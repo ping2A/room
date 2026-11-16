@@ -424,7 +424,13 @@ fn native_printf(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), 
 /// extras in the bank of their type, then each extra's bank (0 int, 1 float,
 /// 2 string) and their count at the end of the int bank.
 #[must_use]
-pub fn vararg_values(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>, ni: usize, nf: usize, ns: usize) -> Vec<Value> {
+pub fn vararg_values(
+    ctx: &ZvmCtx<'_>,
+    regs: &NativeRegs<'_>,
+    ni: usize,
+    nf: usize,
+    ns: usize,
+) -> Vec<Value> {
     let len = ctx.play.native_arg_counts[0].min(regs.i.len());
     let Some(&n) = len.checked_sub(1).and_then(|k| regs.i.get(k)) else {
         return Vec::new();
@@ -484,7 +490,8 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
             k += 1;
             continue;
         }
-        let (mut left, mut plus, mut space, mut zero, mut alt) = (false, false, false, false, false);
+        let (mut left, mut plus, mut space, mut zero, mut alt) =
+            (false, false, false, false, false);
         while let Some(&f) = chars.get(k) {
             match f {
                 '-' => left = true,
@@ -549,7 +556,11 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
                 }
                 (digits, sign(v < 0).to_owned(), true)
             }
-            'u' => (u64::from(as_i(args.next()) as u32).to_string(), String::new(), true),
+            'u' => (
+                u64::from(as_i(args.next()) as u32).to_string(),
+                String::new(),
+                true,
+            ),
             'x' | 'X' | 'o' => {
                 #[allow(clippy::cast_sign_loss)]
                 let v = as_i(args.next()) as u64 & 0xFFFF_FFFF;
@@ -572,7 +583,9 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
             'c' => {
                 let v = as_i(args.next());
                 (
-                    char::from_u32(u32::try_from(v).unwrap_or(0)).map(String::from).unwrap_or_default(),
+                    char::from_u32(u32::try_from(v).unwrap_or(0))
+                        .map(String::from)
+                        .unwrap_or_default(),
                     String::new(),
                     false,
                 )
@@ -611,7 +624,11 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
                         // %g: shortest of %e / %f with `p` significant digits.
                         let p = p.max(1);
                         let a = v.abs();
-                        let exp = if a == 0.0 { 0 } else { a.log10().floor() as i32 };
+                        let exp = if a == 0.0 {
+                            0
+                        } else {
+                            a.log10().floor() as i32
+                        };
                         let s = if exp < -4 || exp >= p as i32 {
                             let s = format!("{:.*e}", p - 1, a);
                             let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
@@ -626,7 +643,11 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
                         if conv == 'G' { s.to_uppercase() } else { s }
                     }
                 };
-                (body, sign(v.is_sign_negative() && v != 0.0).to_owned(), true)
+                (
+                    body,
+                    sign(v.is_sign_negative() && v != 0.0).to_owned(),
+                    true,
+                )
             }
             other => {
                 // Unknown conversion: print it as written.
@@ -641,7 +662,10 @@ pub fn format_printf(heap: &crate::heap::ZvmHeap, fmt: &str, args: &[Value]) -> 
             out.push_str(&prefix);
             out.push_str(&body);
             out.extend(std::iter::repeat_n(' ', pad));
-        } else if zero && numeric && (prec.is_none() || matches!(conv, 'f' | 'F' | 'e' | 'E' | 'g' | 'G')) {
+        } else if zero
+            && numeric
+            && (prec.is_none() || matches!(conv, 'f' | 'F' | 'e' | 'E' | 'g' | 'G'))
+        {
             out.push_str(&prefix);
             out.extend(std::iter::repeat_n('0', pad));
             out.push_str(&body);
@@ -2381,7 +2405,10 @@ mod play_natives {
         Ok(())
     }
 
-    fn texture_id_set_invalid(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    fn texture_id_set_invalid(
+        _ctx: &mut ZvmCtx<'_>,
+        regs: &mut NativeRegs<'_>,
+    ) -> Result<(), Trap> {
         if let Some(slot) = regs.i.first_mut() {
             *slot = -1;
         }
@@ -4098,10 +4125,14 @@ mod play_natives {
     }
 
     fn sector_set_environment(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let name = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
-        ctx.play
-            .actor_ops
-            .push(super::ZsActorOp::SetEnvironment { id: None, name: Some(name) });
+        let name = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        ctx.play.actor_ops.push(super::ZsActorOp::SetEnvironment {
+            id: None,
+            name: Some(name),
+        });
         Ok(())
     }
 
@@ -4215,7 +4246,12 @@ mod play_natives {
         match ctx.heap.get(h) {
             Some(ObjKind::Object { fields_s, .. }) => fields_s
                 .chunks_exact(2)
-                .map(|kv| (ctx.heap.str(kv[0]).to_owned(), ctx.heap.str(kv[1]).to_owned()))
+                .map(|kv| {
+                    (
+                        ctx.heap.str(kv[0]).to_owned(),
+                        ctx.heap.str(kv[1]).to_owned(),
+                    )
+                })
                 .collect(),
             _ => Vec::new(),
         }
@@ -4323,7 +4359,10 @@ mod play_natives {
                 }
                 ws(&mut it);
                 let v = string(&mut it)?;
-                if let Some(slot) = pairs.iter_mut().find(|(pk, _): &&mut (String, String)| *pk == k) {
+                if let Some(slot) = pairs
+                    .iter_mut()
+                    .find(|(pk, _): &&mut (String, String)| *pk == k)
+                {
                     slot.1 = v;
                 } else {
                     pairs.push((k, v));
@@ -4358,7 +4397,10 @@ mod play_natives {
     }
 
     fn dict_from_string(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let text = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        let text = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
         if text == "null" {
             if let Some(slot) = regs.a.first_mut() {
                 *slot = ObjHandle::NULL;
@@ -4621,7 +4663,10 @@ mod play_natives {
     /// like names).
     fn array_find_s(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
-        let v = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        let v = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
         let k = match ctx.heap.get(h) {
             Some(ObjKind::ArrayS(items)) => items
                 .iter()
@@ -5317,10 +5362,7 @@ mod play_natives {
         Ok(())
     }
 
-    fn level_change_sky_mist(
-        ctx: &mut ZvmCtx<'_>,
-        regs: &mut NativeRegs<'_>,
-    ) -> Result<(), Trap> {
+    fn level_change_sky_mist(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         // Args: TextureID (int bank), bool usemist = true (int bank), float yscale = 1.
         let id = regs.i.first().copied().unwrap_or(0);
         let texture = ctx.play.texture_name(id).map(str::to_owned);
@@ -5414,7 +5456,10 @@ mod play_natives {
     }
 
     fn string_format(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let fmt = ctx.heap.str(regs.s.first().copied().unwrap_or_default()).to_owned();
+        let fmt = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
         let args = super::vararg_values(ctx, regs, 0, 0, 1);
         let out = super::format_printf(ctx.heap, &fmt, &args);
         let h = ctx.heap.intern_string(&out);

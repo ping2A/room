@@ -43,7 +43,8 @@ pub fn seed_content(seed: &Path, content_dir: &Path) {
         if dst.exists() {
             continue;
         }
-        let done = std::fs::hard_link(&src, &dst).or_else(|_| std::fs::copy(&src, &dst).map(|_| ()));
+        let done =
+            std::fs::hard_link(&src, &dst).or_else(|_| std::fs::copy(&src, &dst).map(|_| ()));
         match done {
             Ok(()) => info!(file = %name, "shipped content added"),
             Err(e) => warn!(file = %name, %e, "shipped content not copied"),
@@ -1013,8 +1014,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let seed = root.join("seed");
         std::fs::create_dir_all(seed.join("content")).unwrap();
-        std::fs::write(seed.join("content/free.wad"), wad(b"IWAD", &["MAP01", "THINGS"])).unwrap();
-        std::fs::write(seed.join("content/addon.wad"), wad(b"PWAD", &["MAP02", "THINGS"])).unwrap();
+        std::fs::write(
+            seed.join("content/free.wad"),
+            wad(b"IWAD", &["MAP01", "THINGS"]),
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join("content/addon.wad"),
+            wad(b"PWAD", &["MAP02", "THINGS"]),
+        )
+        .unwrap();
         std::fs::write(seed.join("content/bad name.wad"), b"x").unwrap();
         let shipped = r#"{"presets":[
             {"id":"free","title":"Free","iwad":"free.wad"},
@@ -1030,7 +1039,10 @@ mod tests {
         seed_content(&seed, &lib);
         assert!(lib.join("free.wad").is_file());
         assert!(!lib.join("bad name.wad").exists());
-        assert_eq!(wad_maps(&std::fs::read(lib.join("addon.wad")).unwrap()), ["MAP03"]);
+        assert_eq!(
+            wad_maps(&std::fs::read(lib.join("addon.wad")).unwrap()),
+            ["MAP03"]
+        );
         let data = root.join("data");
         let store = ContentStore::open(Some(lib.clone()), data.to_str().unwrap(), 64);
         store.seed_presets(&seed.join("presets.json"), &|_| false);

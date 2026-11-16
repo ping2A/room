@@ -30,7 +30,9 @@ use crate::world_natives::{
 };
 
 fn s_arg(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>, k: usize) -> String {
-    ctx.heap.str(regs.s.get(k).copied().unwrap_or_default()).to_owned()
+    ctx.heap
+        .str(regs.s.get(k).copied().unwrap_or_default())
+        .to_owned()
 }
 
 fn ret_s(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>, text: &str) {
@@ -362,7 +364,12 @@ fn class_is_abstract(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<
 /// `class.GetParentClass()`.
 fn class_parent(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     let name = s_arg(ctx, regs, 0).to_ascii_lowercase();
-    let parent = ctx.play.class_parents.get(&name).cloned().unwrap_or_default();
+    let parent = ctx
+        .play
+        .class_parents
+        .get(&name)
+        .cloned()
+        .unwrap_or_default();
     ret_s(ctx, regs, &parent);
     Ok(())
 }
@@ -377,7 +384,11 @@ fn get_replacement(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<()
             _ => break,
         }
     }
-    let out = if cur == name.to_ascii_lowercase() { name } else { cur };
+    let out = if cur == name.to_ascii_lowercase() {
+        name
+    } else {
+        cur
+    };
     ret_s(ctx, regs, &out);
     Ok(())
 }
@@ -438,7 +449,11 @@ fn color_ctor(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Tra
 
 /// `Quat.FromAngles(yaw, pitch, roll)` (degrees): UZDoom's `TQuaternion::FromAngles`.
 fn quat_from_angles(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-    let q = quat_from_ypr(arg_f(regs, 0, 0.0), arg_f(regs, 1, 0.0), arg_f(regs, 2, 0.0));
+    let q = quat_from_ypr(
+        arg_f(regs, 0, 0.0),
+        arg_f(regs, 1, 0.0),
+        arg_f(regs, 2, 0.0),
+    );
     ret_vec(regs, &q);
     Ok(())
 }
@@ -584,7 +599,14 @@ fn check_keys(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Tra
     let me = arg_a(regs, 0);
     let lock = arg_i(regs, 0, 0);
     let has = |ctx: &ZvmCtx<'_>, k: &str| inventory_entry(ctx, me, k).is_some_and(|(n, _)| n > 0);
-    let all = ["redcard", "bluecard", "yellowcard", "redskull", "blueskull", "yellowskull"];
+    let all = [
+        "redcard",
+        "bluecard",
+        "yellowcard",
+        "redskull",
+        "blueskull",
+        "yellowskull",
+    ];
     let ok = match lock {
         0 => true,
         100 => all.iter().any(|k| has(ctx, k)),
@@ -641,14 +663,20 @@ fn check_proximity(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<()
             dist2d(origin, *p)
         } else {
             room_core::dmath::sqrt(
-                (p[0] - origin[0]).powi(2) + (p[1] - origin[1]).powi(2) + (p[2] - origin[2]).powi(2),
+                (p[0] - origin[0]).powi(2)
+                    + (p[1] - origin[1]).powi(2)
+                    + (p[2] - origin[2]).powi(2),
             )
         };
         if d <= distance {
             found += 1;
         }
     }
-    let ok = if flags & 1 != 0 { found <= count } else { found >= count };
+    let ok = if flags & 1 != 0 {
+        found <= count
+    } else {
+        found >= count
+    };
     ret_bool(regs, ok);
     Ok(())
 }
@@ -788,7 +816,11 @@ fn append_format(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), 
 /// model skeleton, so the position is taken in the actor's frame (yaw only).
 fn transform_by_bone(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     let me = arg_a(regs, 0);
-    let p = [arg_f(regs, 0, 0.0), arg_f(regs, 1, 0.0), arg_f(regs, 2, 0.0)];
+    let p = [
+        arg_f(regs, 0, 0.0),
+        arg_f(regs, 1, 0.0),
+        arg_f(regs, 2, 0.0),
+    ];
     let origin = pos_of(ctx, me).unwrap_or([0.0; 3]);
     let (s, c) = angle_of(ctx, me).to_radians().sin_cos();
     let world = [

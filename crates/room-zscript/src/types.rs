@@ -1026,17 +1026,17 @@ impl Resolver<'_> {
         let Expr::Ident(root, _) = cur else {
             return;
         };
-        let field_name = if root.eq_ignore_ascii_case("self") || root.eq_ignore_ascii_case("invoker")
-        {
-            if path.is_empty() {
+        let field_name =
+            if root.eq_ignore_ascii_case("self") || root.eq_ignore_ascii_case("invoker") {
+                if path.is_empty() {
+                    return;
+                }
+                path.remove(0)
+            } else if self.local(root).is_some() {
                 return;
-            }
-            path.remove(0)
-        } else if self.local(root).is_some() {
-            return;
-        } else {
-            root.as_str()
-        };
+            } else {
+                root.as_str()
+            };
         let Some(field) = self.ct.lookup_field(&self.class.name, field_name) else {
             return;
         };

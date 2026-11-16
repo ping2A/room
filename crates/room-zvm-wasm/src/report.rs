@@ -90,7 +90,11 @@ impl CoverageReport {
                 s,
                 "| `{}` | {} | {} |",
                 n.name,
-                if n.implemented { "implemented" } else { "**missing**" },
+                if n.implemented {
+                    "implemented"
+                } else {
+                    "**missing**"
+                },
                 n.call_sites
             );
         }

@@ -136,12 +136,13 @@ pub fn call_action_args(
         "A_SetFloatSpeed" => a_set_float_speed(world, self_id, args),
         "A_SetFastSpeed" => a_set_fast_speed(world, self_id, args),
         "A_SetViewHeight" => a_set_view_height(world, self_id, args),
-        "A_ClearOverlays" if world.player_seat_of(self_id).is_some_and(|seat| {
-            world
-                .players
-                .get(usize::from(seat))
-                .is_some_and(Option::is_none)
-        }) =>
+        "A_ClearOverlays"
+            if world.player_seat_of(self_id).is_some_and(|seat| {
+                world
+                    .players
+                    .get(usize::from(seat))
+                    .is_some_and(Option::is_none)
+            }) =>
         {
             world
                 .psp_action_queue
@@ -149,9 +150,17 @@ pub fn call_action_args(
             ActionResult::Continue
         }
         "A_ClearOverlays" => a_clear_overlays(world, self_id, args),
-        "A_Overlay" | "A_OverlayOffset" | "A_OverlayAlpha" | "A_OverlayScale"
-        | "A_OverlayFlags" | "A_OverlayPivot" | "A_OverlayPivotAlign" | "A_OverlayRotate"
-        | "A_OverlayRenderStyle" | "A_OverlayTranslation" | "A_OverlayVertexOffset"
+        "A_Overlay"
+        | "A_OverlayOffset"
+        | "A_OverlayAlpha"
+        | "A_OverlayScale"
+        | "A_OverlayFlags"
+        | "A_OverlayPivot"
+        | "A_OverlayPivotAlign"
+        | "A_OverlayRotate"
+        | "A_OverlayRenderStyle"
+        | "A_OverlayTranslation"
+        | "A_OverlayVertexOffset"
         | "A_WeaponOffset" => {
             crate::think_player::overlay_action_from_actor(world, self_id, name, args);
             ActionResult::Continue
@@ -293,7 +302,11 @@ pub fn call_action_args(
         "A_StopAllSounds" => a_stop_channels(world, self_id, 0, 0, true),
         // `A_StopSound(slot = CHAN_VOICE)` / `A_StopSoundEx(slot name)`.
         "A_StopSound" | "A_StopSoundEx" => {
-            let slot = if args.is_empty() { 2 } else { parse_sound_channel(args.first()) };
+            let slot = if args.is_empty() {
+                2
+            } else {
+                parse_sound_channel(args.first())
+            };
             a_stop_channels(world, self_id, slot, slot, false)
         }
         // `A_StopSounds(chanmin, chanmax)`: both 0 = every channel.
@@ -408,8 +421,14 @@ pub fn call_action_args(
         // `A_Chase(melee, missile, flags)` (DECORATE / `A_DoChase`); bare
         // `A_Chase` keeps the vanilla path.
         "A_Chase" if !args.is_empty() => {
-            let melee = args.first().map(|a| a.trim().trim_matches('"').to_owned()).unwrap_or_default();
-            let missile = args.get(1).map(|a| a.trim().trim_matches('"').to_owned()).unwrap_or_default();
+            let melee = args
+                .first()
+                .map(|a| a.trim().trim_matches('"').to_owned())
+                .unwrap_or_default();
+            let missile = args
+                .get(1)
+                .map(|a| a.trim().trim_matches('"').to_owned())
+                .unwrap_or_default();
             let flags = parse_i32_arg(args, 2, 0);
             chase_with_labels(world, self_id, &melee, &missile, flags)
         }
@@ -3294,7 +3313,9 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
             }
             room_zvm::ZsActorOp::SetEnvironment { id, name } => {
                 let at = world.actors.get(self_id).map(|a| (a.pos.x(), a.pos.y()));
-                if let Some(sector) = at.and_then(|(x, y)| crate::physics::sector_at_xy(world, x, y)) {
+                if let Some(sector) =
+                    at.and_then(|(x, y)| crate::physics::sector_at_xy(world, x, y))
+                {
                     match (id, name) {
                         (Some(id), _) => world.set_sector_environment(sector, id),
                         (None, Some(name)) => world.set_sector_environment_name(sector, &name),
@@ -4108,18 +4129,23 @@ fn particle_vector(
     room_core::DVec3::new(x * cos + y * sin, x * sin - y * cos, z)
 }
 
-
 /// Stop this actor's sounds on channels `lo..=hi` (`all` = every channel):
 /// drop matching queued starts, then tell the mixer.
-fn a_stop_channels(world: &mut World, self_id: ActorId, lo: i32, hi: i32, all: bool) -> ActionResult {
+fn a_stop_channels(
+    world: &mut World,
+    self_id: ActorId,
+    lo: i32,
+    hi: i32,
+    all: bool,
+) -> ActionResult {
     let Some(a) = world.actors.get(self_id) else {
         return ActionResult::Continue;
     };
     let (x, y, z) = (a.pos.x(), a.pos.y(), a.pos.z());
     let source_id = sound_source_id(self_id);
-    world.sound_events.retain(|ev| {
-        ev.source_id != Some(source_id) || !(all || (lo..=hi).contains(&ev.channel))
-    });
+    world
+        .sound_events
+        .retain(|ev| ev.source_id != Some(source_id) || !(all || (lo..=hi).contains(&ev.channel)));
     #[allow(clippy::cast_sign_loss)]
     let channel_flags = (hi.clamp(0, 255) as u32) | if all { 1 << 8 } else { 0 };
     world.sound_events.push(crate::world::SimSoundEvent {
@@ -7537,7 +7563,8 @@ fn a_chase_tail(
     // UZDoom's CHF_FASTCHASE gives boss actors a short lateral strafe burst
     // when they are within 640 map units, then pauses ordinary chase movement
     // for the burst's three tics.
-    let fast_strafe_active = fast_chase && !dont_move && fast_chase_strafe(world, self_id, len, dx, dy);
+    let fast_strafe_active =
+        fast_chase && !dont_move && fast_chase_strafe(world, self_id, len, dx, dy);
     // Keep a small follow distance when trailing the player (MBF friends).
     let follow_keep = 96.0;
     if !attack && len < follow_keep {
@@ -7771,10 +7798,18 @@ fn fast_chase_strafe(world: &mut World, self_id: ActorId, len: f64, dx: f64, dy:
     }
     if len < 640.0 && i32::from(world.p_random("pr_chase")) < 100 {
         let bearing = dmath::atan2(dy, dx);
-        let turn: f64 = if world.p_random("pr_chase") < 128 { 90.0 } else { -90.0 };
+        let turn: f64 = if world.p_random("pr_chase") < 128 {
+            90.0
+        } else {
+            -90.0
+        };
         let angle = bearing + turn.to_radians();
         if let Some(a) = world.actors.get_mut(self_id) {
-            a.vel = DVec3::new(dmath::cos(angle) * 13.0, dmath::sin(angle) * 13.0, a.vel.z());
+            a.vel = DVec3::new(
+                dmath::cos(angle) * 13.0,
+                dmath::sin(angle) * 13.0,
+                a.vel.z(),
+            );
             a.fast_chase_strafe = 3;
         }
         return true;
@@ -7854,7 +7889,10 @@ fn a_chase_uz_body(
     {
         a.tics = (a.tics - a.tics / 2).max(3);
     }
-    let friendly = world.actors.get(self_id).is_some_and(|a| a.flags & FLAG_FRIENDLY != 0);
+    let friendly = world
+        .actors
+        .get(self_id)
+        .is_some_and(|a| a.flags & FLAG_FRIENDLY != 0);
     let Some(tid) = resolve_chase_target(world, self_id, chase_flags) else {
         // No target: idle (`SetIdle`), or wander with CHF_DONTIDLE / friends.
         if chase_flags & 512 != 0 || friendly {
@@ -7866,12 +7904,19 @@ fn a_chase_uz_body(
         return idle_state(world, self_id).map_or(ActionResult::Continue, ActionResult::Jump);
     };
     // Do not attack twice in a row.
-    if world.actors.get(self_id).is_some_and(|a| a.flags & FLAG_JUSTATTACKED != 0) {
+    if world
+        .actors
+        .get(self_id)
+        .is_some_and(|a| a.flags & FLAG_JUSTATTACKED != 0)
+    {
         if let Some(a) = world.actors.get_mut(self_id) {
             a.flags &= !FLAG_JUSTATTACKED;
         }
         let fast = world.fast_monsters
-            || world.actors.get(self_id).is_some_and(|a| a.extra_flags.get_name("ALWAYSFAST"));
+            || world
+                .actors
+                .get(self_id)
+                .is_some_and(|a| a.extra_flags.get_name("ALWAYSFAST"));
         if !fast && !dont_move && chase_flags & (128 | 256) == 0 {
             new_chase_dir(world, self_id, tid);
         }
@@ -7886,7 +7931,10 @@ fn a_chase_uz_body(
     // Scared monsters (`+FRIGHTENED`, or a `+FRIGHTENING` / frightener
     // target) only consider attacking 43 times in 256.
     let scared = world.actors.get(self_id).is_some_and(|a| a.frightened)
-        || world.actors.get(tid).is_some_and(|t| t.extra_flags.get_name("FRIGHTENING"));
+        || world
+            .actors
+            .get(tid)
+            .is_some_and(|t| t.extra_flags.get_name("FRIGHTENING"));
     let may_attack = !scared || i32::from(world.p_random("pr_scaredycat")) < 43;
     // The shared walker handles strafe, attacks, movement and sound; the
     // pre-attack steps above already ran, so it skips them (no flag 1<<29).
@@ -13831,13 +13879,26 @@ actor Shooter : Actor 9403
         let (mut w, _, id, cls) = chase_world();
         // Custom missile label.
         assert_eq!(
-            call_action_args(&mut w, id, "A_Chase", &["\"_a_chase_default\"".into(), "\"Shoot2\"".into()]),
+            call_action_args(
+                &mut w,
+                id,
+                "A_Chase",
+                &["\"_a_chase_default\"".into(), "\"Shoot2\"".into()]
+            ),
             ActionResult::Jump(w.states.find_label(cls, "Shoot2").unwrap())
         );
         // `null` missile: no attack.
         let (mut w, _, id, cls) = chase_world();
-        let r = call_action_args(&mut w, id, "A_Chase", &["null".into(), "null".into(), "CHF_DONTMOVE".into()]);
-        assert_ne!(r, ActionResult::Jump(w.states.find_label(cls, "Missile").unwrap()));
+        let r = call_action_args(
+            &mut w,
+            id,
+            "A_Chase",
+            &["null".into(), "null".into(), "CHF_DONTMOVE".into()],
+        );
+        assert_ne!(
+            r,
+            ActionResult::Jump(w.states.find_label(cls, "Missile").unwrap())
+        );
         assert_eq!(w.actors.get(id).unwrap().pos.x(), 200.0, "CHF_DONTMOVE");
     }
 
@@ -13860,9 +13921,16 @@ actor Shooter : Actor 9403
         let (mut w, _, id, _) = chase_world();
         let mo = w.players[0].as_ref().unwrap().mo.unwrap();
         w.actors.get_mut(id).unwrap().target = Some(mo);
-        w.actors.get_mut(mo).unwrap().extra_flags.set_name("MINVISIBLE", true);
+        w.actors
+            .get_mut(mo)
+            .unwrap()
+            .extra_flags
+            .set_name("MINVISIBLE", true);
         let _ = a_ext_chase(&mut w, id, &["false".into(), "false".into()]);
-        assert!(!w.actors.get(id).unwrap().extra_flags.get_name("INCHASE"), "guard released");
+        assert!(
+            !w.actors.get(id).unwrap().extra_flags.get_name("INCHASE"),
+            "guard released"
+        );
     }
 
     #[test]
@@ -19570,12 +19638,24 @@ actor Scout : Actor 9992
             &mut w,
             id,
             "A_SpawnParticleEx",
-            &["white".into(), "\"BAL1A0\"".into(), "7".into(), "0".into(), "10".into(), "6".into()],
+            &[
+                "white".into(),
+                "\"BAL1A0\"".into(),
+                "7".into(),
+                "0".into(),
+                "10".into(),
+                "6".into(),
+            ],
         );
         let ev = w.drain_particle_events();
         assert_eq!(ev[0].texture.as_deref(), Some("BAL1A0"));
         assert_eq!(ev[0].render_style, Some(7));
-        let _ = call_action_args(&mut w, id, "A_SpawnParticleEx", &["white".into(), "\"-\"".into()]);
+        let _ = call_action_args(
+            &mut w,
+            id,
+            "A_SpawnParticleEx",
+            &["white".into(), "\"-\"".into()],
+        );
         assert!(w.drain_particle_events()[0].texture.is_none());
     }
 

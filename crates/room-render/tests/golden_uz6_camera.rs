@@ -37,7 +37,9 @@ fn uz6_ortho_projection_matches_golden() {
         }
     }
     assert!(
-        ortho_x.windows(2).all(|w| (w[0].0 - w[1].0).abs() < 1e-4 && (w[0].1 - w[1].1).abs() < 1e-4),
+        ortho_x
+            .windows(2)
+            .all(|w| (w[0].0 - w[1].0).abs() < 1e-4 && (w[0].1 - w[1].1).abs() < 1e-4),
         "orthographic projection ignores depth: {out}"
     );
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

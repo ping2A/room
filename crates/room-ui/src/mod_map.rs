@@ -127,7 +127,10 @@ fn over(c: Rgba, bg: Rgba, alpha: f32) -> Rgba {
 /// Frame + background.
 pub(crate) fn draw_frame(list: &mut UiDrawList, r: Rect, bg: Rgba, alpha: f32) {
     let shadow = Rgba::new(SHADOW.r, SHADOW.g, SHADOW.b, 0.55 * alpha);
-    list.fill(Rect::new(r.x - 1.0, r.y - 1.0, r.w + 2.0, r.h + 2.0), shadow);
+    list.fill(
+        Rect::new(r.x - 1.0, r.y - 1.0, r.w + 2.0, r.h + 2.0),
+        shadow,
+    );
     list.fill(r, bg);
     let f = Rgba::new(FRAME.r, FRAME.g, FRAME.b, alpha);
     let t = 0.5;
@@ -166,8 +169,12 @@ pub(crate) fn draw_geometry(
         };
         let a = proj.project(v1.pos.x(), v1.pos.y());
         let b = proj.project(v2.pos.x(), v2.pos.y());
-        let front = l.front_sector.and_then(|s| map.sectors.get(s.raw() as usize));
-        let back = l.back_sector.and_then(|s| map.sectors.get(s.raw() as usize));
+        let front = l
+            .front_sector
+            .and_then(|s| map.sectors.get(s.raw() as usize));
+        let back = l
+            .back_sector
+            .and_then(|s| map.sectors.get(s.raw() as usize));
         let (Some(fs), Some(bs)) = (front, back) else {
             walls.push((a, b));
             continue;
@@ -177,7 +184,8 @@ pub(crate) fn draw_geometry(
             continue;
         }
         let floor = (fs.floor_height - bs.floor_height).abs();
-        let closed = fs.ceiling_height <= bs.floor_height || bs.ceiling_height <= fs.floor_height
+        let closed = fs.ceiling_height <= bs.floor_height
+            || bs.ceiling_height <= fs.floor_height
             || fs.ceiling_height <= fs.floor_height
             || bs.ceiling_height <= bs.floor_height;
         if floor > LEDGE {
@@ -200,7 +208,16 @@ fn rgba_u32(c: u32) -> Rgba {
     )
 }
 
-fn ring(list: &mut UiDrawList, proj: &MapProj, cx: f64, cy: f64, r: f64, color: Rgba, t: f32, dashed: bool) {
+fn ring(
+    list: &mut UiDrawList,
+    proj: &MapProj,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    color: Rgba,
+    t: f32,
+    dashed: bool,
+) {
     if r <= 0.0 {
         return;
     }
@@ -278,7 +295,16 @@ pub(crate) fn draw_zones(
                 true,
             );
         }
-        ring(list, proj, f64::from(cx), f64::from(cy), f64::from(rad), color, 0.45, false);
+        ring(
+            list,
+            proj,
+            f64::from(cx),
+            f64::from(cy),
+            f64::from(rad),
+            color,
+            0.45,
+            false,
+        );
     }
 }
 
@@ -298,7 +324,13 @@ pub(crate) fn draw_marker(list: &mut UiDrawList, r: Rect, p: Vec2, size: f32, co
 }
 
 /// Viewer arrow at `p`, pointing along `angle_deg` on screen (0 = east).
-pub(crate) fn draw_arrow(list: &mut UiDrawList, r: Rect, p: Vec2, screen_angle_deg: f32, size: f32) {
+pub(crate) fn draw_arrow(
+    list: &mut UiDrawList,
+    r: Rect,
+    p: Vec2,
+    screen_angle_deg: f32,
+    size: f32,
+) {
     let at = |deg: f32, len: f32| {
         let a = deg.to_radians();
         Vec2::new(p.x + a.cos() * len, p.y - a.sin() * len)
@@ -337,8 +369,14 @@ mod tests {
             rotate: false,
         };
         assert!(north_up.project(0.0, 10.0).y < 45.0, "+y is up");
-        let facing_east = MapProj { rotate: true, ..north_up };
+        let facing_east = MapProj {
+            rotate: true,
+            ..north_up
+        };
         let p = facing_east.project(10.0, 0.0);
-        assert!(p.y < 45.0 && (p.x - 50.0).abs() < 1e-3, "facing (east) is up: {p:?}");
+        assert!(
+            p.y < 45.0 && (p.x - 50.0).abs() < 1e-3,
+            "facing (east) is up: {p:?}"
+        );
     }
 }

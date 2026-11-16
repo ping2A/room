@@ -274,6 +274,8 @@ function setSummary(json) {
     $("#btn-play").title = "Play the selected Build map in the native Duke runtime (F5)";
     $("#btn-play-here").hidden = true;
     $("#btn-new-map").hidden = false;
+    $("#btn-generate").hidden = true;
+    $("#gen-panel").hidden = true;
     $("#btn-new-map").textContent = "New Build map";
     $("#btn-new-map").title = "Create an editable native Build .MAP in the working Duke GRP";
     $("#btn-visual").hidden = true;
@@ -300,6 +302,7 @@ function setSummary(json) {
     $("#btn-play").title = "Play from the player start (F5)";
     $("#btn-play-here").hidden = false;
     $("#btn-new-map").hidden = false;
+    $("#btn-generate").hidden = false;
     $("#btn-new-map").textContent = "New map";
     $("#btn-new-map").title = "New map";
     $("#btn-visual").hidden = false;
@@ -4206,6 +4209,111 @@ function newMap() {
   } catch (e) { toast(errText(e), true); }
 }
 
+// ---------------------------------------------------------------- map generator
+
+function genOptions() {
+  return {
+    seed: Math.max(0, Math.floor(Number($("#gen-seed").value) || 0)),
+    name: ($("#gen-name").value || "MAP01").trim().toUpperCase().slice(0, 8),
+    players: Number($("#gen-players").value) || 8,
+    size: $("#gen-size").value,
+    theme: $("#gen-theme").value,
+    biomes: $("#gen-biomes").value,
+    verticality: Number($("#gen-vert").value),
+    cover: Number($("#gen-cover").value),
+    outdoor: Number($("#gen-outdoor").value),
+    teleporters: $("#gen-tele").checked,
+    liquids: $("#gen-liquids").checked,
+    power_items: $("#gen-power").checked,
+    monsters: Number($("#gen-monsters").value),
+  };
+}
+
+function genReport(r) {
+  const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+  const extent = `${(r.width / 1024).toFixed(1)} × ${(r.height / 1024).toFixed(1)}k units`;
+  return `<dl>${row("Rooms", r.rooms)}${row("Corridors", `${r.corridors} (${r.loops} loops)`)}` +
+    `${row("Teleporters", r.teleporters ? `${r.teleporters} pairs` : "none")}${row("DM starts", r.dm_starts)}` +
+    `${row("Weapons", r.weapons)}${row("Items", r.items)}` +
+    (r.monsters ? row("Monsters", r.monsters) : "") + (r.secrets ? row("Secrets", r.secrets) : "") +
+    `${row("Size", extent)}` +
+    `${row("Biomes", genBiomes(r.biomes || []))}` +
+    `${row("Geometry", `${r.sectors} sectors · ${r.lines} lines`)}</dl>` +
+    (r.attempts > 1 ? `<div>Seed ${r.seed} (attempt ${r.attempts})</div>` : "");
+}
+
+function genBiomes(list) {
+  const names = { indoor: "interior", yard: "yard", cave: "cave", canyon: "canyon", swamp: "swamp", courtyard: "keep", plaza: "plaza" };
+  const n = {};
+  for (const b of list) n[b] = (n[b] || 0) + 1;
+  return Object.entries(n).sort((a, b) => b[1] - a[1]).map(([b, c]) => `${c} ${names[b] || b}`).join(", ");
+}
+
+let genBusy = false;
+function generateMap() {
+  if (!S.summary || S.summary.duke || genBusy) return;
+  const opts = genOptions();
+  if (!/^[A-Z0-9_]{1,8}$/.test(opts.name)) { toast("Map name: 1–8 letters, digits or _", true); return; }
+  const mine = S.docs[opts.name] && S.docs[opts.name].generated;
+  if (!mine && (S.summary.maps.includes(opts.name) || S.docs[opts.name])
+      && !confirm(`${opts.name} already exists. Replace it with a generated map?`)) return;
+  genBusy = true;
+  $("#gen-go").disabled = true;
+  $("#gen-report").textContent = "Generating…";
+  // Let the panel repaint before the (synchronous) generation.
+  requestAnimationFrame(() => setTimeout(() => {
+    try {
+      if (S.doc) S.docs[S.doc.name] = S.doc;
+      const out = JSON.parse(S.mod.roomEditorGenerateMap(JSON.stringify(opts)));
+      S.doc = out.doc;
+      S.doc.generated = opts;
+      S.docs[S.doc.name] = S.doc;
+      S.undo = []; S.redo = []; S.sel.clear(); S.version++;
+      setSummary(S.mod.roomEditorSummary());
+      $("#map-select").value = S.doc.name;
+      fitView(); renderInspector(); renderBrowser();
+      $("#gen-report").innerHTML = genReport(out.report);
+      toast(`${S.doc.name} generated: ${out.report.rooms} rooms, ${out.report.dm_starts} starts`);
+    } catch (e) {
+      $("#gen-report").innerHTML = `<span class="gen-err"></span>`;
+      $("#gen-report .gen-err").textContent = errText(e);
+    } finally {
+      genBusy = false;
+      $("#gen-go").disabled = false;
+    }
+  }, 0));
+}
+
+function openGenerator(open = true) {
+  $("#gen-panel").hidden = !open;
+  if (open) {
+    const cur = S.doc && S.doc.generated;
+    if (cur) {
+      $("#gen-name").value = S.doc.name;
+    } else if (S.summary) {
+      let n = 1;
+      while (S.summary.maps.includes(`MAP${String(n).padStart(2, "0")}`) || S.docs[`MAP${String(n).padStart(2, "0")}`]) n++;
+      $("#gen-name").value = n <= 99 ? `MAP${String(n).padStart(2, "0")}` : "GEN01";
+    }
+    $("#gen-seed").focus();
+  }
+}
+
+$("#btn-generate").addEventListener("click", () => openGenerator($("#gen-panel").hidden));
+$("#gen-close").addEventListener("click", () => openGenerator(false));
+$("#gen-form").addEventListener("submit", (e) => { e.preventDefault(); generateMap(); });
+$("#gen-dice").addEventListener("click", () => { $("#gen-seed").value = Math.floor(Math.random() * 1e9); });
+$("#gen-reroll").addEventListener("click", () => {
+  $("#gen-seed").value = Math.floor(Math.random() * 1e9);
+  generateMap();
+});
+$("#gen-players").addEventListener("input", (e) => { $("#gen-players-out").textContent = e.target.value; });
+$("#gen-panel").addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.key === "Escape") openGenerator(false);
+});
+$("#gen-seed").value = Math.floor(Math.random() * 1e6);
+
 // ---------------------------------------------------------------- toolbar & keys
 
 function syncModeButtons() {
@@ -4330,6 +4438,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "F5") { e.preventDefault(); setPlaying(true, "start"); return; }
   if (e.code === "F6") { e.preventDefault(); setPlaying(true, "here"); return; }
   if (e.code === "F7") { e.preventDefault(); setPlaying(false); return; }
+  if (mod && e.code === "KeyG" && S.summary && !S.summary.duke) { e.preventDefault(); openGenerator($("#gen-panel").hidden); return; }
   if (typing) return;
   if (mod && e.code === "KeyZ") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (mod && e.code === "KeyY") { e.preventDefault(); redo(); return; }

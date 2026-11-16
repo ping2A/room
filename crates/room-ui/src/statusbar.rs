@@ -12,7 +12,11 @@ const INV_BOX: f32 = 32.0;
 /// An icon with its centre (`DI_ITEM_CENTER`) or bottom centre on `(x, y)`.
 fn inv_icon(list: &mut UiDrawList, item: &HudInvItem, x: f32, y: f32, bottom: bool) {
     let top = if bottom { y - item.h } else { y - item.h / 2.0 };
-    list.patch(&item.icon, Vec2::new(x - item.w / 2.0, top), Vec2::new(0.0, 0.0));
+    list.patch(
+        &item.icon,
+        Vec2::new(x - item.w / 2.0, top),
+        Vec2::new(0.0, 0.0),
+    );
 }
 
 /// The open inventory bar from `(x, y)`: seven boxes, the selected one framed,
@@ -23,7 +27,9 @@ fn draw_inventory_bar(list: &mut UiDrawList, hud: &HudState, x: f32, y: f32) {
     }
     // Scroll so the selection is visible (`ValidateInvFirst`).
     let sel = hud.inv_sel.unwrap_or(0);
-    let first = sel.saturating_sub(INV_BOXES - 1).min(hud.inv_bar.len().saturating_sub(INV_BOXES));
+    let first = sel
+        .saturating_sub(INV_BOXES - 1)
+        .min(hud.inv_bar.len().saturating_sub(INV_BOXES));
     let first = if sel < first { sel } else { first };
     list.fill(
         Rect::new(x, y, INV_BOX * INV_BOXES as f32, INV_BOX),

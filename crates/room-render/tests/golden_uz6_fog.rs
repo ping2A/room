@@ -10,7 +10,9 @@
 
 use glam::Vec3;
 use room_nodebuild::apply_nodes;
-use room_render::{Camera, GpuContext, OffscreenTarget, UnlitPass, build_scene, read_rgba, render_offscreen};
+use room_render::{
+    Camera, GpuContext, OffscreenTarget, UnlitPass, build_scene, read_rgba, render_offscreen,
+};
 use room_testkit::{MapBuilder, rect};
 use std::fmt::Write as _;
 
@@ -59,7 +61,10 @@ fn uz6_thick_fog_and_sky_fog_match_golden() {
         ..Camera::default()
     };
     let scene = build_scene(&map, &camera, None);
-    assert!(!scene.sky_parts.is_empty(), "F_SKY1 ceiling builds the sky shell");
+    assert!(
+        !scene.sky_parts.is_empty(),
+        "F_SKY1 ceiling builds the sky shell"
+    );
     let target = OffscreenTarget::new(&gpu, W, H);
     let mut pass = UnlitPass::new(&gpu, target.format);
     pass.set_fog_density(0.5);
@@ -81,13 +86,19 @@ fn uz6_thick_fog_and_sky_fog_match_golden() {
         runs.push((far, top));
     }
     // Fog colour (0.05, 0.05, 0.08) as the target stores it.
-    let fog = mean(&{
-        pass.set_thick_fog(0.0, 0.0);
-        pass.set_sky_fog(255.0);
-        pass.set_fog_density(1000.0);
-        render_offscreen(&gpu, &mut pass, &target, &camera, &scene);
-        read_rgba(&gpu, &target).expect("readback")
-    }, W / 2 - 4, H / 2 - 4, W / 2 + 4, H / 2 + 4);
+    let fog = mean(
+        &{
+            pass.set_thick_fog(0.0, 0.0);
+            pass.set_sky_fog(255.0);
+            pass.set_fog_density(1000.0);
+            render_offscreen(&gpu, &mut pass, &target, &camera, &scene);
+            read_rgba(&gpu, &target).expect("readback")
+        },
+        W / 2 - 4,
+        H / 2 - 4,
+        W / 2 + 4,
+        H / 2 + 4,
+    );
     let _ = writeln!(out, "fog     {fog:?}");
     let (plain, thick, skyfog) = (runs[0], runs[1], runs[2]);
     assert!(

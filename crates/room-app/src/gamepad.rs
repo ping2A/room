@@ -58,7 +58,9 @@ impl PadBackend {
                         self.active = None;
                         self.name = None;
                     }
-                    EventType::Connected | EventType::ButtonPressed(..) | EventType::AxisChanged(..)
+                    EventType::Connected
+                    | EventType::ButtonPressed(..)
+                    | EventType::AxisChanged(..)
                         if self.active.is_none() =>
                     {
                         self.active = Some(ev.id);

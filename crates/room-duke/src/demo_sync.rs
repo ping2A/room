@@ -8,7 +8,9 @@ use room_build_engine::world::{BuildWorld, MAXSTATUS};
 
 use room_build::art::{MAX_TILES, TileSet};
 
-use crate::con::{IncludeResolver, ScriptImage, compile};
+use crate::con::{
+    ConCompileOptions, ConDialect, IncludeResolver, ScriptImage, compile_with_options,
+};
 use crate::player::{DukeInput, TileZMeta};
 use crate::session::DukeSession;
 use crate::trace::{
@@ -85,6 +87,26 @@ pub fn session_from_grp_layers_with_con_and_includes(
     con_override: Option<&[u8]>,
     additional_includes: Option<&mut dyn IncludeResolver>,
 ) -> Result<DukeSession, String> {
+    session_from_grp_layers_with_con_and_includes_dialect(
+        grp_layers,
+        map_name,
+        skill,
+        con_override,
+        additional_includes,
+        ConDialect::Atomic,
+    )
+}
+
+/// Load a map with a root CON override, include resolver, and explicit CON
+/// dialect. EDuke32 images initialize their VM before the map's sprites spawn.
+pub fn session_from_grp_layers_with_con_and_includes_dialect(
+    grp_layers: &[&[u8]],
+    map_name: &str,
+    skill: u8,
+    con_override: Option<&[u8]>,
+    additional_includes: Option<&mut dyn IncludeResolver>,
+    dialect: ConDialect,
+) -> Result<DukeSession, String> {
     if skill > 4 {
         return Err(format!("skill {skill} is outside the Duke range 0..=4"));
     }
@@ -101,7 +123,7 @@ pub fn session_from_grp_layers_with_con_and_includes(
     let map = grp
         .get(&map_name)
         .ok_or_else(|| format!("missing map {map_name}"))?;
-    session_from_grp_map_data(&grp, map, skill, con_override, additional_includes)
+    session_from_grp_map_data(&grp, map, skill, con_override, additional_includes, dialect)
 }
 
 /// Load a standalone Build `.MAP` file using content/resources from GRP layers.
@@ -141,7 +163,14 @@ pub fn session_from_grp_map_bytes_with_con_and_includes(
         return Err(format!("skill {skill} is outside the Duke range 0..=4"));
     }
     let grp = GrpStack::parse_layers(grp_layers).map_err(|e| format!("GRP: {e}"))?;
-    session_from_grp_map_data(&grp, map_bytes, skill, con_override, additional_includes)
+    session_from_grp_map_data(
+        &grp,
+        map_bytes,
+        skill,
+        con_override,
+        additional_includes,
+        ConDialect::Atomic,
+    )
 }
 
 fn session_from_grp_map_data<'g, 'a, 'r>(
@@ -150,6 +179,7 @@ fn session_from_grp_map_data<'g, 'a, 'r>(
     skill: u8,
     con_override: Option<&[u8]>,
     additional_includes: Option<&'r mut dyn IncludeResolver>,
+    dialect: ConDialect,
 ) -> Result<DukeSession, String> {
     let world = BuildWorld::load_map_bytes(map_bytes).map_err(|e| format!("map: {e}"))?;
     let game = con_override
@@ -159,7 +189,7 @@ fn session_from_grp_map_data<'g, 'a, 'r>(
         grp,
         additional: additional_includes,
     };
-    let script: ScriptImage = compile(game, &mut inc);
+    let script: ScriptImage = compile_with_options(game, &mut inc, ConCompileOptions { dialect });
     if script.errors != 0 {
         return Err(format!("CON errors={}", script.errors));
     }
@@ -173,7 +203,13 @@ fn session_from_grp_map_data<'g, 'a, 'r>(
         }
     }
     let mut session = DukeSession::new();
-    session.load_script(script);
+    if dialect == ConDialect::EDuke32 {
+        session
+            .try_load_script(script)
+            .map_err(|error| format!("EDuke32 runtime initialization: {error}"))?;
+    } else {
+        session.load_script(script);
+    }
     session.set_tile_meta(tile_z_meta_from_grp(grp));
     session.set_world_with_skill(world, skill);
     session.player.extra = 100;
@@ -238,6 +274,10 @@ fn tile_z_meta_from_grp(grp: &GrpStack<'_>) -> Vec<TileZMeta> {
                 height: t.height as i16,
                 x_offset: t.x_offset(),
                 y_offset: t.y_offset(),
+                anim_frames: (t.picanm & 63) as u8,
+                anim_speed: ((t.picanm >> 24) & 15) as u8,
+                anim_type: ((t.picanm >> 6) & 3) as u8,
+                ..TileZMeta::default()
             };
         }
     }
@@ -400,6 +440,54 @@ mod tests {
     /// matches the Chocolate trace for at least this many tics. Raise it as
     /// the frontier moves; never lower it to make a change pass.
     const DEMO1_REAL_SYNC_TICS: usize = 436;
+
+    #[test]
+    fn grp_map_loader_initializes_eduke_vm_before_level_setup() {
+        let root = duke_root();
+        let grp_path = root.join("duke3d.grp");
+        if !grp_path.is_file() {
+            return;
+        }
+        let grp = std::fs::read(grp_path).unwrap();
+        let source =
+            b"var loader_value 0 0\nappendevent EVENT_GAME\nset loader_value 7\nendevent\n";
+        let mut includes = crate::con::NullIncludes;
+        let mut session = session_from_grp_layers_with_con_and_includes_dialect(
+            &[&grp],
+            "E1L1",
+            2,
+            Some(source),
+            Some(&mut includes),
+            ConDialect::EDuke32,
+        )
+        .expect("load EDuke32 dialect before map setup");
+        assert_eq!(
+            session.script.as_ref().map(|script| script.dialect),
+            Some(ConDialect::EDuke32)
+        );
+        assert!(session.eduke_vm_state.is_some());
+        assert!(session.world.is_some());
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("loader_value", 0, 0)
+                .unwrap(),
+            0
+        );
+        session.tick(DukeInput::default());
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("loader_value", 0, 0)
+                .unwrap(),
+            7,
+            "EVENT_GAME should execute after the EDuke32 VM is attached to the live map"
+        );
+    }
 
     /// E1L1 as a player would play it: walk to the rooftop fan vent, throw
     /// the pipe bomb picked up on the way at the gas tanks (SEENINE chain,
@@ -6509,9 +6597,6 @@ mod tests {
             );
         }
     }
-
-    /// Count FX sprites after tic135 with seed-matching pad.
-    #[test]
 
     /// Count FX sprites after tic135 with seed-matching pad.
     #[test]

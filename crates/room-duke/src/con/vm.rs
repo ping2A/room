@@ -56,6 +56,9 @@ pub struct ActorConTemps {
     /// Chocolate `hittype[i].floorz` / `ceilingz` from `getglobalz`.
     pub hit_floorz: i32,
     pub hit_ceilingz: i32,
+    /// EDuke32 actor extension flags exposed to CON as `htflags`.
+    #[serde(default)]
+    pub hit_flags: i32,
     /// Chocolate `hittype[i].bposz` — Z at start of `moveactors` (skill gate).
     pub bposz: i32,
     /// Chocolate `hittype[i].bposx` — previous X cached by moving effectors.
@@ -117,6 +120,69 @@ pub struct ActorConTemps {
     pub hit_owner: i16,
     /// Chocolate `hittype[].tempang` — saved sprite palette.
     pub tempang: i16,
+    /// EDuke32 `hittype[].floorzoffset`, exposed as `htfloorzoffset`.
+    #[serde(default)]
+    pub floor_z_offset: i8,
+    /// EDuke32 `hittype[].waterzoffset`, exposed as `htwaterzoffset`.
+    #[serde(default)]
+    pub water_z_offset: i8,
+    /// EDuke32 active projectile `workslike` field (`thisprojectile`).
+    #[serde(default)]
+    pub projectile_workslike: i32,
+    /// EDuke32 active projectile bounce sound (`thisprojectile.bsound`).
+    #[serde(default)]
+    pub projectile_bsound: i32,
+    /// EDuke32 active projectile drop rate (`thisprojectile.drop`).
+    #[serde(default)]
+    pub projectile_drop: i32,
+    /// EDuke32 active projectile blast radius (`thisprojectile.hitradius`).
+    #[serde(default)]
+    pub projectile_hitradius: i32,
+    /// EDuke32 active projectile movement multiplier (`thisprojectile.velmult`).
+    #[serde(default)]
+    pub projectile_velmult: i32,
+    /// EDuke32 active projectile lifetime or hitscan distance (`range`).
+    #[serde(default)]
+    pub projectile_range: i32,
+    /// EDuke32 active projectile impact spawn tile (`spawns`).
+    #[serde(default)]
+    pub projectile_spawns: i32,
+    /// EDuke32 active projectile impact sound (`isound`).
+    #[serde(default)]
+    pub projectile_isound: i32,
+    /// EDuke32 projectile firing sound (`sound`).
+    #[serde(default)]
+    pub projectile_sound: i32,
+    /// EDuke32 projectile trail tile (`trail`).
+    #[serde(default)]
+    pub projectile_trail: i32,
+    /// EDuke32 number of trail sprites per movement tick (`tnum`).
+    #[serde(default)]
+    pub projectile_tnum: i32,
+    /// EDuke32 projectile trail X repeat (`txrepeat`).
+    #[serde(default)]
+    pub projectile_txrepeat: i32,
+    /// EDuke32 projectile trail Y repeat (`tyrepeat`).
+    #[serde(default)]
+    pub projectile_tyrepeat: i32,
+    /// EDuke32 projectile trail Z offset in Build units (`toffset`).
+    #[serde(default)]
+    pub projectile_toffset: i32,
+    /// EDuke32 impact spawn X repeat (`sxrepeat`).
+    #[serde(default)]
+    pub projectile_sxrepeat: i32,
+    /// EDuke32 impact spawn Y repeat (`syrepeat`).
+    #[serde(default)]
+    pub projectile_syrepeat: i32,
+    /// EDuke32 live-projectile age in 30 Hz tics for `PROJECTILE_TIMED`.
+    #[serde(default)]
+    pub projectile_age: i32,
+    /// EDuke32 `spriteext` render metadata exposed by `getactor` / `setactor`.
+    #[serde(default)]
+    pub sprite_ext: EdukeSpriteExt,
+    /// EDuke32 sprite blend table index exposed as `actor[].blend`.
+    #[serde(default)]
+    pub sprite_blend: i32,
     /// CON `addkills` credited to the owning player after actor parsing.
     pub pending_actor_kills: i32,
     /// CON `pkick` requests the owner's 14-frame quick-kick animation.
@@ -195,6 +261,35 @@ pub struct ActorConTemps {
     pub actorstayput: i16,
 }
 
+/// EDuke32's per-sprite extension fields used by CON structure access.
+///
+/// These values are stored alongside the per-sprite runtime temps so they
+/// follow sprite-slot allocation and the existing `.fsave` actor snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EdukeSpriteExt {
+    /// Model angle offset.
+    pub angoff: i32,
+    /// EDuke32 model/display flags.
+    pub mdflags: i32,
+    /// Model rotation center offsets in Build units.
+    pub mdxoff: i32,
+    /// Model rotation center offsets in Build units.
+    pub mdyoff: i32,
+    /// Model rotation center offsets in Build units.
+    pub mdzoff: i32,
+    /// Model pitch in Build units.
+    pub pitch: i32,
+    /// Model roll in Build units.
+    pub roll: i32,
+    /// Sprite texture X panning override.
+    pub xpanning: i32,
+    /// Sprite texture Y panning override.
+    pub ypanning: i32,
+    /// Transparency multiplier in the documented 0–255 CON range.
+    pub alpha: u8,
+}
+
 /// Fully rolled fragment spawn captured at the CON opcode's position in RNG
 /// order, then inserted into Build lists after actor interpretation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -264,6 +359,7 @@ impl Default for ActorConTemps {
             cgg: 0,
             hit_floorz: 0,
             hit_ceilingz: 0,
+            hit_flags: 0,
             bposz: 0,
             bposx: 0,
             bposy: 0,
@@ -289,6 +385,27 @@ impl Default for ActorConTemps {
             hit_ang: 0,
             hit_owner: -1,
             tempang: 0,
+            floor_z_offset: 0,
+            water_z_offset: 0,
+            projectile_workslike: 0,
+            projectile_bsound: 0,
+            projectile_drop: 0,
+            projectile_hitradius: 0,
+            projectile_velmult: 0,
+            projectile_range: 0,
+            projectile_spawns: 0,
+            projectile_isound: 0,
+            projectile_sound: 0,
+            projectile_trail: 0,
+            projectile_tnum: 0,
+            projectile_txrepeat: 0,
+            projectile_tyrepeat: 0,
+            projectile_toffset: 0,
+            projectile_sxrepeat: 0,
+            projectile_syrepeat: 0,
+            projectile_age: 0,
+            sprite_ext: EdukeSpriteExt::default(),
+            sprite_blend: 0,
             pending_actor_kills: 0,
             pending_quick_kick: false,
             pending_pstomp: false,
@@ -329,6 +446,8 @@ pub enum ConStop {
     Break,
     /// `killit` set `killit_flag`.
     KillIt,
+    /// The selected script dialect does not have an executable VM backend yet.
+    UnsupportedDialect,
 }
 
 /// Sprite/sector snapshot for water / floor-distance CON predicates.
@@ -1036,7 +1155,13 @@ impl<'a> ConVm<'a> {
         if let Some(want) = con_op_trace_sprite()
             && want == i32::from(self.sprite_i)
         {
-            eprintln!("CONOP sprite={} pc={} op={} arg={}", self.sprite_i, self.insptr, op, self.word(self.insptr + 1));
+            eprintln!(
+                "CONOP sprite={} pc={} op={} arg={}",
+                self.sprite_i,
+                self.insptr,
+                op,
+                self.word(self.insptr + 1)
+            );
         }
         match op {
             // ifrnd
@@ -2334,6 +2459,9 @@ pub fn execute(
     randomseed: &mut i32,
     temps: &mut ActorConTemps,
 ) -> ConStop {
+    if image.dialect != super::ConDialect::Atomic {
+        return ConStop::UnsupportedDialect;
+    }
     let mut vm = ConVm::new(&image.script, entry, *randomseed, temps);
     vm.sound_defs = Some(&image.sounds);
     let stop = vm.run();
@@ -2382,6 +2510,9 @@ pub fn execute_with_sprite_id(
     player_dist: i32,
     sprite_i: i16,
 ) -> ConStop {
+    if image.dialect != super::ConDialect::Atomic {
+        return ConStop::UnsupportedDialect;
+    }
     tick_action_frames(&image.script, temps, &mut sprite.lotag);
     let env = ConSpriteEnv {
         sect_lotag: sector.lotag,
@@ -2468,6 +2599,9 @@ pub fn execute_actor<'a>(
     shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
     fall_now: Option<&'a mut (dyn FnMut(&mut ActorConTemps, &mut i32, &mut i16) + 'a)>,
 ) -> ConStop {
+    if image.dialect != super::ConDialect::Atomic {
+        return ConStop::UnsupportedDialect;
+    }
     tick_action_frames(&image.script, temps, &mut sprite.lotag);
     let env = ConSpriteEnv {
         sect_lotag: sector.lotag,
@@ -2589,6 +2723,18 @@ pub fn actor_header_hitag(image: &ScriptImage, picnum: i16) -> i32 {
 mod tests {
     use super::*;
     use crate::con::{NullIncludes, compile};
+
+    #[test]
+    fn atomic_vm_refuses_unimplemented_eduke32_images() {
+        let mut image = ScriptImage::new();
+        image.dialect = super::super::ConDialect::EDuke32;
+        let mut seed = 1;
+        let mut temps = ActorConTemps::default();
+        assert_eq!(
+            execute(&image, 0, &mut seed, &mut temps),
+            ConStop::UnsupportedDialect
+        );
+    }
 
     #[test]
     fn state_calls_action_then_ends() {
@@ -2723,7 +2869,11 @@ ends\n\
 /// Debug: `ROOM_CON_OP_TRACE=<sprite>` prints every CON opcode that sprite runs.
 fn con_op_trace_sprite() -> Option<i32> {
     static WANT: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
-    *WANT.get_or_init(|| std::env::var("ROOM_CON_OP_TRACE").ok().and_then(|v| v.parse().ok()))
+    *WANT.get_or_init(|| {
+        std::env::var("ROOM_CON_OP_TRACE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    })
 }
 
 /// Chocolate `EGS`: `hittype[i].floorz/ceilingz = hittype[owner].floorz/ceilingz`.

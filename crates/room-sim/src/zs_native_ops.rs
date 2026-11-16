@@ -71,7 +71,9 @@ fn bone(world: &mut World, id: ActorId, op: &room_zvm::ZsNativeOp, part: BonePar
     let duration = f(op, dim, 1.0);
     let now = f64::from(world.level.maptime);
     if let Some(a) = world.actors.get_mut(id) {
-        a.ext.model.set_bone(index, &name, part, value, now, duration, mode);
+        a.ext
+            .model
+            .set_bone(index, &name, part, value, now, duration, mode);
     }
 }
 
@@ -96,7 +98,11 @@ pub fn replace_textures(world: &mut World, from: &str, to: &str, flags: i64) {
     for (k, sec) in map.sectors.iter_mut().enumerate() {
         let k = k as u32;
         if flags & 8 == 0 {
-            let cur = world.sector_floor_pics.get(&k).cloned().unwrap_or_else(|| sec.floor_pic.clone());
+            let cur = world
+                .sector_floor_pics
+                .get(&k)
+                .cloned()
+                .unwrap_or_else(|| sec.floor_pic.clone());
             if cur.eq_ignore_ascii_case(from) {
                 sec.floor_pic = to.to_owned();
                 world.sector_floor_pics.insert(k, to.to_owned());
@@ -142,7 +148,9 @@ impl World {
                 });
                 return;
             }
-            "ppshader.setuniform1f" | "ppshader.setuniform2f" | "ppshader.setuniform3f"
+            "ppshader.setuniform1f"
+            | "ppshader.setuniform2f"
+            | "ppshader.setuniform3f"
             | "ppshader.setuniform1i" => {
                 let values = if name.ends_with("1i") {
                     vec![i(op, 0, 0) as f32]
@@ -190,7 +198,13 @@ impl World {
                     .actors
                     .get(id)
                     .and_then(|a| self.classes.get(a.class))
-                    .map(|c| if c.tag.is_empty() { c.name.clone() } else { c.tag.clone() })
+                    .map(|c| {
+                        if c.tag.is_empty() {
+                            c.name.clone()
+                        } else {
+                            c.tag.clone()
+                        }
+                    })
                     .unwrap_or_default();
                 if !tag.is_empty() {
                     self.messages.push(HudMessage {
@@ -200,7 +214,8 @@ impl World {
                 }
             }
             "actor.usepuzzleitem" => {
-                let _ = crate::action::call_action_args(self, id, "A_UsePuzzleItem", &args_text(op));
+                let _ =
+                    crate::action::call_action_args(self, id, "A_UsePuzzleItem", &args_text(op));
             }
             "actor.setanimation" => {
                 let _ = crate::action::call_action_args(self, id, "A_SetAnimation", &args_text(op));
@@ -217,7 +232,8 @@ impl World {
                 let _ = crate::action::call_action_args(self, id, "A_SetModelFlag", &args_text(op));
             }
             "actor.clearmodelflag" => {
-                let _ = crate::action::call_action_args(self, id, "A_ClearModelFlag", &args_text(op));
+                let _ =
+                    crate::action::call_action_args(self, id, "A_ClearModelFlag", &args_text(op));
             }
             "actor.resetmodelflags" => {
                 let _ = crate::action::call_action_args(self, id, "A_ResetModelFlags", &[]);
@@ -236,13 +252,21 @@ impl World {
             "playerinfo.poisonplayer" => {
                 let pawn = caller.unwrap_or(id);
                 let poison = i(op, 0, 0) as i32;
-                if let Some(p) = self.players.iter_mut().flatten().find(|p| p.mo == Some(pawn)) {
+                if let Some(p) = self
+                    .players
+                    .iter_mut()
+                    .flatten()
+                    .find(|p| p.mo == Some(pawn))
+                {
                     p.poison_count = (p.poison_count + poison).min(100);
                     p.poisoner = None;
                 }
             }
             "playerinfo.setsubtitlenumber" | "playerinfo.setlognumber" => {
-                self.subtitle_request = Some((i(op, 0, 0) as i32, op.s.first().cloned().unwrap_or_default()));
+                self.subtitle_request = Some((
+                    i(op, 0, 0) as i32,
+                    op.s.first().cloned().unwrap_or_default(),
+                ));
             }
             // Not applied yet (docs/36 UZ3): `SetFullbrightMode`,
             // `SetSafeFlash`, `SpotState.Add/RemoveSpot`, `DynamicLight`

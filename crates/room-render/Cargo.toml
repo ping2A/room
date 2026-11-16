@@ -30,6 +30,8 @@ wgpu.workspace = true
 
 [dev-dependencies]
 room-build = { path = "../room-build" }
+room-mapgen = { path = "../room-mapgen" }
+serde_json.workspace = true
 room-decorate = { path = "../room-decorate" }
 room-sim = { path = "../room-sim" }
 room-testkit = { path = "../room-testkit" }

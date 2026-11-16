@@ -153,16 +153,14 @@ fn spawn_water_splash2(
     sprite.yrepeat = size;
     sprite.shade = -16;
     sprite.cstat |= 128;
-    if let Some(sector) = usize::try_from(src.sectnum).ok().and_then(|s| sectors.get(s)) {
+    if let Some(sector) = usize::try_from(src.sectnum)
+        .ok()
+        .and_then(|s| sectors.get(s))
+    {
         let sec_z: Vec<room_build_engine::geom::SectorZ> = sectors.iter().map(SectorT::z).collect();
         let wxy: Vec<room_build_engine::geom::WallXY> = walls.iter().map(WallT::xy).collect();
-        let (ceilz, florz) = room_build_engine::geom::getzsofslope(
-            sprite.sectnum,
-            sprite.x,
-            sprite.y,
-            &sec_z,
-            &wxy,
-        );
+        let (ceilz, florz) =
+            room_build_engine::geom::getzsofslope(sprite.sectnum, sprite.x, sprite.y, &sec_z, &wxy);
         if sector.lotag == 2 {
             sprite.z = ceilz + (16 << 8);
             sprite.cstat |= 8;
@@ -170,7 +168,10 @@ fn spawn_water_splash2(
             sprite.z = florz;
         }
     }
-    if let Some(own) = usize::try_from(sprite.sectnum).ok().and_then(|s| sectors.get(s)) {
+    if let Some(own) = usize::try_from(sprite.sectnum)
+        .ok()
+        .and_then(|s| sectors.get(s))
+    {
         if own.floorpicnum == FLOORSLIME || own.ceilingpicnum == FLOORSLIME {
             sprite.pal = 7;
         }
@@ -401,12 +402,18 @@ pub fn movetransports(
             let st = lists.sprite_stat[ju];
             // Chocolate handles statnum 1 (actors; live water monsters stay),
             // 4, 5, 12 and 13 here.
-            if !matches!(st, STAT_ACTOR | STAT_PROJECTILE | STAT_MISC | STAT_FALLER | STAT_DUMMYPLAYER) {
+            if !matches!(
+                st,
+                STAT_ACTOR | STAT_PROJECTILE | STAT_MISC | STAT_FALLER | STAT_DUMMYPLAYER
+            ) {
                 j = nextj;
                 continue;
             }
             if st == STAT_ACTOR
-                && matches!(sprites[ju].picnum, SHARK | COMMANDER | OCTABRAIN | 2370..=2377)
+                && matches!(
+                    sprites[ju].picnum,
+                    SHARK | COMMANDER | OCTABRAIN | 2370..=2377
+                )
                 && sprites[ju].extra > 0
             {
                 j = nextj;
@@ -475,10 +482,7 @@ pub fn movetransports(
             match sectlotag {
                 1 | 2 => {
                     let old_sect = sprites[ju].sectnum;
-                    if pic == WATERBUBBLE
-                        && old_sect >= 0
-                        && (old_sect as usize) < sectors.len()
-                    {
+                    if pic == WATERBUBBLE && old_sect >= 0 && (old_sect as usize) < sectors.len() {
                         if actor_temps.len() <= ju {
                             actor_temps.resize_with(ju + 1, ActorConTemps::default);
                         }

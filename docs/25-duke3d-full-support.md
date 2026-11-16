@@ -2172,18 +2172,242 @@ Measured inventory (2026-11-14):
 |---|---|---|
 | Entry | `brutal/eduke.con` → `scripts/BRUTAL.CON` → `GAME.CON` + 39 includes under `scripts/brutal/` (incl. `enemies/`, `weapons/`) | Root CON + named includes load (D11) |
 | `GAME.CON` / `DEFS.CON` / `USER.CON` | Atomic files with 64 / 0 / 14 lines changed (jib `guts` moved to `jibs.con`, blimp respawn fix, a few `ifrnd` removed) | Compiles (vanilla subset) |
-| Mod CON | ~34k lines; over 500 distinct command words outside the 108 vanilla keywords. Most used: `set` 4,953, `ife` 1,838, `var` 1,692, `case` 1,332, `add` 855, `sub` 604, `defstate` 577, `ifn`/`ifl`/`ifg`/`ifge`/`ifle`/`ifand`, `mul`, `div`, `and`/`or`/`xor`, `shiftl`/`shiftr`, `rand`, `mulscale`, `switch`/`endswitch`, `whilen`/`whilel`, `setarray`/`gamearray`, `defineprojectile` 273, `damageeventtile` 68, `spritenoshade`/`spritenopal`, `espawn`/`espawnvar`/`ezshoot`, `getflorzofslope`/`getceilzofslope`, `updatesector(z)`, `cansee`, `ldist`, `getangle`, `sin`/`cos`, `qsprintf`/`redefinequote`, `setgamepalette`, `inittimer`/`getticks`/`totalclock`, `changespritestat`, `headspritestat`/`nextspritestat`, `appendstate` | **0**: Room's compiler stops with **66,015 errors** |
+| Mod CON | ~34k lines; over 500 distinct command words outside the 108 vanilla keywords. Most used: `set` 4,953, `ife` 1,838, `var` 1,692, `case` 1,332, `add` 855, `sub` 604, `defstate` 577, `ifn`/`ifl`/`ifg`/`ifge`/`ifle`/`ifand`, `mul`, `div`, `and`/`or`/`xor`, `shiftl`/`shiftr`, `rand`, `mulscale`, `switch`/`endswitch`, `whilen`/`whilel`, `setarray`/`gamearray`, `defineprojectile` 273, `damageeventtile` 68, `spritenoshade`/`spritenopal`, `espawn`/`espawnvar`/`ezshoot`, `getflorzofslope`/`getceilzofslope`, `updatesector(z)`, `cansee`, `ldist`, `getangle`, `sin`/`cos`, `qsprintf`/`redefinequote`, `setgamepalette`, `inittimer`/`getticks`/`totalclock`, `changespritestat`, `headspritestat`/`nextspritestat`, `appendstate` | ED1 parses the reachable CON tree with zero diagnostics; runtime support remains partial and is tracked in ED2–ED5. |
 | Events | 126 `appendevent` blocks on 36 events: `EVENT_GAME` 18, `NEWGAME` 12, `ENTERLEVEL` 12, `KILLIT` 9, `SPAWN` 8, `EGS` 8, `POSTDAMAGESPRITE` 7, `SOUND` 6, `ANIMATESPRITES` 4, `WORLD`, `LOADGAME`, `PROCESSINPUT`, `RESETWEAPONS` 3 each, then `DISPLAYSTART`, `PRELOADGAME`, `FIRE`, `POSTWEAPONSHOOT`, `WEAPKEY`, `ACTIVATECHEAT`, `DISPLAYWEAPON`, `RESETPLAYER`, `PRELEVEL`, `DISPLAYREST`, `DISPLAYMENU`, `DISPLAYCROSSHAIR`, `NEXTWEAPON`/`PREVIOUSWEAPON`/`LASTWEAPON`/`SELECTWEAPON`, `DAMAGESPRITE`/`WALL`/`FLOOR`/`CEILING`, `DOFIRE`, `INCURDAMAGE`, `TURNAROUND` | None |
-| Struct access | `geta`/`seta`/`gets`/`getwall`/`getp`/`getuserdef`/`gettiledata` with ~104 members: sprite fields, `htflags`/`htg_t`/`htmovflag`/`htpicnum`/`htextra` (actor), `mdflags`/`alpha`/`blend` (spriteext / translucency), wall/sector fields incl. slopes, player `curr_weapon`/`ammo_amount`/`gotweapon`/`kickback_pic`/`weapon_pos`/`q16horiz`/`rotscrnang`, `userdef.vm_sprite` | Rust fields exist for the vanilla subset; no label table |
+| Struct access | `geta`/`seta`/`gets`/`getwall`/`getp`/`getuserdef`/`gettiledata` with ~104 members: sprite fields, `htflags`/`htg_t`/`htmovflag`/`htpicnum`/`htextra` (actor), `mdflags`/`alpha`/`blend` (spriteext / translucency), wall/sector fields incl. slopes, player `curr_weapon`/`ammo_amount`/`gotweapon`/`kickback_pic`/`weapon_pos`/`q16horiz`/`rotscrnang`, `userdef.vm_sprite` | Live adapters cover the tested core fields, tiledata metadata, the Brutal userdef subset, all documented spriteext fields, and transient tspr access; projectile defaults, renderer integration and complete field coverage remain |
 | DEF | `duke3d.def` + 8 included files: 393 `tilefromtexture`, 100 `texture`, 22 `skybox`, 3 `animtilerange`, `copytile`, `blendtable`/`glblend`, `basepalette`, `dummytile(range)`, voxel `include`s with `tint` | None |
 | Art | 992 PNG + 499 BMP (new tiles 9000+ and replacements), 463 KVX voxels, 22 skyboxes | ART only |
-| Map hacks | 177 `.mhk` | None |
+| Map hacks | 177 `.mhk`; 207 DEF `mapinfo` entries | `duke mod-check` parses 28,527 sprite/light records; desktop selects by case-insensitive map filename + MD4 and applies `angoff` to the render copy |
 | Audio | 164 WAV, 54 OGG, 20 VOC | VOC only |
-| Maps | `brutal/maps/box.map` (test map) | Build `.MAP` |
+| Maps | `brutal/maps/box.map` (version 9 test map) | Build `.MAP` |
 
 Brutal Duke's CON comments state its rules: weapons/HUD effects run only in
 single player or local fake-multiplayer ("network sessions do not qualify"),
 so Room does not need lockstep-safe display code for the first pass.
+
+ED0 scanner baseline (local v0.2.0 tree, 2026-11-15): 51 CON files / 44,756
+lines total, of which the target entry and `scripts/brutal/` paths contain 48
+files / 34,100 lines; 49 distinct include names resolve and none remain
+unresolved after EDuke32 comment-delimiter lexing. The compiler now reports
+zero diagnostics on that source, while retaining 1,692 source variables plus
+four generated range-loop variables, 22 arrays, 703 states, 125 event hooks, 273 projectile property
+assignments and 68 damage-event tiles from the reachable include tree. The ED2
+storage layer initializes those vars and arrays with fixed per-player/per-actor
+extents, checked indexing and bounded allocation. EDuke32 CON command words are
+case-insensitive, while labels, state names, gamevars and gamearrays preserve
+their source spelling and resolve case-sensitively ([EDukeWiki scripting rules](https://wiki.eduke32.com/wiki/Scripting)). Version-2 `.fsave` snapshots written with the prior folded variable/array lookup maps are re-indexed after their stored declaration layout is validated. Deterministic integer
+arithmetic and Build math helpers are also available. The compiler now emits a
+partial EDuke32 instruction program for assignments, arithmetic/bitwise/shift
+operations, scale/trig helpers, array get/set, relational conditions, inclusive
+`ifrnd` branches, `else`, `while*`, saved-bound `for … range …`, snapshot-based
+`for … allsprites`, switch/case/default/break, states, actor `action`/`move`/
+`ai`, actor `strength`/`addstrength`, `cstat`/`cstator`, `cactor`,
+`spritepal`/`getlastpal`, `clipdist`, `count`, `sleeptime`, `sizeat`/`sizeto`,
+`fall`, counter resets, `addkills`, `hitradius`, `ifgotweaponce`, `ifcanshoottarget`,
+`ifbulletnear`,
+`sound`/`soundonce`/`globalsound`/`stopsound`, actor `killit`, `addphealth`,
+`quote`, `palfrom`, `sectorofwall`, `getzrange`, `debris`, `guts`, `lotsofglass`, `money`, `mail`, `paper`, `operate`, `getticks`, `setgamepalette`, `inittimer`, `endofgame`, `ifnosounds`, `ifrespawn`, `ifactornotstayput`, and event entry points (24,799 instructions and 185 explicit no-op
+instructions in the current inventory). `action`, `move` and `ai` update the live actor's
+script pointers, counters and movement flags; `randomangle` consumes the shared
+gameplay RNG using the [EDukeWiki movement flags]. Event `endevent` stops its
+current handler, while an explicit top-level `return` stops the remaining
+appended handlers. A bounded interpreter runs
+those instructions and keeps gameplay/display random streams separate. Standalone
+VM execution starts its saved gameplay seed at 1996; with a live world adapter,
+`randomseed`, `ifrnd`, and gameplay `rand` draws read and advance the shared
+Build gameplay seed, while display draws stay on their own stream. The compiler
+also initializes an implicit `RETURN` gamevar (1,697 runtime vars); the
+compiler chains `prependstate` before the exact-name state and each exact-name
+`appendstate` after it, preserving declaration order across multiple extensions; the
+interpreter also supports in-place `abs` / `clamp`, integer `sqrt` and
+`calchypotenuse`, floor/ceiling slope queries, portal `cansee`, `updatesector`
+and Z-aware `updatesectorz`, live sprite `ldist` and `dist`, sprite-list head/next
+queries and mutations, `setsprite` coordinate updates, and `spawn` / `espawn` /
+`espawnvar` through Room's actor initialization path. `espawn` stores the new
+sprite index in `RETURN`. `hitscan` queries active Build sprites, walls and slope
+planes and writes sector/wall/sprite plus XYZ results through its six output
+gamevars. `for … allsprites` snapshots active sprite slots from the live world
+and iterates them under the shared VM instruction budget. `ifcansee` now tries
+the actor origin and a deterministic 3×3 grid spanning its ART tile extent for
+face, wall and floor sprites, using repeat counts, offsets, orientation and
+cstat flips. Duplicate points are skipped when ART geometry is unavailable.
+This approximates the [EDukeWiki visible-part-of-tile behavior](https://wiki.eduke32.com/wiki/Ifcansee);
+all probes currently retain the actor sector, and sample placement / portal
+behavior still need EDuke32 trace comparison. `ifcanshoottarget` uses live Build
+hitscan for the close-range shortcut, three-ray corridor, same-tile blockers,
+forcefields and large-badguy tolerances. `ifbulletnear` scans live projectile
+sprites for an incoming Build-angle vector within the classic threat corridor,
+excluding projectiles owned by the actor; a detected threat consumes gameplay
+`TRAND` and applies Chocolate's dodge-angle turn. DukeSession can initialize that
+state, explicitly run source-registered event bodies in source order under
+one shared instruction budget, and persist VM state in `.fsave` version 2.
+The VM keeps the EDuke32 `numplayers` and `MULTIMODE` predefined gamevars
+independent. The live session supplies the same active-player count for both
+until bot slots are modeled; EDuke32 counts non-bot players in `numplayers`
+and all players in `MULTIMODE` ([EDukeWiki](https://wiki.eduke32.com/wiki/Numplayers)).
+The live adapter also exposes `numsectors`, `NUMSECTORS`, `NUMWALLS`, and
+case-preserved `Numsprites`; `sectorofwall` scans live sector wall ranges in
+ascending sector order and returns `-1` when no sector owns the requested wall.
+`getzrange` reads the live sector planes and active wall/sprite clip geometry,
+then writes the ceiling/floor Z values and Build hit codes to its four outputs.
+`debris` creates the requested STAT_MISC fragments with the parent's shade and
+palette, using Chocolate's fragment iteration and gameplay RNG draw order.
+`guts` creates floor-clamped gore fragments with the current actor and nearest
+player ownership, palette and repeat rules, and Chocolate's six gameplay RNG
+draws per fragment.
+`lotsofglass` creates the rotating GLASSPIECES variants with inherited palette
+and Chocolate's five gameplay RNG draws per fragment.
+`shoot` and `eshoot` steer player-fired declared RPG projectiles through the
+live Build-angle aim cone when full auto-aim is active; hitscan workslike also
+steer in bullet-only mode. They derive vertical velocity from projectile speed
+and target height, and skip steering when `PROJECTILE_NOAIM` is set.
+`zshoot` / `ezshoot` retain their explicit vertical velocity. Declared
+RPG-workslike sprites now use the live swept movement path: each tic subtracts
+`thisprojectile.drop` from vertical velocity before the step, wall, sprite,
+floor and ceiling contacts enter the shared RPG impact path, and
+`thisprojectile.hitradius` sets the blast radius. Direct target damage follows
+the `PROJECTILE_RPG_IMPACT` flag. Other workslike modes, bounce behavior, trail
+spawns, timed expiry and projectile sound behavior remain open.
+`quote <constant>` updates the selected player's quote ID and timer, reads the
+current VM quote text (including `redefinequote` changes), and sends that text
+to the session console while suppressing repeated consecutive quote IDs.
+`palfrom` accepts duration/RGB operands across line breaks and applies them to
+the event's selected player's live palette-flash state.
+Player structure access also exposes quote and palette-flash fields, previous
+positions, true floor/ceiling caches, and the live floor-sprite bridge pair:
+`spritebridge` reports whether the latest player `getzrange` hit a floor sprite,
+and `sbs` reports its sprite index (or `-1`). The same bridge result suppresses
+shallow-water view bob in EDuke32 sessions, preserving the Atomic movement
+baseline.
+`getactor` / `setactor` also expose EDuke32's `htactorstayput`, `httempang`,
+`htfloorzoffset`, and `htwaterzoffset` names over persisted actor-temp fields.
+Reads and writes validate their native field ranges, and a focused event
+regression saves and restores all four values through `.fsave`. The two
+`CON fall` applies `htwaterzoffset` to lotag-1 resting placement (`24` clears
+the default adjustment); full hitbox/collision consumers and the movement
+effect of `htfloorzoffset` remain open.
+
+Sector slope members `floorslope` and `ceilingslope` alias Build's
+`floorheinum` and `ceilingheinum`. The gated v9 `box.map` smoke
+test now executes map lifecycle hooks (`PRELEVEL`, `LOADACTOR`, `SPAWN`,
+`ENTERLEVEL`) and registered `EVENT_GAME` / `EVENT_SPAWN` hooks without VM
+faults. TROR geometry interpretation and EDuke32 reference value dumps remain
+open. The external fixture capture is a parity checkpoint; it does not block
+implementation of later ED milestones.
+Earlier version-2 EDuke32 snapshots without the implicit `RETURN` slot migrate
+to the current runtime shape during load. When
+a world is loaded, event execution uses a partial live adapter for actor/sprite,
+sector, wall, player and supplied per-tic input fields. The VM now evaluates
+`ifcount`, `ifaction`, `ifactioncount`, `ifai`, `ifmove`, `ifactor`,
+`ifstrength`, `ifwasweapon`, `ifspawnedby`, `ifspritepal` and `ifmultiplayer`
+from the current actor/temp data or the multiplayer builtin. `ifpdistl` / `ifpdistg`
+use the nearest player's previous position; `ifinwater`, `ifoutside` and
+`ifphealthl` read the active actor sector and player. `ifpinventory` compares
+the nearest player's inventory amount by inequality and checks access cards
+against the actor's palette. `ifgapzl` reads the active actor sector's
+slope-adjusted floor and ceiling and compares their gap in Build units.
+`iffloordistl` / `ifceilingdistl` compare the actor's tile-derived center
+against those same sector planes. `ifp` accepts OR-combined
+flag constants and reads the active player's sync bits, player state, body
+sprite, and current actor sprite for movement, jumping, kick, inventory,
+health, and facing predicates. `ifdead`, `ifsquished`, `ifhitweapon`,
+`ifnotmoving` and `ifhitspace` also run against live actor temps, Build sector
+gaps and the active input record; inline `state` commands invoke their target.
+`killit` compiles to a terminating VM instruction. Before deletion the session
+runs `EVENT_KILLIT`; a nonzero `RETURN` cancels the deletion. Otherwise sprites
+on `STAT_ACTOR` and `STAT_MISC` are removed, while sprites on other status lists
+are hidden by setting `xrepeat` to zero. Later code in the actor body and later
+hooks for that event are skipped, matching the documented
+[EDukeWiki `killit` behavior] and [EDukeWiki `EVENT_KILLIT` contract].
+Zero compiler
+diagnostics means the reachable source is parsed, not that every command has
+runtime behavior: several accepted commands still lower to `NoOp`. The native
+GRP session API accepts an explicit EDuke32 dialect and include resolver,
+initializes EDuke32 state before level setup, and dispatches the registered
+map/tic hooks described above. The `duke_play` example can load a local CON
+directory for headless experiments. This is partial runtime support; it does
+not make the Brutal Duke tree a complete or acceptance-tested mod. Remaining
+work includes unsupported actor commands and effects, exact event call sites
+and return semantics, missing structure members, rendering/HUD behavior,
+complete weapon behavior, and the multiplayer policy in ED10. The current EDuke32 bytecode
+report records 185 explicit `NoOp` instructions; its most frequent named heads
+are `ifnosounds`, `resetplayer` and `respawnhitag` (4 each).
+`getticks` uses elapsed milliseconds derived from Room's deterministic 120 Hz
+simulation clock, rather than EDuke32's unsynchronized wall clock. `inittimer`
+updates the desktop/browser pacing rate while each game tic retains the same
+deterministic clock increments. Classic actor bodies and named states now execute, and the actor
+action/move/AI commands plus `pkick` are no longer among the no-ops.
+`addphealth` now compiles 12 player-health statements;
+seven additional uses remain no-ops in Atomic actor bodies.
+`sectorofwall`'s 12 former no-ops are now live Build wall-range lookups.
+The three Brutal Duke `getzrange` uses now query live Build geometry.
+All 98 Brutal Duke `debris` statements now produce live fragment sprites.
+All 47 Brutal Duke `guts` statements now produce live gore fragments.
+All 29 Brutal Duke `lotsofglass` statements now produce live GLASSPIECES.
+Structural `else` and intentional
+`nullop` placeholders are excluded from the per-head ranking. The current
+the remaining four-use heads are `resetplayer` and `respawnhitag`; actor `action`/`move`/`ai` and `pkick` now execute in the VM.
+The remaining actor, world-query, and render/audio gaps are tracked in ED3–ED8. The
+scanner sees the complete directory and reports 132 distinct unknown statement
+heads / 17,840 occurrences, 6,580 distinct identifiers outside the Atomic
+command list, 126 event blocks / 36 normalized event families, 112 dotted
+member names / 1,455 occurrences, and 39 unknown DEF statement heads / 3,844
+occurrences. Across all packaged DEF files it counts 28 files / 3,737 lines
+and zero brace imbalances. These metrics have different scopes (the compiler
+follows reachable includes; the inventory scans the whole directory) and are
+not a completed compiler's diagnostics. `room duke mod-check <dir> --dialect
+eduke32 --md report.md` reproduces the current inventory.
+
+The shared ED2 reference fixture at `testdata/ed2-vm-reference.con`
+prints labeled values with CON `echo`. Room runs the same single-file fixture
+without external game data:
+
+```sh
+cargo run -p room-cli -- duke con-reference testdata/ed2-vm-reference.con
+```
+
+Run the fixture as an EDuke32 CON module with the target Atomic GRP, then save
+the `ED2REF|...` lines from the engine log when an EDuke32 reference build is
+available. This comparison does not block implementation of later ED
+milestones. For example, from the repository root with the target GRP
+configured:
+
+```sh
+/path/to/eduke32 -mx testdata/ed2-vm-reference.con
+```
+
+EDuke32 writes `eduke32.log` beside its executable, replacing that log each
+time it starts. After the fixture has run, extract the labeled lines before
+launching EDuke32 again. On Windows:
+
+```powershell
+findstr /C:"ED2REF|" C:\path\to\eduke32\eduke32.log > testdata\ed2-vm-reference.eduke32.txt
+```
+
+The [EDukeWiki CON mutator guide] documents loading standalone modules with
+`-mx`; the [EDukeWiki FAQ] documents the log location, its
+[troubleshooting guide] notes that each launch overwrites the log, and the
+[EDukeWiki `echo` reference] confirms that `echo` writes to the log.
+Compare the captured log against Room with:
+
+```sh
+cargo run -p room-cli -- duke con-reference testdata/ed2-vm-reference.con \
+  --reference testdata/ed2-vm-reference.eduke32.txt
+```
+
+The comparison extracts lines containing `ED2REF|` from the supplied log and
+requires an exact ordered match. The fixture covers wrapping arithmetic,
+signed division, signed/bitwise conditions, range loops, switch dispatch,
+composed states, integer math, and a seeded gameplay random stream. Its output
+is a candidate until captured from the pinned EDuke32 reference.
+
+[EDukeWiki CON mutator guide]: https://wiki.eduke32.com/wiki/CON_mutator
+[EDukeWiki FAQ]: https://wiki.eduke32.com/wiki/Frequently_Asked_Questions
+[troubleshooting guide]: https://wiki.eduke32.com/wiki/Troubleshooting_EDuke32
+[EDukeWiki `echo` reference]: https://wiki.eduke32.com/wiki/Echo
+[EDukeWiki `killit` behavior]: https://wiki.eduke32.com/wiki/Killit
+[EDukeWiki `EVENT_KILLIT` contract]: https://wiki.eduke32.com/wiki/EVENT_KILLIT
+[EDukeWiki movement flags]: https://wiki.eduke32.com/wiki/Move
 
 #### Principles
 
@@ -2216,17 +2440,17 @@ does not.
 
 | ID | Scope | Acceptance (Brutal Duke unless noted) |
 |---|---|---|
-| **ED0** | `room-cli duke mod-check <dir>` harness: compiles the CON tree, parses DEF, lists unknown words/members/events/DEF tokens with file:line; gated `brutal_duke_gated` test; dialect flag plumbed (compile only) | Report runs on `brutal/`; counts above reproduced; Atomic image hash and DEMO1 floor unchanged |
-| **ED1** | Compiler: EDuke32 lexical rules (`defstate`/`appendstate`, `appendevent`/`onevent`/`endevent`, `switch`/`case`/`default`/`endswitch`, `while`*, `{}` blocks, labels and `define` overriding), `var`/`gamevar` with flags (global / per-player / per-actor, `0 2` etc.), `array`/`gamearray`, `definequote`/`redefinequote`, `defineprojectile`, `damageeventtile`, `spritenoshade`/`spritenopal`/`spriteflags` | **0** compile errors on Brutal Duke; unit tests per construct; Atomic hash unchanged |
-| **ED2** | VM core: var read/write (incl. per-actor/per-player storage, sized from `MAXSPRITES`/`MAXPLAYERS`), arithmetic/bitwise/`mulscale`/`scalevar`/`sin`/`cos`/`getangle`, all `if`* comparisons, `switch`, loops with an iteration cap, `state` calls, `rand`/`displayrand` (separate from `krand` like EDuke32), `qsprintf` | Fixture CON suite (one file per family) matches the EDuke32 reference value dump; `box.map` loads with every `EVENT_GAME`/`EVENT_SPAWN` hook running without VM faults |
-| **ED3** | Struct access: label tables for sprite / actor (`ht`*) / spriteext (`mdflags`, `alpha`, `blend`) / wall / sector / player / userdef / tiledata / input; `geta`/`seta`, `getactorvar`/`setactorvar`, bounds checks, read-only members | Every member Brutal Duke uses (~104) has a test; out-of-range ids log and do not crash |
-| **ED4** | Event dispatcher: the 36 events above at their EDuke32 call sites, `RETURN` semantics (e.g. `EVENT_DAMAGESPRITE` cancel, `EVENT_SOUND` replace), `EVENT_ANIMATESPRITES` with tsprite access, display events into the HUD draw list | Scenario: pistol shot on a LIZTROOP in `box.map` → blood decal sprites, shell casing, `EVENT_POSTDAMAGESPRITE` trace equal to the reference trace for 300 tics |
-| **ED5** | Engine queries and spawns: `espawn(var)`, `ezshoot`, custom projectiles (`defineprojectile` flags, trail, hit behaviour), `cansee`, `hitscan`, `getflorzofslope`/`getceilzofslope`, `updatesector(z)`, `ldist`/`dist`, stat-list walks, `changespritestat`, `setsprite` | Brutal weapons (pistol akimbo, MP5, magazines) fire, eject casings and hit; E1L1 kill-all sweep (`duke_play kill-all`) passes with Brutal Duke loaded |
-| **ED6** | Resources: DEF parser (`tilefromtexture`, `texture`, `copytile`, `dummytile(range)`, `animtilerange`, `skybox`, `basepalette`, `blendtable`/`glblend`, voxel `include`/`tint`), PNG/BMP tile import into the tile set at native size with `xoffset`/`yoffset`, `.mhk` map hacks applied at load, OGG/WAV sounds and music | Mod-check: **0** unknown DEF tokens; new tiles 9000+ render in the editor and in-game; E1L1 loads its `.mhk` |
-| **ED7** | Rendering: KVX voxels in the Build view (sprite `cstat` 48 + DEF voxels), translucency/`alpha`/`blend` tables, skyboxes, true-colour hi-res tiles in the software path | Golden captures of gore, decals, voxel props and the E1L1 skybox against reference screenshots (SSIM ≥ 0.9, same camera) |
-| **ED8** | Player/HUD layer: `EVENT_DISPLAYWEAPON`/`DISPLAYREST`/`DISPLAYCROSSHAIR` drawing (`rotatesprite`, `digitalnumber`, `gametext`, `screentext` subset), weapon sway/recoil, night vision palette, slow motion (`inittimer`), death cam | Brutal HUD screenshot set matches reference; slow-motion toggles without desync of the sim clock |
+| **ED0** | `room-cli duke mod-check <dir>` harness: compiles the CON tree and scans DEF; inventories non-Atomic command heads, referenced struct members, event names and DEF statement heads with file:line; gated `brutal_duke_gated` test; dialect flag plumbed (compile only) | Report runs on `brutal/`; counts above reproduced; Atomic image hash and DEMO1 floor unchanged |
+| **ED1** | Compiler: EDuke32 lexical rules (`defstate`/`appendstate`/`prependstate`, `appendevent`/`onevent`/`endevent`, `switch`/`case`/`default`/`endswitch`, `while`* and `for … range …` / `for … allsprites` loops, `{}` blocks including next-line braces, labels and `define` overriding), `var`/`gamevar` with flags (global / per-player / per-actor, `0 2` etc.), `array`/`gamearray`, `definequote`/`redefinequote`, `defineprojectile`, `damageeventtile`, `spritenoshade`/`spritenopal`/`spriteflags` | **0** compile errors on Brutal Duke; unit tests per construct; Atomic hash unchanged |
+| **ED2** | VM core: var read/write (incl. per-actor/per-player storage, sized from `MAXSPRITES`/`MAXPLAYERS`), bounded `resizearray`, arithmetic/bitwise/`mulscale`/`scalevar`/`sin`/`cos`/`getangle`/`sqrt`, all `if`* comparisons plus actor/player conditions `ifcount`, `ifaction`, `ifactioncount`, `ifai`, `ifmove`, `ifactor`, `ifstrength`, `ifwasweapon`, `ifspawnedby`, `ifspritepal`, `ifmultiplayer`, `ifgotweaponce`, OR-combined `ifp` player flags, `ifdead`, `ifsquished`, `ifhitweapon`, `ifnotmoving`, `ifhitspace`, `ifactornotstayput`, `ifcansee`, `ifcanseetarget`, `ifcanshoottarget`, `ifbulletnear`, actor-classified `ifrespawn`, `ifpinventory`, `ifgapzl`, `iffloordistl`, `ifceilingdistl`, `ifpdistl` / `ifpdistg`, `ifinwater`, `ifoutside` and `ifphealthl`, `switch`, loops with an iteration cap, inline/top-level `state` calls plus ordered `appendstate` / `prependstate`, relational and actor-condition `else if` chains, `rand`/`displayrand`, saved `randomseed`, inclusive `ifrnd`, independent `numplayers` / `MULTIMODE` values (currently equal in the live session because bots are not modeled), `RESPAWN_MONSTERS` / `RESPAWN_ITEMS` / `RESPAWN_INVENTORY` host-backed gamevars, live map-count built-ins and player-facing `quote` output with runtime text | The v9 `box.map` loads; map lifecycle, registered `EVENT_GAME` hooks and each active map sprite's `EVENT_SPAWN` hook run without VM faults (gated local test); fixture CON suite compares labeled values against an EDuke32 capture when available |
+| **ED3** | Partial live adapter for core sprite/actor-temp, wall, sector, player and supplied input fields with checked object IDs, array subscripts, integer widths and read-only linked-list fields. Player quote/palette state, previous positions, true floor/ceiling caches, floor-sprite `spritebridge` / `sbs`, and player `max_shield_amount` and `max_ammo_amount[]` are live; shallow-water bob uses the floor-bridge result. `gettiledata` / `settiledata` cover size, picanm offsets/animation values and `gameflags`; ART metadata carries picanm values, and EDuke32 tile directives seed static flags. `userdef` covers Brutal's `vm_sprite`, `player_skill`, weapon/HUD scales and visibility, `pause_on`, indexed `return`, and respawn settings, with dynamic `THISACTOR` context. Per-sprite `thisprojectile` reads/writes `workslike`, `bsound`, `drop`, `hitradius`, `velmult`, `range`, `spawns`, `isound`, `sound`, trail parameters and remaining `bounces` (`yvel`) through live sprite state and saveable actor temps. All documented `spriteext` fields and `actor[].blend` read/write per sprite and persist through `.fsave`. All documented `tspr*` fields operate on a supplied transient render copy; native and web render paths invoke `EVENT_ANIMATESPRITES` for visible, drawable sprites with `SPREXT_TSPRACCESS`, passing the viewing seat and discarding other host-structure writes. Documented projectile properties use a per-tile table seeded by `defineprojectile`, including documented `spawns`, `bsound`, `extra_rand` and conditional `tnum` defaults; `setprojectile` overrides persist in `.fsave`. Remaining: other userdef fields, mirror re-entry, render blend consumption and complete field coverage | Every member Brutal Duke uses (~104) has a test; out-of-range ids log and do not crash |
+| **ED4** | Source-order hook execution shares an instruction budget; `endevent` terminates the current handler and explicit top-level `return` stops the remaining appended handlers. The live adapter executes actor `action` / `move` / `ai` pointer updates, `strength`, `addstrength`, `addkills`, `cstat`, `cstator`, `cactor`, `spritepal`, `getlastpal`, `clipdist`, `count`, `sleeptime`, `sizeat`, `sizeto`, `fall`, `resetactioncount`, `resetcount`, `pkick`, `operate`, `addphealth`, `endofgame`, nearest-player `addammo` / `addweapon` and their `var` forms, `addinventory` and its `var` form, player `palfrom`, and the `sound`, `soundonce`, `globalsound`, `stopsound` commands. `endofgame` records the per-player exit countdown (default 52); global MODE_EOL transition and campaign routing remain open. `ifnosounds` branches against the active actor sound-owner snapshot. `pkick` queues the existing 14-tic player quick-kick response through actor-temp state and skips APLAYER sources; `operate` queues the current actor for the native near-sector operation phase. Weapon and inventory commands target the nearest player; full ammo stops the current event, armor uses `max_shield_amount`, and access cards follow the actor palette. `addphealth` applies `gamestartup[2]`, god-mode suppression, the `ATOMICHEALTH` double cap, body-sprite synchronization, and the low-health cue. `EVENT_PRELEVEL` resets actor-scoped vars before world setup; after sprite initialization, map sprites receive `EVENT_LOADACTOR` (no player context), then `EVENT_SPAWN` (nearest player). `EVENT_ENTERLEVEL` runs after player/world setup and follows `RETURN` for local-seat iteration. `EVENT_PREWORLD` runs once per tic before per-sprite `EVENT_PREGAME`; `EVENT_PROCESSINPUT` runs once per local seat against mutable sync records before native input handling; `EVENT_WORLD` runs once after per-sprite `EVENT_GAME`, including on maps with no active sprites. Global hooks expose `THISPLAYER` / `THISACTOR` as `-1`. `EVENT_PREGAME` and `EVENT_GAME` skip effective `SFLAG_NOEVENTS` and supply the nearest player. Native and web render paths dispatch `EVENT_ANIMATESPRITES` to drawable sprites with `SPREXT_TSPRACCESS`, using transient render copies. Runtime spawns trigger `EVENT_EGS` then `EVENT_SPAWN` after the caller event returns under a shared budget and a recursion cap. `killit` calls `EVENT_KILLIT`, honors its `RETURN` veto, then frees actor/misc sprites or hides sprites on other statuses. Remaining: exact instruction-point spawn ordering, other event call sites, cancellation/replacement `RETURN` semantics (e.g. `EVENT_DAMAGESPRITE` cancel, `EVENT_SOUND` replace), display events into the HUD draw list | Scenario: pistol shot on a LIZTROOP in `box.map` → blood decal sprites, shell casing, `EVENT_POSTDAMAGESPRITE` trace equal to the reference trace for 300 tics |
+| **ED5** | Engine queries and spawns: deterministic `calchypotenuse`, live slope and `getzrange` queries, `sectorofwall`, geometry `cansee`, `updatesector` / `updatesectorz`, live sprite `ldist` / `dist`, sprite-list head/next queries and mutations, coordinate `setsprite`, `spawn` / `espawn` / `espawnvar`, `money` / `mail` / `paper`, `debris` / `guts` / `lotsofglass`, `hitradius`, live-world `hitscan`, and `shoot` / `eshoot` / `zshoot` / `ezshoot` variants are supported. The three item-spray commands spawn randomized live sprites from the current actor using Chocolate's shared Build RNG order and runtime spawn-event path. `sectorofwall` resolves the first owning sector by ascending live sector index and returns `-1` when no sector owns a wall. `getzrange` writes live ceiling/floor planes and Build hit codes. `debris` creates randomized scraps; `guts` creates floor-clamped gore with player ownership and palette rules; `lotsofglass` creates rotating glass fragments with inherited palette. CON `hitradius` evaluates its radius and four damage bands in VM order and immediately applies the current actor's blast to live actors, players and nearby walls, carrying the shared gameplay RNG forward. Declared projectiles initialize from `defineprojectile` velocity, velocity multiplier, size, extra, owner and workslike; `PROJ_CLIPDIST` applies only with `PROJECTILE_REALCLIPDIST`, while declared `cstat`, shade and palette initialize on the projectile; `e` variants set `RETURN`. Declared `HITSCAN` / `KNEE` shots resolve a finite live-world ray, queue configured direct damage with `PROJ_EXTRA_RAND`, and retain an invisible impact sprite until the next tic; `PROJ_SOUND` queues on impact. Player-fired `HITSCAN` definitions place their configured `PROJ_DECAL` tile at wall impacts using `PROJ_XREPEAT` / `PROJ_YREPEAT` and wall alignment. Configured `PROJ_TRAIL` sprites are emitted at the ray endpoint using `PROJ_TNUM`, trail repeat and Z-offset values. Player shots use full auto-aim for RPG workslike and bullet-only mode for hitscan workslike, derive vertical trajectory from speed and target height, and respect `PROJECTILE_NOAIM`; `zshoot` supplies the explicit vertical velocity. RPG-workslike sprites subtract `PROJ_DROP` before movement, repeat swept collision and sector updates for `PROJ_VEL_MULT` (capped at 256 steps per tic), continue remaining steps after flagged wall, mirror and sprite bounces, decrement `PROJ_BOUNCES` only for wall contacts, apply configured hitradius on terminal impact, apply direct hit damage only with `PROJECTILE_RPG_IMPACT`, emit configured trail sprites, process impact spawns/sounds, honor timed expiry with `PROJECTILE_EXPLODEONTIMER`, and spawn randomized `WATERBUBBLE` actors when a flagged RPG ends its tic or a flagged hitscan impacts underwater. Active actor scripts now process queued hits through their compiled `ifhitweapon` path | Brutal weapons (pistol akimbo, MP5, magazines) fire, eject casings and hit; `duke_play kill-all E1L1` excludes corpses present at setup, and the bundled Brutal Duke tree now records 29/33 kills, 2 hurt, 1 alive and 1 target without a clear shot, so ED5 acceptance remains unmet; RPG-workslike drop, repeated movement, configured hitradius, opt-in direct impact damage, bounce continuation, trail settings, velocity multiplier and timed disappear/explode behavior are covered; remaining: velocity loss (decay rule still needs source confirmation), randomized decal sizing and other workslike effects |
+| **ED6** | Resources: a nested DEF parser handles quoted paths, comments, nested blocks, `tilefromtexture`, all `texture` palette branches as resource specs (the indexed desktop importer currently consumes palette 0), `copytile`, `dummytile(range)`, `animtilerange`, and map-specific `Music { ID … file … }` blocks; all 393 Brutal Duke PNG/BMP replacements decode in `duke mod-check` with zero asset or syntax errors. The desktop renderer accepts mounted mod DEF/images, maps high-resolution pixels through the Build palette at source dimensions, and applies alpha cutoffs, `xoff`/`yoff`, copies, dummy tiles and animation ranges. Desktop `definesound` lookup resolves loose mod WAV/OGG files; Atomic map starts also resolve DEF music IDs and stream loose WAV/OGG/FLAC/MP3 PCM, MIDI, or MUS with CON MIDI as fallback. DEF `mapinfo` selects an MHK by case-insensitive map filename and MD4; the renderer applies `angoff` to aligned-sprite render copies while preserving simulation sprites. Remaining: palette-specific `texture` rendering and true-colour sampling, `skybox`, `basepalette`, `blendtable`/`glblend`, voxel `include`/`tint`, browser/editor mounting, MHK model transforms and lights, and broader DEF music/resource integration | Mod-check parses all bundled DEF/MHK records; a hashed fixture selects its referenced MHK and rejects a hash mismatch; test both `tilefromtexture` and `texture ... pal 0` image imports at source dimensions, then render new tiles 9000+ in the editor and in-game; verify E1L1 against its matching legal map asset |
+| **ED7** | Rendering: the software Build view loads the palette translucency lookup and composites sprite `cstat` translucency after opaque sprites, in far-to-near order with stable sprite-index ties and no translucent depth writes. Remaining: translucent wall-layer order, scaled `spriteext.alpha`, `spriteext.blend`, `blendtable` resources, KVX voxels in the Build view (sprite `cstat` 48 + DEF voxels), skyboxes and true-colour hi-res tiles | Golden captures of translucent gore/decals, overlapping transparent sprites, voxel props and the E1L1 skybox against reference screenshots (SSIM ≥ 0.9, same camera) |
+| **ED8** | Player/HUD layer: `EVENT_DISPLAYWEAPON`/`DISPLAYREST`/`DISPLAYCROSSHAIR` drawing (`rotatesprite`, `digitalnumber`, `gametext`, `screentext` subset), weapon sway/recoil, night vision palette and `setgamepalette` (per-player base palettes and LOOKUP.DAT tables; animation palette still open), slow motion (`inittimer` maps timer rate to desktop/browser pacing without changing per-tic simulation math), death cam | Brutal HUD screenshot set matches reference; slow-motion toggles without desync of the sim clock |
 | **ED9** | Performance and web: per-tic budget with 300+ decal/blood sprites (janitor limits respected), Brutal Duke as a web solo preset (DEF/PNG/KVX streamed from a directory or zip, cached like the Doom presets) | E1L1 full fight ≤ 2 ms/tic native, ≤ 4 ms/tic wasm; browser solo starts Brutal Duke from the lobby |
-| **ED10** | Saves and multiplayer scope: var/array/actor-var state in `.fsave`; Brutal Duke marked solo/local-coop only in the lobby (its own rule); generic EDuke32 lockstep deferred | Save/load mid-fight restores vars and decals; lobby refuses Brutal Duke for network rooms with a clear message |
+| **ED10** | `.fsave` version 2 carries EDuke32 gamevars (including actor/player scopes), arrays, quotes, random streams, implicit `RETURN`, tile metadata, modeled Brutal userdef fields, including respawn modes, projectile definitions and active projectile bounce/velocity-multiplier/lifetime/trail/impact state; legacy VM snapshots migrate and current state validates against the loaded image. Desktop, browser lobby and server verifier now reject EDuke32 CON content before network roster setup with a solo-only explanation. New fields use serde defaults so older `.fsave` records load. Remaining: other native struct state, full mid-fight restore acceptance and solo/local-coop lobby policy. Generic EDuke32 lockstep deferred | Save/load mid-fight restores vars and decals; network refusal is covered by the session policy regression but still needs a full lobby/runtime check |
 
 ED0–ED4 are the critical path; Brutal Duke is not playable before ED5 and
 does not look like Brutal Duke before ED7.

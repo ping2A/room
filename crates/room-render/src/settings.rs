@@ -826,7 +826,9 @@ impl RenderSettings {
                 true
             }
             "gl_texture_filter_anisotropic" => {
-                let v = i.or(f.map(|f| f as i32)).unwrap_or(if b == Some(true) { 8 } else { 1 });
+                let v = i
+                    .or(f.map(|f| f as i32))
+                    .unwrap_or(if b == Some(true) { 8 } else { 1 });
                 self.anisotropy = crate::materials::sampler_anisotropy(v.clamp(0, 16) as u16);
                 true
             }

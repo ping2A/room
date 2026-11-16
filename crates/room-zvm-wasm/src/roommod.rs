@@ -75,7 +75,11 @@ pub(crate) fn append_sections(art: &mut Artifact, program: &CompiledProgram) {
     append_sections_with(art, program, &[]);
 }
 
-fn append_sections_with(art: &mut Artifact, program: &CompiledProgram, external: &[(String, String)]) {
+fn append_sections_with(
+    art: &mut Artifact,
+    program: &CompiledProgram,
+    external: &[(String, String)],
+) {
     let list: String = external
         .iter()
         .map(|(p, text)| format!("{p}\t{}\n", source_digest(text)))
@@ -168,7 +172,9 @@ pub fn read_room_mod(bytes: &[u8]) -> Result<RoomMod, CodegenError> {
         .map(|(n, _, _)| (aot_abi::IMPORT_MODULE.to_owned(), (*n).to_owned()))
         .collect();
     if imports != expected {
-        return Err(bad("module imports something other than the zvm runtime".into()));
+        return Err(bad(
+            "module imports something other than the zvm runtime".into()
+        ));
     }
     let compiled = flags[1..].iter().map(|f| f & 1 != 0).collect();
     let hot = flags[1..].iter().map(|f| f & 2 != 0).collect();
@@ -243,7 +249,10 @@ pub fn compile_room_mod_with(
 
 /// Attach the shipped module registered for `program` to `vm` (built from
 /// that program). Returns false when none is registered.
-pub fn attach_if_shipped(vm: &mut room_zvm::Zvm, program: &CompiledProgram) -> Result<bool, String> {
+pub fn attach_if_shipped(
+    vm: &mut room_zvm::Zvm,
+    program: &CompiledProgram,
+) -> Result<bool, String> {
     let Some(m) = shipped_for(program) else {
         return Ok(false);
     };

@@ -164,7 +164,12 @@ pub fn cylinder_sky_ranges(sky: &str, len: usize) -> Vec<crate::scene::MaterialR
         (sky_cap_name(sky, false), segs * 6 + cap, cap),
     ]
     .into_iter()
-    .map(|(name, start, count)| crate::scene::MaterialRange { name, start, count, flags: 0 })
+    .map(|(name, start, count)| crate::scene::MaterialRange {
+        name,
+        start,
+        count,
+        flags: 0,
+    })
     .collect()
 }
 

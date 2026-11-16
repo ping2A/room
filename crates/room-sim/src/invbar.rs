@@ -1,9 +1,9 @@
 //! Inventory bar: the selected item, cycling and use (UZDoom `invnext`,
 //! `invprev`, `invuse`, `PlayerPawn.InvSel` / `InvFirst`).
 
+use crate::actor::ActorId;
 use crate::player::Player;
 use crate::world::World;
-use crate::actor::ActorId;
 use room_core::ClassId;
 
 /// Tics the bar stays open after a cycle (UZDoom `5 * TICRATE`).
@@ -52,7 +52,11 @@ pub fn cycle(world: &World, player: &mut Player, mo: ActorId, dir: i32) {
         .inv_sel
         .and_then(|c| items.iter().position(|&x| x == c))
         .unwrap_or(0);
-    let next = if dir > 0 { (cur + 1) % n } else { (cur + n - 1) % n };
+    let next = if dir > 0 {
+        (cur + 1) % n
+    } else {
+        (cur + n - 1) % n
+    };
     player.inv_sel = Some(items[next]);
     player.inventory_tics = INVENTORY_TICS;
 }

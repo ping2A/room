@@ -37,6 +37,63 @@ impl SoftTiles {
         self.tiles.insert(picnum, (width, height, pixels));
     }
 
+    /// Insert a Build-layout tile and its sprite origin offsets.
+    pub fn insert_with_offset(
+        &mut self,
+        picnum: i16,
+        width: u16,
+        height: u16,
+        pixels: Vec<u8>,
+        x_offset: i8,
+        y_offset: i8,
+    ) {
+        self.insert(picnum, width, height, pixels);
+        self.sprite_offsets.insert(picnum, (x_offset, y_offset));
+    }
+
+    /// Copy an already loaded tile, including its animation and sprite origin.
+    pub fn copy_tile(&mut self, source: i16, destination: i16) -> bool {
+        let Some(tile) = self.tiles.get(&source).cloned() else {
+            return false;
+        };
+        self.tiles.insert(destination, tile);
+        if let Some(offset) = self.sprite_offsets.get(&source).copied() {
+            self.sprite_offsets.insert(destination, offset);
+        }
+        if let Some(animation) = self.animations.get(&source).cloned() {
+            self.animations.insert(destination, animation);
+        }
+        true
+    }
+
+    /// Set an ART-style animation range from EDuke32 DEF metadata.
+    pub fn set_animation_range(&mut self, start: i16, end: i16, speed: u8, animation: u8) {
+        if animation == 0 {
+            self.animations.remove(&start);
+            return;
+        }
+        let frames: Vec<i16> = match animation {
+            1 => (start..=end)
+                .chain((start.saturating_add(1)..end).rev())
+                .collect(),
+            2 => (start..=end).collect(),
+            3 => (end..=start).rev().collect(),
+            _ => Vec::new(),
+        };
+        if frames.len() > 1 {
+            self.animations
+                .insert(start, (frames, 1_u32 << speed.min(15)));
+        } else {
+            self.animations.remove(&start);
+        }
+    }
+
+    /// Reserve a blank transparent tile with explicit dimensions.
+    pub fn insert_dummy(&mut self, picnum: i16, width: u16, height: u16) {
+        let count = usize::from(width) * usize::from(height);
+        self.insert_with_offset(picnum, width, height, vec![255; count], 0, 0);
+    }
+
     /// Copy from a `room_build::Tile`.
     pub fn insert_tile(&mut self, picnum: i16, tile: &room_build::art::Tile<'_>) {
         self.insert(picnum, tile.width, tile.height, tile.pixels.to_vec());
@@ -280,7 +337,8 @@ impl SoftTiles {
         let half = i64::from(height / 2);
         let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
         let th = i64::from(tile_height.max(1));
-        let v = th / 2 + (i64::from(row) - sky_horizon) * 200 / i64::from(height)
+        let v = th / 2
+            + (i64::from(row) - sky_horizon) * 200 / i64::from(height)
             + i64::from(ypanning) * th / 256;
         let v = v.rem_euclid(th) as u32;
         self.sample_at(pic, u, v, clock_120hz)
@@ -332,7 +390,10 @@ impl TileRef<'_> {
     pub fn at(&self, u: i64, v: i64) -> u8 {
         let x = u.rem_euclid(self.w as i64) as usize;
         let y = v.rem_euclid(self.h as i64) as usize;
-        self.pix.get(x * self.h + y).copied().unwrap_or(room_build::art::TRANSPARENT)
+        self.pix
+            .get(x * self.h + y)
+            .copied()
+            .unwrap_or(room_build::art::TRANSPARENT)
     }
 }
 
@@ -423,27 +484,65 @@ pub fn render_fp_textured_at(
     tiles: &SoftTiles,
     clock_120hz: u32,
 ) {
-    let (zbuf, drawn) =
-        render_fp_textured_without_mirrors_at(world, view, frame, tiles, clock_120hz);
-    // Mirrors are searched among the sectors the portal pass reached, not
-    // the (camera-only) `visible_sectors` of the incoming view.
-    let mut mirror_view = view.clone();
-    mirror_view.visible_sectors = drawn;
-    render_fp_mirror_at(world, &mirror_view, frame, tiles, &zbuf, clock_120hz, 560);
+    render_fp_textured_at_with_sprite_angle_offsets(world, view, frame, tiles, clock_120hz, None);
 }
 
-fn render_fp_textured_without_mirrors_at(
+/// Textured draw with presentation-only MHK sprite angle offsets. Sprite
+/// overrides are indexed by the original Build map sprite slot and never
+/// modify the playsim world.
+pub fn render_fp_textured_at_with_sprite_angle_offsets(
     world: &BuildWorld,
     view: &BuildView,
     frame: &mut SoftFrame,
     tiles: &SoftTiles,
     clock_120hz: u32,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
+) {
+    let (zbuf, drawn) = render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
+        world,
+        view,
+        frame,
+        tiles,
+        clock_120hz,
+        angle_offsets,
+    );
+    // Mirrors are searched among the sectors the portal pass reached, not
+    // the (camera-only) `visible_sectors` of the incoming view.
+    let mut mirror_view = view.clone();
+    mirror_view.visible_sectors = drawn;
+    render_fp_mirror_at(
+        world,
+        &mirror_view,
+        frame,
+        tiles,
+        &zbuf,
+        clock_120hz,
+        560,
+        angle_offsets,
+    );
+}
+
+fn render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
+    world: &BuildWorld,
+    view: &BuildView,
+    frame: &mut SoftFrame,
+    tiles: &SoftTiles,
+    clock_120hz: u32,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
 ) -> (Vec<i32>, Vec<i16>) {
     let (mut zbuf, drawn) = portal::render(world, view, frame, tiles, clock_120hz);
     // Sprites are drawn for every sector the portal pass actually reached.
     let mut sprite_view = view.clone();
     sprite_view.visible_sectors = drawn;
-    render_fp_sprites_at(world, &sprite_view, frame, Some(tiles), &mut zbuf, clock_120hz);
+    render_fp_sprites_at_with_angle_offsets(
+        world,
+        &sprite_view,
+        frame,
+        Some(tiles),
+        &mut zbuf,
+        clock_120hz,
+        angle_offsets,
+    );
     (zbuf, sprite_view.visible_sectors)
 }
 
@@ -460,6 +559,7 @@ fn render_fp_mirror_at(
     scene_depth: &[i32],
     clock_120hz: u32,
     mirror_tile: i16,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
 ) {
     let mut nearest: Option<(i64, usize, i16)> = None;
     for &sector_index in &view.visible_sectors {
@@ -536,7 +636,10 @@ fn render_fp_mirror_at(
         }
     }
     if std::env::var_os("ROOM_MIRROR_DEBUG").is_some() {
-        eprintln!("mirror: visible {} nearest {nearest:?}", view.visible_sectors.len());
+        eprintln!(
+            "mirror: visible {} nearest {nearest:?}",
+            view.visible_sectors.len()
+        );
     }
     let Some((_, wall_index, owner_sector)) = nearest else {
         return;
@@ -584,12 +687,13 @@ fn render_fp_mirror_at(
         copy.sprites[index].cstat &= !0x8000;
         Some(copy)
     });
-    let _ = render_fp_textured_without_mirrors_at(
+    let _ = render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
         with_viewer.as_ref().unwrap_or(world),
         &reflected_view,
         &mut reflected_frame,
         tiles,
         clock_120hz,
+        angle_offsets,
     );
 
     let Some(points) = project_mirror_quad(
@@ -731,7 +835,12 @@ fn draw_mirror_triangle(
                 + w1 as f64 / f64::from(z1.max(1))
                 + w2 as f64 / f64::from(z2.max(1)))
                 / area as f64;
-            let depth = if inv > 0.0 { (1.0 / inv) as i32 } else { i32::MAX }.max(1);
+            let depth = if inv > 0.0 {
+                (1.0 / inv) as i32
+            } else {
+                i32::MAX
+            }
+            .max(1);
             let index = y as usize * width + x as usize;
             if index >= scene_depth.len() || scene_depth[index].saturating_add(2) < depth {
                 continue;
@@ -1045,6 +1154,8 @@ fn sky_color(picnum: i16, ang: i16, col: i32, y: i32) -> u8 {
 
 /// `cstat` bit 15 — invisible.
 const CSTAT_INVISIBLE: u16 = 32768;
+/// Build sprite cstat bit 1: composite through the translucency lookup.
+const CSTAT_TRANSLUCENT: u16 = 2;
 /// Build sprite cstat bit 2: flip face sprite about its vertical axis.
 const CSTAT_XFLIP: u16 = 4;
 /// Build sprite cstat bit 3: flip face sprite about its horizontal axis.
@@ -1262,6 +1373,20 @@ pub fn render_fp_sprites_at(
     zbuf: &mut [i32],
     clock_120hz: u32,
 ) {
+    render_fp_sprites_at_with_angle_offsets(world, view, frame, tiles, zbuf, clock_120hz, None);
+}
+
+/// Face, wall-aligned and floor-aligned sprites with render-only angle
+/// offsets from a matched EDuke32 MHK file.
+pub fn render_fp_sprites_at_with_angle_offsets(
+    world: &BuildWorld,
+    view: &BuildView,
+    frame: &mut SoftFrame,
+    tiles: Option<&SoftTiles>,
+    zbuf: &mut [i32],
+    clock_120hz: u32,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
+) {
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
     let w = frame.width as i32;
     let h = frame.height as i32;
@@ -1271,8 +1396,49 @@ pub fn render_fp_sprites_at(
     let focal_y = (h / 2).max(1);
     let horiz_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
 
-    for i in 0..crate::world::MAXSPRITES {
-        let sp = &world.sprites[i];
+    // Build renders opaque sprites before its translucent pass. Translucent
+    // sprites then blend far-to-near against the completed opaque scene, and
+    // must not occlude later translucent layers with a depth write.
+    let mut sprite_order = (0..crate::world::MAXSPRITES)
+        .filter(|&index| {
+            let sprite = &world.sprites[index];
+            sprite.sectnum >= 0
+                && !lists_stat_free(world, index)
+                && sprite.cstat & CSTAT_INVISIBLE == 0
+                && sprite.xrepeat != 0
+                && sprite.yrepeat != 0
+                && view.visible_sectors.contains(&sprite.sectnum)
+        })
+        .map(|index| {
+            let sprite = &world.sprites[index];
+            let translucent = sprite.cstat & CSTAT_TRANSLUCENT != 0;
+            let depth = if translucent {
+                cam_project(view, sin, cos, sprite.x, sprite.y, sprite.z)
+                    .map_or(i64::MIN, |(_, _, depth)| depth)
+            } else {
+                0
+            };
+            (translucent, depth, index)
+        })
+        .collect::<Vec<_>>();
+    sprite_order.sort_by(|left, right| match (left.0, right.0) {
+        (false, false) => left.2.cmp(&right.2),
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        (true, true) => right.1.cmp(&left.1).then_with(|| left.2.cmp(&right.2)),
+    });
+
+    for (_, _, i) in sprite_order {
+        let original = &world.sprites[i];
+        let mut sprite_copy;
+        let sp = if let Some(offset) = angle_offsets.and_then(|overrides| overrides.get(&i)) {
+            sprite_copy = *original;
+            sprite_copy.ang =
+                (i32::from(sprite_copy.ang) + i32::from(*offset)).rem_euclid(2048) as i16;
+            &sprite_copy
+        } else {
+            original
+        };
         if sp.sectnum < 0 || lists_stat_free(world, i) || (sp.cstat & CSTAT_INVISIBLE) != 0 {
             continue;
         }
@@ -1284,7 +1450,9 @@ pub fn render_fp_sprites_at(
             continue;
         }
         if let Some(ts) = tiles
-            && ts.dimensions(sp.picnum).is_none_or(|(tw, th)| tw == 0 || th == 0)
+            && ts
+                .dimensions(sp.picnum)
+                .is_none_or(|(tw, th)| tw == 0 || th == 0)
         {
             continue;
         }
@@ -1376,7 +1544,9 @@ pub fn render_fp_sprites_at(
                         ts.composite_sprite(frame.pixels[depth_index], pix, sp.cstat)
                     }),
                 );
-                zbuf[depth_index] = z;
+                if sp.cstat & CSTAT_TRANSLUCENT == 0 {
+                    zbuf[depth_index] = z;
+                }
             }
         }
     }
@@ -1570,7 +1740,9 @@ fn draw_sprite_triangle(
                 }
                 None => flat,
             };
-            zbuf[index] = depth;
+            if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
+                zbuf[index] = depth;
+            }
             frame.put(
                 x,
                 y,
@@ -1652,8 +1824,10 @@ fn render_wall_aligned_sprite(
     let focal_y = f64::from((frame.height as i32 / 2).max(1));
     let center_x = f64::from(frame.width as i32 / 2);
     let center_y = f64::from(frame.height as i32 / 2);
-    let horizon_off =
-        f64::from(-horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1))));
+    let horizon_off = f64::from(-horiz_pixel_offset(
+        view.horiz,
+        i64::from((frame.height as i32 / 2).max(1)),
+    ));
     // Camera space (same basis as `cam_project`), without its behind-camera
     // rejection: the segment is clipped against a near plane instead, so a
     // poster whose one end is behind the eye still draws its visible part.
@@ -1727,7 +1901,8 @@ fn render_wall_aligned_sprite(
             if index >= zbuf.len() || test_depth >= zbuf[index] {
                 continue;
             }
-            let v0 = (((f64::from(y) + 0.5 - top) / (bottom - top) * th as f64) as i64).clamp(0, th - 1);
+            let v0 =
+                (((f64::from(y) + 0.5 - top) / (bottom - top) * th as f64) as i64).clamp(0, th - 1);
             let v = if sprite.cstat & CSTAT_YFLIP != 0 {
                 th - 1 - v0
             } else {
@@ -1741,7 +1916,9 @@ fn render_wall_aligned_sprite(
                 ),
                 None => flat,
             };
-            zbuf[index] = depth;
+            if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
+                zbuf[index] = depth;
+            }
             frame.put(
                 col,
                 y,
@@ -2092,6 +2269,148 @@ mod tests {
     }
 
     #[test]
+    fn translucent_sprites_render_back_to_front_without_depth_writes() {
+        let sprites = [
+            SpriteT {
+                x: 200,
+                y: 0,
+                z: 0,
+                cstat: CSTAT_TRANSLUCENT,
+                picnum: 8,
+                xrepeat: 255,
+                yrepeat: 255,
+                sectnum: 0,
+                statnum: 0,
+                ..SpriteT::default()
+            },
+            SpriteT {
+                x: 350,
+                y: 0,
+                z: 0,
+                cstat: 0,
+                picnum: 7,
+                xrepeat: 255,
+                yrepeat: 255,
+                sectnum: 0,
+                statnum: 0,
+                ..SpriteT::default()
+            },
+            SpriteT {
+                x: 275,
+                y: 0,
+                z: 0,
+                cstat: CSTAT_TRANSLUCENT,
+                picnum: 9,
+                xrepeat: 255,
+                yrepeat: 255,
+                sectnum: 0,
+                statnum: 0,
+                ..SpriteT::default()
+            },
+        ];
+        let world = BuildWorld::load_arrays(
+            vec![SectorT::default()],
+            Vec::new(),
+            &sprites,
+            [50, 0, 0],
+            0,
+            0,
+            1,
+        )
+        .unwrap();
+        let view = BuildView {
+            posx: 50,
+            posy: 0,
+            posz: 0,
+            ang: 0,
+            horiz: 100,
+            sect: 0,
+            visible_sectors: vec![0],
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert(7, 1, 1, vec![10]);
+        tiles.insert(8, 1, 1, vec![20]);
+        tiles.insert(9, 1, 1, vec![30]);
+        let mut translucency = vec![0; 65_536];
+        translucency[usize::from(10_u8) * 256 + usize::from(30_u8)] = 80;
+        translucency[usize::from(80_u8) * 256 + usize::from(20_u8)] = 77;
+        tiles.set_translucency_table(Some(translucency));
+        let mut frame = SoftFrame::new(64, 48);
+        let mut depth = vec![i32::MAX; frame.pixels.len()];
+        render_fp_sprites_at(&world, &view, &mut frame, Some(&tiles), &mut depth, 0);
+
+        let pixel = frame
+            .pixels
+            .iter()
+            .position(|&value| value == 77)
+            .expect("near translucent sprite should blend over the farther opaque sprite");
+        let (sin, cos) = crate::helpers::approx_sincos_q14(0);
+        let (_, _, far_depth) =
+            cam_project(&view, sin, cos, sprites[1].x, sprites[1].y, sprites[1].z).unwrap();
+        assert_eq!(depth[pixel], far_depth as i32);
+    }
+
+    #[test]
+    fn mhk_sprite_angle_offset_changes_only_the_render_copy() {
+        let sprite = SpriteT {
+            x: 200,
+            y: 200,
+            z: 0,
+            cstat: CSTAT_FLOOR_ALIGN,
+            picnum: 7,
+            xrepeat: 255,
+            yrepeat: 255,
+            sectnum: 0,
+            statnum: 0,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let world = BuildWorld::load_arrays(
+            vec![SectorT::default()],
+            Vec::new(),
+            &[sprite],
+            [50, 200, -1024],
+            0,
+            0,
+            1,
+        )
+        .unwrap();
+        let view = BuildView {
+            posx: 50,
+            posy: 200,
+            posz: -1024,
+            ang: 0,
+            horiz: 100,
+            sect: 0,
+            visible_sectors: vec![0],
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert(7, 2, 2, vec![10, 20, 30, 40]);
+        let offsets = BTreeMap::from([(0, 512)]);
+        let mut original = SoftFrame::new(64, 48);
+        let mut hacked = SoftFrame::new(64, 48);
+        render_fp_sprites_at(
+            &world,
+            &view,
+            &mut original,
+            Some(&tiles),
+            &mut vec![i32::MAX; 64 * 48],
+            0,
+        );
+        render_fp_sprites_at_with_angle_offsets(
+            &world,
+            &view,
+            &mut hacked,
+            Some(&tiles),
+            &mut vec![i32::MAX; 64 * 48],
+            0,
+            Some(&offsets),
+        );
+        assert_ne!(original.pixels, hacked.pixels);
+        assert_eq!(world.sprites[0].ang, 0);
+    }
+
+    #[test]
     fn fp_solid_fills_columns() {
         let sectors = vec![SectorT {
             wallptr: 0,
@@ -2410,5 +2729,16 @@ mod tests {
             "expected solid wall ink"
         );
         assert_eq!(f.pixels[(32 * 64 + 32) as usize], 128); // camera
+    }
+
+    #[test]
+    fn def_animation_range_uses_speed_and_forward_frames() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(10, 1, 1, vec![10]);
+        tiles.insert(11, 1, 1, vec![11]);
+        tiles.set_animation_range(10, 11, 1, 2);
+        assert_eq!(tiles.sample_at(10, 0, 0, 0), Some(10));
+        assert_eq!(tiles.sample_at(10, 0, 0, 1), Some(10));
+        assert_eq!(tiles.sample_at(10, 0, 0, 2), Some(11));
     }
 }

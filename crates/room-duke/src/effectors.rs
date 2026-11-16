@@ -3386,7 +3386,10 @@ pub(crate) fn move_true_drop_planes(
                     sprite.z.wrapping_sub(fz).signum().wrapping_mul(sp),
                 )
             } else {
-                (near(t1), -sprite.z.wrapping_sub(t1).signum().wrapping_mul(sp))
+                (
+                    near(t1),
+                    -sprite.z.wrapping_sub(t1).signum().wrapping_mul(sp),
+                )
             };
             if arrived {
                 crate::interactions::call_sector_sound(world, sprite.sectnum, temps);

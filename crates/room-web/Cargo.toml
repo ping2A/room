@@ -24,6 +24,7 @@ room-formats = { path = "../room-formats", optional = true }
 room-game = { path = "../room-game", optional = true }
 room-input = { path = "../room-input", optional = true }
 room-map = { path = "../room-map", optional = true }
+room-mapgen = { path = "../room-mapgen", optional = true }
 room-music = { path = "../room-music", optional = true }
 room-net = { path = "../room-net", default-features = false, optional = true }
 room-proto = { path = "../room-proto", optional = true }
@@ -117,6 +118,7 @@ browser = [
     "dep:room-net",
     "dep:room-proto",
     "dep:room-nodebuild",
+    "dep:room-mapgen",
     "dep:room-duke",
     "dep:room-render",
     "dep:room-script",

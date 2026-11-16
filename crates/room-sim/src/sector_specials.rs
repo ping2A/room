@@ -371,7 +371,11 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
             // Strife hazard: standing here fills a meter; damage comes from
             // `tick_hazard` while it drains (a radsuit only slows the fill).
             if sector_damage_applies(world, mo, invul)
-                && let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(mo))
+                && let Some(p) = world
+                    .players
+                    .iter_mut()
+                    .flatten()
+                    .find(|p| p.mo == Some(mo))
             {
                 let fill = if radsuit { 1 } else { amt.max(1) };
                 p.hazard_count = (p.hazard_count + fill).min(60 * 35);
@@ -392,7 +396,12 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
 /// Strife `hazardcount`: once the meter passes 16 s, hurt every 32 tics.
 fn tick_hazard(world: &mut World, mo: ActorId) {
     let time = world.level.time;
-    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(mo)) else {
+    let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(mo))
+    else {
         return;
     };
     if p.hazard_count <= 0 {
@@ -803,7 +812,11 @@ actor Grunt : Actor 9500
         let mut w = World::from_map_with_classes(map, classes, states).unwrap();
         let mo = w.players[0].as_ref().unwrap().mo.unwrap();
         let g = w
-            .spawn_at(grunt, room_core::DVec3::new(160.0, 160.0, 0.0), room_core::Angle::ZERO)
+            .spawn_at(
+                grunt,
+                room_core::DVec3::new(160.0, 160.0, 0.0),
+                room_core::Angle::ZERO,
+            )
             .unwrap();
         (w, mo, g)
     }

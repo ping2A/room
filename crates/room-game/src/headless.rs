@@ -1127,11 +1127,18 @@ impl Headless {
     /// "Underwater" preset, as `OpenALSoundRenderer::UpdateListener` loads.
     #[must_use]
     pub fn listener_sound(&self, seat: u8, water_reverb: bool) -> ListenerSound<'_> {
-        let none = ListenerSound { env: None, underwater: false };
+        let none = ListenerSound {
+            env: None,
+            underwater: false,
+        };
         let Some(world) = self.world.as_ref() else {
             return none;
         };
-        let Some(mo) = world.players.get(usize::from(seat)).and_then(|p| p.as_ref()?.mo) else {
+        let Some(mo) = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref()?.mo)
+        else {
             return none;
         };
         let (id, under) = world.listener_environment(mo);
@@ -1142,7 +1149,10 @@ impl Headless {
                 .environments
                 .find(room_audio::reverb::ENV_UNDERWATER)
                 .or_else(|| self.environments.find(room_audio::reverb::ENV_OFF));
-            return ListenerSound { env: water, underwater };
+            return ListenerSound {
+                env: water,
+                underwater,
+            };
         }
         ListenerSound { env, underwater }
     }
@@ -2038,7 +2048,10 @@ impl Headless {
     }
 
     /// [`Self::save_game`] storing `sounds` (looping voices) for the load.
-    pub fn save_game_with_sounds(&mut self, sounds: &[save::SavedSound]) -> Result<Vec<u8>, GameError> {
+    pub fn save_game_with_sounds(
+        &mut self,
+        sounds: &[save::SavedSound],
+    ) -> Result<Vec<u8>, GameError> {
         if self.state != GameState::Level {
             return Err(GameError::Message("can only save during Level".into()));
         }
@@ -25516,11 +25529,18 @@ actor PlayerPawn : Actor 0
         game.tick(&[host, TicCmd::default(), TicCmd::default()]);
         assert_eq!(
             game.take_net_save_request(),
-            Some(NetSaveRequest { load: false, slot: 4 })
+            Some(NetSaveRequest {
+                load: false,
+                slot: 4
+            })
         );
         assert_eq!(game.take_net_save_request(), None);
         let p0 = game.world().unwrap().players[0].as_ref().unwrap();
-        assert_eq!(p0.cmd.buttons.0 & Buttons::NETSAVE, 0, "stripped before the playsim");
+        assert_eq!(
+            p0.cmd.buttons.0 & Buttons::NETSAVE,
+            0,
+            "stripped before the playsim"
+        );
         assert_eq!(p0.cmd.weapon_select, 0);
         // A client's bit is ignored and stripped too.
         game.tick(&[TicCmd::default(), host, TicCmd::default()]);

@@ -65,7 +65,8 @@ pub fn encode_sounds(sounds: &[SavedSound]) -> String {
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             s.name.replace(['\t', '\n'], " "),
             s.channel,
-            s.source_id.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+            s.source_id
+                .map_or_else(|| "-".to_owned(), |v| v.to_string()),
             s.volume,
             s.attenuation,
             s.pitch,
@@ -91,7 +92,11 @@ pub fn decode_sounds(text: &str) -> Vec<SavedSound> {
             Some(SavedSound {
                 name: f[0].to_owned(),
                 channel: f[1].parse().ok()?,
-                source_id: if f[2] == "-" { None } else { Some(f[2].parse().ok()?) },
+                source_id: if f[2] == "-" {
+                    None
+                } else {
+                    Some(f[2].parse().ok()?)
+                },
                 volume: f[3].parse().ok()?,
                 attenuation: f[4].parse().ok()?,
                 pitch: f[5].parse().ok()?,
@@ -131,24 +136,30 @@ pub fn save_world_with_sounds(
         return Ok(base);
     }
     // Re-pack: copy every entry, then append `sounds.txt`.
-    let mut src = ZipArchive::new(Cursor::new(base)).map_err(|e| SaveError::Message(e.to_string()))?;
+    let mut src =
+        ZipArchive::new(Cursor::new(base)).map_err(|e| SaveError::Message(e.to_string()))?;
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for i in 0..src.len() {
-            let mut f = src.by_index(i).map_err(|e| SaveError::Message(e.to_string()))?;
+            let mut f = src
+                .by_index(i)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
             let mut buf = Vec::new();
-            f.read_to_end(&mut buf).map_err(|e| SaveError::Message(e.to_string()))?;
+            f.read_to_end(&mut buf)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
             zip.start_file(f.name().to_owned(), opts)
                 .map_err(|e| SaveError::Message(e.to_string()))?;
-            zip.write_all(&buf).map_err(|e| SaveError::Message(e.to_string()))?;
+            zip.write_all(&buf)
+                .map_err(|e| SaveError::Message(e.to_string()))?;
         }
         zip.start_file("sounds.txt", opts)
             .map_err(|e| SaveError::Message(e.to_string()))?;
         zip.write_all(encode_sounds(sounds).as_bytes())
             .map_err(|e| SaveError::Message(e.to_string()))?;
-        zip.finish().map_err(|e| SaveError::Message(e.to_string()))?;
+        zip.finish()
+            .map_err(|e| SaveError::Message(e.to_string()))?;
     }
     Ok(cursor.into_inner())
 }
@@ -351,7 +362,10 @@ pub fn load_world(world: &mut World, bytes: &[u8]) -> Result<u64, SaveError> {
         let mut env = Vec::new();
         file.read_to_end(&mut env)
             .map_err(|e| SaveError::Message(e.to_string()))?;
-        world.sound_env.load_bytes(&env).map_err(SaveError::Message)?;
+        world
+            .sound_env
+            .load_bytes(&env)
+            .map_err(SaveError::Message)?;
     }
     if let Ok(mut file) = zip.by_name("modhud.bin") {
         let mut hud = Vec::new();
@@ -397,13 +411,20 @@ fn decode_other_players(world: &mut World, bin: &[u8]) -> Result<(), SaveError> 
     let n = usize::from(bin[4]);
     let mut o = 5;
     for _ in 0..n {
-        let seat = usize::from(*bin.get(o).ok_or_else(|| SaveError::Message("players.bin truncated".into()))?);
+        let seat = usize::from(
+            *bin.get(o)
+                .ok_or_else(|| SaveError::Message("players.bin truncated".into()))?,
+        );
         let len = read_u32(bin, o + 1)? as usize;
         o += 5;
         let block = bin
             .get(o..o + len)
             .ok_or_else(|| SaveError::Message("players.bin truncated".into()))?;
-        if world.players.get(seat).is_some_and(|p| p.as_ref().is_some_and(|p| p.mo.is_some())) {
+        if world
+            .players
+            .get(seat)
+            .is_some_and(|p| p.as_ref().is_some_and(|p| p.mo.is_some()))
+        {
             let _ = decode_player_block(world, seat, block, 0)?;
         }
         o += len;
@@ -676,7 +697,12 @@ fn decode_world(world: &mut World, bin: &[u8]) -> Result<(), SaveError> {
 }
 
 /// Restore seat `seat` from a block at `bin[o..]`; returns the offset after it.
-fn decode_player_block(world: &mut World, seat: usize, bin: &[u8], mut o: usize) -> Result<usize, SaveError> {
+fn decode_player_block(
+    world: &mut World,
+    seat: usize,
+    bin: &[u8],
+    mut o: usize,
+) -> Result<usize, SaveError> {
     if seat >= world.players.len() {
         return Err(SaveError::Message(format!("bad seat {seat}")));
     }

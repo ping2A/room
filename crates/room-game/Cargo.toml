@@ -44,6 +44,7 @@ zip.workspace = true
 
 [dev-dependencies]
 room-build = { path = "../room-build" }
+room-mapgen = { path = "../room-mapgen" }
 room-map = { path = "../room-map" }
 room-net = { path = "../room-net" }
 room-nodebuild = { path = "../room-nodebuild" }

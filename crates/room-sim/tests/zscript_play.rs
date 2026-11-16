@@ -2196,7 +2196,15 @@ fn load_uzdoom_stdlib_with(extra: &str) -> room_zvm::CompiledProgram {
     }
     sources.push(("mod.zs".to_owned(), extra.to_owned()));
     let result = room_zscript::check(&sources);
-    assert!(result.ok(), "{:?}", result.diagnostics.iter().filter(|d| d.severity == room_zscript::Severity::Error).collect::<Vec<_>>());
+    assert!(
+        result.ok(),
+        "{:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == room_zscript::Severity::Error)
+            .collect::<Vec<_>>()
+    );
     result.program.expect("uzdoom program")
 }
 
@@ -2232,7 +2240,10 @@ class TestMover : Actor
 "#,
     );
     w.load_zscript_program_stubbed(prog);
-    let cid = w.classes.find_name("TestMover").expect("TestMover registered");
+    let cid = w
+        .classes
+        .find_name("TestMover")
+        .expect("TestMover registered");
     let mover = w
         .spawn_at(
             cid,
@@ -2245,7 +2256,11 @@ class TestMover : Actor
     let hp = w.actors.get(player).unwrap().health;
     w.tick();
     let a = w.actors.get(mover).unwrap();
-    assert!((a.angle.degrees() - 33.5).abs() < 1e-6, "angle {}", a.angle.degrees());
+    assert!(
+        (a.angle.degrees() - 33.5).abs() < 1e-6,
+        "angle {}",
+        a.angle.degrees()
+    );
     assert!(a.vel.z() > 0.0, "vel.z written back: {}", a.vel.z());
     assert_eq!(w.actors.get(player).unwrap().health, hp - 7);
     // Script fields saw live values.
@@ -2263,8 +2278,14 @@ class TestMover : Actor
         usize::from(layout.fields["seenhp"].1),
     );
     match vm.heap.get(h) {
-        Some(room_zvm::ObjKind::Object { fields_f, fields_i, .. }) => {
-            assert!((fields_f[fx] - 200.5).abs() < 1e-9, "seenx {}", fields_f[fx]);
+        Some(room_zvm::ObjKind::Object {
+            fields_f, fields_i, ..
+        }) => {
+            assert!(
+                (fields_f[fx] - 200.5).abs() < 1e-9,
+                "seenx {}",
+                fields_f[fx]
+            );
             assert_eq!(fields_f[ff], 0.0);
             assert_eq!(fields_i[fh], i64::from(hp));
         }
@@ -2333,17 +2354,38 @@ class Probe : Actor
     let slot = |n: &str| usize::from(layout.fields[n].1);
     let h = w.zscript.actor_fields[&probe.index()];
     let (fi, ff) = match vm.heap.get(h) {
-        Some(room_zvm::ObjKind::Object { fields_i, fields_f, .. }) => (fields_i.clone(), fields_f.clone()),
+        Some(room_zvm::ObjKind::Object {
+            fields_i, fields_f, ..
+        }) => (fields_i.clone(), fields_f.clone()),
         other => panic!("{other:?}"),
     };
     assert_eq!(fi[slot("saw")], 1, "player visible");
-    assert!((ff[slot("dist")] - 100.0).abs() < 1e-6, "dist {}", ff[slot("dist")]);
-    assert!((ff[slot("ang")] - 180.0).abs() < 1e-6, "ang {}", ff[slot("ang")]);
+    assert!(
+        (ff[slot("dist")] - 100.0).abs() < 1e-6,
+        "dist {}",
+        ff[slot("dist")]
+    );
+    assert!(
+        (ff[slot("ang")] - 180.0).abs() < 1e-6,
+        "ang {}",
+        ff[slot("ang")]
+    );
     assert_eq!(fi[slot("clips")], i64::from(have));
-    assert_eq!(fi[slot("found")], if have > 0 { i64::from(have) } else { -1 });
+    assert_eq!(
+        fi[slot("found")],
+        if have > 0 { i64::from(have) } else { -1 }
+    );
     let a = w.actors.get(probe).unwrap();
-    assert!((a.pos.x() - 174.0).abs() < 1e-6, "SetOrigin x {}", a.pos.x());
-    assert!((a.pos.z() - 4.0).abs() < 1e-6 || a.pos.z() <= 4.0, "SetOrigin z {}", a.pos.z());
+    assert!(
+        (a.pos.x() - 174.0).abs() < 1e-6,
+        "SetOrigin x {}",
+        a.pos.x()
+    );
+    assert!(
+        (a.pos.z() - 4.0).abs() < 1e-6 || a.pos.z() <= 4.0,
+        "SetOrigin z {}",
+        a.pos.z()
+    );
 }
 
 #[test]
@@ -2383,7 +2425,10 @@ class EchoSetter : Actor
     for line in entry.lines() {
         if let Some(rest) = line.trim().strip_prefix("#include") {
             let path = rest.trim().trim_matches('"');
-            sources.push((path.replace('\\', "/"), std::fs::read_to_string(root.join(path)).unwrap()));
+            sources.push((
+                path.replace('\\', "/"),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
         }
     }
     sources.push(("echo.zs".into(), zs.into()));
@@ -2408,7 +2453,11 @@ class EchoSetter : Actor
     )
     .unwrap();
     w.tick();
-    assert_eq!(w.sound_env.sector_env(sector), 0x0800, "Cave set by ZScript");
+    assert_eq!(
+        w.sound_env.sector_env(sector),
+        0x0800,
+        "Cave set by ZScript"
+    );
 }
 
 #[test]

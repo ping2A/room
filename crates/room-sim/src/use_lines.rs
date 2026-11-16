@@ -64,7 +64,9 @@ pub fn use_lines(world: &mut World, mo: ActorId) -> bool {
             // `blockuse` without a special: the use stops dead here.
             break;
         }
-        if ext & room_map::udmf::ext::LINE_PASSUSE != 0 && ext & room_map::udmf::ext::LINE_BLOCKUSE == 0 {
+        if ext & room_map::udmf::ext::LINE_PASSUSE != 0
+            && ext & room_map::udmf::ext::LINE_BLOCKUSE == 0
+        {
             activate_line(world, lid, Some(mo), ActivationType::Use);
             passed = true;
             continue;
@@ -481,15 +483,21 @@ mod tests {
         if blocker {
             // A special-less `blockuse` line between the player and the door.
             let base = map.vertices.len() as u32;
-            map.vertices.push(room_map::Vertex { pos: room_core::DVec2::new(64.0, 230.0) });
-            map.vertices.push(room_map::Vertex { pos: room_core::DVec2::new(192.0, 230.0) });
+            map.vertices.push(room_map::Vertex {
+                pos: room_core::DVec2::new(64.0, 230.0),
+            });
+            map.vertices.push(room_map::Vertex {
+                pos: room_core::DVec2::new(192.0, 230.0),
+            });
             let mut l = map.lines[door].clone();
             l.v1 = room_core::VertexId::from_raw(base);
             l.v2 = room_core::VertexId::from_raw(base + 1);
             l.delta = room_core::DVec2::new(128.0, 0.0);
             l.special = 0;
             map.lines.push(l);
-            map.udmf_user.line_ext.push(room_map::udmf::ext::LINE_BLOCKUSE);
+            map.udmf_user
+                .line_ext
+                .push(room_map::udmf::ext::LINE_BLOCKUSE);
             map.blockmap = room_map::blockmap::build_blockmap(&map.vertices, &map.lines);
         }
         apply_nodes(&mut map);

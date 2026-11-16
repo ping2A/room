@@ -86,7 +86,9 @@ impl BonusScreen {
         }
         self.totalclock += clocks;
         self.stage_sounds();
-        if self.totalclock > OUTRO + 320 || (self.totalclock < OUTRO && self.totalclock > 10240 + 120) {
+        if self.totalclock > OUTRO + 320
+            || (self.totalclock < OUTRO && self.totalclock > 10240 + 120)
+        {
             self.done = true;
         }
         // Chocolate parks the idle screen by wrapping its clock.
@@ -183,7 +185,10 @@ impl BonusScreen {
                 let left = if self.skill > 3 {
                     "N/A".to_string()
                 } else {
-                    format!("{:<3}", self.stats.total_kills.saturating_sub(self.stats.kills))
+                    format!(
+                        "{:<3}",
+                        self.stats.total_kills.saturating_sub(self.stats.kills)
+                    )
                 };
                 page.gametext(value_x - 1, 99 + 4 + 9, &left, 0);
             }
@@ -192,8 +197,16 @@ impl BonusScreen {
             page.gametext(10, 120 + 9, "Secrets Found:", 0);
             page.gametext(10, 130 + 9, "Secrets Missed:", 0);
             if tc > 60 * 10 {
-                page.gametext(value_x - 1, 120 + 9, &format!("{:<3}", self.stats.secrets_found), 0);
-                let missed = self.stats.total_secrets.saturating_sub(self.stats.secrets_found);
+                page.gametext(
+                    value_x - 1,
+                    120 + 9,
+                    &format!("{:<3}", self.stats.secrets_found),
+                    0,
+                );
+                let missed = self
+                    .stats
+                    .total_secrets
+                    .saturating_sub(self.stats.secrets_found);
                 page.gametext(value_x - 1, 130 + 9, &format!("{missed:<3}"), 0);
             }
         }
@@ -205,7 +218,16 @@ mod tests {
     use super::*;
 
     fn screen() -> BonusScreen {
-        BonusScreen::new(DukeLevelBonusStats { kills: 3, total_kills: 10, ..Default::default() }, "HOLLYWOOD HOLOCAUST".into(), 0, 2)
+        BonusScreen::new(
+            DukeLevelBonusStats {
+                kills: 3,
+                total_kills: 10,
+                ..Default::default()
+            },
+            "HOLLYWOOD HOLOCAUST".into(),
+            0,
+            2,
+        )
     }
 
     #[test]
@@ -216,7 +238,16 @@ mod tests {
             b.tick(4);
             all.extend(b.take_sounds());
         }
-        assert_eq!(all, ["BONUSMUSIC", "PIPEBOMB_EXPLODE", "FLY_BY", "PIPEBOMB_EXPLODE", "PIPEBOMB_EXPLODE"]);
+        assert_eq!(
+            all,
+            [
+                "BONUSMUSIC",
+                "PIPEBOMB_EXPLODE",
+                "FLY_BY",
+                "PIPEBOMB_EXPLODE",
+                "PIPEBOMB_EXPLODE"
+            ]
+        );
         assert!(!b.done());
     }
 

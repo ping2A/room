@@ -536,9 +536,12 @@ class Probe
     assert!(crate::read_room_mod(&bad).is_err());
     let mut t = crate::check::Tiers::new_room_mod(program).unwrap();
     for n in [0, 1, 5, 12] {
-        t.call("Fact", |vm| vm.call_with("Probe.Fact", &[n], &[])).unwrap();
-        t.call("Say", |vm| vm.call_with("Probe.Say", &[n], &[])).unwrap();
-        t.call("Cat", |vm| vm.call_with("Probe.Cat", &[n], &["hey"])).unwrap();
+        t.call("Fact", |vm| vm.call_with("Probe.Fact", &[n], &[]))
+            .unwrap();
+        t.call("Say", |vm| vm.call_with("Probe.Say", &[n], &[]))
+            .unwrap();
+        t.call("Cat", |vm| vm.call_with("Probe.Cat", &[n], &["hey"]))
+            .unwrap();
     }
     t.call_everything(2, 7).unwrap();
 }

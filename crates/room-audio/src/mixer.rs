@@ -738,8 +738,7 @@ impl Mixer {
                     all,
                 } => {
                     self.voices.retain(|v| {
-                        v.source_id != Some(source_id)
-                            || !(all || (min..=max).contains(&v.channel))
+                        v.source_id != Some(source_id) || !(all || (min..=max).contains(&v.channel))
                     });
                 }
                 SoundEvent::StopAll => self.voices.clear(),
@@ -775,7 +774,11 @@ impl Mixer {
         out.fill(0.0);
         let frames = out.len() / 2;
         let mut finished = Vec::new();
-        let send_decay = self.env_reverb.as_ref().and_then(|r| r.params()).map(|p| p.decay_time);
+        let send_decay = self
+            .env_reverb
+            .as_ref()
+            .and_then(|r| r.params())
+            .map(|p| p.decay_time);
         let use_send = send_decay.is_some();
         if use_send {
             self.send.clear();
@@ -882,7 +885,11 @@ impl Mixer {
             } else {
                 voice.pitch
             };
-            let dry_out: &mut [f32] = if muffle && world { &mut self.world } else { out };
+            let dry_out: &mut [f32] = if muffle && world {
+                &mut self.world
+            } else {
+                out
+            };
             let mut pos = voice.cursor as f32;
             for f in 0..frames {
                 let idx = pos as usize;
@@ -992,7 +999,11 @@ fn send_geometry(
     let SoundOrigin::Point(p) = origin else {
         return ([0.0; 3], None);
     };
-    let (dx, dy, dz) = (p.x() - listener.x(), p.y() - listener.y(), p.z() - listener.z());
+    let (dx, dy, dz) = (
+        p.x() - listener.x(),
+        p.y() - listener.y(),
+        p.z() - listener.z(),
+    );
     let dist = room_core::dmath::sqrt(dx * dx + dy * dy + dz * dz);
     let attenuates = scale > 0.0 && flags.0 & SoundFlags::ATTN_NONE == 0;
     let scaled = attenuates.then(|| (dist * f64::from(scale)) as f32);
@@ -1365,7 +1376,8 @@ mod tests {
     #[test]
     fn chan_auto_on_an_actor_overlaps_and_channel_stops_are_scoped() {
         let mut mix = Mixer::new();
-        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
         let ev = |channel: i32| SoundEvent::Start {
             origin: SoundOrigin::None,
             channel,
@@ -1381,11 +1393,26 @@ mod tests {
         };
         mix.apply(&[ev(0), ev(0), ev(2), ev(2)]);
         assert_eq!(mix.voices.len(), 3, "CHAN_AUTO stacks, CHAN_VOICE replaces");
-        mix.apply(&[SoundEvent::StopActorChannels { source_id: 5, min: 2, max: 2, all: false }]);
+        mix.apply(&[SoundEvent::StopActorChannels {
+            source_id: 5,
+            min: 2,
+            max: 2,
+            all: false,
+        }]);
         assert_eq!(mix.voices.len(), 2);
-        mix.apply(&[SoundEvent::StopActorChannels { source_id: 6, min: 0, max: 0, all: true }]);
+        mix.apply(&[SoundEvent::StopActorChannels {
+            source_id: 6,
+            min: 0,
+            max: 0,
+            all: true,
+        }]);
         assert_eq!(mix.voices.len(), 2, "other actor");
-        mix.apply(&[SoundEvent::StopActorChannels { source_id: 5, min: 0, max: 0, all: true }]);
+        mix.apply(&[SoundEvent::StopActorChannels {
+            source_id: 5,
+            min: 0,
+            max: 0,
+            all: true,
+        }]);
         assert!(mix.voices.is_empty());
         // A one-shot started while paused is dropped.
         mix.set_paused(true);
@@ -1396,7 +1423,8 @@ mod tests {
     #[test]
     fn pause_holds_world_voices_but_not_nopause_ones() {
         let mut mix = Mixer::new();
-        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
         start(&mut mix, SoundOrigin::None, 0);
         mix.set_paused(true);
         let mut out = vec![0.0f32; 16];
@@ -1413,7 +1441,8 @@ mod tests {
     #[test]
     fn listener_z_ignores_height_difference() {
         let mut mix = Mixer::new();
-        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 64]));
         mix.set_listener(DVec3::ZERO, 0.0);
         let high = SoundOrigin::Point(DVec3::new(0.0, 0.0, 1100.0));
         start(&mut mix, high, 0);
@@ -1430,7 +1459,8 @@ mod tests {
     fn environment_reverb_adds_a_tail_and_skips_ui() {
         let table = crate::reverb::EnvironmentTable::builtin_only();
         let mut mix = Mixer::new();
-        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
         mix.set_environment(table.find(0x0A00)); // Hangar
         assert!(mix.environment_active());
         start(&mut mix, SoundOrigin::None, 0);
@@ -1440,7 +1470,8 @@ mod tests {
         assert!(tail > 0.0, "reverb tail");
         // UI voices stay dry.
         let mut mix = Mixer::new();
-        mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+        mix.bank
+            .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
         mix.set_environment(table.find(0x0A00));
         start(&mut mix, SoundOrigin::None, SoundFlags::UI);
         let mut out = vec![0.0f32; 44_100];
@@ -1458,13 +1489,16 @@ mod tests {
             let mut mix = Mixer::new();
             mix.set_listener(DVec3::ZERO, 0.0);
             mix.set_environment(table.find(0x0A00));
-            mix.bank.insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
+            mix.bank
+                .insert(SoundId::from_raw(1), Arc::from(vec![0.5f32; 32]));
             start(&mut mix, SoundOrigin::Point(DVec3::new(0.0, y, 0.0)), 0);
             let mut out = vec![0.0f32; 8192];
             mix.render(&mut out);
             // Early reflections (after Hangar's 20 ms delay) keep the
             // direction; the late tail is diffuse.
-            out[1600..3800].chunks_exact(2).fold((0.0, 0.0), |a, f| (a.0 + f[0] * f[0], a.1 + f[1] * f[1]))
+            out[1600..3800]
+                .chunks_exact(2)
+                .fold((0.0, 0.0), |a, f| (a.0 + f[0] * f[0], a.1 + f[1] * f[1]))
         };
         let (l, r) = wet(200.0); // facing +X: +Y is on the left
         assert!(l > r * 3.0, "left source wet l={l} r={r}");
@@ -1475,22 +1509,31 @@ mod tests {
     #[test]
     fn underwater_lowers_pitch_and_muffles_world_voices() {
         // A 1-in-2 alternating (Nyquist) tone through 4 frames of output.
-        let tone: Vec<f32> = (0..400).map(|i| if i % 2 == 0 { 0.5 } else { -0.5 }).collect();
+        let tone: Vec<f32> = (0..400)
+            .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
         let run = |under: bool, muffle: bool, flags: u32| {
             let mut mix = Mixer::new();
-            mix.bank.insert(SoundId::from_raw(1), Arc::from(tone.clone()));
+            mix.bank
+                .insert(SoundId::from_raw(1), Arc::from(tone.clone()));
             mix.set_underwater(under, muffle);
             start(&mut mix, SoundOrigin::None, flags);
             let mut out = vec![0.0f32; 200];
             mix.render(&mut out);
-            (mix.voices.first().map(|v| v.cursor), out[100..].iter().map(|s| s.abs()).sum::<f32>())
+            (
+                mix.voices.first().map(|v| v.cursor),
+                out[100..].iter().map(|s| s.abs()).sum::<f32>(),
+            )
         };
         let (dry_cursor, dry) = run(false, false, 0);
         let (wet_cursor, unmuffled) = run(true, false, 0);
         assert_eq!(dry_cursor, Some(100));
         assert_eq!(wet_cursor, Some(79), "pitch × {UNDERWATER_PITCH}");
         let (_, muffled) = run(true, true, 0);
-        assert!(muffled < unmuffled * 0.5, "muffled {muffled} vs {unmuffled}");
+        assert!(
+            muffled < unmuffled * 0.5,
+            "muffled {muffled} vs {unmuffled}"
+        );
         let (ui_cursor, ui) = run(true, true, SoundFlags::UI);
         assert_eq!(ui_cursor, Some(100));
         assert!((ui - dry).abs() < 1e-3);

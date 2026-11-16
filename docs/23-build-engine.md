@@ -21,7 +21,7 @@ git-ignored and the tests that use it pass trivially when it is absent.
 | GRP container (`KenSilverman`) | yes — `room_build::Grp` |
 | ART tiles (`TILES*.ART`) | yes — every tile used by a map becomes a Doom patch in `TX_START`…`TX_END` (`BTnnnn`) |
 | `PALETTE.DAT` | yes — `PLAYPAL` (14 palettes with Doom pain/bonus tints) + 34-map `COLORMAP` |
-| `.MAP` v7/v8 | yes — sectors, walls, sprites → `TEXTMAP` |
+| `.MAP` v7/v8/v9 | yes — sectors, walls, sprites → `TEXTMAP`; v9 sector values are retained, but TROR geometry semantics are not implemented |
 | `USER.CON` level table | names, par times, music → old-style `MAPINFO` (`E1L1` → `E1M1`, `next` within an episode) |
 | Slopes | yes — `heinum` → UDMF `floorplane_*` / `ceilingplane_*` |
 | Parallax sky | yes — `F_SKY1`; the most common parallax ceiling tile is the `sky1` |

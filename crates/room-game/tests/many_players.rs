@@ -54,7 +54,11 @@ fn cmd_for(seat: usize, tic: u32) -> TicCmd {
         buttons: Buttons(buttons),
         forward_move: if phase < 4 { 25 } else { -15 },
         side_move: if phase == 2 { 24 } else { 0 },
-        yaw: if phase == 5 { 400 } else { (seat as i16 % 5 - 2) * 40 },
+        yaw: if phase == 5 {
+            400
+        } else {
+            (seat as i16 % 5 - 2) * 40
+        },
         ..TicCmd::default()
     }
 }
@@ -84,7 +88,9 @@ fn sixteen_seat_soak_is_deterministic_and_every_seat_plays() {
     let w = game.world().unwrap();
     let mut moved = 0;
     for seat in 0..16 {
-        let p = w.players[seat].as_ref().unwrap_or_else(|| panic!("seat {seat} in game"));
+        let p = w.players[seat]
+            .as_ref()
+            .unwrap_or_else(|| panic!("seat {seat} in game"));
         let mo = p.mo.expect("pawn");
         let a = w.actors.get(mo).expect("actor");
         if p.player_state != PlayerState::Dead && a.pos != a.spawn_point {
@@ -104,7 +110,11 @@ fn sixty_four_seats_spawn_apart_and_up_to_eight_hash_as_before() {
     let w = game.world().unwrap();
     let pawns: Vec<_> = (0..MAX_PLAYERS)
         .map(|s| {
-            let mo = w.players[s].as_ref().unwrap_or_else(|| panic!("seat {s}")).mo.unwrap();
+            let mo = w.players[s]
+                .as_ref()
+                .unwrap_or_else(|| panic!("seat {s}"))
+                .mo
+                .unwrap();
             w.actors.get(mo).unwrap().pos
         })
         .collect();

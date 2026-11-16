@@ -175,7 +175,9 @@ impl CompiledProgram {
         }
         let version = r.u32()?;
         if version != VERSION {
-            return Err(format!("ZVM program image version {version}, expected {VERSION}"));
+            return Err(format!(
+                "ZVM program image version {version}, expected {VERSION}"
+            ));
         }
         let mut p = CompiledProgram::default();
         for _ in 0..r.len()? {

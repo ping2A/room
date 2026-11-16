@@ -29,38 +29,38 @@ pub mod fixups {
 }
 
 pub mod actors;
-mod c_actors;
-pub mod dummyplayers;
 pub mod animate;
-mod spawn_rt;
 pub mod audio;
 pub mod badguy;
+pub mod bonus;
+mod c_actors;
 pub mod campaign;
 pub mod con;
 mod cyclers;
 pub mod demo;
 pub mod demo_sync;
+pub mod dummyplayers;
 pub(crate) mod effectors;
 pub mod explosions;
 pub(crate) mod fallers;
 pub mod fta;
 pub(crate) mod interactions;
+pub mod menu;
 pub mod moveplayers;
 pub mod player;
 pub mod prelevel;
 pub mod session;
 pub mod shoot;
 pub mod spawn;
+mod spawn_rt;
 pub mod standables;
 pub mod stat;
 pub mod trace;
 pub mod transports;
+pub mod ui_page;
 pub mod view;
 pub(crate) mod wall_animations;
 pub mod weapon_view;
-pub mod ui_page;
-pub mod bonus;
-pub mod menu;
 pub mod weapons;
 pub mod weapons_move;
 
@@ -68,9 +68,14 @@ pub use actors::moveactors;
 pub use badguy::badguy_pic;
 pub use campaign::{DukeCampaignProgress, DukeCampaignTransition, DukeLevelBonusStats};
 pub use con::{
-    ActorConTemps, ConStop, ConVersion, ConVm, IncludeResolver, KEYWORDS, LevelDef, Lexer,
-    MAX_TILES, NUM_KEYWORDS, NUM_QUOTES, NUM_SOUNDS, NullIncludes, ScriptImage, SoundDef, compile,
-    execute, keyword_index,
+    ActorConTemps, ConCompileOptions, ConDialect, ConStop, ConVersion, ConVm, EDUKE_MAX_QUOTES,
+    EDUKE_MAX_SOUNDS, EDUKE_MAX_TILES, EDUKE_MAXPLAYERS, EdArrayDefinition, EdBinaryOperator,
+    EdComparison, EdEventDefinition, EdExecution, EdInstruction, EdLValue, EdOperand,
+    EdProjectileProperty, EdStateDefinition, EdStructKind, EdVariableDefinition, EdVariableScope,
+    EdukeProgram, EdukeStructAccess, EdukeVmError, EdukeVmState, IncludeResolver, KEYWORDS,
+    LevelDef, Lexer, MAX_TILES, NUM_KEYWORDS, NUM_QUOTES, NUM_SOUNDS, NullIncludes, ScriptImage,
+    SoundDef, build_cos_q14, build_divscale, build_getangle, build_mulscale, build_sin_q14,
+    compile, compile_with_options, evaluate_binary, execute, keyword_index,
 };
 pub use demo::{
     DukeAtomicDemoPlayer, DukeAtomicDemoRecorder, DukeDemoError, DukeDemoRecorder, DukeDemoTic,
@@ -79,7 +84,8 @@ pub use demo_sync::{
     DEMO1_PRE_TIC0_SEED, DEMO1_TIC0_EXTRA_KRANDS, align_rng_pre_tic0, demo1_frontier,
     duke_map_lump, krand_unstep, play_demo_trace, session_from_grp_demo,
     session_from_grp_demo_layers, session_from_grp_layers, session_from_grp_layers_with_con,
-    session_from_grp_layers_with_con_and_includes, session_from_grp_map,
+    session_from_grp_layers_with_con_and_includes,
+    session_from_grp_layers_with_con_and_includes_dialect, session_from_grp_map,
     session_from_grp_map_bytes, session_from_grp_map_bytes_with_con,
     session_from_grp_map_bytes_with_con_and_includes,
 };

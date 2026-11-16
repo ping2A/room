@@ -133,7 +133,11 @@ impl MaterialCatalog {
             wgpu::FilterMode::Nearest
         };
         self.sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some(if aniso > 1 { "mat-aniso-repeat" } else { "mat-nearest-repeat" }),
+            label: Some(if aniso > 1 {
+                "mat-aniso-repeat"
+            } else {
+                "mat-nearest-repeat"
+            }),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,

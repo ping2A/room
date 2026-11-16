@@ -403,7 +403,11 @@ impl Console {
                     let msg = format!(
                         "ChangeMap {}{}",
                         map.as_deref().unwrap_or("(next)"),
-                        if keep_inventory { "" } else { " (pistol start)" }
+                        if keep_inventory {
+                            ""
+                        } else {
+                            " (pistol start)"
+                        }
                     );
                     host.push(HostCommand::ChangeMap {
                         map,
@@ -414,7 +418,9 @@ impl Console {
                 }
                 "doublebind" | "undoublebind" => {
                     let Some(key) = args.first().cloned() else {
-                        return Err(ConsoleError::Message("usage: doublebind <key> [command]".into()));
+                        return Err(ConsoleError::Message(
+                            "usage: doublebind <key> [command]".into(),
+                        ));
                     };
                     let command = if cmd_key == "undoublebind" {
                         Some(String::new())
@@ -861,21 +867,44 @@ mod tests {
         assert_eq!(
             r.host,
             vec![
-                HostCommand::ChangeMap { map: None, keep_inventory: true },
-                HostCommand::ChangeMap { map: Some("MAP05".into()), keep_inventory: true },
-                HostCommand::ChangeMap { map: Some("MAP05".into()), keep_inventory: false },
-                HostCommand::ChangeMap { map: None, keep_inventory: false },
+                HostCommand::ChangeMap {
+                    map: None,
+                    keep_inventory: true
+                },
+                HostCommand::ChangeMap {
+                    map: Some("MAP05".into()),
+                    keep_inventory: true
+                },
+                HostCommand::ChangeMap {
+                    map: Some("MAP05".into()),
+                    keep_inventory: false
+                },
+                HostCommand::ChangeMap {
+                    map: None,
+                    keep_inventory: false
+                },
                 HostCommand::ChangeEpisode(2),
             ]
         );
         assert!(con.exec("changeepisode 0").is_err());
-        let r = con.exec("doublebind w +speed; doublebind w; undoublebind w").unwrap();
+        let r = con
+            .exec("doublebind w +speed; doublebind w; undoublebind w")
+            .unwrap();
         assert_eq!(
             r.host,
             vec![
-                HostCommand::DoubleBind { key: "w".into(), command: Some("+speed".into()) },
-                HostCommand::DoubleBind { key: "w".into(), command: None },
-                HostCommand::DoubleBind { key: "w".into(), command: Some(String::new()) },
+                HostCommand::DoubleBind {
+                    key: "w".into(),
+                    command: Some("+speed".into())
+                },
+                HostCommand::DoubleBind {
+                    key: "w".into(),
+                    command: None
+                },
+                HostCommand::DoubleBind {
+                    key: "w".into(),
+                    command: Some(String::new())
+                },
             ]
         );
     }

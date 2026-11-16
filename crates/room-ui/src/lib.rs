@@ -8,8 +8,8 @@ mod acs_hud;
 mod automap;
 mod canvas_bridge;
 mod doom_text;
-pub mod endoom;
 mod draw;
+pub mod endoom;
 mod finale;
 mod font;
 mod hud;
@@ -23,8 +23,8 @@ mod mod_map;
 mod mod_zones;
 mod patches;
 mod sbarinfo_draw;
-mod script_sbar;
 mod scoreboard;
+mod script_sbar;
 mod statusbar;
 mod title;
 mod weapon;
@@ -57,17 +57,17 @@ pub use mod_hud::{
 pub use mod_zones::{draw_mod_zones_automap, draw_outside_zone_tint};
 pub use patches::{PatchCache, SoftPatch};
 pub use sbarinfo_draw::{SbarInfoBar, SbarInfoFrame, SbarInfoOutput};
+pub use scoreboard::{ScoreLine, draw_scoreboard};
+pub use script_sbar::{
+    HUD_CVARS, HUD_FULLSCREEN, HUD_STATUSBAR, PatchDims, SbarSnapshot, SbarWeapon, ScriptStatusBar,
+};
 pub use statusbar::{DoomStatusBar, DukeStatusBar, StatusBar};
 pub use title::{
     anim_pic, anim_pic_loop, draw_title, parse_titledef, splash_ms, title_anim_pic,
     title_screen_pic,
 };
 pub use weapon::{
-    draw_crosshair, draw_weapon, draw_weapon_lit, draw_weapon_tinted, overlay_bob, set_patch_corners,
-    overlay_layer_bob, weapon_ready_patch,
+    draw_crosshair, draw_weapon, draw_weapon_lit, draw_weapon_tinted, overlay_bob,
+    overlay_layer_bob, set_patch_corners, weapon_ready_patch,
 };
-pub use script_sbar::{
-    HUD_CVARS, HUD_FULLSCREEN, HUD_STATUSBAR, PatchDims, SbarSnapshot, SbarWeapon, ScriptStatusBar,
-};
-pub use scoreboard::{ScoreLine, draw_scoreboard};
 pub use zscript_bar::ZscriptStatusBar;

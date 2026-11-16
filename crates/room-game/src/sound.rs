@@ -147,7 +147,11 @@ impl SoundSystem {
     }
 
     /// Saved records → `Start` events (sounds that no longer resolve are skipped).
-    pub fn restore_events(&mut self, vfs: &Vfs, saved: &[crate::save::SavedSound]) -> Vec<SoundEvent> {
+    pub fn restore_events(
+        &mut self,
+        vfs: &Vfs,
+        saved: &[crate::save::SavedSound],
+    ) -> Vec<SoundEvent> {
         saved
             .iter()
             .filter_map(|s| {
@@ -475,10 +479,16 @@ mod tests {
         };
         assert!(me.hears(&sim_ev(None, None, 0)));
         assert!(me.hears(&sim_ev(Some(1), None, 0)));
-        assert!(!me.hears(&sim_ev(Some(0), None, 0)), "another seat's private sound");
+        assert!(
+            !me.hears(&sim_ev(Some(0), None, 0)),
+            "another seat's private sound"
+        );
         let local = ListenerFilter::CHANF_LOCAL;
         assert!(me.hears(&sim_ev(None, Some(7), local)));
-        assert!(!me.hears(&sim_ev(None, Some(9), local)), "someone else's CHANF_LOCAL");
+        assert!(
+            !me.hears(&sim_ev(None, Some(9), local)),
+            "someone else's CHANF_LOCAL"
+        );
         assert!(ListenerFilter::default().hears(&sim_ev(Some(3), Some(9), local)));
     }
 

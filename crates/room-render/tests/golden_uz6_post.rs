@@ -8,7 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use room_defs::{HardwareShaderDef, HardwareShaderKind};
-use room_render::{GpuContext, HardwarePostRunner, PostTimes, compile_post_glsl, read_texture_rgba};
+use room_render::{
+    GpuContext, HardwarePostRunner, PostTimes, compile_post_glsl, read_texture_rgba,
+};
 use std::fmt::Write as _;
 
 const W: u32 = 4;
@@ -91,7 +93,9 @@ fn uz6_post_shader_inputs_match_golden() {
     assert!(!runner.set_uniform("nope", &[1.0]));
     let input = texture(
         &gpu,
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
     );
     let output = texture(
         &gpu,
@@ -122,7 +126,15 @@ fn uz6_post_shader_inputs_match_golden() {
         let mut enc = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        runner.run(&gpu.device, &gpu.queue, &mut enc, &input, &out_view, *times, &[]);
+        runner.run(
+            &gpu.device,
+            &gpu.queue,
+            &mut enc,
+            &input,
+            &out_view,
+            *times,
+            &[],
+        );
         gpu.queue.submit([enc.finish()]);
         let rgba = read_texture_rgba(&gpu, &output, W, H).expect("readback");
         let _ = writeln!(text, "frame {k}");

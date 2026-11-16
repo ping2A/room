@@ -360,18 +360,16 @@ pub fn take_duke_input(ang: i16) -> room_duke::DukeInput {
     // Mouse counts use the Doom sign (positive = left); Build angles grow
     // clockwise, hence the negation. `processinput` applies `avel << 1`.
     let mouse_yaw = f64::from(MOUSE_YAW.replace(0));
-    let yaw_units = -mouse_yaw * room_input::MOUSE_DEG_PER_COUNT * 2048.0 / 360.0
-        + DUKE_TURN_RESIDUAL.get();
+    let yaw_units =
+        -mouse_yaw * room_input::MOUSE_DEG_PER_COUNT * 2048.0 / 360.0 + DUKE_TURN_RESIDUAL.get();
     #[allow(clippy::cast_possible_truncation)]
     let turn = (f64::from(key_turn) + (yaw_units / 2.0).trunc()).clamp(-127.0, 127.0) as i16;
-    DUKE_TURN_RESIDUAL
-        .set((yaw_units - f64::from(turn - key_turn) * 2.0).clamp(-2048.0, 2048.0));
+    DUKE_TURN_RESIDUAL.set((yaw_units - f64::from(turn - key_turn) * 2.0).clamp(-2048.0, 2048.0));
     // Chocolate mouse aiming adds `horz >> 1` to `horiz`; one horiz unit is
     // ~1/160 rad at the 320x200 reference projection.
     let pitch_deg =
         f64::from(MOUSE_PITCH.replace(0)) * room_input::MOUSE_DEG_PER_COUNT * DUKE_PITCH_SCALE;
-    let horiz_units =
-        pitch_deg * 160.0 * std::f64::consts::PI / 180.0 + DUKE_HORIZ_RESIDUAL.get();
+    let horiz_units = pitch_deg * 160.0 * std::f64::consts::PI / 180.0 + DUKE_HORIZ_RESIDUAL.get();
     // Even values so both directions move by the same amount.
     let half = horiz_units.trunc().clamp(-63.0, 63.0);
     DUKE_HORIZ_RESIDUAL.set((horiz_units - half).clamp(-200.0, 200.0));

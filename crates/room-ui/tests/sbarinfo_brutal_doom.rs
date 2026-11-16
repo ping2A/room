@@ -6,7 +6,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use room_defs::DefinitionsBuilder;
-use room_ui::{CanvasSink, DrawCmd, PatchCache, PatchDims, SbarInfoBar, SbarInfoFrame, SbarSnapshot, blit_draw_list_full};
+use room_ui::{
+    CanvasSink, DrawCmd, PatchCache, PatchDims, SbarInfoBar, SbarInfoFrame, SbarSnapshot,
+    blit_draw_list_full,
+};
 use room_vfs::VfsBuilder;
 
 const W: usize = 1280;
@@ -17,7 +20,10 @@ struct Fb(Vec<[u8; 4]>);
 impl CanvasSink for Fb {
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: [f32; 4]) {
         let (x0, y0) = (x.round().max(0.0) as usize, y.round().max(0.0) as usize);
-        let (x1, y1) = (((x + w).round().max(0.0) as usize).min(W), ((y + h).round().max(0.0) as usize).min(H));
+        let (x1, y1) = (
+            ((x + w).round().max(0.0) as usize).min(W),
+            ((y + h).round().max(0.0) as usize).min(H),
+        );
         for yy in y0..y1 {
             for xx in x0..x1 {
                 let p = &mut self.0[yy * W + xx];
@@ -62,11 +68,20 @@ fn write_png(path: &std::path::Path, fb: &Fb) {
 
 #[test]
 fn brutal_doom_status_bar_shows_the_magazine() {
-    let (Ok(pk3), Ok(wad)) = (std::env::var("ROOM_BRUTALDOOM_PK3"), std::env::var("ROOM_DOOM2_WAD")) else {
+    let (Ok(pk3), Ok(wad)) = (
+        std::env::var("ROOM_BRUTALDOOM_PK3"),
+        std::env::var("ROOM_DOOM2_WAD"),
+    ) else {
         eprintln!("skip: set ROOM_BRUTALDOOM_PK3 and ROOM_DOOM2_WAD");
         return;
     };
-    let vfs = VfsBuilder::new().mount_path(&wad).unwrap().mount_path(&pk3).unwrap().build().unwrap();
+    let vfs = VfsBuilder::new()
+        .mount_path(&wad)
+        .unwrap()
+        .mount_path(&pk3)
+        .unwrap()
+        .build()
+        .unwrap();
     let defs = DefinitionsBuilder::new(&vfs).build().unwrap();
     let info = defs.sbarinfo.clone().expect("Brutal Doom ships SBARINFO");
     let bar = SbarInfoBar::new(info, &defs.fonts);
@@ -82,11 +97,17 @@ fn brutal_doom_status_bar_shows_the_magazine() {
             ("sbartype1".into(), 1, 1),
             ("IsPlayer".into(), 1, 1),
         ],
-        icons: vec![("Clip2".into(), "CLIPA0".into()), ("RifleAmmo".into(), "CLIPA0".into()), ("BasicArmor".into(), "ARM1A0".into())],
+        icons: vec![
+            ("Clip2".into(), "CLIPA0".into()),
+            ("RifleAmmo".into(), "CLIPA0".into()),
+            ("BasicArmor".into(), "ARM1A0".into()),
+        ],
         ready_weapon: Some("Rifle".into()),
         ammo1: Some("Clip2".into()),
         ammo2: Some("RifleAmmo".into()),
-        slots: [false, true, true, false, true, false, false, false, false, false],
+        slots: [
+            false, true, true, false, true, false, false, false, false, false,
+        ],
         keys: 1 | 32,
         ..SbarSnapshot::default()
     };
@@ -125,7 +146,13 @@ fn brutal_doom_status_bar_shows_the_magazine() {
                 _ => None,
             })
             .collect();
-        eprintln!("{} bar: {} patches, origin {:?} size {:?}", if fullscreen { "fullscreen" } else { "normal" }, names.len(), out.origin, out.size);
+        eprintln!(
+            "{} bar: {} patches, origin {:?} size {:?}",
+            if fullscreen { "fullscreen" } else { "normal" },
+            names.len(),
+            out.origin,
+            out.size
+        );
         let missing: Vec<&&str> = names.iter().filter(|n| cache.get(n).is_none()).collect();
         // Brutal Doom names a few lumps it does not ship (`STGNU22`…);
         // UZDoom draws nothing for them either.
@@ -134,13 +161,31 @@ fn brutal_doom_status_bar_shows_the_magazine() {
             assert!(names.contains(&"STBARBD"), "{names:?}");
             assert!(names.contains(&"STMAG"), "magazine panel: {names:?}");
             // Magazine 23 and reserve 120 in the big font, health 87.
-            let digits: String = names.iter().filter_map(|n| n.strip_prefix("STTNUM")).collect();
+            let digits: String = names
+                .iter()
+                .filter_map(|n| n.strip_prefix("STTNUM"))
+                .collect();
             assert!(digits.starts_with("23120"), "{digits}");
         }
         let mut fb = Fb(vec![[40, 40, 48, 255]; W * H]);
-        blit_draw_list_full(&out.list, out.size.0, out.size.1, None, Some(&cache), &mut Offset { fb: &mut fb, ox: out.origin.0, oy: out.origin.1 });
+        blit_draw_list_full(
+            &out.list,
+            out.size.0,
+            out.size.1,
+            None,
+            Some(&cache),
+            &mut Offset {
+                fb: &mut fb,
+                ox: out.origin.0,
+                oy: out.origin.1,
+            },
+        );
         if let Some(dir) = &out_dir {
-            let path = std::path::Path::new(dir).join(if fullscreen { "bd_fullscreen.png" } else { "bd_normal.png" });
+            let path = std::path::Path::new(dir).join(if fullscreen {
+                "bd_fullscreen.png"
+            } else {
+                "bd_normal.png"
+            });
             write_png(&path, &fb);
         }
     }

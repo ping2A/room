@@ -86,8 +86,8 @@ impl World {
                     Angle::from_degrees(probe.angle.degrees() + f64::from(cmd.yaw) * YAW_TO_DEG);
             }
             if cmd.pitch != 0 {
-                let deg = (probe.pitch.degrees() + f64::from(cmd.pitch) * YAW_TO_DEG)
-                    .clamp(-89.0, 89.0);
+                let deg =
+                    (probe.pitch.degrees() + f64::from(cmd.pitch) * YAW_TO_DEG).clamp(-89.0, 89.0);
                 probe.pitch = Angle::from_degrees(deg);
             }
             let mut forward = f64::from(cmd.forward_move) * fwd_scale;
@@ -105,11 +105,7 @@ impl World {
                 if on_ground {
                     let f = f64::from(cmd.forward_move >> 8) * 2048.0 / 65536.0 * fwd_scale;
                     let sd = f64::from(cmd.side_move >> 8) * 2048.0 / 65536.0 * side_scale;
-                    vel = DVec3::new(
-                        vel.x() + f * c + sd * s,
-                        vel.y() + f * s - sd * c,
-                        vel.z(),
-                    );
+                    vel = DVec3::new(vel.x() + f * c + sd * s, vel.y() + f * s - sd * c, vel.z());
                 }
                 self.predict_step(&mut probe, mo, &mut floor_z, vel.x(), vel.y());
                 if on_ground {
@@ -247,7 +243,11 @@ mod tests {
         assert!(d < 0.01, "guess {:?} real {:?}", guess.pos, real.pos);
         assert!((guess.angle.degrees() - real.angle.degrees()).abs() < 1e-6);
         let view = w.players[0].as_ref().unwrap().view_z;
-        assert!((guess.view_z - view).abs() < 8.0, "eye {} vs {view}", guess.view_z);
+        assert!(
+            (guess.view_z - view).abs() < 8.0,
+            "eye {} vs {view}",
+            guess.view_z
+        );
     }
 
     #[test]
@@ -256,7 +256,11 @@ mod tests {
         // Thirty tics east hits the wall at x = 512 (radius 16).
         let pending = vec![walk(0); 30];
         let guess = w.predict_player_view(0, &pending).unwrap();
-        assert!(guess.pos.x() <= 512.0 - 16.0 + 0.01 && guess.pos.x() > 400.0, "{:?}", guess.pos);
+        assert!(
+            guess.pos.x() <= 512.0 - 16.0 + 0.01 && guess.pos.x() > 400.0,
+            "{:?}",
+            guess.pos
+        );
         assert!(w.predict_player_view(0, &[]).is_none());
         w.players[0].as_mut().unwrap().player_state = PlayerState::Dead;
         assert!(w.predict_player_view(0, &pending).is_none());

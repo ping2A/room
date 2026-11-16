@@ -96,7 +96,11 @@ fn compute(world: &World) -> Vec<bool> {
                 }
             }
             DOOR_LOCKED_RAISE | GENERIC_DOOR => {
-                let lock = if l.special == GENERIC_DOOR { l.args[4] } else { l.args[3] };
+                let lock = if l.special == GENERIC_DOOR {
+                    l.args[4]
+                } else {
+                    l.args[3]
+                };
                 if lock != 0 || l.lock_number != 0 || !door_ok(l.args[0]) {
                     continue;
                 }

@@ -225,7 +225,13 @@ pub struct HardwarePostRunner {
     user_data: Vec<u8>,
     fields: Vec<PostUniformField>,
     texture_count: usize,
-    last: Option<(wgpu::Texture, wgpu::TextureView, u32, u32, wgpu::TextureFormat)>,
+    last: Option<(
+        wgpu::Texture,
+        wgpu::TextureView,
+        u32,
+        u32,
+        wgpu::TextureFormat,
+    )>,
 }
 
 impl HardwarePostRunner {
@@ -349,7 +355,11 @@ impl HardwarePostRunner {
     /// `PPShader.SetUniform1f/2f/3f/4f/1i`: write a user uniform by name
     /// (ints as their value). Returns `false` for an unknown name.
     pub fn set_uniform(&mut self, name: &str, values: &[f32]) -> bool {
-        let Some(f) = self.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name)) else {
+        let Some(f) = self
+            .fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(name))
+        else {
             return false;
         };
         for k in 0..f.components.min(values.len() as u32) {
@@ -527,7 +537,10 @@ void main()
 }
 "#;
         let c = compile_post_glsl(
-            &def(&[("float", "strength"), ("vec4", "tint")], &[("noise", "NOISE")]),
+            &def(
+                &[("float", "strength"), ("vec4", "tint")],
+                &[("noise", "NOISE")],
+            ),
             src,
         )
         .unwrap();

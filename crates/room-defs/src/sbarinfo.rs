@@ -161,8 +161,14 @@ pub fn parse_sbarinfo(text: &str) -> Result<SbarInfo, DefsError> {
                         loop {
                             match sc.next_token()? {
                                 Tok::Punct(Punct::Semi) | Tok::Eof => break,
-                                Tok::Ident(v) if strings.is_empty() && v.eq_ignore_ascii_case("false") => on = false,
-                                Tok::Ident(v) if !v.eq_ignore_ascii_case("true") => strings.push(v.to_owned()),
+                                Tok::Ident(v)
+                                    if strings.is_empty() && v.eq_ignore_ascii_case("false") =>
+                                {
+                                    on = false
+                                }
+                                Tok::Ident(v) if !v.eq_ignore_ascii_case("true") => {
+                                    strings.push(v.to_owned())
+                                }
                                 Tok::String(v) => strings.push(v.into_owned()),
                                 _ => {}
                             }
@@ -394,13 +400,18 @@ fn parse_one_cmd(sc: &mut Scanner<'_>, lower: &str) -> Result<SbarCmd, DefsError
 /// leading `not`): `else` none, `alpha` one, the rest a separated list.
 fn header_values(kind: &str) -> Option<usize> {
     match kind {
-        "else" | "usesammo" | "usessecondaryammo" | "inventorybarnotvisible" | "ifinvulnerable" => Some(0),
+        "else" | "usesammo" | "usessecondaryammo" | "inventorybarnotvisible" | "ifinvulnerable" => {
+            Some(0)
+        }
         "alpha" | "aspectratio" => Some(1),
         _ => None,
     }
 }
 
-fn parse_block_rest(sc: &mut Scanner<'_>, kind: &str) -> Result<(Vec<String>, Vec<SbarCmd>), DefsError> {
+fn parse_block_rest(
+    sc: &mut Scanner<'_>,
+    kind: &str,
+) -> Result<(Vec<String>, Vec<SbarCmd>), DefsError> {
     let max = header_values(kind);
     let mut args: Vec<String> = Vec::new();
     let mut values = 0usize;
@@ -422,7 +433,14 @@ fn parse_block_rest(sc: &mut Scanner<'_>, kind: &str) -> Result<(Vec<String>, Ve
                 expect_value = true;
             }
             Tok::Punct(Punct::OrOr) | Tok::Punct(Punct::AndAnd) => {
-                args.push(if matches!(tok, Tok::Punct(Punct::OrOr)) { "||" } else { "&&" }.into());
+                args.push(
+                    if matches!(tok, Tok::Punct(Punct::OrOr)) {
+                        "||"
+                    } else {
+                        "&&"
+                    }
+                    .into(),
+                );
                 expect_value = true;
             }
             Tok::Punct(Punct::Percent) => args.push("%".into()),
@@ -513,8 +531,12 @@ fn parse_draw_cmd(sc: &mut Scanner<'_>, name: &str) -> Result<SbarCmd, DefsError
     Ok(match name {
         // `N + center` coordinates stay raw (`Other`): the renderer reads them.
         "drawimage"
-            if args.get(1).is_some_and(|a| a.trim().parse::<i32>().is_err())
-                || args.get(2).is_some_and(|a| a.trim().parse::<i32>().is_err()) =>
+            if args
+                .get(1)
+                .is_some_and(|a| a.trim().parse::<i32>().is_err())
+                || args
+                    .get(2)
+                    .is_some_and(|a| a.trim().parse::<i32>().is_err()) =>
         {
             SbarCmd::Other {
                 name: name.to_owned(),

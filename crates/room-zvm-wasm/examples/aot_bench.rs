@@ -59,7 +59,11 @@ fn time(label: &str, interp: &mut Zvm, aot: &mut Zvm, f: impl Fn(&mut Zvm) -> i6
 
 fn main() {
     let (mut interp, mut aot) = pair();
-    println!("engine: {} (Zvm {} bytes)", aot.aot_engine().unwrap_or("none"), std::mem::size_of::<Zvm>());
+    println!(
+        "engine: {} (Zvm {} bytes)",
+        aot.aot_engine().unwrap_or("none"),
+        std::mem::size_of::<Zvm>()
+    );
     // Warm up (JIT compile happened at attach; first call touches the code).
     let _ = aot.call_with("Bench.Tick", &[1], &[]);
     time("Collatz sweep 1..30000", &mut interp, &mut aot, |vm| {

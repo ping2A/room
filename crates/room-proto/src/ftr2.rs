@@ -112,7 +112,14 @@ pub fn encode_binary(msg: &BinaryMsg) -> Vec<u8> {
                     body.extend_from_slice(&encode_tic_frame(f));
                 }
             }
-            (if wide { MSG_TIC_BATCH_WIDE } else { MSG_TIC_BATCH }, body)
+            (
+                if wide {
+                    MSG_TIC_BATCH_WIDE
+                } else {
+                    MSG_TIC_BATCH
+                },
+                body,
+            )
         }
         BinaryMsg::Checksum(c) => (MSG_CHECKSUM, encode_tic_checksum(c)),
         BinaryMsg::DukeTicCmd(m) => (MSG_DUKE_TIC_CMD, encode_duke_sync_cmd(m)),
@@ -254,7 +261,10 @@ mod tests {
         };
         let pkt = encode_binary(&BinaryMsg::TicFrame(wide.clone()));
         assert_eq!(pkt[4], MSG_TIC_FRAME_WIDE);
-        assert_eq!(parse_binary(&pkt).unwrap(), BinaryMsg::TicFrame(wide.clone()));
+        assert_eq!(
+            parse_binary(&pkt).unwrap(),
+            BinaryMsg::TicFrame(wide.clone())
+        );
         let narrow = TicFrameMsg {
             tic: 6,
             seat_mask: 0b11,

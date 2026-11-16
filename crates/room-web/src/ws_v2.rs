@@ -260,7 +260,11 @@ impl WsV2Transport {
         self.last_ping_ms = now_ms();
         let nonce = (self.last_ping_ms * 1000.0) as u64;
         // Report our smoothed RTT so the server can share it on the scoreboard.
-        let rtt_us = self.shared.borrow().rtt_ms.map_or(0, |ms| (ms.max(0.0) * 1000.0) as u64);
+        let rtt_us = self
+            .shared
+            .borrow()
+            .rtt_ms
+            .map_or(0, |ms| (ms.max(0.0) * 1000.0) as u64);
         self.send_bin(encode_binary(&BinaryMsg::Ping {
             nonce,
             server_time_us: rtt_us,
@@ -507,7 +511,10 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
         ControlMsg::Reject(r) => {
             shared.borrow_mut().reject = Some(format!("{}: {}", r.code, r.reason));
         }
-        ControlMsg::Roster { seats, starts_in_ms } => {
+        ControlMsg::Roster {
+            seats,
+            starts_in_ms,
+        } => {
             let mut s = shared.borrow_mut();
             s.start_at_ms = starts_in_ms.map(|ms| now_ms() + f64::from(ms));
             let now: std::collections::BTreeSet<u8> = seats.iter().map(|r| r.seat).collect();

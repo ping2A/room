@@ -93,7 +93,13 @@ pub fn movedummyplayers(
         sprites[iu].y += player.posy - player.oposy;
         // `setsprite(i,SX,SY,SZ)`: keep the sector in step with the position.
         let mut new_sect = sprites[iu].sectnum;
-        updatesector(sprites[iu].x, sprites[iu].y, &mut new_sect, &sec_walls, &wxy);
+        updatesector(
+            sprites[iu].x,
+            sprites[iu].y,
+            &mut new_sect,
+            &sec_walls,
+            &wxy,
+        );
         if new_sect >= 0 && new_sect != sprites[iu].sectnum {
             let _ = lists.changespritesect(i, new_sect);
             sprites[iu].sectnum = new_sect;

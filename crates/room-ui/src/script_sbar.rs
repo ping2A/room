@@ -76,7 +76,14 @@ pub struct SbarWeapon {
 }
 
 /// Doom's key classes in definition order (`Key.GetKeyType`).
-const DOOM_KEYS: [&str; 6] = ["BlueCard", "YellowCard", "RedCard", "BlueSkull", "YellowSkull", "RedSkull"];
+const DOOM_KEYS: [&str; 6] = [
+    "BlueCard",
+    "YellowCard",
+    "RedCard",
+    "BlueSkull",
+    "YellowSkull",
+    "RedSkull",
+];
 
 /// Patch size and offsets, from the renderer's patch cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -186,15 +193,16 @@ pub const HUD_CVARS: &[(&str, i64)] = &[
 /// A HUD CVar read as a bare name (`hud_health_red`).
 fn hud_cvar(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     let name = ctx.play.native_name.to_ascii_lowercase();
-    let v = FRAME.with(|fr| {
-        fr.borrow()
-            .cvars
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-    })
-    .or_else(|| HUD_CVARS.iter().find(|(k, _)| *k == name).map(|(_, v)| *v))
-    .unwrap_or(0);
+    let v = FRAME
+        .with(|fr| {
+            fr.borrow()
+                .cvars
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| *v)
+        })
+        .or_else(|| HUD_CVARS.iter().find(|(k, _)| *k == name).map(|(_, v)| *v))
+        .unwrap_or(0);
     ret_i(regs, v);
     Ok(())
 }
@@ -256,7 +264,13 @@ impl VarArg {
 
 /// The extra arguments of a `vararg` native in call order
 /// ([`room_zvm::vararg_values`]).
-fn varargs(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>, ni: usize, nf: usize, ns: usize) -> Vec<VarArg> {
+fn varargs(
+    ctx: &ZvmCtx<'_>,
+    regs: &NativeRegs<'_>,
+    ni: usize,
+    nf: usize,
+    ns: usize,
+) -> Vec<VarArg> {
     room_zvm::vararg_values(ctx, regs, ni, nf, ns)
         .into_iter()
         .enumerate()
@@ -326,7 +340,13 @@ fn virt_to_hud(t: &DrawTags, x: f64, y: f64) -> (f32, f32) {
     ((x * 320.0 / t.virt.0) as f32, (y * 200.0 / t.virt.1) as f32)
 }
 
-fn patch_cmd(name: String, pos: Vec2, size: Vec2, alpha: f64, recolor: Option<[[f32; 3]; 2]>) -> DrawCmd {
+fn patch_cmd(
+    name: String,
+    pos: Vec2,
+    size: Vec2,
+    alpha: f64,
+    recolor: Option<[[f32; 3]; 2]>,
+) -> DrawCmd {
     #[allow(clippy::cast_possible_truncation)]
     DrawCmd::Patch {
         name,
@@ -360,18 +380,30 @@ fn screen_draw_text(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(
     let mut pen = x;
     for ch in strip_color_escapes(&text).chars() {
         let natural = f64::from(advance(&font, ch, 0));
-        let cell = if t.mono { t.spacing.max(natural) } else { natural + t.spacing };
+        let cell = if t.mono {
+            t.spacing.max(natural)
+        } else {
+            natural + t.spacing
+        };
         if let Some(g) = glyph(&font, ch) {
             if let Some(d) = dims_of(&g) {
                 // `MONO_CellCenter`: each glyph centred in its cell.
-                let gx = if t.mono { pen + (cell - f64::from(d.w)) / 2.0 } else { pen };
+                let gx = if t.mono {
+                    pen + (cell - f64::from(d.w)) / 2.0
+                } else {
+                    pen
+                };
                 let (hx, hy) = virt_to_hud(&t, gx, y);
                 #[allow(clippy::cast_possible_truncation)]
                 let size = Vec2::new(d.w * sx as f32, d.h * sy as f32);
                 FRAME.with(|fr| {
-                    fr.borrow_mut()
-                        .cmds
-                        .push(patch_cmd(g, Vec2::new(hx, hy), size, t.alpha, recolor));
+                    fr.borrow_mut().cmds.push(patch_cmd(
+                        g,
+                        Vec2::new(hx, hy),
+                        size,
+                        t.alpha,
+                        recolor,
+                    ));
                 });
             }
         }
@@ -426,9 +458,13 @@ fn screen_draw_texture(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
     let (hx, hy) = virt_to_hud(&t, x - left, y - top);
     let (hw, hh) = virt_to_hud(&t, w, h);
     FRAME.with(|fr| {
-        fr.borrow_mut()
-            .cmds
-            .push(patch_cmd(name, Vec2::new(hx, hy), Vec2::new(hw, hh), t.alpha, None));
+        fr.borrow_mut().cmds.push(patch_cmd(
+            name,
+            Vec2::new(hx, hy),
+            Vec2::new(hw, hh),
+            t.alpha,
+            None,
+        ));
     });
     Ok(())
 }
@@ -440,7 +476,11 @@ fn texture_id(name: &str) -> i64 {
     }
     FRAME.with(|fr| {
         let mut fr = fr.borrow_mut();
-        if let Some(k) = fr.textures.iter().position(|t| t.eq_ignore_ascii_case(name)) {
+        if let Some(k) = fr
+            .textures
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(name))
+        {
             return k as i64 + 1;
         }
         fr.textures.push(name.to_owned());
@@ -574,7 +614,11 @@ fn lineage(program: &CompiledProgram, class: &str) -> Vec<String> {
     let mut out = vec![class.to_ascii_lowercase()];
     let mut cur = class.to_owned();
     for _ in 0..64 {
-        let Some(c) = program.classes.iter().find(|c| c.name.eq_ignore_ascii_case(&cur)) else {
+        let Some(c) = program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&cur))
+        else {
             break;
         };
         if c.parent.is_empty() {
@@ -643,9 +687,9 @@ fn find_method(program: &CompiledProgram, class: &str, method: &str) -> Option<S
 
 /// Patches the alt HUD may draw beyond the status bar's set.
 const ALTHUD_PATCHES: &[&str] = &[
-    "MEDIA0", "PSTRA0", "ARM1A0", "ARM2A0", "HU_FRAGS", "INVGEML1", "INVGEMR1", "CLIPA0",
-    "SHELA0", "ROCKA0", "CELLA0", "PISTA0", "SHOTA0", "SGN2A0", "MGUNA0", "LAUNA0", "PLASA0",
-    "BFUGA0", "CSAWA0", "BKEYA0", "YKEYA0", "RKEYA0", "BSKUA0", "YSKUA0", "RSKUA0",
+    "MEDIA0", "PSTRA0", "ARM1A0", "ARM2A0", "HU_FRAGS", "INVGEML1", "INVGEMR1", "CLIPA0", "SHELA0",
+    "ROCKA0", "CELLA0", "PISTA0", "SHOTA0", "SGN2A0", "MGUNA0", "LAUNA0", "PLASA0", "BFUGA0",
+    "CSAWA0", "BKEYA0", "YKEYA0", "RKEYA0", "BSKUA0", "YSKUA0", "RSKUA0",
 ];
 
 /// A running ZScript status bar.
@@ -715,7 +759,11 @@ impl ScriptStatusBar {
                 if cur.eq_ignore_ascii_case("AltHud") {
                     return true;
                 }
-                let Some(c) = vm.program.classes.iter().find(|c| c.name.eq_ignore_ascii_case(&cur))
+                let Some(c) = vm
+                    .program
+                    .classes
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(&cur))
                 else {
                     return false;
                 };
@@ -726,7 +774,11 @@ impl ScriptStatusBar {
             }
             false
         };
-        let class = if derives(&self.vm, class.to_owned()) { class } else { "AltHud" };
+        let class = if derives(&self.vm, class.to_owned()) {
+            class
+        } else {
+            "AltHud"
+        };
         if !class.eq_ignore_ascii_case(&self.althud_class) {
             self.althud_class = class.to_owned();
             if !self.althud.is_null() {
@@ -776,21 +828,20 @@ impl ScriptStatusBar {
             let class = self.althud_class.clone();
             self.althud = new_typed(&mut self.vm, &[&class, "AltHud"]);
             if let Some(init) = find_method(&self.vm.program, &class, "Init") {
-                if let Err(e) = self.vm.call_method_banks(&init, self.althud, &[], &[], &[], &[]) {
+                if let Err(e) = self
+                    .vm
+                    .call_method_banks(&init, self.althud, &[], &[], &[], &[])
+                {
                     self.last_error = Some(format!("{init}: {e:?}"));
                 }
             }
         }
         if let Some(draw) = find_method(&self.vm.program, &self.althud_class, "Draw") {
             let (w, h) = (i64::from(size.0.max(1)), i64::from(size.1.max(1)));
-            if let Err(e) = self.vm.call_method_banks(
-                &draw,
-                self.althud,
-                &[w, h],
-                &[],
-                &[],
-                &[self.player],
-            ) {
+            if let Err(e) =
+                self.vm
+                    .call_method_banks(&draw, self.althud, &[w, h], &[], &[], &[self.player])
+            {
                 self.last_error = Some(format!("{draw}: {e:?}"));
             }
         }
@@ -820,7 +871,9 @@ impl ScriptStatusBar {
             names.push(format!("STKEYS{k}"));
         }
         // Inventory bar box, selector and scroll arrows.
-        for k in ["ARTIBOX", "SELECTBO", "INVGEML1", "INVGEML2", "INVGEMR1", "INVGEMR2"] {
+        for k in [
+            "ARTIBOX", "SELECTBO", "INVGEML1", "INVGEML2", "INVGEMR1", "INVGEMR2",
+        ] {
             names.push(k.to_owned());
         }
         names.push(snap.face.clone());
@@ -873,13 +926,20 @@ impl ScriptStatusBar {
         if !self.init_done {
             self.init_done = true;
             if let Some(init) = find_method(&self.vm.program, &self.class, "Init") {
-                if let Err(e) = self.vm.call_method_banks(&init, self.bar, &[], &[], &[], &[]) {
+                if let Err(e) = self
+                    .vm
+                    .call_method_banks(&init, self.bar, &[], &[], &[], &[])
+                {
                     self.last_error = Some(format!("{init}: {e:?}"));
                 }
             }
         }
         if let Some(draw) = find_method(&self.vm.program, &self.class, "Draw") {
-            let state = if fullscreen { HUD_FULLSCREEN } else { HUD_STATUSBAR };
+            let state = if fullscreen {
+                HUD_FULLSCREEN
+            } else {
+                HUD_STATUSBAR
+            };
             if let Err(e) =
                 self.vm
                     .call_method_banks(&draw, self.bar, &[state], &[tic_frac], &[], &[])
@@ -917,7 +977,11 @@ impl ScriptStatusBar {
                 .find(|(c, _)| c.eq_ignore_ascii_case(class))
                 .map(|(_, i)| i.as_str())
         };
-        let weapon_of = |class: &str| snap.weapons.iter().find(|w| w.class.eq_ignore_ascii_case(class));
+        let weapon_of = |class: &str| {
+            snap.weapons
+                .iter()
+                .find(|w| w.class.eq_ignore_ascii_case(class))
+        };
         let ammo_max = |class: &str| {
             snap.inventory
                 .iter()
@@ -931,42 +995,45 @@ impl ScriptStatusBar {
                 })
         };
         // One object per class: typed, with its icon, ammo types and amounts.
-        let item = |vm: &mut Zvm, made: &mut Vec<ObjHandle>, class: &str, owned: bool| -> ObjHandle {
-            let h = new_typed(vm, &[class, "Ammo", "Inventory"]);
-            made.push(h);
-            if let Some(icon) = icon_of(class) {
-                set_int(vm, h, "icon", texture_id(icon));
-            }
-            if DOOM_KEYS.iter().any(|k| k.eq_ignore_ascii_case(class)) {
-                if let Some((_, spr)) =
-                    snap.spawn_sprites.iter().find(|(c, _)| c.eq_ignore_ascii_case(class))
+        let item =
+            |vm: &mut Zvm, made: &mut Vec<ObjHandle>, class: &str, owned: bool| -> ObjHandle {
+                let h = new_typed(vm, &[class, "Ammo", "Inventory"]);
+                made.push(h);
+                if let Some(icon) = icon_of(class) {
+                    set_int(vm, h, "icon", texture_id(icon));
+                }
+                if DOOM_KEYS.iter().any(|k| k.eq_ignore_ascii_case(class)) {
+                    if let Some((_, spr)) = snap
+                        .spawn_sprites
+                        .iter()
+                        .find(|(c, _)| c.eq_ignore_ascii_case(class))
+                    {
+                        // Drawn like UZDoom's alt HUD: the spawn sprite, not the icon.
+                        set_int(vm, h, "althudicon", texture_id(spr));
+                    }
+                }
+                if let Some(w) = weapon_of(class) {
+                    if let Some(a) = &w.ammo1 {
+                        set_str(vm, h, "ammotype1", a);
+                    }
+                    if let Some(a) = &w.ammo2 {
+                        set_str(vm, h, "ammotype2", a);
+                    }
+                }
+                if let Some((_, amount, max)) = snap
+                    .inventory
+                    .iter()
+                    .find(|(c, _, _)| c.eq_ignore_ascii_case(class))
                 {
-                    // Drawn like UZDoom's alt HUD: the spawn sprite, not the icon.
-                    set_int(vm, h, "althudicon", texture_id(spr));
+                    if owned {
+                        set_int(vm, h, "amount", i64::from(*amount));
+                    }
+                    set_int(vm, h, "maxamount", i64::from(*max));
+                } else if let Some(max) = ammo_max(class) {
+                    set_int(vm, h, "maxamount", i64::from(max));
                 }
-            }
-            if let Some(w) = weapon_of(class) {
-                if let Some(a) = &w.ammo1 {
-                    set_str(vm, h, "ammotype1", a);
-                }
-                if let Some(a) = &w.ammo2 {
-                    set_str(vm, h, "ammotype2", a);
-                }
-            }
-            if let Some((_, amount, max)) = snap
-                .inventory
-                .iter()
-                .find(|(c, _, _)| c.eq_ignore_ascii_case(class))
-            {
-                if owned {
-                    set_int(vm, h, "amount", i64::from(*amount));
-                }
-                set_int(vm, h, "maxamount", i64::from(*max));
-            } else if let Some(max) = ammo_max(class) {
-                set_int(vm, h, "maxamount", i64::from(max));
-            }
-            h
-        };
+                h
+            };
         // The pawn's inventory as the `Inv` chain the stdlib walks, each
         // item owned by the pawn; `FindInventory` searches the same items.
         let mut items = Vec::new();
@@ -980,10 +1047,18 @@ impl ScriptStatusBar {
             if snap.inv_bar.iter().any(|c| c.eq_ignore_ascii_case(class)) {
                 set_int(vm, h, "binvbar", 1);
             }
-            if snap.inv_sel.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(class)) {
+            if snap
+                .inv_sel
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(class))
+            {
                 set_obj(vm, mo, "invsel", h);
             }
-            if self.inv_first.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(class)) {
+            if self
+                .inv_first
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(class))
+            {
                 set_obj(vm, mo, "invfirst", h);
             }
         }
@@ -1250,8 +1325,16 @@ fn push_image(name: &str, x: f64, y: f64, flags: i64, alpha: f64, scale: (f64, f
     // Offsets apply per axis in UZDoom; with only one axis on, fold the other in.
     let (px, py) = if apply_offsets {
         let d = d.unwrap_or_default();
-        let ox = if flags & DI_ITEM_HMASK == DI_ITEM_HOFFSET { 0.0 } else { -d.left * scale_x };
-        let oy = if flags & DI_ITEM_VMASK == DI_ITEM_VOFFSET { 0.0 } else { -d.top * scale_y };
+        let ox = if flags & DI_ITEM_HMASK == DI_ITEM_HOFFSET {
+            0.0
+        } else {
+            -d.left * scale_x
+        };
+        let oy = if flags & DI_ITEM_VMASK == DI_ITEM_VOFFSET {
+            0.0
+        } else {
+            -d.top * scale_y
+        };
         (px + ox, py + oy)
     } else {
         (px, py)
@@ -1332,7 +1415,14 @@ fn draw_image_args(name: &str, regs: &NativeRegs<'_>, flags_at: usize) {
         if scale.0 == 0.0 { 1.0 } else { scale.0 },
         if scale.1 == 0.0 { 1.0 } else { scale.1 },
     );
-    push_image(name, x, y, flags, if alpha <= 0.0 { 1.0 } else { alpha }, scale);
+    push_image(
+        name,
+        x,
+        y,
+        flags,
+        if alpha <= 0.0 { 1.0 } else { alpha },
+        scale,
+    );
 }
 
 /// `DrawString(HUDFont, text, pos, flags, translation, alpha, …)`.
@@ -1533,7 +1623,11 @@ fn texman_scaled_size(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
 
 fn texman_check(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     let name = arg_s(ctx, regs, 0);
-    let id = if dims_of(&name).is_some() { texture_id(&name) } else { 0 };
+    let id = if dims_of(&name).is_some() {
+        texture_id(&name)
+    } else {
+        0
+    };
     ret_i(regs, id);
     Ok(())
 }
@@ -1682,7 +1776,8 @@ fn sbar_find_inventory(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
             .items
             .iter()
             .find(|(_, l)| {
-                l.first().is_some_and(|c| *c == class) || (subclass && l.iter().any(|c| *c == class))
+                l.first().is_some_and(|c| *c == class)
+                    || (subclass && l.iter().any(|c| *c == class))
             })
             .map(|(h, _)| *h)
     });
@@ -1735,7 +1830,11 @@ fn weaponslots_locate(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result
     let class = arg_s(ctx, regs, 0);
     let hit = FRAME.with(|fr| {
         let fr = fr.borrow();
-        let w = fr.snap.weapons.iter().find(|w| w.class.eq_ignore_ascii_case(&class))?;
+        let w = fr
+            .snap
+            .weapons
+            .iter()
+            .find(|w| w.class.eq_ignore_ascii_case(&class))?;
         let index = fr
             .snap
             .weapons
@@ -1861,7 +1960,11 @@ fn register(vm: &mut Zvm) {
     t.replace("playerpawn.checkkeys", actor_check_keys);
     t.replace("global.getdefaultbytype", get_default_by_type);
     t.replace("screen.drawtext", screen_draw_text);
-    for name in ["actor.findinventory", "playerpawn.findinventory", "global.findinventory"] {
+    for name in [
+        "actor.findinventory",
+        "playerpawn.findinventory",
+        "global.findinventory",
+    ] {
         t.replace(name, sbar_find_inventory);
     }
     t.replace("actor.getdefault", sbar_get_default);
@@ -1869,7 +1972,14 @@ fn register(vm: &mut Zvm) {
     t.replace("weaponslots.getweapon", weaponslots_get);
     t.replace("weaponslots.locateweapon", weaponslots_locate);
     t.replace("textureid.isnull", sbar_tex_null);
-    for name in ["actor", "inventory", "weapon", "ammo", "playerpawn", "object"] {
+    for name in [
+        "actor",
+        "inventory",
+        "weapon",
+        "ammo",
+        "playerpawn",
+        "object",
+    ] {
         t.replace(&format!("{name}.getclass"), sbar_get_class);
     }
     t.replace("key.getkeytypecount", key_type_count);
@@ -1890,8 +2000,7 @@ mod tests {
     use super::*;
 
     fn stdlib_program() -> CompiledProgram {
-        let root =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
         let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
         let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
         for line in entry.lines() {
@@ -1949,7 +2058,12 @@ mod tests {
     fn althud_dims(name: &str) -> Option<PatchDims> {
         let up = name.to_ascii_uppercase();
         if up.starts_with("STCFN") {
-            return Some(PatchDims { w: 7.0, h: 7.0, left: 0.0, top: 0.0 });
+            return Some(PatchDims {
+                w: 7.0,
+                h: 7.0,
+                left: 0.0,
+                top: 0.0,
+            });
         }
         dims(name)
     }
@@ -1976,9 +2090,24 @@ mod tests {
                 ("Shotgun".into(), "SHOTA0".into()),
             ],
             weapons: vec![
-                SbarWeapon { class: "Fist".into(), slot: 1, ammo1: None, ammo2: None },
-                SbarWeapon { class: "Pistol".into(), slot: 2, ammo1: Some("Clip".into()), ammo2: None },
-                SbarWeapon { class: "Shotgun".into(), slot: 3, ammo1: Some("Shell".into()), ammo2: None },
+                SbarWeapon {
+                    class: "Fist".into(),
+                    slot: 1,
+                    ammo1: None,
+                    ammo2: None,
+                },
+                SbarWeapon {
+                    class: "Pistol".into(),
+                    slot: 2,
+                    ammo1: Some("Clip".into()),
+                    ammo2: None,
+                },
+                SbarWeapon {
+                    class: "Shotgun".into(),
+                    slot: 3,
+                    ammo1: Some("Shell".into()),
+                    ammo2: None,
+                },
             ],
             spawn_sprites: vec![("BlueCard".into(), "BKEYA0".into())],
             ready_weapon: Some("Pistol".into()),
@@ -1990,9 +2119,22 @@ mod tests {
     fn cmd_lines(list: &UiDrawList) -> String {
         let mut out = String::new();
         for c in &list.cmds {
-            if let DrawCmd::Patch { name, pos, size, alpha, recolor, .. } = c {
+            if let DrawCmd::Patch {
+                name,
+                pos,
+                size,
+                alpha,
+                recolor,
+                ..
+            } = c
+            {
                 let cr = recolor.map_or(String::new(), |r| {
-                    format!(" cr{:02x}{:02x}{:02x}", (r[1][0] * 255.0) as u8, (r[1][1] * 255.0) as u8, (r[1][2] * 255.0) as u8)
+                    format!(
+                        " cr{:02x}{:02x}{:02x}",
+                        (r[1][0] * 255.0) as u8,
+                        (r[1][1] * 255.0) as u8,
+                        (r[1][2] * 255.0) as u8
+                    )
                 });
                 out.push_str(&format!(
                     "{name} {:.1},{:.1} {:.1}x{:.1} a{alpha:.2}{cr}\n",
@@ -2016,7 +2158,9 @@ mod tests {
         let got = cmd_lines(&list);
         // Health 75 (green), armor 25 (gold, under `hud_armor_yellow`), the blue
         // key's spawn sprite, clip and shell rows, the pistol.
-        for want in ["MEDIA0 ", "ARM1A0 ", "BKEYA0 ", "CLIPA0 ", "SHELA0 ", "PISTA0 "] {
+        for want in [
+            "MEDIA0 ", "ARM1A0 ", "BKEYA0 ", "CLIPA0 ", "SHELA0 ", "PISTA0 ",
+        ] {
             assert!(got.contains(want), "{want} missing:\n{got}");
         }
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2096,7 +2240,10 @@ mod tests {
             health: 75,
             face: "STFST01".into(),
             inventory: vec![("Clip".into(), 50, 200), ("BasicArmor".into(), 25, 0)],
-            icons: vec![("Clip".into(), "CLIPA0".into()), ("BasicArmor".into(), "ARM1A0".into())],
+            icons: vec![
+                ("Clip".into(), "CLIPA0".into()),
+                ("BasicArmor".into(), "ARM1A0".into()),
+            ],
             ready_weapon: Some("Pistol".into()),
             ammo1: Some("Clip".into()),
             ..SbarSnapshot::default()
@@ -2158,7 +2305,10 @@ mod tests {
         // Seven 32-wide boxes from (48, 169): items centred in the first two.
         let (hx, hy) = center("MEDIA0").unwrap_or_else(|| panic!("first bar item drawn: {p:?}"));
         let (tx, _) = center("CLIPA0").expect("second bar item drawn");
-        assert!((hx - 64.0).abs() < 1.0 && (hy - 185.0).abs() < 1.0, "{hx},{hy} {p:?}");
+        assert!(
+            (hx - 64.0).abs() < 1.0 && (hy - 185.0).abs() < 1.0,
+            "{hx},{hy} {p:?}"
+        );
         assert!((tx - 96.0).abs() < 1.0, "{tx} {p:?}");
         // The selected item takes the face's place, bottom-centred on (160, 198).
         let sel = dims("CLIPA0").unwrap();
@@ -2174,6 +2324,10 @@ mod tests {
         bar.draw(&snap, false, 0.0, &dims, &mut list);
         let p = patches(&list);
         assert!(!p.iter().any(|(n, _, _)| n == "MEDIA0"), "{p:?}");
-        assert_eq!(p.iter().filter(|(n, _, _)| n == "CLIPA0").count(), 1, "{p:?}");
+        assert_eq!(
+            p.iter().filter(|(n, _, _)| n == "CLIPA0").count(),
+            1,
+            "{p:?}"
+        );
     }
 }

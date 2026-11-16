@@ -135,9 +135,12 @@ impl VoxelCatalog {
             let count = verts.len() as u32;
             let name = entry.palette_name.clone();
             lists.opaque_walls.extend_from_slice(&verts);
-            lists
-                .wall_ranges
-                .push(crate::scene::MaterialRange { name, start, count, flags: 0 });
+            lists.wall_ranges.push(crate::scene::MaterialRange {
+                name,
+                start,
+                count,
+                flags: 0,
+            });
         }
         uploads
     }

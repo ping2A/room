@@ -461,7 +461,11 @@ pub fn apply_dyn_lights(lists: &mut SceneLists) {
     for r in &lists.sprite_ranges {
         if r.flags & MaterialRange::NO_DYNLIGHT != 0 {
             let end = (r.start + r.count) as usize;
-            for s in skip.iter_mut().take(end.min(lists.sprites.len())).skip(r.start as usize) {
+            for s in skip
+                .iter_mut()
+                .take(end.min(lists.sprites.len()))
+                .skip(r.start as usize)
+            {
                 *s = true;
             }
         }
@@ -2501,7 +2505,16 @@ fn emit_seg_walls(map: &MapGeometry, seg: &Seg, lists: &mut SceneLists, step_on_
     let (fc1, fc2) = (z_at(front_sec, x1, y1, true), z_at(front_sec, x2, y2, true));
     let mirror = line_is_mirror(map, line_id);
     let mirror_tex = mirror.then(|| mirror_tex_name(line_id.raw()));
-    emit_sky_wall(map, line_id.raw() as usize, line, side_i, front_sec, (x1, y1, x2, y2), (fc1, fc2), lists);
+    emit_sky_wall(
+        map,
+        line_id.raw() as usize,
+        line,
+        side_i,
+        front_sec,
+        (x1, y1, x2, y2),
+        (fc1, fc2),
+        lists,
+    );
 
     if line.back_sector.is_none() {
         // One-sided: full mid wall (or mirror canvas).

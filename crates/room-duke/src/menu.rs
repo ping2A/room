@@ -35,7 +35,10 @@ pub enum MenuAction {
     /// Close the menu and resume play.
     Resume,
     /// Chocolate `newgame(volume, 0, skill)`; `skill` is `ud.player_skill` (1–4).
-    NewGame { volume: u8, skill: u8 },
+    NewGame {
+        volume: u8,
+        skill: u8,
+    },
     OpenSave,
     OpenLoad,
     OpenOptions,
@@ -85,15 +88,32 @@ impl DukeMenu {
             }
         };
         Self {
-            page: if in_game { MenuPage::InGame } else { MenuPage::Main },
+            page: if in_game {
+                MenuPage::InGame
+            } else {
+                MenuPage::Main
+            },
             probey: 0,
             in_game,
             volume: 0,
             volume_names: pick(
                 volume_names,
-                &["L.A. MELTDOWN", "LUNAR APOCALYPSE", "SHRAPNEL CITY", "THE BIRTH"],
+                &[
+                    "L.A. MELTDOWN",
+                    "LUNAR APOCALYPSE",
+                    "SHRAPNEL CITY",
+                    "THE BIRTH",
+                ],
             ),
-            skill_names: pick(skill_names, &["PIECE OF CAKE", "LET'S ROCK", "COME GET SOME", "DAMN I'M GOOD"]),
+            skill_names: pick(
+                skill_names,
+                &[
+                    "PIECE OF CAKE",
+                    "LET'S ROCK",
+                    "COME GET SOME",
+                    "DAMN I'M GOOD",
+                ],
+            ),
             sounds: Vec::new(),
         }
     }
@@ -125,7 +145,11 @@ impl DukeMenu {
     }
 
     fn back_to_root(&mut self) {
-        self.goto(if self.in_game { MenuPage::InGame } else { MenuPage::Main });
+        self.goto(if self.in_game {
+            MenuPage::InGame
+        } else {
+            MenuPage::Main
+        });
     }
 
     /// Chocolate `probe` + the page's switch for one key.
@@ -177,7 +201,11 @@ impl DukeMenu {
         match key {
             MenuKey::Up => {
                 self.sounds.push("KICK_HIT");
-                self.probey = if self.probey == 0 { n - 1 } else { self.probey - 1 };
+                self.probey = if self.probey == 0 {
+                    n - 1
+                } else {
+                    self.probey - 1
+                };
                 MenuAction::None
             }
             MenuKey::Down => {
@@ -278,11 +306,35 @@ impl DukeMenu {
         let spin = ((clock >> 3) % 7) as i16;
         if x == 160 {
             let centre = 320 >> 2;
-            page.sprite(160 + (centre >> 1) + 70, ry, SPINNINGNUKEICON + 6 - ((6 + (clock >> 3)) % 7) as i16, shade, 0, false, false);
-            page.sprite(160 - (centre >> 1) - 70, ry, SPINNINGNUKEICON + spin, shade, 0, false, false);
+            page.sprite(
+                160 + (centre >> 1) + 70,
+                ry,
+                SPINNINGNUKEICON + 6 - ((6 + (clock >> 3)) % 7) as i16,
+                shade,
+                0,
+                false,
+                false,
+            );
+            page.sprite(
+                160 - (centre >> 1) - 70,
+                ry,
+                SPINNINGNUKEICON + spin,
+                shade,
+                0,
+                false,
+                false,
+            );
         } else {
             let w = page.tile_width(BIGFNTCURSOR);
-            page.sprite(x - w - 4, ry, SPINNINGNUKEICON + spin, shade, 0, false, false);
+            page.sprite(
+                x - w - 4,
+                ry,
+                SPINNINGNUKEICON + spin,
+                shade,
+                0,
+                false,
+                false,
+            );
         }
     }
 
@@ -299,12 +351,35 @@ impl DukeMenu {
         match self.page {
             MenuPage::Main | MenuPage::InGame => {
                 let in_game = self.page == MenuPage::InGame;
-                page.sprite(160, if in_game { 32 } else { 28 }, INGAMEDUKETHREEDEE, 0, 0, false, false);
+                page.sprite(
+                    160,
+                    if in_game { 32 } else { 28 },
+                    INGAMEDUKETHREEDEE,
+                    0,
+                    0,
+                    false,
+                    false,
+                );
                 page.sprite(260, 36, PLUTOPAKSPRITE + 2, plu_shade, 0, false, false);
                 let items: &[&str] = if in_game {
-                    &["NEW GAME", "SAVE GAME", "LOAD GAME", "OPTIONS", " HELP", "QUIT TO TITLE", "QUIT GAME"]
+                    &[
+                        "NEW GAME",
+                        "SAVE GAME",
+                        "LOAD GAME",
+                        "OPTIONS",
+                        " HELP",
+                        "QUIT TO TITLE",
+                        "QUIT GAME",
+                    ]
                 } else {
-                    &["NEW GAME", "OPTIONS", "LOAD GAME", "HELP", "CREDITS", "QUIT"]
+                    &[
+                        "NEW GAME",
+                        "OPTIONS",
+                        "LOAD GAME",
+                        "HELP",
+                        "CREDITS",
+                        "QUIT",
+                    ]
                 };
                 Self::cursor(page, 160, 67, 16, self.probey, clock, sh);
                 for (k, item) in items.iter().enumerate() {
@@ -358,7 +433,13 @@ mod tests {
         m.key(MenuKey::Enter);
         assert_eq!(m.page, MenuPage::Skill);
         m.key(MenuKey::Down);
-        assert_eq!(m.key(MenuKey::Enter), MenuAction::NewGame { volume: 1, skill: 3 });
+        assert_eq!(
+            m.key(MenuKey::Enter),
+            MenuAction::NewGame {
+                volume: 1,
+                skill: 3
+            }
+        );
         assert!(m.take_sounds().contains(&"DUKE_GETWEAPON2"));
     }
 

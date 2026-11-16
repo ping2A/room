@@ -1093,7 +1093,12 @@ impl AcsHost for WorldAcsHost<'_> {
         self.script_call_resolved(args, &strings, activator)
     }
 
-    fn script_call_resolved(&mut self, args: &[i32], strings: &[Option<String>], activator: u64) -> i32 {
+    fn script_call_resolved(
+        &mut self,
+        args: &[i32],
+        strings: &[Option<String>],
+        activator: u64,
+    ) -> i32 {
         let name = |i: usize| strings.get(i).cloned().flatten().unwrap_or_default();
         let (class, func) = (name(0), name(1));
         if class.is_empty() || func.is_empty() {
@@ -1124,9 +1129,8 @@ impl AcsHost for WorldAcsHost<'_> {
             // the `GenderMale` token its status bar draws the face for) and
             // the other queued natives.
             let grants = self.world.zscript.take_grants();
-            let fallback = resolve_actor(self.world, 0, activator).or_else(|| {
-                self.world.players.iter().flatten().find_map(|p| p.mo)
-            });
+            let fallback = resolve_actor(self.world, 0, activator)
+                .or_else(|| self.world.players.iter().flatten().find_map(|p| p.mo));
             if let Some(owner) = fallback {
                 for (cookie, item, amount) in grants {
                     // `players[n].mo` handles name the player's pawn.
@@ -1138,8 +1142,12 @@ impl AcsHost for WorldAcsHost<'_> {
                         .and_then(|pn| self.world.players.get(pn).and_then(|p| p.as_ref()))
                         .and_then(|p| p.mo);
                     match pawn {
-                        Some(mo) => self.world.apply_zscript_inventory_change(mo, -1, &item, amount),
-                        None => self.world.apply_zscript_inventory_change(owner, cookie, &item, amount),
+                        Some(mo) => self
+                            .world
+                            .apply_zscript_inventory_change(mo, -1, &item, amount),
+                        None => self
+                            .world
+                            .apply_zscript_inventory_change(owner, cookie, &item, amount),
                     }
                 }
             }

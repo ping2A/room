@@ -75,18 +75,23 @@ impl IqmAnimData {
     /// Animation by name (case-insensitive).
     #[must_use]
     pub fn anim(&self, name: &str) -> Option<&IqmAnim> {
-        self.anims.iter().find(|a| a.name.eq_ignore_ascii_case(name))
+        self.anims
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
     }
 
     /// Joint index by name (case-insensitive).
     #[must_use]
     pub fn joint(&self, name: &str) -> Option<usize> {
-        self.joint_names.iter().position(|n| n.eq_ignore_ascii_case(name))
+        self.joint_names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
     }
 }
 
 fn u32_at(data: &[u8], o: usize) -> Option<u32> {
-    data.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    data.get(o..o + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 fn f32_at(data: &[u8], o: usize) -> Option<f32> {
@@ -122,7 +127,8 @@ pub fn parse_iqm_anim_data(data: &[u8], joints: &[IqmJoint]) -> Option<IqmAnimDa
     let mut out = IqmAnimData::default();
     for j in 0..num_joints.min(joints.len()) {
         let name = u32_at(data, ofs_joints + j * 48)?;
-        out.joint_names.push(text_at(data, ofs_text, num_text, name));
+        out.joint_names
+            .push(text_at(data, ofs_text, num_text, name));
     }
     for a in 0..num_anims {
         let o = ofs_anims + a * 20;
@@ -202,7 +208,10 @@ pub fn interpolate_bone(from: &Trs, to: &Trs, t: f32) -> Trs {
 /// Blend two whole poses (animation layers / animation switch).
 #[must_use]
 pub fn blend_poses(a: &[Trs], b: &[Trs], t: f32) -> Vec<Trs> {
-    a.iter().zip(b).map(|(x, y)| interpolate_bone(x, y, t)).collect()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| interpolate_bone(x, y, t))
+        .collect()
 }
 
 /// The pose between `frame1` and `frame2` (`inter` 0 = frame1).
@@ -224,7 +233,13 @@ pub fn frame_pose(model: &IqmModel, frame1: usize, frame2: usize, inter: f32) ->
     let f1 = frame1.min(count - 1) * n;
     let f2 = frame2.min(count - 1) * n;
     (0..n)
-        .map(|i| interpolate_bone(&model.anim.frames[f1 + i], &model.anim.frames[f2 + i], inter))
+        .map(|i| {
+            interpolate_bone(
+                &model.anim.frames[f1 + i],
+                &model.anim.frames[f2 + i],
+                inter,
+            )
+        })
         .collect()
 }
 
@@ -253,7 +268,10 @@ pub fn anim_frames(anim: &ModelAnim, tic: f64) -> (usize, usize, f32) {
     let elapsed = ((tic - anim.start_tic).max(0.0) / 35.0) * f64::from(anim.framerate);
     let mut frame = f64::from(anim.first_frame) + anim.start_frame + elapsed;
     let last = f64::from(anim.last_frame.max(anim.first_frame));
-    let loop_from = f64::from(anim.loop_frame.clamp(anim.first_frame, anim.last_frame.max(anim.first_frame)));
+    let loop_from = f64::from(
+        anim.loop_frame
+            .clamp(anim.first_frame, anim.last_frame.max(anim.first_frame)),
+    );
     if frame > last {
         if anim.looped {
             let span = last - loop_from + 1.0;
@@ -310,7 +328,9 @@ impl BoneComponent {
                     let q = (q_of(orig) * q_of(cur)).normalize();
                     [q.x, q.y, q.z, q.w]
                 }
-                BoneKind::Translation => [orig[0] + cur[0], orig[1] + cur[1], orig[2] + cur[2], 0.0],
+                BoneKind::Translation => {
+                    [orig[0] + cur[0], orig[1] + cur[1], orig[2] + cur[2], 0.0]
+                }
                 BoneKind::Scaling => [orig[0] * cur[0], orig[1] * cur[1], orig[2] * cur[2], 0.0],
             },
             _ => cur,
@@ -323,7 +343,12 @@ impl BoneComponent {
             return [q.x, q.y, q.z, q.w];
         }
         let i = 1.0 - t;
-        [a[0] * i + b[0] * t, a[1] * i + b[1] * t, a[2] * i + b[2] * t, 0.0]
+        [
+            a[0] * i + b[0] * t,
+            a[1] * i + b[1] * t,
+            a[2] * i + b[2] * t,
+            0.0,
+        ]
     }
 
     /// UZDoom `BoneOverrideComponent::Modify`.
@@ -363,7 +388,11 @@ impl BoneOverride {
     /// UZDoom `BoneOverride::Modify`.
     pub fn modify(&self, trs: &mut Trs, tic: f64) {
         if let Some(c) = &self.translation {
-            let v = c.modify(BoneKind::Translation, [trs.translation.x, trs.translation.y, trs.translation.z, 0.0], tic);
+            let v = c.modify(
+                BoneKind::Translation,
+                [trs.translation.x, trs.translation.y, trs.translation.z, 0.0],
+                tic,
+            );
             trs.translation = Vec3::new(v[0], v[1], v[2]);
         }
         if let Some(c) = &self.rotation {
@@ -372,7 +401,11 @@ impl BoneOverride {
             trs.rotation = q_of(v);
         }
         if let Some(c) = &self.scaling {
-            let v = c.modify(BoneKind::Scaling, [trs.scaling.x, trs.scaling.y, trs.scaling.z, 0.0], tic);
+            let v = c.modify(
+                BoneKind::Scaling,
+                [trs.scaling.x, trs.scaling.y, trs.scaling.z, 0.0],
+                tic,
+            );
             trs.scaling = Vec3::new(v[0], v[1], v[2]);
         }
     }
@@ -434,7 +467,10 @@ mod tests {
         assert_eq!(anim_frames(&anim, 3.0), (13, 11, 0.0));
         // 5 frames in: 15 → loops back over 11..=13 to 12.
         assert_eq!(anim_frames(&anim, 5.0).0, 12);
-        let hold = ModelAnim { looped: false, ..anim };
+        let hold = ModelAnim {
+            looped: false,
+            ..anim
+        };
         assert_eq!(anim_frames(&hold, 50.0), (13, 13, 0.0));
         let (f1, f2, t) = anim_frames(&anim, 1.5);
         assert_eq!((f1, f2), (11, 12));
@@ -469,8 +505,14 @@ mod tests {
             prev: [0.0; 4],
             cur: [4.0, 5.0, 6.0, 0.0],
         };
-        assert_eq!(t.modify(BoneKind::Translation, [1.0, 1.0, 1.0, 0.0], 0.0), [4.0, 5.0, 6.0, 0.0]);
+        assert_eq!(
+            t.modify(BoneKind::Translation, [1.0, 1.0, 1.0, 0.0], 0.0),
+            [4.0, 5.0, 6.0, 0.0]
+        );
         let s = BoneComponent { mode: 1, ..t };
-        assert_eq!(s.modify(BoneKind::Scaling, [2.0, 2.0, 2.0, 0.0], 0.0), [8.0, 10.0, 12.0, 0.0]);
+        assert_eq!(
+            s.modify(BoneKind::Scaling, [2.0, 2.0, 2.0, 0.0], 0.0),
+            [8.0, 10.0, 12.0, 0.0]
+        );
     }
 }

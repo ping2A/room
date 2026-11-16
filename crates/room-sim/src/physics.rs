@@ -267,9 +267,7 @@ fn line_blocks(
     }
     // Strife railing (`ML_RAILING` / UDMF `jumpover`): a 32-unit-high fence
     // over the higher of the two floors; jumping or flying clears it.
-    if (flags & crate::world::ML_RAILING) != 0
-        || ext & room_map::udmf::ext::LINE_JUMPOVER != 0
-    {
+    if (flags & crate::world::ML_RAILING) != 0 || ext & room_map::udmf::ext::LINE_JUMPOVER != 0 {
         let floor = |s: Option<room_core::SectorId>| {
             s.and_then(|s| world.map.sectors.get(s.raw() as usize))
                 .map(|s| f64::from(s.floor_height))
@@ -1541,7 +1539,11 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
             // GZDoom reflects the whole velocity and keeps `BounceFactor` of
             // it. Room applies that to the Doom bounce type (`+DOOMBOUNCE`);
             // other bouncers (Duke glass, MBF) keep their horizontal speed.
-            let xy = if doom_bounce && !mbf_bouncer(&actor) { f } else { 1.0 };
+            let xy = if doom_bounce && !mbf_bouncer(&actor) {
+                f
+            } else {
+                1.0
+            };
             // `BOUNCE_AutoOff` (`+DOOMBOUNCE`): a slow floor rebound ends the
             // bouncing, so the next floor contact explodes the missile.
             let auto_off = (actor.extra_flags.get_name("BOUNCEAUTOOFF")
@@ -1552,7 +1554,8 @@ pub fn z_movement(world: &mut World, actor_id: ActorId) {
                 a.pos = DVec3::new(a.pos.x(), a.pos.y(), z);
                 a.vel = DVec3::new(a.vel.x() * xy, a.vel.y() * xy, vel_z);
                 if auto_off {
-                    a.flags &= !(crate::class::FLAG_BOUNCEONFLOORS | crate::class::FLAG_BOUNCEONWALLS);
+                    a.flags &=
+                        !(crate::class::FLAG_BOUNCEONFLOORS | crate::class::FLAG_BOUNCEONWALLS);
                     a.extra_flags.set_name("BOUNCEONFLOORS", false);
                     a.extra_flags.set_name("BOUNCEONWALLS", false);
                     a.extra_flags.set_name("BOUNCEONCEILINGS", false);
@@ -2877,7 +2880,11 @@ actor Grenade : Limb 9995
         let limb = classes.find_name("Limb").unwrap();
         let death = w.states.find_label(limb, "Death").unwrap();
         let id = w
-            .spawn_at(limb, DVec3::new(1024.0, 1024.0, 40.0), room_core::Angle::ZERO)
+            .spawn_at(
+                limb,
+                DVec3::new(1024.0, 1024.0, 40.0),
+                room_core::Angle::ZERO,
+            )
             .unwrap();
         if let Some(a) = w.actors.get_mut(id) {
             a.vel = DVec3::new(6.0, 2.0, 4.0);
@@ -2890,14 +2897,21 @@ actor Grenade : Limb 9995
                 break;
             }
         }
-        assert!(died.is_some(), "a Doom-bounce limb must stop tumbling and die");
+        assert!(
+            died.is_some(),
+            "a Doom-bounce limb must stop tumbling and die"
+        );
 
         // `BounceCount 2` on a lively Hexen bouncer (no auto-off): the second
         // floor contact explodes it.
         let grenade = classes.find_name("Grenade").unwrap();
         let gdeath = w.states.find_label(grenade, "Death").unwrap();
         let g = w
-            .spawn_at(grenade, DVec3::new(512.0, 512.0, 64.0), room_core::Angle::ZERO)
+            .spawn_at(
+                grenade,
+                DVec3::new(512.0, 512.0, 64.0),
+                room_core::Angle::ZERO,
+            )
             .unwrap();
         if let Some(a) = w.actors.get_mut(g) {
             a.vel = DVec3::new(0.0, 0.0, -10.0);
@@ -2916,8 +2930,15 @@ actor Grenade : Limb 9995
             }
             was_up = !down;
         }
-        assert_eq!(w.actors.get(g).unwrap().state, Some(gdeath), "BounceCount 2 must end it");
-        assert!(floor_hits <= 1, "exploded on the second floor contact, saw {floor_hits} rebounds");
+        assert_eq!(
+            w.actors.get(g).unwrap().state,
+            Some(gdeath),
+            "BounceCount 2 must end it"
+        );
+        assert!(
+            floor_hits <= 1,
+            "exploded on the second floor contact, saw {floor_hits} rebounds"
+        );
     }
 
     #[test]
@@ -3760,12 +3781,22 @@ actor Walker : Actor 9323
         let g = w
             .spawn_at(gib, DVec3::new(100.0, 128.0, 106.0), room_core::Angle::ZERO)
             .unwrap();
-        assert!(try_move(&mut w, g, DVec3::new(104.0, 128.0, 106.0)), "42 units up over flat floor");
+        assert!(
+            try_move(&mut w, g, DVec3::new(104.0, 128.0, 106.0)),
+            "42 units up over flat floor"
+        );
         // A walker still stops at a 64-unit ledge (box over both floors).
         let m = w
-            .spawn_at(walker, DVec3::new(236.0, 128.0, 64.0), room_core::Angle::ZERO)
+            .spawn_at(
+                walker,
+                DVec3::new(236.0, 128.0, 64.0),
+                room_core::Angle::ZERO,
+            )
             .unwrap();
-        assert!(!try_move(&mut w, m, DVec3::new(248.0, 128.0, 64.0)), "ledge must still block");
+        assert!(
+            !try_move(&mut w, m, DVec3::new(248.0, 128.0, 64.0)),
+            "ledge must still block"
+        );
     }
 
     #[test]

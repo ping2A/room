@@ -1412,7 +1412,15 @@ impl NetPlay {
         mouse_yaw: &mut i32,
         mouse_pitch: &mut i32,
     ) -> Option<Vec<TicCmd>> {
-        if !self.pump_v2(now_ms(), held, attack, weapon, weapon_cycle, mouse_yaw, mouse_pitch) {
+        if !self.pump_v2(
+            now_ms(),
+            held,
+            attack,
+            weapon,
+            weapon_cycle,
+            mouse_yaw,
+            mouse_pitch,
+        ) {
             return None;
         }
         let cmds = self.take_v2_frame();
@@ -1566,9 +1574,7 @@ impl NetPlay {
     /// the predicted view between commands. `1.0` without a clock.
     #[must_use]
     pub fn input_frac(&self, now: f64) -> f64 {
-        self.clock
-            .input_horizon(now)
-            .map_or(1.0, |h| h - h.floor())
+        self.clock.input_horizon(now).map_or(1.0, |h| h - h.floor())
     }
 
     /// The playout wanted a frame that has not arrived.

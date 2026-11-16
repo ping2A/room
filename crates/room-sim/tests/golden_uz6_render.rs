@@ -88,7 +88,11 @@ fn uz6_sprite_view_flags_match_golden() {
     ] {
         let cid = w.classes.find_name(class).unwrap();
         let id = w
-            .spawn_at(cid, DVec3::new(512.0, 512.0, 0.0), Angle::from_degrees(30.0))
+            .spawn_at(
+                cid,
+                DVec3::new(512.0, 512.0, 0.0),
+                Angle::from_degrees(30.0),
+            )
             .unwrap();
         w.actors.get_mut(id).unwrap().roll = Angle::from_degrees(20.0);
         let a = w.actors.get(id).unwrap().clone();
@@ -113,7 +117,10 @@ fn uz6_sprite_view_flags_match_golden() {
     }
     // `+SPRITEANGLE` 90: the view-relative angle is 90 from wherever the
     // viewer stands (the viewer is due south, at -90°).
-    assert!(out.contains("Angled        rot_angle=-180.00 fixed=true"), "{out}");
+    assert!(
+        out.contains("Angled        rot_angle=-180.00 fixed=true"),
+        "{out}"
+    );
     check("uz6_sprite_view.txt", &out);
 }
 
@@ -147,7 +154,11 @@ fn uz6_sprite_shadow_rule_matches_golden() {
         let modes: Vec<u8> = (0..3)
             .map(|m| u8::from(room_sim::casts_sprite_shadow(&w, *id, m)))
             .collect();
-        let _ = writeln!(out, "{name:<11} mode0={} mode1={} mode2={}", modes[0], modes[1], modes[2]);
+        let _ = writeln!(
+            out,
+            "{name:<11} mode0={} mode1={} mode2={}",
+            modes[0], modes[1], modes[2]
+        );
     }
     check("uz6_sprite_shadow.txt", &out);
 }
@@ -155,9 +166,18 @@ fn uz6_sprite_shadow_rule_matches_golden() {
 #[test]
 fn uz6_isometric_sprite_matches_golden() {
     let mut out = String::new();
-    for (yaw, pitch) in [(0.0, 30.0), (45.0, 30.0), (45.0, 60.0), (135.0, 35.264), (90.0, 0.0)] {
+    for (yaw, pitch) in [
+        (0.0, 30.0),
+        (45.0, 30.0),
+        (45.0, 60.0),
+        (135.0, 35.264),
+        (90.0, 0.0),
+    ] {
         let (scale, tilt) = room_sim::isometric_sprite(16.0, 32.0, 56.0, yaw, pitch);
-        let _ = writeln!(out, "yaw={yaw:<6} pitch={pitch:<7} scale_y={scale:.4} tilt={tilt:.4}");
+        let _ = writeln!(
+            out,
+            "yaw={yaw:<6} pitch={pitch:<7} scale_y={scale:.4} tilt={tilt:.4}"
+        );
     }
     check("uz6_isometric.txt", &out);
 }

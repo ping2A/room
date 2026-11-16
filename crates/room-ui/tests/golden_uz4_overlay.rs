@@ -6,7 +6,9 @@
 //!
 //! Regenerate: `ROOM_UPDATE_GOLDEN=1 cargo test -p room-ui --test golden_uz4_overlay`
 
-use room_ui::{CanvasSink, PatchCache, SoftPatch, UiDrawList, blit_draw_list_full, draw_weapon_tinted};
+use room_ui::{
+    CanvasSink, PatchCache, SoftPatch, UiDrawList, blit_draw_list_full, draw_weapon_tinted,
+};
 
 const W: usize = 160;
 const H: usize = 100;
@@ -17,7 +19,10 @@ struct Fb(Vec<[f32; 3]>);
 impl CanvasSink for Fb {
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: [f32; 4]) {
         let (x0, y0) = (x.round().max(0.0) as usize, y.round().max(0.0) as usize);
-        let (x1, y1) = (((x + w).round() as usize).min(W), ((y + h).round() as usize).min(H));
+        let (x1, y1) = (
+            ((x + w).round() as usize).min(W),
+            ((y + h).round() as usize).min(H),
+        );
         for yy in y0..y1 {
             for xx in x0..x1 {
                 let p = &mut self.0[yy * W + xx];
@@ -84,7 +89,13 @@ fn weapon_overlay_with_pivot_rotate_and_scale_matches_its_golden() {
     // Overlay: 16×8, yellow with a green right column.
     cache.insert(
         "TFLAA0",
-        patch(16, 8, -120, -60, |x, _| if x == 15 { [0, 255, 0, 255] } else { [255, 255, 0, 255] }),
+        patch(16, 8, -120, -60, |x, _| {
+            if x == 15 {
+                [0, 255, 0, 255]
+            } else {
+                [255, 255, 0, 255]
+            }
+        }),
     );
     let mut list = UiDrawList::new();
     let gun = cache.get("TGUNA0").cloned();
@@ -92,14 +103,52 @@ fn weapon_overlay_with_pivot_rotate_and_scale_matches_its_golden() {
     // Layer 1: the gun, `A_OverlayScale(1, 1.5)`, `A_OverlayRotate(1, 15)`,
     // centre pivot.
     draw_weapon_tinted(
-        &mut list, "TGUNA0", true, gun.as_ref(), 0.0, 0.0, 1.0, true, false, 1.0, 1.5, 1.5, false, 0.5,
-        0.5, 15.0, 1.0, 1.0, 1.0, false, true,
+        &mut list,
+        "TGUNA0",
+        true,
+        gun.as_ref(),
+        0.0,
+        0.0,
+        1.0,
+        true,
+        false,
+        1.0,
+        1.5,
+        1.5,
+        false,
+        0.5,
+        0.5,
+        15.0,
+        1.0,
+        1.0,
+        1.0,
+        false,
+        true,
     );
     // Layer 2: `A_OverlayPivot(2, 0, 0)`, `A_OverlayScale(2, 2, 1)`,
     // `A_OverlayRotate(2, 90)`: turned a quarter turn about its top-left.
     draw_weapon_tinted(
-        &mut list, "TFLAA0", true, flash.as_ref(), 0.0, 0.0, 1.0, true, false, 1.0, 2.0, 1.0, false, 0.0,
-        0.0, 90.0, 1.0, 1.0, 1.0, false, true,
+        &mut list,
+        "TFLAA0",
+        true,
+        flash.as_ref(),
+        0.0,
+        0.0,
+        1.0,
+        true,
+        false,
+        1.0,
+        2.0,
+        1.0,
+        false,
+        0.0,
+        0.0,
+        90.0,
+        1.0,
+        1.0,
+        1.0,
+        false,
+        true,
     );
     let mut fb = Fb(vec![[0.0; 3]; W * H]);
     blit_draw_list_full(&list, W as f32, H as f32, None, Some(&cache), &mut fb);
@@ -112,9 +161,16 @@ fn weapon_overlay_with_pivot_rotate_and_scale_matches_its_golden() {
     }
     // Both layers are on screen and the rotated overlay stands upright (it
     // was 2:1 wide; turned 90° it is taller than wide).
-    assert!(picture.contains('R') && picture.contains('B') && picture.contains('Y'), "\n{picture}");
+    assert!(
+        picture.contains('R') && picture.contains('B') && picture.contains('Y'),
+        "\n{picture}"
+    );
     let rows_with_y = picture.lines().filter(|l| l.contains('Y')).count();
-    let widest_y = picture.lines().map(|l| l.matches('Y').count()).max().unwrap_or(0);
+    let widest_y = picture
+        .lines()
+        .map(|l| l.matches('Y').count())
+        .max()
+        .unwrap_or(0);
     assert!(rows_with_y > widest_y, "overlay not turned:\n{picture}");
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../testdata/goldens/uz4_overlay_pivot_rotate.txt");
@@ -122,5 +178,10 @@ fn weapon_overlay_with_pivot_rotate_and_scale_matches_its_golden() {
         std::fs::write(&path, &picture).unwrap();
     }
     let want = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(picture, want, "overlay picture differs from {}", path.display());
+    assert_eq!(
+        picture,
+        want,
+        "overlay picture differs from {}",
+        path.display()
+    );
 }

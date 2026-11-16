@@ -645,7 +645,12 @@ pub fn add_hexen_armor(world: &mut World, owner: ActorId, slot: i32, amount: i32
         return false;
     }
     let (base, inc) = hexen_armor_profile(world, owner).unwrap_or((0.0, [0.0; 4]));
-    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(owner)) else {
+    let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(owner))
+    else {
         return false;
     };
     if amount <= 0 {
@@ -670,7 +675,12 @@ pub(crate) fn absorb_hexen_armor(world: &mut World, target: ActorId, damage: i32
     let Some((base, inc)) = hexen_armor_profile(world, target) else {
         return damage;
     };
-    let Some(p) = world.players.iter_mut().flatten().find(|p| p.mo == Some(target)) else {
+    let Some(p) = world
+        .players
+        .iter_mut()
+        .flatten()
+        .find(|p| p.mo == Some(target))
+    else {
         return damage;
     };
     let mut saved_percent: f64 = p.hexen_armor.iter().sum::<f64>() + base;
@@ -1948,16 +1958,28 @@ mod tests {
         ));
         let fighter = classes.find_name("TestFighter").unwrap();
         w.actors.get_mut(mo).unwrap().class = fighter;
-        assert_eq!(hexen_armor_profile(&w, mo), Some((15.0, [25.0, 20.0, 15.0, 5.0])));
+        assert_eq!(
+            hexen_armor_profile(&w, mo),
+            Some((15.0, [25.0, 20.0, 15.0, 5.0]))
+        );
         assert_eq!(hexen_armor_class(&w, mo), 3, "natural AC 15 / 5");
         let mesh = classes.find_name("TestMesh").unwrap();
-        let item = w.spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
+        let item = w
+            .spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
         assert!(try_pickup(&mut w, mo, item));
         assert_eq!(w.players[0].as_ref().unwrap().hexen_armor[0], 25.0);
-        let again = w.spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
-        assert!(!try_pickup(&mut w, mo, again), "a full piece is not taken twice");
+        let again = w
+            .spawn_at(mesh, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
+        assert!(
+            !try_pickup(&mut w, mo, again),
+            "a full piece is not taken twice"
+        );
         let amulet = classes.find_name("TestAmulet").unwrap();
-        let item = w.spawn_at(amulet, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO).unwrap();
+        let item = w
+            .spawn_at(amulet, DVec3::new(40.0, 32.0, 0.0), Angle::ZERO)
+            .unwrap();
         assert!(try_pickup(&mut w, mo, item));
         assert_eq!(hexen_armor_class(&w, mo), 9, "(15 + 25 + 5) / 5");
         // 45 % saved; mesh wears by 30 × 25 / 300 = 2.5.

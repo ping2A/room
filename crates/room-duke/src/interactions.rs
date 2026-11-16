@@ -2476,7 +2476,16 @@ pub(crate) fn use_wall_switch(
             x, y, probe_z, sector, angle, USE_RANGE, &sectors, &walls, &tags,
         );
         sprite_target = nearest_tagged_sprite_switch(
-            world, x, y, probe_z, sector, angle, USE_RANGE, tile_meta, &sector_z, &walls,
+            world,
+            x,
+            y,
+            probe_z,
+            sector,
+            angle,
+            USE_RANGE,
+            tile_meta,
+            &sector_z,
+            &walls,
             NearSpriteFilter::Switch,
         );
         if wall_target.is_some() || sprite_target.is_some() {
@@ -2870,10 +2879,8 @@ fn nearest_tagged_sprite_switch(
                     sprite.lotag == 0
                         || !matches!(
                             sprite.picnum,
-                            crate::spawn::TOILET
-                                | crate::spawn::STALL
-                                | crate::spawn::WATERFOUNTAIN..=566
-                                | crate::spawn::PLUG
+                            crate::spawn::TOILET | crate::spawn::STALL | crate::spawn::WATERFOUNTAIN
+                                ..=566 | crate::spawn::PLUG
                         )
                 }
             }
@@ -3104,7 +3111,16 @@ pub(crate) fn use_nuke_button(
         })
         .collect();
     let Some((index, _)) = nearest_tagged_sprite_switch(
-        world, x, y, z, sector, angle, USE_RANGE, tile_meta, &sectors, &walls,
+        world,
+        x,
+        y,
+        z,
+        sector,
+        angle,
+        USE_RANGE,
+        tile_meta,
+        &sectors,
+        &walls,
         NearSpriteFilter::NukeButton,
     ) else {
         return false;

@@ -498,7 +498,11 @@ fn apply_vertex_heights(map: &mut UdmfMap, vertex_z: &[(Option<f64>, Option<f64>
     let mut verts: Vec<Vec<u16>> = vec![Vec::new(); map.sectors.len()];
     for l in &map.linedefs {
         for side in [l.side_front, l.side_back] {
-            let Some(sd) = map.sidedefs.get(usize::from(side)).filter(|_| side != u16::MAX) else {
+            let Some(sd) = map
+                .sidedefs
+                .get(usize::from(side))
+                .filter(|_| side != u16::MAX)
+            else {
                 continue;
             };
             let Some(list) = verts.get_mut(usize::from(sd.sector)) else {
@@ -519,9 +523,17 @@ fn apply_vertex_heights(map: &mut UdmfMap, vertex_z: &[(Option<f64>, Option<f64>
         let (Some(p0), Some(p1), Some(p2)) = (pos(list[0]), pos(list[1]), pos(list[2])) else {
             continue;
         };
-        let zs = |v: u16| vertex_z.get(usize::from(v)).copied().unwrap_or((None, None));
+        let zs = |v: u16| {
+            vertex_z
+                .get(usize::from(v))
+                .copied()
+                .unwrap_or((None, None))
+        };
         let sector = &map.sectors[si];
-        let (floor_h, ceil_h) = (f64::from(sector.floor_height), f64::from(sector.ceiling_height));
+        let (floor_h, ceil_h) = (
+            f64::from(sector.floor_height),
+            f64::from(sector.ceiling_height),
+        );
         for ceiling in [false, true] {
             let pick = |v: u16| if ceiling { zs(v).1 } else { zs(v).0 };
             if list.iter().all(|&v| pick(v).is_none()) {
@@ -534,7 +546,11 @@ fn apply_vertex_heights(map: &mut UdmfMap, vertex_z: &[(Option<f64>, Option<f64>
             let c = [p2.x(), p2.y(), z(list[2])];
             let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let mut n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+            let mut n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             if len < 1e-9 || n[2].abs() < 1e-9 {
                 continue;
@@ -1995,7 +2011,10 @@ thing { x = 0.0; y = 0.0; type = 1; standing = true; coop = false; }
 "#;
         let map = parse_udmf(text).unwrap();
         use super::ext::*;
-        assert_eq!(map.user.line_ext(0), LINE_BLOCKUSE | LINE_JUMPOVER | LINE_MONSTERACTIVATE);
+        assert_eq!(
+            map.user.line_ext(0),
+            LINE_BLOCKUSE | LINE_JUMPOVER | LINE_MONSTERACTIVATE
+        );
         assert_eq!(
             map.user.sector_ext(0),
             SECTOR_NOATTACK | SECTOR_HIDDEN | SECTOR_HURTMONSTERS

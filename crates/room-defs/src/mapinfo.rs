@@ -1104,10 +1104,22 @@ map MAP01 "Fog"
         .unwrap();
         let m = info.maps.get("MAP01").unwrap();
         assert_eq!(m.extras.get("skyfog").map(String::as_str), Some("128"));
-        assert_eq!(m.extras.get("skymist").map(String::as_str), Some("MIST01,200"));
-        assert_eq!(m.extras.get("skymistyscale").map(String::as_str), Some("0.5"));
+        assert_eq!(
+            m.extras.get("skymist").map(String::as_str),
+            Some("MIST01,200")
+        );
+        assert_eq!(
+            m.extras.get("skymistyscale").map(String::as_str),
+            Some("0.5")
+        );
         assert!(m.extras.contains_key("useskymist"));
-        assert_eq!(m.extras.get("thickfogdistance").map(String::as_str), Some("1024"));
-        assert_eq!(m.extras.get("thickfogmultiplier").map(String::as_str), Some("8.5"));
+        assert_eq!(
+            m.extras.get("thickfogdistance").map(String::as_str),
+            Some("1024")
+        );
+        assert_eq!(
+            m.extras.get("thickfogmultiplier").map(String::as_str),
+            Some("8.5")
+        );
     }
 }

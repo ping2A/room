@@ -4,13 +4,22 @@
 //! Chocolate `GAMEDEF.C` `keyw[]`.
 
 mod compile;
+mod eduke_vm;
 mod keywords;
 mod lex;
 pub mod vm;
 
 pub use compile::{
-    ConVersion, IncludeResolver, LevelDef, MAX_TILES, NUM_QUOTES, NUM_SOUNDS, NullIncludes,
-    ScriptImage, SoundDef, compile,
+    ConCompileOptions, ConDialect, ConVersion, EDUKE_MAX_QUOTES, EDUKE_MAX_SOUNDS, EDUKE_MAX_TILES,
+    EdArrayDefinition, EdEventDefinition, EdProjectileProperty, EdStateDefinition,
+    EdVariableDefinition, IncludeResolver, LevelDef, MAX_TILES, NUM_QUOTES, NUM_SOUNDS,
+    NullIncludes, ScriptImage, SoundDef, compile, compile_with_options,
+};
+pub use eduke_vm::{
+    EDUKE_MAXPLAYERS, EdActorMember, EdBinaryOperator, EdComparison, EdExecution, EdInstruction,
+    EdItemSprayKind, EdLValue, EdOperand, EdSoundMode, EdSpriteListKind, EdStructKind,
+    EdVariableScope, EdukeProgram, EdukeStructAccess, EdukeVmError, EdukeVmState, build_cos_q14,
+    build_divscale, build_getangle, build_mulscale, build_sin_q14, evaluate_binary,
 };
 pub use keywords::{KEYWORDS, NUM_KEYWORDS, keyword_index};
 pub use lex::{Lexer, is_altok, is_special};

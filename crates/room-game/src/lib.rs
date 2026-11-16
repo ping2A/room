@@ -5,6 +5,7 @@
 mod demo;
 mod engine_data;
 mod headless;
+pub mod mod_convert;
 mod mods;
 mod music;
 mod native_mods;
@@ -12,7 +13,6 @@ mod runtime;
 mod save;
 mod sound;
 mod vanilla_lmp;
-pub mod mod_convert;
 mod zscript_load;
 
 pub use demo::{
@@ -25,10 +25,9 @@ pub use engine_data::{
     load_layered_engine_data, mount_embedded_engine, mount_optional_engine_extras,
 };
 pub use headless::{
-    GameError, GameOptions, GameState, Headless, IntermissionTallies, ListenerSound, NetSaveRequest,
-    Skill,
-    apply_complevel_to_world, default_next_map_name, default_par_seconds, keyconf_alias_lines,
-    keyconf_default_binds,
+    GameError, GameOptions, GameState, Headless, IntermissionTallies, ListenerSound,
+    NetSaveRequest, Skill, apply_complevel_to_world, default_next_map_name, default_par_seconds,
+    keyconf_alias_lines, keyconf_default_binds,
 };
 pub use mods::{MANIFEST_LUMP, discover_mods, discover_python_mods, replaced_zscript};
 pub use music::{
@@ -45,7 +44,7 @@ pub use sound::{ListenerFilter, SoundSystem};
 pub use vanilla_lmp::VanillaLmp;
 pub use zscript_load::acs_library_pool;
 pub use zscript_load::{
-    CONVERTED_MODULE, CONVERTED_RECORD, CONVERTED_UI_MODULE, ZscriptLoadReport, load_status_bar_program,
-    load_zscript_from_vfs, log_zscript_report, status_bar_mod_sources,
+    CONVERTED_MODULE, CONVERTED_RECORD, CONVERTED_UI_MODULE, ZscriptLoadReport,
+    load_status_bar_program, load_zscript_from_vfs, log_zscript_report, status_bar_mod_sources,
     uzdoom_stdlib_sources, zscript_sources_from_vfs,
 };

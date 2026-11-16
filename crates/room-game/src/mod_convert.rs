@@ -136,7 +136,9 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
 fn mount(paths: &[&Path]) -> Result<Vfs, String> {
     let mut b = crate::mount_embedded_engine(VfsBuilder::new()).map_err(|e| e.to_string())?;
     for p in paths {
-        b = b.mount_path(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        b = b
+            .mount_path(p)
+            .map_err(|e| format!("{}: {e}", p.display()))?;
     }
     b.build().map_err(|e| e.to_string())
 }
@@ -158,7 +160,10 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
     // … compiled the way the game compiles them: with the engine's ZScript.
     let vfs = mount(&[opts.input.as_path()])?;
     let (sources, _) = crate::zscript_sources_from_vfs(&vfs);
-    let mod_paths: BTreeSet<String> = mod_sources.iter().map(|(p, _)| p.to_ascii_lowercase()).collect();
+    let mod_paths: BTreeSet<String> = mod_sources
+        .iter()
+        .map(|(p, _)| p.to_ascii_lowercase())
+        .collect();
     let external: Vec<(String, String)> = sources
         .iter()
         .filter(|(p, _)| !mod_paths.contains(&p.to_ascii_lowercase()))
@@ -218,7 +223,11 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
         return Err(format!("ZScript does not compile:\n{}", errs.join("\n")));
     }
     report.sources = mod_sources.iter().map(|(p, _)| p.clone()).collect();
-    let skip: BTreeSet<String> = report.sources.iter().map(|p| p.to_ascii_lowercase()).collect();
+    let skip: BTreeSet<String> = report
+        .sources
+        .iter()
+        .map(|p| p.to_ascii_lowercase())
+        .collect();
 
     // Package: input entries minus ZScript sources, plus the module.
     let out = std::fs::File::create(&opts.output)
@@ -226,8 +235,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
     let mut zw = zip::ZipWriter::new(out);
     let deflate = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
-    let stored = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     if is_zip(&opts.input) {
         let f = std::fs::File::open(&opts.input).map_err(|e| e.to_string())?;
         let mut za = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
@@ -249,7 +258,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
                 continue;
             }
             let bytes = std::fs::read(opts.input.join(&rel)).map_err(|e| e.to_string())?;
-            zw.start_file(rel.as_str(), deflate).map_err(|e| e.to_string())?;
+            zw.start_file(rel.as_str(), deflate)
+                .map_err(|e| e.to_string())?;
             zw.write_all(&bytes).map_err(|e| e.to_string())?;
             report.entries_copied += 1;
         }
@@ -257,7 +267,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
         return Err("only .pk3/.zip packages and directories can be converted (not WADs)".into());
     }
     if let Some(art) = &play_art {
-        zw.start_file(CONVERTED_MODULE, stored).map_err(|e| e.to_string())?;
+        zw.start_file(CONVERTED_MODULE, stored)
+            .map_err(|e| e.to_string())?;
         zw.write_all(&art.bytes).map_err(|e| e.to_string())?;
     }
     // UI scope (`docs/37` §6.6.3): a ZScript status bar is compiled with the
@@ -265,9 +276,9 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
     if let Some(class) = status_bar_class {
         let mut ui_sources = crate::uzdoom_stdlib_sources();
         if ui_sources.is_empty() {
-            report
-                .warnings
-                .push(format!("StatusBarClass {class}: wadsrc/uzdoom not found, no UI module"));
+            report.warnings.push(format!(
+                "StatusBarClass {class}: wadsrc/uzdoom not found, no UI module"
+            ));
         } else {
             ui_sources.extend(crate::status_bar_mod_sources(&vfs));
             let ui = room_zscript::check(&ui_sources);
@@ -278,9 +289,11 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
                         .filter(|(p, _)| !mod_paths.contains(&p.to_ascii_lowercase()))
                         .cloned()
                         .collect();
-                    let ui_art = room_zvm_wasm::roommod::compile_room_mod_with(&ui_program, &ui_external)
+                    let ui_art =
+                        room_zvm_wasm::roommod::compile_room_mod_with(&ui_program, &ui_external)
+                            .map_err(|e| e.to_string())?;
+                    zw.start_file(CONVERTED_UI_MODULE, stored)
                         .map_err(|e| e.to_string())?;
-                    zw.start_file(CONVERTED_UI_MODULE, stored).map_err(|e| e.to_string())?;
                     zw.write_all(&ui_art.bytes).map_err(|e| e.to_string())?;
                     report.ui_wasm_bytes = ui_art.bytes.len();
                 }
@@ -310,7 +323,14 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
     // Verify, then append the record.
     match (&opts.iwad, opts.verify_tics) {
         (Some(iwad), n) if n > 0 => {
-            let v = verify_converted(iwad, &opts.input, &opts.output, opts.map.as_deref(), n, opts.skill)?;
+            let v = verify_converted(
+                iwad,
+                &opts.input,
+                &opts.output,
+                opts.map.as_deref(),
+                n,
+                opts.skill,
+            )?;
             if !v.passed() {
                 report.warnings.push(format!(
                     "verification failed: first divergence at tic {:?}",
@@ -330,7 +350,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertReport, String> {
         .open(&opts.output)
         .map_err(|e| e.to_string())?;
     let mut zw = zip::ZipWriter::new_append(f).map_err(|e| e.to_string())?;
-    zw.start_file(CONVERTED_RECORD, deflate).map_err(|e| e.to_string())?;
+    zw.start_file(CONVERTED_RECORD, deflate)
+        .map_err(|e| e.to_string())?;
     zw.write_all(record.as_bytes()).map_err(|e| e.to_string())?;
     zw.finish().map_err(|e| e.to_string())?;
     Ok(report)
@@ -428,8 +449,11 @@ pub fn session_trace(
     let mut trace = Vec::with_capacity(tics as usize);
     for t in 0..tics {
         if t == save_at && t > 0 {
-            let bytes = game.save_game().map_err(|e| format!("save at tic {t}: {e}"))?;
-            game.load_game(&bytes).map_err(|e| format!("load at tic {t}: {e}"))?;
+            let bytes = game
+                .save_game()
+                .map_err(|e| format!("save at tic {t}: {e}"))?;
+            game.load_game(&bytes)
+                .map_err(|e| format!("load at tic {t}: {e}"))?;
         }
         game.tick(&[scripted_cmd(t)]);
         let w = game.world().ok_or("no world")?;

@@ -248,7 +248,8 @@ const DRONE: i16 = 1880;
 const SHARK: i16 = 1550;
 const ROTATEGUN: i16 = 2360;
 const APLAYER: i16 = 1405;
-const BLIMP_WEAPON_SPRITES: [i16; 14] = [23, 22, 42, 44, 44, 57, 54, 53, 55, 44, 44, 23, 44, 24];
+pub(crate) const BLIMP_WEAPON_SPRITES: [i16; 14] =
+    [23, 22, 42, 44, 44, 57, 54, 53, 55, 44, 44, 23, 44, 24];
 const PIPEBOMB_BLAST_RADIUS_FALLBACK: i32 = 2500;
 const EXPLOSION2: i16 = 1890;
 const WATERSPLASH2: i16 = 1380;
@@ -745,7 +746,9 @@ pub fn moveactors_with_skill(
         // Chocolate: snapshot bpos* before execute/fall (skill gate uses bposz).
         temps[iu].bposz = sprites[iu].z;
         if pic_i == DUKECAR || pic_i == HELECOPT {
-            move_dukecar(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+            move_dukecar(
+                lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu,
+            );
             i = next;
             continue;
         }
@@ -1442,7 +1445,9 @@ pub fn moveactors_with_skill(
             if pn == BLOOD {
                 let _ = con_spawn_blood(lists, sprites, picnum, temps, Some(script), i);
             } else if pn == EXPLOSION2 {
-                spawn_explosion2_from(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+                spawn_explosion2_from(
+                    lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu,
+                );
             } else {
                 let _ = crate::spawn_rt::spawn_from(
                     lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed,
@@ -1987,10 +1992,14 @@ fn move_pipebombs(
         }
         if (is_morter || is_bouncemine)
             && let Some(script) = script
-            && let Some(trail) = script.labels.get("FRAMEEFFECT1").map(|label| label.value as i16)
+            && let Some(trail) = script
+                .labels
+                .get("FRAMEEFFECT1")
+                .map(|label| label.value as i16)
         {
             let j = crate::spawn_rt::spawn_from(
-                lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed, i, trail,
+                lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed, i,
+                trail,
             );
             if j >= 0 {
                 let ju = j as usize;
@@ -2168,7 +2177,10 @@ fn move_pipebombs(
             temps[iu].g_t[5] = 0;
         }
         // MORTER / BOUNCEMINE detonate on any contact or next to a player.
-        if temps[iu].g_t[3] == 0 && (is_morter || is_bouncemine) && (move_hit != 0 || nearest_dist < 844) {
+        if temps[iu].g_t[3] == 0
+            && (is_morter || is_bouncemine)
+            && (move_hit != 0 || nearest_dist < 844)
+        {
             temps[iu].g_t[3] = 1;
             temps[iu].g_t[4] = 0;
             sprites[iu].xvel = 0;
@@ -2195,13 +2207,23 @@ fn move_pipebombs(
                     .unwrap_or(PIPEBOMB_BLAST_RADIUS_FALLBACK)
                     .max(1);
                 // gamestartup: …pipebomb, shrinker, tripbomb, morter, bouncemine.
-                let blast_offset = if is_morter { 3 } else if is_bouncemine { 4 } else { 0 };
+                let blast_offset = if is_morter {
+                    3
+                } else if is_bouncemine {
+                    4
+                } else {
+                    0
+                };
                 let pipebomb_radius = if blast_offset == 0 {
                     pipebomb_radius
                 } else {
                     script
                         .and_then(|image| {
-                            let base = if image.con_version == crate::con::ConVersion::V15 { 9 } else { 8 };
+                            let base = if image.con_version == crate::con::ConVersion::V15 {
+                                9
+                            } else {
+                                8
+                            };
                             image.gamestartup.get(base + blast_offset).copied()
                         })
                         .unwrap_or(pipebomb_radius)
@@ -2466,7 +2488,9 @@ fn move_dukecar(
         let _ = lists.deletesprite(i);
         return;
     } else if t0 & 3 == 0 {
-        spawn_explosion2_from(lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu);
+        spawn_explosion2_from(
+            lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu,
+        );
     }
     // Chocolate `ssp(i, CLIPMASK0)` → non-badguy `movesprite`.
     let sp = sprites[iu];

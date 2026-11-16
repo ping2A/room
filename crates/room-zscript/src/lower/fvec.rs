@@ -227,8 +227,9 @@ fn member_float_field_static(obj: &Expr, field: &str, lx: &Lx) -> Option<(u16, u
         }
     }
     match static_class(obj, lx) {
-        Some(class) => lookup_float_field(lx, &class, field)
-            .or_else(|| declaring_float_field(lx, field)),
+        Some(class) => {
+            lookup_float_field(lx, &class, field).or_else(|| declaring_float_field(lx, field))
+        }
         None => declaring_float_field(lx, field),
     }
 }
@@ -299,7 +300,11 @@ fn float_place_static(expr: &Expr, lx: &Lx) -> bool {
 
 /// Resolve a scalar float place: a float local, a scalar float field or
 /// one component of a vector place.
-pub(super) fn float_place(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr) -> Option<FloatPlace> {
+pub(super) fn float_place(
+    f: &mut CompiledFunction,
+    lx: &mut Lx,
+    expr: &Expr,
+) -> Option<FloatPlace> {
     if !float_place_static(expr, lx) {
         return None;
     }
@@ -446,9 +451,7 @@ pub(super) fn expr_is_float(expr: &Expr, lx: &Lx) -> bool {
         }
         Expr::Unary { op, expr, .. } if op == "-" || op == "+" => expr_is_float(expr, lx),
         Expr::Binary { op, lhs, rhs, .. } => match op.as_str() {
-            "+" | "-" | "/" | "**" => {
-                expr_is_float(lhs, lx) || expr_is_float(rhs, lx)
-            }
+            "+" | "-" | "/" | "**" => expr_is_float(lhs, lx) || expr_is_float(rhs, lx),
             "*" => {
                 (expr_vector_dim(lhs, lx).is_some() && expr_vector_dim(rhs, lx).is_some())
                     || ((expr_is_float(lhs, lx) || expr_is_float(rhs, lx))
@@ -458,15 +461,33 @@ pub(super) fn expr_is_float(expr: &Expr, lx: &Lx) -> bool {
             "dot" | "DOT" | "Dot" => true,
             _ => false,
         },
-        Expr::Ternary { then_e, else_e, .. } => expr_is_float(then_e, lx) || expr_is_float(else_e, lx),
+        Expr::Ternary { then_e, else_e, .. } => {
+            expr_is_float(then_e, lx) || expr_is_float(else_e, lx)
+        }
         Expr::Cast { ty, .. } => is_float_type_name(ty),
         Expr::Call { callee, .. } => match callee.as_ref() {
             Expr::Ident(name, _) => {
                 matches!(
                     name.to_ascii_lowercase().as_str(),
-                    "frandom" | "frandom2" | "fcrandom" | "sin" | "cos" | "tan" | "asin" | "acos"
-                        | "atan" | "atan2" | "vectorangle" | "sqrt" | "double" | "float"
-                        | "fmin" | "fmax" | "deltaangle" | "absangle" | "frandompick"
+                    "frandom"
+                        | "frandom2"
+                        | "fcrandom"
+                        | "sin"
+                        | "cos"
+                        | "tan"
+                        | "asin"
+                        | "acos"
+                        | "atan"
+                        | "atan2"
+                        | "vectorangle"
+                        | "sqrt"
+                        | "double"
+                        | "float"
+                        | "fmin"
+                        | "fmax"
+                        | "deltaangle"
+                        | "absangle"
+                        | "frandompick"
                 ) || resolve_call(callee, lx)
                     .and_then(|t| lx.funcs.get(&t.key))
                     .is_some_and(|sig| sig.ret == 1)
@@ -590,7 +611,9 @@ pub(super) fn emit_expr_v(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr, di
                 _ => {}
             }
         }
-        Expr::Unary { op, expr: inner, .. } if op == "-" || op == "+" => {
+        Expr::Unary {
+            op, expr: inner, ..
+        } if op == "-" || op == "+" => {
             let v = emit_expr_v(f, lx, inner, dim);
             if op == "+" {
                 return v;
@@ -794,7 +817,11 @@ pub(super) fn emit_dot(f: &mut CompiledFunction, lx: &mut Lx, lhs: &Expr, rhs: &
 }
 
 /// Scalar float read: float place, `.Length()`, `a * b` dot product.
-pub(super) fn try_emit_float_read(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr) -> Option<u8> {
+pub(super) fn try_emit_float_read(
+    f: &mut CompiledFunction,
+    lx: &mut Lx,
+    expr: &Expr,
+) -> Option<u8> {
     match expr {
         Expr::Ident(..) | Expr::Member { .. } => {
             if let Expr::Member { obj, field, .. } = expr {
@@ -942,7 +969,8 @@ pub(super) fn try_emit_float_inc(
     dec: bool,
     post: bool,
 ) -> Option<u8> {
-    if !float_place_static(expr, lx) || matches!(expr, Expr::Ident(n, _) if float_local(lx, n).is_some())
+    if !float_place_static(expr, lx)
+        || matches!(expr, Expr::Ident(n, _) if float_local(lx, n).is_some())
     {
         return None;
     }

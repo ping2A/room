@@ -27,7 +27,9 @@ fn root() -> PathBuf {
 fn mount(paths: &[&Path]) -> room_vfs::Vfs {
     let mut b = room_game::mount_embedded_engine(room_vfs::VfsBuilder::new()).unwrap();
     for p in paths {
-        b = b.mount_path(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        b = b
+            .mount_path(p)
+            .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     }
     b.build().unwrap()
 }
@@ -59,10 +61,13 @@ fn digest(w: &World) -> String {
         inv.sort();
         // The voice actually used: the actor's, else its class's, else
         // "player" (`actor_sound_identity`).
-        let voice = [a.sound_class.trim(), w.classes.get(a.class).map_or("", |d| d.sound_class.trim())]
-            .into_iter()
-            .find(|v| !v.is_empty())
-            .unwrap_or("player");
+        let voice = [
+            a.sound_class.trim(),
+            w.classes.get(a.class).map_or("", |d| d.sound_class.trim()),
+        ]
+        .into_iter()
+        .find(|v| !v.is_empty())
+        .unwrap_or("player");
         let _ = writeln!(s, "{}] {voice}", inv.join(","));
     }
     s
@@ -86,7 +91,10 @@ fn session(paths: &[&Path], tics: u32, skill: u8) -> Run {
     game.set_complevel(defs.complevel);
     game.set_terrain(&defs.terrain);
     game.set_keyconf(&defs.keyconf);
-    game.set_acs_library_pool(room_game::acs_library_pool(&vfs), defs.loadacs.libraries.clone());
+    game.set_acs_library_pool(
+        room_game::acs_library_pool(&vfs),
+        defs.loadacs.libraries.clone(),
+    );
     game.set_mapinfo(Arc::new(defs.mapinfo));
     let zs = room_game::load_zscript_from_vfs(&vfs);
     assert!(zs.ok, "ZScript: {:?}", zs.notes);

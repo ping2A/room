@@ -111,7 +111,10 @@ impl HostCtx for Ctx<'_> {
     }
 
     fn depth(&mut self) -> i32 {
-        self.st.globals.as_ref().map_or(0, |g| get_i64(&g.depth) as i32)
+        self.st
+            .globals
+            .as_ref()
+            .map_or(0, |g| get_i64(&g.depth) as i32)
     }
 
     fn set_rq(&mut self, rq: Option<i64>) {
@@ -172,7 +175,8 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     put(
         &zvm,
         "new_obj",
-        Closure::<dyn Fn(i32) -> i64>::new(move |k| a::imp_new_obj(&mut ctx!(s), k)).into_js_value(),
+        Closure::<dyn Fn(i32) -> i64>::new(move |k| a::imp_new_obj(&mut ctx!(s), k))
+            .into_js_value(),
     )?;
     let s = Rc::clone(st);
     put(
@@ -185,7 +189,8 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     put(
         &zvm,
         "is_null",
-        Closure::<dyn Fn(i64) -> i64>::new(move |o| a::imp_is_null(&mut ctx!(s), o)).into_js_value(),
+        Closure::<dyn Fn(i64) -> i64>::new(move |o| a::imp_is_null(&mut ctx!(s), o))
+            .into_js_value(),
     )?;
     macro_rules! load {
         ($name:literal, $ret:ty, $op:path, $map:expr) => {{
@@ -195,9 +200,11 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
                 $name,
                 Closure::<dyn Fn(i64, i32, i32, i32) -> Result<$ret, JsValue>>::new(
                     move |o, x, f, p| {
-                        a::heap_op(&mut ctx!(s), f, p, |vm| $op(&vm.heap, a::obj(o), x as u32 as usize))
-                            .map($map)
-                            .map_err(|_| trap_value())
+                        a::heap_op(&mut ctx!(s), f, p, |vm| {
+                            $op(&vm.heap, a::obj(o), x as u32 as usize)
+                        })
+                        .map($map)
+                        .map_err(|_| trap_value())
                     },
                 )
                 .into_js_value(),
@@ -206,50 +213,72 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     }
     load!("ld_i", i64, crate::ops::ld_i, |v| v);
     load!("ld_f", f64, crate::ops::ld_f, |v| v);
-    load!("ld_s", i32, crate::ops::ld_s, |v: crate::heap::StrHandle| v.0 as i32);
+    load!(
+        "ld_s",
+        i32,
+        crate::ops::ld_s,
+        |v: crate::heap::StrHandle| v.0 as i32
+    );
     load!("ld_a", i64, crate::ops::ld_a, |v| abi::obj_bits(v) as i64);
     let s = Rc::clone(st);
     put(
         &zvm,
         "st_i",
-        Closure::<dyn Fn(i64, i32, i64, i32, i32) -> Result<(), JsValue>>::new(move |o, x, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::st_i(&mut vm.heap, a::obj(o), x as u32 as usize, v))
+        Closure::<dyn Fn(i64, i32, i64, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, x, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::st_i(&mut vm.heap, a::obj(o), x as u32 as usize, v)
+                })
                 .map_err(|_| trap_value())
-        })
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
     put(
         &zvm,
         "st_f",
-        Closure::<dyn Fn(i64, i32, f64, i32, i32) -> Result<(), JsValue>>::new(move |o, x, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::st_f(&mut vm.heap, a::obj(o), x as u32 as usize, v))
+        Closure::<dyn Fn(i64, i32, f64, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, x, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::st_f(&mut vm.heap, a::obj(o), x as u32 as usize, v)
+                })
                 .map_err(|_| trap_value())
-        })
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
     put(
         &zvm,
         "st_s",
-        Closure::<dyn Fn(i64, i32, i32, i32, i32) -> Result<(), JsValue>>::new(move |o, x, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| {
-                crate::ops::st_s(&mut vm.heap, a::obj(o), x as u32 as usize, crate::heap::StrHandle(v as u32))
-            })
-            .map_err(|_| trap_value())
-        })
+        Closure::<dyn Fn(i64, i32, i32, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, x, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::st_s(
+                        &mut vm.heap,
+                        a::obj(o),
+                        x as u32 as usize,
+                        crate::heap::StrHandle(v as u32),
+                    )
+                })
+                .map_err(|_| trap_value())
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
     put(
         &zvm,
         "st_a",
-        Closure::<dyn Fn(i64, i32, i64, i32, i32) -> Result<(), JsValue>>::new(move |o, x, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| {
-                crate::ops::st_a(&mut vm.heap, a::obj(o), x as u32 as usize, a::obj(v))
-            })
-            .map_err(|_| trap_value())
-        })
+        Closure::<dyn Fn(i64, i32, i64, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, x, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::st_a(&mut vm.heap, a::obj(o), x as u32 as usize, a::obj(v))
+                })
+                .map_err(|_| trap_value())
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
@@ -257,7 +286,10 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
         &zvm,
         "arr_len",
         Closure::<dyn Fn(i64, i32, i32) -> Result<i64, JsValue>>::new(move |o, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::arr_len(&vm.heap, a::obj(o))).map_err(|_| trap_value())
+            a::heap_op(&mut ctx!(s), f, p, |vm| {
+                crate::ops::arr_len(&vm.heap, a::obj(o))
+            })
+            .map_err(|_| trap_value())
         })
         .into_js_value(),
     )?;
@@ -266,8 +298,10 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
         &zvm,
         "arr_get_i",
         Closure::<dyn Fn(i64, i64, i32, i32) -> Result<i64, JsValue>>::new(move |o, i, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::arr_get_i(&vm.heap, a::obj(o), i))
-                .map_err(|_| trap_value())
+            a::heap_op(&mut ctx!(s), f, p, |vm| {
+                crate::ops::arr_get_i(&vm.heap, a::obj(o), i)
+            })
+            .map_err(|_| trap_value())
         })
         .into_js_value(),
     )?;
@@ -275,10 +309,14 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     put(
         &zvm,
         "arr_set_i",
-        Closure::<dyn Fn(i64, i64, i64, i32, i32) -> Result<(), JsValue>>::new(move |o, i, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::arr_set_i(&mut vm.heap, a::obj(o), i, v))
+        Closure::<dyn Fn(i64, i64, i64, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, i, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::arr_set_i(&mut vm.heap, a::obj(o), i, v)
+                })
                 .map_err(|_| trap_value())
-        })
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
@@ -286,8 +324,10 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
         &zvm,
         "arr_push_i",
         Closure::<dyn Fn(i64, i64, i32, i32) -> Result<(), JsValue>>::new(move |o, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::arr_push_i(&mut vm.heap, a::obj(o), v))
-                .map_err(|_| trap_value())
+            a::heap_op(&mut ctx!(s), f, p, |vm| {
+                crate::ops::arr_push_i(&mut vm.heap, a::obj(o), v)
+            })
+            .map_err(|_| trap_value())
         })
         .into_js_value(),
     )?;
@@ -296,9 +336,11 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
         &zvm,
         "arr_get_s",
         Closure::<dyn Fn(i64, i64, i32, i32) -> Result<i32, JsValue>>::new(move |o, i, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| crate::ops::arr_get_s(&vm.heap, a::obj(o), i))
-                .map(|h| h.0 as i32)
-                .map_err(|_| trap_value())
+            a::heap_op(&mut ctx!(s), f, p, |vm| {
+                crate::ops::arr_get_s(&vm.heap, a::obj(o), i)
+            })
+            .map(|h| h.0 as i32)
+            .map_err(|_| trap_value())
         })
         .into_js_value(),
     )?;
@@ -306,12 +348,19 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     put(
         &zvm,
         "arr_set_s",
-        Closure::<dyn Fn(i64, i64, i32, i32, i32) -> Result<(), JsValue>>::new(move |o, i, v, f, p| {
-            a::heap_op(&mut ctx!(s), f, p, |vm| {
-                crate::ops::arr_set_s(&mut vm.heap, a::obj(o), i, crate::heap::StrHandle(v as u32))
-            })
-            .map_err(|_| trap_value())
-        })
+        Closure::<dyn Fn(i64, i64, i32, i32, i32) -> Result<(), JsValue>>::new(
+            move |o, i, v, f, p| {
+                a::heap_op(&mut ctx!(s), f, p, |vm| {
+                    crate::ops::arr_set_s(
+                        &mut vm.heap,
+                        a::obj(o),
+                        i,
+                        crate::heap::StrHandle(v as u32),
+                    )
+                })
+                .map_err(|_| trap_value())
+            },
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
@@ -330,9 +379,9 @@ fn imports(st: &Rc<RefCell<WebState>>) -> Result<Object, String> {
     put(
         &zvm,
         "native",
-        Closure::<dyn Fn(i32, i32, i32, i32, i32) -> Result<(), JsValue>>::new(move |id, n, b, _f, _p| {
-            a::imp_native(&mut ctx!(s), id, n, b).map_err(|_| trap_value())
-        })
+        Closure::<dyn Fn(i32, i32, i32, i32, i32) -> Result<(), JsValue>>::new(
+            move |id, n, b, _f, _p| a::imp_native(&mut ctx!(s), id, n, b).map_err(|_| trap_value()),
+        )
         .into_js_value(),
     )?;
     let s = Rc::clone(st);
@@ -383,7 +432,8 @@ pub async fn instantiate(
         ..WebState::default()
     }));
     let imports = imports(&st)?;
-    let promise: js_sys::Promise = WebAssembly::instantiate_buffer(&bytes, &imports).unchecked_into();
+    let promise: js_sys::Promise =
+        WebAssembly::instantiate_buffer(&bytes, &imports).unchecked_into();
     let result = wasm_bindgen_futures::JsFuture::from(promise)
         .await
         .map_err(|e| format!("instantiate: {e:?}"))?;
@@ -544,7 +594,10 @@ impl Backend for WebBackend {
                 copy_out(m, &self.scratch);
             }
         }
-        let r = f.call0(&JsValue::NULL).map(|_| ()).map_err(|e| format!("{e:?}"));
+        let r = f
+            .call0(&JsValue::NULL)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"));
         let mut st = self.inst.st.borrow_mut();
         self.core = st.core.take();
         if let Some(m) = &st.memory {

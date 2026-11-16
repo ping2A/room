@@ -1,6 +1,8 @@
 //! Retained Mod HUD drawing (`docs/27` §9 / MH1).
 
-use crate::doom_text::{draw_stcfn_prop as draw_stcfn_string, measure_stcfn_prop as measure_stcfn_string};
+use crate::doom_text::{
+    draw_stcfn_prop as draw_stcfn_string, measure_stcfn_prop as measure_stcfn_string,
+};
 use crate::draw::{Rect, Rgba, UiDrawList, Vec2};
 use room_map::MapGeometry;
 use room_sim::mod_hud::{HudWidget, ModHud, WidgetKey, flags, kind, layer, map as map_layers};
@@ -175,20 +177,20 @@ fn text_ramp(index: u8) -> Option<[[f32; 3]; 2]> {
         ]
     };
     let (dark, bright) = match index {
-        0 => (0x3c_1010, 0xff_b8b8), // brick
-        1 => (0x4a_3a20, 0xff_e6b0), // tan
-        2 | 20 => (0x2a_2a2a, 0xd8_d8d8), // gray, dark gray
-        3 | 16 => (0x0c_3a0c, 0x9c_ff9c), // green
-        4 | 18 => (0x3a_2410, 0xd8_a060), // brown
-        5 => (0x4a_2c00, 0xff_e050),  // gold
-        6 | 17 => (0x3c_0000, 0xff_5050), // red
-        7 | 24 => (0x00_0c4a, 0x80_a0ff), // blue
-        8 | 23 => (0x4a_1c00, 0xff_a040), // orange
-        9 => (0x60_6060, 0xff_ffff),  // white
-        10 => (0x4a_4000, 0xff_ff60), // yellow
+        0 => (0x3c_1010, 0xff_b8b8),       // brick
+        1 => (0x4a_3a20, 0xff_e6b0),       // tan
+        2 | 20 => (0x2a_2a2a, 0xd8_d8d8),  // gray, dark gray
+        3 | 16 => (0x0c_3a0c, 0x9c_ff9c),  // green
+        4 | 18 => (0x3a_2410, 0xd8_a060),  // brown
+        5 => (0x4a_2c00, 0xff_e050),       // gold
+        6 | 17 => (0x3c_0000, 0xff_5050),  // red
+        7 | 24 => (0x00_0c4a, 0x80_a0ff),  // blue
+        8 | 23 => (0x4a_1c00, 0xff_a040),  // orange
+        9 => (0x60_6060, 0xff_ffff),       // white
+        10 => (0x4a_4000, 0xff_ff60),      // yellow
         13 | 22 => (0x10_3050, 0xb0_e0ff), // light blue, ice
-        14 => (0x50_4430, 0xff_f4dc), // cream
-        19 => (0x2c_0c3c, 0xd8_90ff), // purple
+        14 => (0x50_4430, 0xff_f4dc),      // cream
+        19 => (0x2c_0c3c, 0xd8_90ff),      // purple
         21 | 25 => (0x00_3a3a, 0x70_ffff), // cyan, teal
         _ => return None,
     };
@@ -392,7 +394,15 @@ fn draw_map_widget(
         draw_geometry(map, &proj, list, bg, alpha, reveal);
     }
     if (layers & map_layers::ZONES) != 0 {
-        draw_zones(ctx.zones, maptime, ctx.ticfrac_milli, &proj, list, bg, alpha);
+        draw_zones(
+            ctx.zones,
+            maptime,
+            ctx.ticfrac_milli,
+            &proj,
+            list,
+            bg,
+            alpha,
+        );
     }
     if (layers & map_layers::MARKERS) != 0 || (layers & map_layers::ITEMS) != 0 {
         for (_, mw) in ctx
@@ -412,7 +422,15 @@ fn draw_map_widget(
                 let lx = (p.x + size).min(rect.x + rect.w - lw - 1.0);
                 let start = list.cmds.len();
                 draw_stcfn_string(list, lx, p.y - 2.0, &label, 0.5);
-                list.style_since(start, alpha, text_ramp(if mw.text_color == 255 { 9 } else { mw.text_color }));
+                list.style_since(
+                    start,
+                    alpha,
+                    text_ramp(if mw.text_color == 255 {
+                        9
+                    } else {
+                        mw.text_color
+                    }),
+                );
             }
         }
     }

@@ -139,7 +139,10 @@ pub fn effect_tics_for_item(world: &World, mo: ActorId, giver: ClassId) -> Optio
         .and_then(|v| v.split(',').next()?.trim().parse::<f64>().ok())
         .map_or(dur, duration_tics);
     let player = world.players.get(player_slot(world, mo)?)?.as_ref()?;
-    let key = world.classes.get(power).map(|c| c.name.to_ascii_lowercase())?;
+    let key = world
+        .classes
+        .get(power)
+        .map(|c| c.name.to_ascii_lowercase())?;
     if let Some(st) = player.powers.get(&key) {
         return Some((st.tics, max));
     }
@@ -335,8 +338,8 @@ fn end_effect(world: &mut World, p: &mut Player, mo: ActorId, st: &PowerState) {
             for other in world.players.iter_mut().flatten() {
                 other.timefreezer &= mask;
             }
-            let any = p.timefreezer != 0
-                || world.players.iter().flatten().any(|o| o.timefreezer != 0);
+            let any =
+                p.timefreezer != 0 || world.players.iter().flatten().any(|o| o.timefreezer != 0);
             if !any {
                 world.level.frozen_power = false;
             }

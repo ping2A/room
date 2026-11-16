@@ -44,7 +44,10 @@ pub fn replaced_zscript(vfs: &Vfs) -> Vec<String> {
         };
         if let Ok(m) = Manifest::parse(&String::from_utf8_lossy(&bytes)) {
             for p in m.replaces_zscript {
-                let p = p.trim_start_matches("./").trim_start_matches('/').to_ascii_lowercase();
+                let p = p
+                    .trim_start_matches("./")
+                    .trim_start_matches('/')
+                    .to_ascii_lowercase();
                 if !out.contains(&p) {
                     out.push(p);
                 }

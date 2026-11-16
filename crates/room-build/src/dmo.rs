@@ -652,7 +652,8 @@ mod tests {
     fn atomic_v116_demos_decode_every_record() {
         // v116 (the Atomic retail demos) has a one-byte player header; the
         // body must decode to exactly `reccnt` records.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke/demos");
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke/demos");
         for (name, map) in [("DEMO1", "E3L11"), ("DEMO2", "E4L11"), ("DEMO3", "E4L2")] {
             let Ok(b) = std::fs::read(dir.join(format!("{name}.DMO"))) else {
                 return;
@@ -661,7 +662,10 @@ mod tests {
             let d = DmoDemo::parse(&b).unwrap();
             assert_eq!(d.map_name(), map, "{name}");
             assert_eq!(d.tics.len(), reccnt, "{name}");
-            assert!(d.weapon_choices.is_empty(), "{name}: v116 has no weapon table");
+            assert!(
+                d.weapon_choices.is_empty(),
+                "{name}: v116 has no weapon table"
+            );
         }
     }
 

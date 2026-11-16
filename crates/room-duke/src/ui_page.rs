@@ -30,7 +30,12 @@ impl<'a> UiPage<'a> {
     pub fn new(tiles: &'a SoftTiles, frame: &'a mut SoftFrame) -> Self {
         let sx = f64::from(frame.width) / 320.0;
         let sy = f64::from(frame.height) / 200.0;
-        Self { tiles, frame, sx, sy }
+        Self {
+            tiles,
+            frame,
+            sx,
+            sy,
+        }
     }
 
     /// Fill the page with one palette index.
@@ -46,7 +51,16 @@ impl<'a> UiPage<'a> {
 
     /// `rotatesprite` at zoom 65536: `top_left` is flag 16; otherwise (x, y)
     /// is the tile centre plus its picanm offset. `opaque` is flag 64.
-    pub fn sprite(&mut self, x: i32, y: i32, pic: i16, shade: i8, pal: u8, top_left: bool, opaque: bool) {
+    pub fn sprite(
+        &mut self,
+        x: i32,
+        y: i32,
+        pic: i16,
+        shade: i8,
+        pal: u8,
+        top_left: bool,
+        opaque: bool,
+    ) {
         let Some((tw, th)) = self.tiles.dimensions(pic) else {
             return;
         };
@@ -80,7 +94,9 @@ impl<'a> UiPage<'a> {
                 if p == room_build::art::TRANSPARENT && !opaque {
                     continue;
                 }
-                let p = self.tiles.shade_palette(shade, self.tiles.remap_palette(pal, p));
+                let p = self
+                    .tiles
+                    .shade_palette(shade, self.tiles.remap_palette(pal, p));
                 self.frame.pixels[(dy * fw + dx) as usize] = p;
             }
         }
@@ -144,7 +160,11 @@ impl<'a> UiPage<'a> {
                     continue;
                 }
                 let Some(ac) = glyph(c) else { break };
-                width += if c.is_ascii_digit() { 8 } else { self.tile_width(ac) };
+                width += if c.is_ascii_digit() {
+                    8
+                } else {
+                    self.tile_width(ac)
+                };
             }
             x = 160 - (width >> 1);
         }
@@ -155,7 +175,11 @@ impl<'a> UiPage<'a> {
             }
             let Some(ac) = glyph(c) else { break };
             self.sprite(x, y, ac, shade, 0, true, false);
-            x += if c.is_ascii_digit() { 8 } else { self.tile_width(ac) };
+            x += if c.is_ascii_digit() {
+                8
+            } else {
+                self.tile_width(ac)
+            };
         }
     }
 
@@ -166,7 +190,15 @@ impl<'a> UiPage<'a> {
                 x += 5;
                 continue;
             }
-            self.sprite(x, y, MINIFONT + i16::from(c) - i16::from(b'!'), 0, pal, true, false);
+            self.sprite(
+                x,
+                y,
+                MINIFONT + i16::from(c) - i16::from(b'!'),
+                0,
+                pal,
+                true,
+                false,
+            );
             x += 4;
         }
     }

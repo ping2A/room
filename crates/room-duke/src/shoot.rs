@@ -29,7 +29,7 @@ const COMMANDER: i16 = 1920;
 const GREENSLIME: i16 = 2370;
 const ORGANTIC: i16 = 2420;
 const ROTATEGUN: i16 = 2360;
-const RECON: i16 = 1960;
+pub(crate) const RECON: i16 = 1960;
 /// Atomic `CHAINGUN` weapon damage profile.
 pub const CHAINGUN: i16 = 2536;
 /// Atomic `COOLEXPLOSION1` — OCTABRAIN projectile (`shoot` / STAT_PROJECTILE).
@@ -75,7 +75,33 @@ pub(crate) fn script_tile_or(script: Option<&ScriptImage>, name: &str, fallback:
 const CLIPMASK1: u32 = (256 << 16) + 64;
 
 /// Chocolate `AUTO_AIM_ANGLE`.
-const AUTO_AIM_ANGLE: i16 = 48;
+pub(crate) const AUTO_AIM_ANGLE: i16 = 48;
+/// EDuke32 `PROJECTILE_FLAG_HITSCAN` (`PROJ_WORKSLIKE` bit 0).
+pub(crate) const PROJECTILE_FLAG_HITSCAN: i32 = 1;
+/// EDuke32 `PROJECTILE_FLAG_KNEE` (`PROJ_WORKSLIKE` bit 4).
+pub(crate) const PROJECTILE_FLAG_KNEE: i32 = 16;
+/// EDuke32 `PROJECTILE_FLAG_RPG` (`PROJ_WORKSLIKE` bit 1).
+pub(crate) const PROJECTILE_FLAG_RPG: i32 = 2;
+/// EDuke32 `PROJECTILE_FLAG_WATERBUBBLES` (`PROJ_WORKSLIKE` bit 5).
+pub(crate) const PROJECTILE_FLAG_WATERBUBBLES: i32 = 32;
+/// EDuke32 `PROJECTILE_FLAG_REALCLIPDIST` (`PROJ_WORKSLIKE` bit 19).
+pub(crate) const PROJECTILE_FLAG_REALCLIPDIST: i32 = 524_288;
+/// EDuke32 `PROJECTILE_FLAG_BOUNCESOFFWALLS` (`PROJ_WORKSLIKE` bit 2).
+pub(crate) const PROJECTILE_FLAG_BOUNCESOFFWALLS: i32 = 4;
+/// EDuke32 `PROJECTILE_FLAG_BOUNCESOFFMIRRORS` (`PROJ_WORKSLIKE` bit 3).
+pub(crate) const PROJECTILE_FLAG_BOUNCESOFFMIRRORS: i32 = 8;
+/// EDuke32 `PROJECTILE_FLAG_BOUNCESOFFSPRITES` (`PROJ_WORKSLIKE` bit 7).
+pub(crate) const PROJECTILE_FLAG_BOUNCESOFFSPRITES: i32 = 128;
+/// EDuke32 `PROJECTILE_FLAG_TIMED` (`PROJ_WORKSLIKE` bit 6).
+pub(crate) const PROJECTILE_FLAG_TIMED: i32 = 64;
+/// EDuke32 `PROJECTILE_FLAG_EXPLODEONTIMER` (`PROJ_WORKSLIKE` bit 14).
+pub(crate) const PROJECTILE_FLAG_EXPLODEONTIMER: i32 = 16_384;
+/// EDuke32 `PROJECTILE_FLAG_NOAIM` (`PROJ_WORKSLIKE` bit 12).
+pub(crate) const PROJECTILE_FLAG_NOAIM: i32 = 4096;
+/// EDuke32 `PROJECTILE_FLAG_RPG_IMPACT` (`PROJ_WORKSLIKE` bit 15).
+pub(crate) const PROJECTILE_FLAG_RPG_IMPACT: i32 = 32_768;
+/// EDuke32 `PROJECTILE_FLAG_FORCEIMPACT` (`PROJ_WORKSLIKE` bit 18).
+pub(crate) const PROJECTILE_FLAG_FORCEIMPACT: i32 = 262_144;
 
 /// Chocolate `FindDistance2D` (Build approx — not `ksqrt` / not manhattan).
 #[must_use]
@@ -954,6 +980,302 @@ fn tracers(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Fire one EDuke32 user-defined hitscan projectile from its temporary sprite.
+/// The returned sprite remains available to `e` variants for the rest of the
+/// current CON event and is removed by `moveweapons` on the next tic.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoot_defined_hitscan(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    players: &[Player],
+    randomseed: &mut i32,
+    projectile_id: i16,
+    range: i32,
+    damage: i32,
+    damage_random: i32,
+    decal_tile: i32,
+    decal_xrepeat: Option<u8>,
+    decal_yrepeat: Option<u8>,
+    trail_tile: i32,
+    trail_count: i32,
+    trail_xrepeat: i32,
+    trail_yrepeat: i32,
+    trail_offset: i32,
+    workslike: i32,
+) -> HitScan {
+    let Ok(projectile_index) = usize::try_from(projectile_id) else {
+        return HitScan::MISS;
+    };
+    let Some(projectile) = sprites.get(projectile_index).copied() else {
+        return HitScan::MISS;
+    };
+    let Ok(owner_index) = usize::try_from(projectile.owner) else {
+        return HitScan::MISS;
+    };
+    if owner_index >= sprites.len() {
+        return HitScan::MISS;
+    }
+
+    let range = range.clamp(0, 1 << 20);
+    let (sin, cos) = sincos_q14(i32::from(projectile.ang) & 2047);
+    let scale = i64::from(range);
+    let ray_component = |component: i32| {
+        (i64::from(component) * scale / (1 << 14)).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+            as i32
+    };
+    let dx = ray_component(cos);
+    let dy = ray_component(sin);
+    let dz = (i64::from(projectile.zvel) * scale / 256)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let sec_w: Vec<SectorWalls> = sectors.iter().map(SectorT::walls).collect();
+    let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+    let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    let sprite_hits: Vec<SpriteHit> = sprites
+        .iter()
+        .enumerate()
+        .map(|(index, sprite)| {
+            let meta = tile_meta
+                .get(sprite.picnum.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            let mut hit = SpriteHit {
+                x: sprite.x,
+                y: sprite.y,
+                z: sprite.z,
+                sectnum: sprite.sectnum,
+                clipdist: 0,
+                cstat: sprite.cstat,
+                face_span: i32::from(meta.width) * i32::from(sprite.xrepeat),
+                face_height: (i32::from(meta.height) * i32::from(sprite.yrepeat)) << 2,
+            };
+            if index == owner_index || index == projectile_index {
+                hit.cstat = 0;
+            }
+            hit
+        })
+        .collect();
+    let hit = if range == 0 {
+        HitScan::MISS
+    } else {
+        hitscan_full(
+            projectile.x,
+            projectile.y,
+            projectile.z,
+            projectile.sectnum,
+            dx,
+            dy,
+            dz,
+            CLIPMASK1,
+            &sec_w,
+            &wxy,
+            &sprite_hits,
+            Some(&sec_z),
+        )
+    };
+
+    let (impact_sector, impact_x, impact_y, impact_z) = if hit.hitsect >= 0 {
+        (hit.hitsect, hit.hitx, hit.hity, hit.hitz)
+    } else {
+        let end_x = projectile.x.wrapping_add(dx);
+        let end_y = projectile.y.wrapping_add(dy);
+        let end_z = projectile.z.wrapping_add(dz);
+        let mut end_sector = projectile.sectnum;
+        updatesector(end_x, end_y, &mut end_sector, &sec_w, &wxy);
+        (end_sector, end_x, end_y, end_z)
+    };
+    sprites[projectile_index].x = impact_x;
+    sprites[projectile_index].y = impact_y;
+    sprites[projectile_index].z = impact_z;
+    if impact_sector >= 0 {
+        if lists.sprite_sect.get(projectile_index).copied() != Some(impact_sector) {
+            let _ = lists.changespritesect(projectile_id, impact_sector);
+        }
+        sprites[projectile_index].sectnum = impact_sector;
+    }
+    sprites[projectile_index].xrepeat = 0;
+    sprites[projectile_index].yrepeat = 0;
+
+    if hit.hitsprite >= 0 {
+        let random_damage = if damage_random > 0 {
+            krand_step(randomseed) & damage_random
+        } else {
+            0
+        };
+        let target_index = hit.hitsprite as usize;
+        if actor_temps.len() <= target_index {
+            actor_temps.resize_with(target_index + 1, ActorConTemps::default);
+        }
+        if actor_temps[target_index].hit_extra < 0 {
+            actor_temps[target_index].hit_extra = 0;
+        }
+        sprites[projectile_index].extra = damage
+            .saturating_add(random_damage)
+            .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+            as i16;
+        let actortype = script.map_or(&[][..], |image| image.actortype.as_slice());
+        checkhitsprite_shotgun(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            players,
+            picnum_out,
+            actor_temps,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+            hit.hitsprite,
+            projectile_id,
+            false,
+        );
+    }
+    if workslike & PROJECTILE_FLAG_HITSCAN != 0
+        && decal_tile >= 0
+        && sprites[owner_index].picnum == APLAYER
+        && hit.hitwall >= 0
+        && let Ok(decal_tile) = i16::try_from(decal_tile)
+        && let Some(wall) = walls.get(hit.hitwall as usize).copied()
+        && let Some(end) = usize::try_from(wall.point2)
+            .ok()
+            .and_then(|point| walls.get(point))
+        && usize::try_from(hit.hitsect)
+            .ok()
+            .is_some_and(|sector| sector < sectors.len())
+    {
+        let decal = egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            hit.hitsect,
+            hit.hitx,
+            hit.hity,
+            hit.hitz,
+            decal_tile,
+            0,
+            0,
+            0,
+            projectile.ang,
+            0,
+            0,
+            projectile.owner,
+            STAT_MISC,
+        );
+        if let Ok(decal_index) = usize::try_from(decal)
+            && decal_index < sprites.len()
+        {
+            let angle =
+                getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y)).wrapping_add(512);
+            sprites[decal_index].xrepeat = decal_xrepeat.unwrap_or(3);
+            sprites[decal_index].yrepeat = decal_yrepeat.unwrap_or(3);
+            sprites[decal_index].cstat = 16;
+            sprites[decal_index].xvel = -1;
+            sprites[decal_index].ang = angle as i16;
+
+            let sector_walls: Vec<SectorWalls> =
+                sectors.iter().map(|sector| sector.walls()).collect();
+            let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+            let (sin, cos) = sincos_q14(angle);
+            let mut x = sprites[decal_index].x;
+            let mut y = sprites[decal_index].y;
+            let mut sectnum = sprites[decal_index].sectnum;
+            let _ = clipmove_xy(
+                &mut x,
+                &mut y,
+                &mut sectnum,
+                -cos >> 14,
+                -sin >> 14,
+                i32::from(sprites[decal_index].clipdist) << 2,
+                &sector_walls,
+                &wall_xy,
+            );
+            sprites[decal_index].x = x;
+            sprites[decal_index].y = y;
+            if sectnum >= 0 && sectnum != sprites[decal_index].sectnum {
+                sprites[decal_index].sectnum = sectnum;
+                let _ = lists.changespritesect(decal, sectnum);
+            }
+        }
+    }
+    if trail_tile > 0
+        && impact_sector >= 0
+        && workslike & PROJECTILE_FLAG_HITSCAN != 0
+        && let Ok(trail_tile) = i16::try_from(trail_tile)
+    {
+        let trail_xrepeat = if trail_xrepeat == 0 {
+            32
+        } else {
+            trail_xrepeat.clamp(0, i32::from(u8::MAX)) as u8
+        };
+        let trail_yrepeat = if trail_yrepeat == 0 {
+            32
+        } else {
+            trail_yrepeat.clamp(0, i32::from(u8::MAX)) as u8
+        };
+        for _ in 0..trail_count.clamp(0, 32) {
+            let _ = egs(
+                lists,
+                sprites,
+                picnum_out,
+                actor_temps,
+                script,
+                impact_sector,
+                impact_x,
+                impact_y,
+                impact_z.wrapping_add(trail_offset.wrapping_shl(8)),
+                trail_tile,
+                projectile.shade,
+                trail_xrepeat,
+                trail_yrepeat,
+                projectile.ang,
+                0,
+                0,
+                projectile.owner,
+                STAT_MISC,
+            );
+        }
+    }
+    if workslike & PROJECTILE_FLAG_WATERBUBBLES != 0
+        && usize::try_from(impact_sector)
+            .ok()
+            .and_then(|index| sectors.get(index))
+            .is_some_and(|sector| sector.lotag == 2)
+    {
+        let angle = (krand_step(randomseed) & 2047) as i16;
+        let yrepeat = (4 + (krand_step(randomseed) & 3)) as u8;
+        let xrepeat = (4 + (krand_step(randomseed) & 3)) as u8;
+        let _ = egs(
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            script,
+            impact_sector,
+            impact_x,
+            impact_y,
+            impact_z,
+            WATERBUBBLE,
+            -32,
+            xrepeat,
+            yrepeat,
+            angle,
+            0,
+            0,
+            projectile.owner,
+            STAT_MISC,
+        );
+    }
+    hit
+}
+
 fn spawn_bullethole(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -1017,13 +1339,9 @@ fn spawn_bullethole(
         while sprite >= 0 {
             let index = sprite as usize;
             sprite = lists.nextspritesect.get(index).copied().unwrap_or(-1);
-            if sprites
-                .get(index)
-                .is_some_and(|marker| {
-                    lists.sprite_stat.get(index).copied() == Some(STAT_EFFECTOR)
-                        && marker.lotag == 13
-                })
-            {
+            if sprites.get(index).is_some_and(|marker| {
+                lists.sprite_stat.get(index).copied() == Some(STAT_EFFECTOR) && marker.lotag == 13
+            }) {
                 return;
             }
         }
@@ -1279,7 +1597,11 @@ pub fn shoot_shotgun_player(
                 "sprite #{} pic {} stat {} cstat {} extra {}",
                 hit.hitsprite,
                 t.picnum,
-                lists.sprite_stat.get(hit.hitsprite as usize).copied().unwrap_or(-1),
+                lists
+                    .sprite_stat
+                    .get(hit.hitsprite as usize)
+                    .copied()
+                    .unwrap_or(-1),
                 t.cstat,
                 t.extra
             )
@@ -1300,7 +1622,11 @@ pub fn shoot_shotgun_player(
             hit.hitx,
             hit.hity,
             hit.hitz,
-            if j >= 0 { format!("locked on #{j}") } else { "free".to_string() }
+            if j >= 0 {
+                format!("locked on #{j}")
+            } else {
+                "free".to_string()
+            }
         ));
     }
     if hit.hitsect < 0 {
@@ -3635,8 +3961,24 @@ pub(crate) fn shoot_enemy(
                 && (hit.hitwall >= 0 || hit.hitsprite >= 0)
             {
                 let j = egs(
-                    lists, sprites, picnum_out, actor_temps, Some(script), hit.hitsect, hit.hitx,
-                    hit.hity, hit.hitz, KNEE, -15, 0, 0, sa, 32, 0, i, STAT_PROJECTILE,
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    Some(script),
+                    hit.hitsect,
+                    hit.hitx,
+                    hit.hity,
+                    hit.hitz,
+                    KNEE,
+                    -15,
+                    0,
+                    0,
+                    sa,
+                    32,
+                    0,
+                    i,
+                    STAT_PROJECTILE,
                 );
                 if j >= 0 {
                     let ju = j as usize;
@@ -3645,8 +3987,20 @@ pub(crate) fn shoot_enemy(
                         .wrapping_add((krand_step(randomseed) & 7) as i16);
                     if hit.hitsprite >= 0 {
                         checkhitsprite_shotgun(
-                            lists, sprites, sectors, walls, players, picnum_out, actor_temps, tile_meta,
-                            Some(script), actortype, randomseed, hit.hitsprite, j, false,
+                            lists,
+                            sprites,
+                            sectors,
+                            walls,
+                            players,
+                            picnum_out,
+                            actor_temps,
+                            tile_meta,
+                            Some(script),
+                            actortype,
+                            randomseed,
+                            hit.hitsprite,
+                            j,
+                            false,
                         );
                     }
                 }
@@ -3655,8 +4009,24 @@ pub(crate) fn shoot_enemy(
         }
         if atwith == GROWSPARK {
             let j = egs(
-                lists, sprites, picnum_out, actor_temps, Some(script), sect, hit.hitx, hit.hity,
-                hit.hitz, GROWSPARK, -16, 28, 28, sa, 0, 0, i, crate::stat::STAT_ACTOR,
+                lists,
+                sprites,
+                picnum_out,
+                actor_temps,
+                Some(script),
+                sect,
+                hit.hitx,
+                hit.hity,
+                hit.hitz,
+                GROWSPARK,
+                -16,
+                28,
+                28,
+                sa,
+                0,
+                0,
+                i,
+                crate::stat::STAT_ACTOR,
             );
             if j >= 0 {
                 let ju = j as usize;
@@ -3666,24 +4036,68 @@ pub(crate) fn shoot_enemy(
                 sprites[ju].yrepeat = 1;
                 if hit.hitsprite >= 0 {
                     checkhitsprite_shotgun(
-                        lists, sprites, sectors, walls, players, picnum_out, actor_temps, tile_meta,
-                        Some(script), actortype, randomseed, hit.hitsprite, j, false,
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        players,
+                        picnum_out,
+                        actor_temps,
+                        tile_meta,
+                        Some(script),
+                        actortype,
+                        randomseed,
+                        hit.hitsprite,
+                        j,
+                        false,
                     );
                 }
             }
             return true;
         }
         if (krand_step(randomseed) & 15) == 0
-            && sectors.get(hit.hitsect as usize).is_some_and(|sc| sc.lotag == 2)
+            && sectors
+                .get(hit.hitsect as usize)
+                .is_some_and(|sc| sc.lotag == 2)
         {
             tracers(
-                lists, sprites, picnum_out, actor_temps, Some(script), sectors, walls, randomseed,
-                hit.hitx, hit.hity, hit.hitz, sx, sy, sz, 8, i,
+                lists,
+                sprites,
+                picnum_out,
+                actor_temps,
+                Some(script),
+                sectors,
+                walls,
+                randomseed,
+                hit.hitx,
+                hit.hity,
+                hit.hitz,
+                sx,
+                sy,
+                sz,
+                8,
+                i,
             );
         }
         let k = egs(
-            lists, sprites, picnum_out, actor_temps, Some(script), hit.hitsect, hit.hitx,
-            hit.hity, hit.hitz, SHOTSPARK1, -15, 24, 24, sa, 0, 0, i, STAT_PROJECTILE,
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            Some(script),
+            hit.hitsect,
+            hit.hitx,
+            hit.hity,
+            hit.hitz,
+            SHOTSPARK1,
+            -15,
+            24,
+            24,
+            sa,
+            0,
+            0,
+            i,
+            STAT_PROJECTILE,
         );
         if k < 0 {
             return true;
@@ -3693,8 +4107,20 @@ pub(crate) fn shoot_enemy(
         sprites[ku].extra = init_actor_temps_from_script(script, atwith).0;
         if hit.hitsprite >= 0 {
             checkhitsprite_shotgun(
-                lists, sprites, sectors, walls, players, picnum_out, actor_temps, tile_meta,
-                Some(script), actortype, randomseed, hit.hitsprite, k, false,
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                picnum_out,
+                actor_temps,
+                tile_meta,
+                Some(script),
+                actortype,
+                randomseed,
+                hit.hitsprite,
+                k,
+                false,
             );
             let hs = hit.hitsprite as usize;
             if hs < sprites.len() && sprites[hs].picnum == APLAYER {
@@ -3705,8 +4131,15 @@ pub(crate) fn shoot_enemy(
                 }
             } else {
                 spawn_smallsmoke(
-                    lists, sprites, sectors, walls, picnum_out, actor_temps, Some(script),
-                    randomseed, k,
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum_out,
+                    actor_temps,
+                    Some(script),
+                    randomseed,
+                    k,
                 );
             }
         } else if hit.hitwall >= 0 {
@@ -3749,8 +4182,24 @@ pub(crate) fn shoot_enemy(
             sz -= 10 << 8;
         }
         let j = egs(
-            lists, sprites, picnum_out, actor_temps, Some(script), sect, sx, sy, sz, atwith, -127,
-            sizx, sizy, sa, vel as i16, zvel.clamp(-32768, 32767) as i16, i, STAT_PROJECTILE,
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            Some(script),
+            sect,
+            sx,
+            sy,
+            sz,
+            atwith,
+            -127,
+            sizx,
+            sizy,
+            sa,
+            vel as i16,
+            zvel.clamp(-32768, 32767) as i16,
+            i,
+            STAT_PROJECTILE,
         );
         if j >= 0 {
             let ju = j as usize;
@@ -3781,13 +4230,30 @@ pub(crate) fn shoot_enemy(
         }
         let zvel = ((player.oposz - sz) * vel) / player_dist;
         if badguy_pic(s.picnum, actortype) && (s.hitag & 2048) != 0 {
-            sa = s.ang.wrapping_add(((krand_step(randomseed) & 31) - 16) as i16);
+            sa = s
+                .ang
+                .wrapping_add(((krand_step(randomseed) & 31) - 16) as i16);
         }
         let x = sx + sincos_q14(348 + i32::from(sa)).1 / 448;
         let y = sy + sin_at(i32::from(sa) + 348) / 448;
         let j = egs(
-            lists, sprites, picnum_out, actor_temps, Some(script), sect, x, y, sz - (1 << 8),
-            atwith, 0, 14, 14, sa, vel as i16, zvel.clamp(-32768, 32767) as i16, i,
+            lists,
+            sprites,
+            picnum_out,
+            actor_temps,
+            Some(script),
+            sect,
+            x,
+            y,
+            sz - (1 << 8),
+            atwith,
+            0,
+            14,
+            14,
+            sa,
+            vel as i16,
+            zvel.clamp(-32768, 32767) as i16,
+            i,
             STAT_PROJECTILE,
         );
         if j < 0 {

@@ -110,6 +110,7 @@ pub fn spawn_duke_verifier_with_output(
 > {
     let grp = std::fs::read(&grp_path).map_err(|e| format!("read Duke GRP: {e}"))?;
     let mut session = room_duke::session_from_grp_map(&grp, map, skill.saturating_sub(1).min(4))?;
+    session.validate_network_content()?;
     session.configure_multiplayer_mode(
         usize::from(max_players.clamp(2, 8)),
         duke_game_mode,

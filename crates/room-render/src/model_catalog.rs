@@ -4,7 +4,9 @@ use crate::iqm_anim::{
     BoneOverride, IqmAnim, ModelAnim, Trs, absolute_matrices, anim_frames, apply_overrides,
     blend_poses, frame_pose,
 };
-use crate::models::{IqmModel, ModelError, ModelMesh, append_model, parse_iqm_full, parse_model_bytes};
+use crate::models::{
+    IqmModel, ModelError, ModelMesh, append_model, parse_iqm_full, parse_model_bytes,
+};
 use crate::scene::SceneLists;
 use crate::ue1::parse_ue1;
 use glam::Vec3;
@@ -166,7 +168,9 @@ pub struct AnimRequest {
 /// Resolve an [`AnimRequest`] against the model's animation list.
 #[must_use]
 pub fn resolve_anim(anims: &[IqmAnim], req: &AnimRequest) -> Option<ModelAnim> {
-    let a = anims.iter().find(|a| a.name.eq_ignore_ascii_case(&req.name))?;
+    let a = anims
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case(&req.name))?;
     let first = a.first_frame as i32;
     let count = a.num_frames.max(1) as i32;
     let last = if req.end_frame >= 0 {
@@ -226,7 +230,9 @@ pub fn actor_pose(
                 f64::from(req.interpolate_tics.max(1))
             };
             match (&now, &pose.prev_animation) {
-                (Some(now), Some((prev, switch))) if blend_tics > 0.0 && pose.tic < switch + blend_tics => {
+                (Some(now), Some((prev, switch)))
+                    if blend_tics > 0.0 && pose.tic < switch + blend_tics =>
+                {
                     let t = ((pose.tic - switch) / blend_tics).clamp(0.0, 1.0) as f32;
                     match sample(prev, *switch) {
                         Some(from) => blend_poses(&from, now, t),
@@ -261,7 +267,12 @@ pub fn actor_pose(
 
 /// The skinned mesh of `model` for `pose` (bind pose when unskinned).
 #[must_use]
-pub fn posed_mesh(model: &IqmModel, anim_source: &IqmModel, pose: &ModelActorPose, keyframe: Option<u32>) -> ModelMesh {
+pub fn posed_mesh(
+    model: &IqmModel,
+    anim_source: &IqmModel,
+    pose: &ModelActorPose,
+    keyframe: Option<u32>,
+) -> ModelMesh {
     if !model.is_skinned() {
         return model.mesh.clone();
     }
@@ -299,7 +310,11 @@ pub fn append_actor_models(
         let keyframe = def
             .frames
             .iter()
-            .find(|f| f.sprite.eq_ignore_ascii_case(&pose.sprite) && f.frame == pose.frame && f.model_index == 0)
+            .find(|f| {
+                f.sprite.eq_ignore_ascii_case(&pose.sprite)
+                    && f.frame == pose.frame
+                    && f.model_index == 0
+            })
             .and_then(|f| f.keyframe);
         let anim_path = pose
             .animation_file

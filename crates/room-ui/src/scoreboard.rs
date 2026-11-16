@@ -30,7 +30,13 @@ const TOP: f32 = 40.0;
 const ROW: f32 = 10.0;
 
 fn right(list: &mut UiDrawList, x_right: f32, y: f32, text: &str) {
-    draw_stcfn_string(list, x_right - measure_stcfn_string(text, 1.0), y, text, 1.0);
+    draw_stcfn_string(
+        list,
+        x_right - measure_stcfn_string(text, 1.0),
+        y,
+        text,
+        1.0,
+    );
 }
 
 /// Draw `lines` (already in display order). Deathmatch shows frags and
@@ -47,7 +53,10 @@ pub fn draw_scoreboard(
         return;
     }
     let height = ROW * (lines.len() as f32 + 2.0) + 8.0;
-    list.fill(Rect::new(LEFT, TOP - 4.0, WIDTH, height), Rgba::new(0.0, 0.0, 0.0, 0.6));
+    list.fill(
+        Rect::new(LEFT, TOP - 4.0, WIDTH, height),
+        Rgba::new(0.0, 0.0, 0.0, 0.6),
+    );
     let cols: &[(&str, f32)] = if deathmatch {
         &[("FRAGS", 220.0), ("DEATHS", 284.0)]
     } else {
@@ -107,33 +116,59 @@ mod tests {
     #[test]
     fn deathmatch_lists_every_player_with_the_local_line_marked() {
         let lines = vec![
-            ScoreLine { seat: 1, name: "Bea".into(), frags: 7, deaths: 1, ..ScoreLine::default() },
-            ScoreLine { seat: 0, name: "Al".into(), frags: 2, deaths: 5, ..ScoreLine::default() },
+            ScoreLine {
+                seat: 1,
+                name: "Bea".into(),
+                frags: 7,
+                deaths: 1,
+                ..ScoreLine::default()
+            },
+            ScoreLine {
+                seat: 0,
+                name: "Al".into(),
+                frags: 2,
+                deaths: 5,
+                ..ScoreLine::default()
+            },
         ];
         let mut list = UiDrawList::new();
         draw_scoreboard(&mut list, &lines, true, 0, [0; 3]);
         // Header plus two lines.
         assert_eq!(glyph_rows(&list).len(), 3);
         // "7" right-aligned under FRAGS on the first line.
-        let seven = list.cmds.iter().any(|c| matches!(c,
-            DrawCmd::Patch { name, pos, .. } if name == "STCFN055" && pos.y == TOP + ROW * 1.5));
+        let seven = list.cmds.iter().any(|c| {
+            matches!(c,
+            DrawCmd::Patch { name, pos, .. } if name == "STCFN055" && pos.y == TOP + ROW * 1.5)
+        });
         assert!(seven);
         // The highlight sits on the second line (the local seat 0).
-        let marked = list.cmds.iter().any(|c| matches!(c,
-            DrawCmd::Fill { rect, .. } if (rect.y - (TOP + ROW * 2.5 - 1.0)).abs() < 0.01));
+        let marked = list.cmds.iter().any(|c| {
+            matches!(c,
+            DrawCmd::Fill { rect, .. } if (rect.y - (TOP + ROW * 2.5 - 1.0)).abs() < 0.01)
+        });
         assert!(marked);
     }
 
     #[test]
     fn cooperative_shows_percentages_of_the_level_totals() {
-        let lines = vec![ScoreLine { seat: 0, name: "Al".into(), kills: 5, items: 1, secrets: 0, ..ScoreLine::default() }];
+        let lines = vec![ScoreLine {
+            seat: 0,
+            name: "Al".into(),
+            kills: 5,
+            items: 1,
+            secrets: 0,
+            ..ScoreLine::default()
+        }];
         let mut list = UiDrawList::new();
         draw_scoreboard(&mut list, &lines, false, 0, [10, 4, 0]);
         // 50% kills: '5', '0', '%' glyphs present on the player line.
         let y = TOP + ROW * 1.5;
         for code in ["STCFN053", "STCFN048", "STCFN037"] {
-            assert!(list.cmds.iter().any(|c| matches!(c,
-                DrawCmd::Patch { name, pos, .. } if name == code && pos.y == y)), "{code}");
+            assert!(
+                list.cmds.iter().any(|c| matches!(c,
+                DrawCmd::Patch { name, pos, .. } if name == code && pos.y == y)),
+                "{code}"
+            );
         }
     }
 }

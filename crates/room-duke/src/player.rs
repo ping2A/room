@@ -85,13 +85,26 @@ pub const DUKE_FRICTION: i32 = 53200;
 /// `TICSPERFRAME` when `TICRATE=120` and 30 Hz (`120/30 = 4`).
 pub const TICS_PER_FRAME: i32 = 4;
 
-/// ART size + picanm offsets for [`getzrange`] sprite planes.
+/// Runtime ART and EDuke32 tile metadata for Build sprite and CON access.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TileZMeta {
+    /// ART `xsize` / EDuke32 `gettiledata.xsize`.
     pub width: i16,
+    /// ART `ysize` / EDuke32 `gettiledata.ysize`.
     pub height: i16,
+    /// ART `picanm.xoffset` / EDuke32 tile x offset.
     pub x_offset: i8,
+    /// ART `picanm.yoffset` / EDuke32 tile y offset.
     pub y_offset: i8,
+    /// ART / EDuke32 `picanm.animframes`.
+    pub anim_frames: u8,
+    /// ART / EDuke32 `picanm.animspeed`.
+    pub anim_speed: u8,
+    /// ART / EDuke32 `picanm.animtype`.
+    pub anim_type: u8,
+    /// EDuke32 per-tile `g_tile[].gameflags` bitfield.
+    pub game_flags: u32,
 }
 
 /// Build a [`SpriteZClip`] from a live sprite + ART meta table.
@@ -184,6 +197,12 @@ pub struct Player {
     #[serde(default)]
     pub body_xvel: i16,
     pub bobposy: i32,
+    /// EDuke32 `spritebridge`: the player stands on a floor-aligned sprite.
+    #[serde(default)]
+    pub sprite_bridge: bool,
+    /// EDuke32 `sbs`: supporting floor sprite, or -1 when there is none.
+    #[serde(default = "no_sprite_index")]
+    pub bridge_sprite: i16,
     pub cursectnum: i16,
     pub posxv: i32,
     pub posyv: i32,
@@ -223,6 +242,9 @@ pub struct Player {
     /// Chocolate `player_struct::shield_amount` (body armor, 0–100).
     #[serde(default = "default_shield_amount")]
     pub shield_amount: i16,
+    /// EDuke32 `max_shield_amount`, the CON armor cap.
+    #[serde(default = "default_shield_amount")]
+    pub max_shield_amount: i16,
     /// Chocolate `hurt_delay` cooldown for damage pain cues.
     #[serde(default)]
     pub hurt_delay: i16,
@@ -268,6 +290,9 @@ pub struct Player {
     /// Chocolate `heat_on` night vision toggle.
     #[serde(default)]
     pub heat_on: bool,
+    /// EDuke32 `player.palette` full-screen palette/lookup identifier.
+    #[serde(default)]
+    pub game_palette: i32,
     /// Chocolate `pals[0..3]` palette flash tint (RGB, 0..=64).
     #[serde(default)]
     pub palette_flash: [u8; 3],
@@ -362,6 +387,9 @@ pub struct Player {
     pub ammo: [i16; 12],
     /// Chocolate `gotweapon[MAX_WEAPONS]`.
     pub gotweapon: [bool; 12],
+    /// EDuke32 `max_ammo_amount[MAX_WEAPONS]` used to cap CON grants.
+    #[serde(default = "default_max_ammo_amounts")]
+    pub max_ammo_amount: [i16; 12],
     /// Chocolate `kickback_pic` (weapon anim / fire phase).
     pub kickback_pic: i16,
     /// Chocolate's last usable weapon before an empty-gun switch.
@@ -487,6 +515,10 @@ fn default_shield_amount() -> i16 {
     100
 }
 
+fn default_max_ammo_amounts() -> [i16; 12] {
+    [0, 200, 50, 200, 50, 50, 50, 99, 10, 99, 0, 50]
+}
+
 impl Default for Player {
     fn default() -> Self {
         Self {
@@ -517,6 +549,8 @@ impl Default for Player {
             hit_ceilingz: 0,
             body_xvel: 0,
             bobposy: 0,
+            sprite_bridge: false,
+            bridge_sprite: -1,
             cursectnum: 0,
             posxv: 0,
             posyv: 0,
@@ -534,6 +568,7 @@ impl Default for Player {
             airleft: default_airleft(),
             extra_extra8: 0,
             shield_amount: default_shield_amount(),
+            max_shield_amount: default_shield_amount(),
             hurt_delay: 0,
             steroids_amount: 0,
             scuba_amount: 0,
@@ -551,6 +586,7 @@ impl Default for Player {
             refresh_inventory: 0,
             holoduke_on: -1,
             heat_on: false,
+            game_palette: 0,
             palette_flash: [0; 3],
             palette_flash_tics: 0,
             num_loogies: 0,
@@ -594,6 +630,7 @@ impl Default for Player {
             gotweapon: [
                 true, true, false, false, false, false, false, false, false, false, true, false,
             ],
+            max_ammo_amount: default_max_ammo_amounts(),
             kickback_pic: 0,
             last_full_weapon: -1,
             show_empty_weapon: false,
@@ -768,6 +805,33 @@ pub fn processinput_move_with_lists_clipping(
     sprite_lists: Option<&SpriteLists>,
     noclip: bool,
 ) -> i32 {
+    processinput_move_with_lists_clipping_eduke(
+        p,
+        sync,
+        sectors,
+        walls,
+        sprites,
+        tile_meta,
+        dukefriction,
+        sprite_lists,
+        noclip,
+        false,
+    )
+}
+
+/// EDuke32 movement path with a selectable bridge-specific shallow-water rule.
+pub(crate) fn processinput_move_with_lists_clipping_eduke(
+    p: &mut Player,
+    sync: DukeInput,
+    sectors: &[SectorT],
+    walls: &[WallT],
+    sprites: &[SpriteT],
+    tile_meta: &[TileZMeta],
+    dukefriction: i32,
+    sprite_lists: Option<&SpriteLists>,
+    noclip: bool,
+    eduke32_spritebridge: bool,
+) -> i32 {
     let mut movement_hit = 0;
     // Chocolate `processinput` runs once per 30 Hz game frame.
     p.last_avel = sync.avel;
@@ -889,7 +953,7 @@ pub fn processinput_move_with_lists_clipping(
     }
 
     // Chocolate: getzrange + fall/ceiling clamp happen *before* XY clipmove.
-    apply_player_fall_z(
+    apply_player_fall_z_with_eduke_bridge(
         p,
         sync,
         sectors,
@@ -897,6 +961,7 @@ pub fn processinput_move_with_lists_clipping(
         sprites,
         tile_meta,
         sprite_lists.map(|lists| &lists.sprite_stat[..]),
+        eduke32_spritebridge,
     );
 
     if p.posxv != 0 || p.posyv != 0 || sync.fvel != 0 || sync.svel != 0 {
@@ -1088,6 +1153,28 @@ pub fn apply_player_fall_z(
     tile_meta: &[TileZMeta],
     sprite_stat: Option<&[i16]>,
 ) {
+    apply_player_fall_z_with_eduke_bridge(
+        p,
+        sync,
+        sectors,
+        walls,
+        sprites,
+        tile_meta,
+        sprite_stat,
+        false,
+    );
+}
+
+fn apply_player_fall_z_with_eduke_bridge(
+    p: &mut Player,
+    sync: DukeInput,
+    sectors: &[SectorT],
+    walls: &[WallT],
+    sprites: &[SpriteT],
+    tile_meta: &[TileZMeta],
+    sprite_stat: Option<&[i16]>,
+    eduke32_spritebridge: bool,
+) {
     if p.cursectnum < 0 || p.cursectnum as usize >= sectors.len() {
         return;
     }
@@ -1124,6 +1211,19 @@ pub fn apply_player_fall_z(
     );
     let mut cz = zr.ceilz;
     let fz = zr.florz;
+    // EDuke32 exposes the floor-sprite result of getzrange as
+    // `spritebridge`/`sbs`. Build hit codes reserve 49152+ for sprites.
+    let bridge_sprite = if zr.florhit >= 49152 {
+        i16::try_from(zr.florhit - 49152).ok().filter(|index| {
+            sprites
+                .get(*index as usize)
+                .is_some_and(|sprite| sprite.cstat & 48 == 32)
+        })
+    } else {
+        None
+    };
+    p.sprite_bridge = bridge_sprite.is_some();
+    p.bridge_sprite = bridge_sprite.unwrap_or(-1);
     // Chocolate `hittype[pi].floorz = fz; hittype[pi].ceilingz = cz;`
     p.hit_floorz = fz;
     p.hit_ceilingz = cz;
@@ -1241,13 +1341,13 @@ pub fn apply_player_fall_z(
     // Non-jetpack path. Chocolate `processinput`: `i = 40`, and in shallow
     // water (`psectlotag == 1 && spritebridge == 0`) the view bobs —
     // `pycount += 32; pyoff = sintable[pycount]>>6` with `i = 34` — or, when
-    // shrunk, sits at `i = 12` without bobbing. Room does not track
-    // `spritebridge` yet, so standing on a sprite bridge over water still bobs.
+    // shrunk, sits at `i = 12` without bobbing. A floor sprite bridge uses the
+    // ordinary `i = 40` path.
     let shrunk = usize::try_from(p.sprite_i)
         .ok()
         .and_then(|index| sprites.get(index))
         .is_some_and(|sprite| sprite.yrepeat < 32);
-    let i = if psectlotag == 1 {
+    let i = if psectlotag == 1 && !(eduke32_spritebridge && p.sprite_bridge) {
         if shrunk {
             12
         } else {
@@ -1471,6 +1571,7 @@ mod tests {
             height: 82,
             x_offset: -1,
             y_offset: 1,
+            ..TileZMeta::default()
         };
         apply_player_fall_z(
             &mut p,
@@ -1483,5 +1584,55 @@ mod tests {
         );
         assert_eq!(p.posz, -24016);
         assert_eq!(p.poszv, 128);
+    }
+
+    #[test]
+    fn floor_aligned_sprite_sets_eduke_bridge_fields() {
+        let (mut sectors, walls) = unit_square();
+        sectors[0].lotag = 1;
+        sectors[0].ceilingz = -(256 << 8);
+        sectors[0].floorz = 256 << 8;
+        let mut p = Player {
+            posx: 512,
+            posy: 512,
+            posz: 0,
+            cursectnum: 0,
+            ..Default::default()
+        };
+        let sprites = [
+            SpriteT::default(),
+            SpriteT {
+                x: 512,
+                y: 512,
+                z: 128 << 8,
+                cstat: 33,
+                picnum: 1,
+                xrepeat: 64,
+                yrepeat: 64,
+                sectnum: 0,
+                ..Default::default()
+            },
+        ];
+        let mut meta = vec![TileZMeta::default(); 2];
+        meta[1] = TileZMeta {
+            width: 32,
+            height: 32,
+            ..Default::default()
+        };
+
+        apply_player_fall_z_with_eduke_bridge(
+            &mut p,
+            DukeInput::default(),
+            &sectors,
+            &walls,
+            &sprites,
+            &meta,
+            None,
+            true,
+        );
+
+        assert!(p.sprite_bridge);
+        assert_eq!(p.bridge_sprite, 1);
+        assert_eq!(p.pycount, 0, "bridge suppresses shallow-water view bob");
     }
 }

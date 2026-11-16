@@ -97,7 +97,11 @@ impl FrameLog {
         }
         let mut out = Vec::with_capacity(4096);
         out.extend_from_slice(FTR2_MAGIC);
-        out.push(if self.wide { MSG_TIC_BATCH_WIDE } else { MSG_TIC_BATCH });
+        out.push(if self.wide {
+            MSG_TIC_BATCH_WIDE
+        } else {
+            MSG_TIC_BATCH
+        });
         out.extend_from_slice(&[0, 0]);
         let mut i = from;
         let mut n: u16 = 0;

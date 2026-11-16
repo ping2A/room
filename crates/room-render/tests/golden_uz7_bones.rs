@@ -44,7 +44,13 @@ fn iqm_bytes() -> Vec<u8> {
         ]
     };
     let q = std::f32::consts::FRAC_PI_4;
-    let frames = [frame(0.0, 0.0), frame(q, 0.0), frame(2.0 * q, 0.0), frame(0.0, 0.0), frame(0.0, 2.0)];
+    let frames = [
+        frame(0.0, 0.0),
+        frame(q, 0.0),
+        frame(2.0 * q, 0.0),
+        frame(0.0, 0.0),
+        frame(0.0, 2.0),
+    ];
     // Quantize: offset = -4, scale = 8 / 65535 per channel.
     let (off, scale) = (-4.0f32, 8.0f32 / 65535.0);
 
@@ -56,12 +62,20 @@ fn iqm_bytes() -> Vec<u8> {
     };
     let ofs_text = put(&mut out, &text);
     // Vertex data.
-    let pos_bytes: Vec<u8> = positions.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+    let pos_bytes: Vec<u8> = positions
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     let ofs_pos = put(&mut out, &pos_bytes);
     let ofs_bi = put(&mut out, &blend_idx.concat());
     let ofs_bw = put(&mut out, &blend_w.concat());
     let mut va = Vec::new();
-    for (ty, fmt, size, ofs) in [(0u32, 7u32, 3u32, ofs_pos), (4, 1, 4, ofs_bi), (5, 1, 4, ofs_bw)] {
+    for (ty, fmt, size, ofs) in [
+        (0u32, 7u32, 3u32, ofs_pos),
+        (4, 1, 4, ofs_bi),
+        (5, 1, 4, ofs_bw),
+    ] {
         for v in [ty, 0, fmt, size, ofs] {
             va.extend_from_slice(&v.to_le_bytes());
         }
@@ -183,7 +197,10 @@ fn uz7_blend_is_the_lerp_of_frames() {
     }
     // Halfway between 0° and 90°: the arm at 45°.
     let angle = mid[1].rotation.to_axis_angle().1;
-    assert!((angle - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "{angle}");
+    assert!(
+        (angle - std::f32::consts::FRAC_PI_4).abs() < 1e-3,
+        "{angle}"
+    );
 }
 
 #[test]
@@ -192,7 +209,13 @@ fn uz7_bones_match_golden() {
     let mut out = String::new();
     let mut line = |label: &str, p: Vec3| {
         let z = |v: f32| if v.abs() < 5e-4 { 0.0 } else { v };
-        let _ = writeln!(out, "{label:<34} {:>7.3} {:>7.3} {:>7.3}", z(p.x), z(p.y), z(p.z));
+        let _ = writeln!(
+            out,
+            "{label:<34} {:>7.3} {:>7.3} {:>7.3}",
+            z(p.x),
+            z(p.y),
+            z(p.z)
+        );
     };
     let base = ModelActorPose::default();
     line("bind / no animation", tip(&m, &base));
@@ -230,7 +253,14 @@ fn uz7_bones_match_golden() {
     for t in [0.0, 5.0, 10.0] {
         let p = ModelActorPose {
             tic: t,
-            bones: vec![(None, "arm".into(), BoneOverride { rotation: Some(rot), ..BoneOverride::default() })],
+            bones: vec![(
+                None,
+                "arm".into(),
+                BoneOverride {
+                    rotation: Some(rot),
+                    ..BoneOverride::default()
+                },
+            )],
             ..ModelActorPose::default()
         };
         line(&format!("add rot arm tic {t}"), tip(&m, &p));
@@ -245,13 +275,26 @@ fn uz7_bones_match_golden() {
     };
     let p = ModelActorPose {
         tic: 1.0,
-        bones: vec![(Some(1), String::new(), BoneOverride { translation: Some(tr), ..BoneOverride::default() })],
+        bones: vec![(
+            Some(1),
+            String::new(),
+            BoneOverride {
+                translation: Some(tr),
+                ..BoneOverride::default()
+            },
+        )],
         ..ModelActorPose::default()
     };
     line("replace translation arm", tip(&m, &p));
     // Spot checks: bind tip at x = 2; a quarter turn puts it at (1, 1).
-    assert!(out.contains("bind / no animation                  2.000   0.000   0.000"), "{out}");
-    assert!(out.contains("add rot arm tic 10                   1.000   1.000   0.000"), "{out}");
+    assert!(
+        out.contains("bind / no animation                  2.000   0.000   0.000"),
+        "{out}"
+    );
+    assert!(
+        out.contains("add rot arm tic 10                   1.000   1.000   0.000"),
+        "{out}"
+    );
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../testdata/goldens/uz7_bones.txt");
     if std::env::var_os("ROOM_UPDATE_GOLDEN").is_some() {

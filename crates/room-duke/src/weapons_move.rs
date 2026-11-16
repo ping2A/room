@@ -1240,7 +1240,14 @@ pub fn moveweapons(
             );
             // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
             let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
-                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+                room_build_engine::geom::HitScan {
+                    hitsect: -1,
+                    hitwall: -1,
+                    hitsprite: -1,
+                    hitx: 0,
+                    hity: 0,
+                    hitz: 0,
+                }
             } else {
                 hit
             };
@@ -1387,7 +1394,14 @@ pub fn moveweapons(
             );
             // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
             let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
-                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+                room_build_engine::geom::HitScan {
+                    hitsect: -1,
+                    hitwall: -1,
+                    hitsprite: -1,
+                    hitx: 0,
+                    hity: 0,
+                    hitz: 0,
+                }
             } else {
                 hit
             };
@@ -1518,8 +1532,16 @@ pub fn moveweapons(
             let nz = if z_ok { daz } else { source.z };
             let hit = room_build_engine::geom::HitScan {
                 hitsect: sect_for_planes,
-                hitwall: if retval & 49152 == 32768 { (retval & 32767) as i16 } else { -1 },
-                hitsprite: if retval & 49152 == 49152 { (retval & 4095) as i16 } else { -1 },
+                hitwall: if retval & 49152 == 32768 {
+                    (retval & 32767) as i16
+                } else {
+                    -1
+                },
+                hitsprite: if retval & 49152 == 49152 {
+                    (retval & 4095) as i16
+                } else {
+                    -1
+                },
                 hitx: nx,
                 hity: ny,
                 hitz: nz,
@@ -1660,58 +1682,178 @@ pub fn moveweapons(
             }
             continue;
         }
-        if sprites[iu].picnum == rpg_tile {
-            let source_sect = sprites[iu].sectnum;
-            let xv = i32::from(sprites[iu].xvel);
-            let (sin, cos) = sincos_q14(i32::from(sprites[iu].ang) & 2047);
-            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
-            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
-            let dz = (i32::from(sprites[iu].zvel) * TICSPERFRAME) >> 3;
+        let projectile_workslike = actor_temps
+            .get(iu)
+            .map_or(0, |temps| temps.projectile_workslike);
+        if projectile_workslike
+            & (crate::shoot::PROJECTILE_FLAG_HITSCAN | crate::shoot::PROJECTILE_FLAG_KNEE)
+            != 0
+        {
+            let _ = lists.deletesprite(i);
+            continue;
+        }
+        let custom_rpg = projectile_workslike & crate::shoot::PROJECTILE_FLAG_RPG != 0;
+        if sprites[iu].picnum == rpg_tile || custom_rpg {
+            let mut timer_expired = false;
+            if custom_rpg
+                && projectile_workslike & crate::shoot::PROJECTILE_FLAG_TIMED != 0
+                && actor_temps
+                    .get(iu)
+                    .is_some_and(|temps| temps.projectile_range > 0)
+            {
+                let temps = &mut actor_temps[iu];
+                if temps.projectile_age >= temps.projectile_range {
+                    if projectile_workslike & crate::shoot::PROJECTILE_FLAG_EXPLODEONTIMER != 0 {
+                        timer_expired = true;
+                    } else {
+                        let _ = lists.deletesprite(i);
+                        continue;
+                    }
+                } else {
+                    temps.projectile_age = temps.projectile_age.saturating_add(1);
+                }
+            }
+            if custom_rpg {
+                let drop = actor_temps.get(iu).map_or(0, |temps| temps.projectile_drop);
+                sprites[iu].zvel = i32::from(sprites[iu].zvel)
+                    .wrapping_sub(drop)
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                    as i16;
+            }
+            let source = sprites[iu];
+            // EDuke32's PROJ_VEL_MULT repeats this movement step. Keep the
+            // individual step's collision and sector update below, including
+            // any remaining steps after a bounce changes projectile angle.
+            let velocity_multiplier = if custom_rpg {
+                actor_temps
+                    .get(iu)
+                    .map_or(0, |temps| temps.projectile_velmult)
+                    .max(1)
+            } else {
+                1
+            };
+            if custom_rpg && !timer_expired {
+                let temps = actor_temps.get(iu);
+                let trail_tile = temps.map_or(0, |temps| temps.projectile_trail);
+                let trail_count = temps.map_or(0, |temps| temps.projectile_tnum).clamp(0, 32);
+                if let Ok(trail_tile) = i16::try_from(trail_tile)
+                    && trail_tile > 0
+                {
+                    let repeat_x = temps
+                        .map_or(0, |temps| temps.projectile_txrepeat)
+                        .clamp(0, i32::from(u8::MAX));
+                    let repeat_y = temps
+                        .map_or(0, |temps| temps.projectile_tyrepeat)
+                        .clamp(0, i32::from(u8::MAX));
+                    let repeat_x = if repeat_x == 0 { 32 } else { repeat_x as u8 };
+                    let repeat_y = if repeat_y == 0 { 32 } else { repeat_y as u8 };
+                    let offset = temps.map_or(0, |temps| temps.projectile_toffset);
+                    for _ in 0..trail_count {
+                        let _ = crate::shoot::egs(
+                            lists,
+                            sprites,
+                            picnum,
+                            actor_temps,
+                            script,
+                            source.sectnum,
+                            source.x,
+                            source.y,
+                            source.z.wrapping_add(offset.wrapping_shl(8)),
+                            trail_tile,
+                            source.shade,
+                            repeat_x,
+                            repeat_y,
+                            source.ang,
+                            0,
+                            0,
+                            i,
+                            crate::stat::STAT_MISC,
+                        );
+                    }
+                }
+            }
             let spr_hits: Vec<SpriteHit> = sprites
                 .iter()
-                .map(|sp| {
-                    SpriteHit::cylinder(
+                .enumerate()
+                .map(|(index, sp)| {
+                    let mut hit = SpriteHit::cylinder(
                         sp.x,
                         sp.y,
                         sp.z,
                         sp.sectnum,
                         i32::from(sp.clipdist) << 2,
                         sp.cstat,
-                    )
+                    );
+                    if custom_rpg
+                        && (index == iu || source.owner >= 0 && index == source.owner as usize)
+                    {
+                        hit.cstat = 0;
+                    }
+                    hit
                 })
                 .collect();
-            let hit = hitscan_full(
-                sprites[iu].x,
-                sprites[iu].y,
-                sprites[iu].z,
-                sprites[iu].sectnum,
-                dx,
-                dy,
-                dz,
-                (256 << 16) + 64,
-                &sec_w,
-                &wxy,
-                &spr_hits,
-                Some(&sec_z),
-            );
-            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
-            let hit = if hit_beyond_step(&hit, sprites[iu].x, sprites[iu].y, sprites[iu].z, dx, dy, dz) {
-                room_build_engine::geom::HitScan { hitsect: -1, hitwall: -1, hitsprite: -1, hitx: 0, hity: 0, hitz: 0 }
+            let hit = if timer_expired {
+                room_build_engine::geom::HitScan {
+                    hitsect: source.sectnum,
+                    hitwall: -1,
+                    hitsprite: -1,
+                    hitx: source.x,
+                    hity: source.y,
+                    hitz: source.z,
+                }
             } else {
-                hit
+                advance_projectile_with_sweeps(
+                    lists,
+                    sprites,
+                    actor_temps,
+                    i,
+                    velocity_multiplier,
+                    projectile_workslike,
+                    script_tile(script, "MIRROR").unwrap_or(560),
+                    &sec_w,
+                    &wxy,
+                    &sec_z,
+                    &spr_hits,
+                    walls,
+                )
             };
+            if custom_rpg
+                && !timer_expired
+                && projectile_workslike & crate::shoot::PROJECTILE_FLAG_WATERBUBBLES != 0
+            {
+                let (bubble_sector, bubble_x, bubble_y, bubble_z) = if hit.hitsect >= 0 {
+                    (hit.hitsect, hit.hitx, hit.hity, hit.hitz)
+                } else {
+                    let projectile = sprites[iu];
+                    (projectile.sectnum, projectile.x, projectile.y, projectile.z)
+                };
+                spawn_custom_projectile_water_bubble(
+                    lists,
+                    sprites,
+                    sectors,
+                    picnum,
+                    actor_temps,
+                    script,
+                    randomseed,
+                    bubble_sector,
+                    bubble_x,
+                    bubble_y,
+                    bubble_z,
+                    sprites[iu].owner,
+                );
+            }
             let plane_hit = hit.hitsect >= 0 && hit.hitwall < 0 && hit.hitsprite < 0;
             if hit.hitwall >= 0 || hit.hitsprite >= 0 || plane_hit {
                 sprites[iu].x = hit.hitx;
                 sprites[iu].y = hit.hity;
                 sprites[iu].z = hit.hitz;
                 if hit.hitsect >= 0 {
-                    if hit.hitsect != source_sect {
+                    if lists.sprite_sect[iu] != hit.hitsect {
                         let _ = lists.changespritesect(i, hit.hitsect);
                     }
                     sprites[iu].sectnum = hit.hitsect;
                 }
-                if plane_hit && sprites[iu].zvel < 0 {
+                if plane_hit && !timer_expired && sprites[iu].zvel < 0 {
                     if let Some(sector) = usize::try_from(hit.hitsect)
                         .ok()
                         .and_then(|index| sectors.get(index))
@@ -1772,13 +1914,23 @@ pub fn moveweapons(
                             sprites[target].picnum,
                             script.map_or(&[], |image| image.actortype.as_slice()),
                         );
-                        let direct_damage = if is_badguy {
+                        let direct_hit_enabled = !custom_rpg
+                            || projectile_workslike & crate::shoot::PROJECTILE_FLAG_RPG_IMPACT != 0;
+                        let direct_damage = if !direct_hit_enabled {
+                            0
+                        } else if custom_rpg {
+                            projectile.extra
+                        } else if is_badguy {
                             projectile.extra.saturating_mul(2)
                         } else {
                             projectile.extra
                         };
-                        if !object_handled {
-                            actor_temps[target].hit_picnum = rpg_tile;
+                        if !object_handled && direct_hit_enabled {
+                            actor_temps[target].hit_picnum = if custom_rpg {
+                                projectile.picnum
+                            } else {
+                                rpg_tile
+                            };
                             actor_temps[target].hit_extra = if actor_temps[target].hit_extra < 0 {
                                 direct_damage
                             } else {
@@ -1798,6 +1950,31 @@ pub fn moveweapons(
                     }
                 }
                 let blast_strength = i32::from(sprites[iu].extra.max(1));
+                let blast_radius = if custom_rpg {
+                    actor_temps
+                        .get(iu)
+                        .map_or(0, |temps| temps.projectile_hitradius)
+                } else {
+                    RPG_BLAST_RADIUS
+                };
+                let blast_picnum = if custom_rpg
+                    && projectile_workslike & crate::shoot::PROJECTILE_FLAG_RPG_IMPACT == 0
+                {
+                    RADIUSEXPLOSION
+                } else {
+                    sprites[iu].picnum
+                };
+                if custom_rpg
+                    && sprites[iu].extra <= 0
+                    && blast_radius <= 0
+                    && projectile_workslike
+                        & (crate::shoot::PROJECTILE_FLAG_RPG_IMPACT
+                            | crate::shoot::PROJECTILE_FLAG_FORCEIMPACT)
+                        == 0
+                {
+                    let _ = lists.deletesprite(i);
+                    continue;
+                }
                 apply_rpg_blast(
                     lists,
                     sprites,
@@ -1807,8 +1984,8 @@ pub fn moveweapons(
                     players,
                     randomseed,
                     blast_strength,
-                    RPG_BLAST_RADIUS,
-                    rpg_tile,
+                    blast_radius,
+                    blast_picnum,
                     sprites[iu],
                     i,
                     picnum,
@@ -1823,6 +2000,59 @@ pub fn moveweapons(
                     sprites[iu].sectnum,
                     sprites[iu].owner,
                 );
+                let impact_state = actor_temps.get(iu).cloned().unwrap_or_default();
+                let timed_effects_enabled = !timer_expired
+                    || projectile_workslike & crate::shoot::PROJECTILE_FLAG_EXPLODEONTIMER != 0;
+                if timed_effects_enabled {
+                    if impact_state.projectile_isound > 0
+                        && let Ok(sound) = i16::try_from(impact_state.projectile_isound)
+                    {
+                        actor_temps[iu].pending_actor_sounds.push(sound);
+                    }
+                    if let Ok(spawn_tile) = i16::try_from(impact_state.projectile_spawns)
+                        && spawn_tile > 0
+                    {
+                        let impact = sprites[iu];
+                        let repeat_x = if impact_state.projectile_sxrepeat > 0 {
+                            impact_state
+                                .projectile_sxrepeat
+                                .clamp(0, i32::from(u8::MAX)) as u8
+                        } else if impact.xrepeat > 0 {
+                            impact.xrepeat
+                        } else {
+                            32
+                        };
+                        let repeat_y = if impact_state.projectile_syrepeat > 0 {
+                            impact_state
+                                .projectile_syrepeat
+                                .clamp(0, i32::from(u8::MAX)) as u8
+                        } else if impact.yrepeat > 0 {
+                            impact.yrepeat
+                        } else {
+                            32
+                        };
+                        let _ = crate::shoot::egs(
+                            lists,
+                            sprites,
+                            picnum,
+                            actor_temps,
+                            script,
+                            impact.sectnum,
+                            impact.x,
+                            impact.y,
+                            impact.z,
+                            spawn_tile,
+                            impact.shade,
+                            repeat_x,
+                            repeat_y,
+                            impact.ang,
+                            0,
+                            0,
+                            i,
+                            crate::stat::STAT_ACTOR,
+                        );
+                    }
+                }
                 let wall_sounds = if iu < actor_temps.len() {
                     std::mem::take(&mut actor_temps[iu].pending_actor_sounds)
                 } else {
@@ -1842,10 +2072,6 @@ pub fn moveweapons(
                 actor_temps[iu] = ActorConTemps::default();
                 actor_temps[iu].pending_actor_sounds = wall_sounds;
                 actor_temps[iu].g_t[5] = 0;
-            } else {
-                sprites[iu].x += dx;
-                sprites[iu].y += dy;
-                sprites[iu].z += dz;
             }
             continue;
         }
@@ -4549,6 +4775,599 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eduke_projectile_velocity_multiplier_updates_each_portal_step() {
+        let mut lists = SpriteLists::new();
+        let mut sprites = vec![SpriteT::default(); room_build_engine::world::MAXSPRITES];
+        let projectile_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile_index = projectile_id as usize;
+        sprites[projectile_index] = SpriteT {
+            x: 900,
+            y: 500,
+            z: 0,
+            sectnum: 0,
+            xvel: 100,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let sectors = [
+            SectorWalls {
+                wallptr: 0,
+                wallnum: 4,
+            },
+            SectorWalls {
+                wallptr: 4,
+                wallnum: 4,
+            },
+        ];
+        let walls = [
+            WallT {
+                x: 0,
+                y: 0,
+                point2: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 1_000,
+                y: 0,
+                point2: 2,
+                nextsector: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 1_000,
+                y: 1_000,
+                point2: 3,
+                ..WallT::default()
+            },
+            WallT {
+                x: 0,
+                y: 1_000,
+                point2: 0,
+                ..WallT::default()
+            },
+            WallT {
+                x: 1_000,
+                y: 0,
+                point2: 5,
+                ..WallT::default()
+            },
+            WallT {
+                x: 2_000,
+                y: 0,
+                point2: 6,
+                ..WallT::default()
+            },
+            WallT {
+                x: 2_000,
+                y: 1_000,
+                point2: 7,
+                ..WallT::default()
+            },
+            WallT {
+                x: 1_000,
+                y: 1_000,
+                point2: 4,
+                nextsector: 0,
+                ..WallT::default()
+            },
+        ];
+        let wall_xy = walls
+            .iter()
+            .map(|wall| WallXY {
+                x: wall.x,
+                y: wall.y,
+                point2: wall.point2,
+                nextsector: wall.nextsector,
+                cstat: wall.cstat,
+            })
+            .collect::<Vec<_>>();
+        let sector_z = [
+            SectorZ {
+                wallptr: 0,
+                wallnum: 4,
+                ceilingz: -10_000,
+                floorz: 10_000,
+                ceilingstat: 0,
+                floorstat: 0,
+                ceilingheinum: 0,
+                floorheinum: 0,
+            },
+            SectorZ {
+                wallptr: 4,
+                wallnum: 4,
+                ceilingz: -10_000,
+                floorz: 10_000,
+                ceilingstat: 0,
+                floorstat: 0,
+                ceilingheinum: 0,
+                floorheinum: 0,
+            },
+        ];
+        let mut actor_temps = vec![ActorConTemps::default(); projectile_index + 1];
+
+        let hit = advance_projectile_with_sweeps(
+            &mut lists,
+            &mut sprites,
+            &mut actor_temps,
+            projectile_id,
+            3,
+            0,
+            560,
+            &sectors,
+            &wall_xy,
+            &sector_z,
+            &[],
+            &walls,
+        );
+
+        assert_eq!(hit, room_build_engine::geom::HitScan::MISS);
+        assert_eq!(sprites[projectile_index].x, 1_050);
+        assert_eq!(sprites[projectile_index].sectnum, 1);
+        assert_eq!(lists.sprite_sect[projectile_index], 1);
+    }
+
+    #[test]
+    fn eduke_custom_rpg_projectile_applies_drop_before_swept_motion() {
+        let mut lists = SpriteLists::new();
+        let mut sprites = vec![SpriteT::default(); room_build_engine::world::MAXSPRITES];
+        let mut sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -100_000,
+            floorz: 100_000,
+            lotag: 2,
+            ..SectorT::default()
+        }];
+        let mut walls = vec![
+            WallT {
+                x: -10_000,
+                y: -10_000,
+                point2: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: -10_000,
+                point2: 2,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: 10_000,
+                point2: 3,
+                ..WallT::default()
+            },
+            WallT {
+                x: -10_000,
+                y: 10_000,
+                point2: 0,
+                ..WallT::default()
+            },
+        ];
+        let projectile_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile_index = projectile_id as usize;
+        sprites[projectile_index] = SpriteT {
+            x: 1_000,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_000,
+            xvel: 100,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let mut actor_temps = vec![ActorConTemps::default(); projectile_index + 1];
+        actor_temps[projectile_index].projectile_workslike =
+            crate::shoot::PROJECTILE_FLAG_RPG | crate::shoot::PROJECTILE_FLAG_WATERBUBBLES;
+        actor_temps[projectile_index].projectile_drop = -64;
+        actor_temps[projectile_index].projectile_velmult = 2;
+        actor_temps[projectile_index].projectile_hitradius = 512;
+        actor_temps[projectile_index].projectile_trail = 9_001;
+        actor_temps[projectile_index].projectile_tnum = 2;
+        actor_temps[projectile_index].projectile_txrepeat = 9;
+        actor_temps[projectile_index].projectile_tyrepeat = 10;
+        actor_temps[projectile_index].projectile_toffset = 1;
+        let mut players = Vec::new();
+        let mut randomseed = 17;
+        let mut picnum = vec![0; projectile_index + 1];
+
+        moveweapons(
+            &mut lists,
+            &mut sprites,
+            &mut sectors,
+            &mut walls,
+            &mut players,
+            &mut randomseed,
+            &mut actor_temps,
+            &mut picnum,
+            None,
+            &[],
+        );
+
+        assert_eq!(lists.sprite_stat[projectile_index], STAT_PROJECTILE);
+        assert_eq!(sprites[projectile_index].x, 1_100);
+        assert_eq!(sprites[projectile_index].z, 30_064);
+        assert_eq!(sprites[projectile_index].zvel, 64);
+        let trails = sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                lists.sprite_stat[*index] == crate::stat::STAT_MISC && sprite.picnum == 9_001
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(trails.len(), 2);
+        assert!(trails.iter().all(|trail| {
+            trail.x == 1_000
+                && trail.y == 1_000
+                && trail.z == 30_256
+                && trail.xrepeat == 9
+                && trail.yrepeat == 10
+        }));
+        let bubbles = sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                lists.sprite_stat[*index] == STAT_MISC && sprite.picnum == WATERBUBBLE
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(bubbles.len(), 1);
+        assert_eq!(
+            (bubbles[0].x, bubbles[0].y, bubbles[0].z),
+            (1_100, 1_000, 30_064)
+        );
+        assert!((4..=7).contains(&bubbles[0].xrepeat));
+        assert!((4..=7).contains(&bubbles[0].yrepeat));
+
+        actor_temps[projectile_index].projectile_workslike |= crate::shoot::PROJECTILE_FLAG_TIMED;
+        actor_temps[projectile_index].projectile_range = 1;
+        actor_temps[projectile_index].projectile_age = 1;
+        moveweapons(
+            &mut lists,
+            &mut sprites,
+            &mut sectors,
+            &mut walls,
+            &mut players,
+            &mut randomseed,
+            &mut actor_temps,
+            &mut picnum,
+            None,
+            &[],
+        );
+        assert_ne!(lists.sprite_stat[projectile_index], STAT_PROJECTILE);
+    }
+
+    #[test]
+    fn eduke_custom_rpg_projectile_bounces_from_wall_and_counts_down() {
+        let mut lists = SpriteLists::new();
+        let mut sprites = vec![SpriteT::default(); room_build_engine::world::MAXSPRITES];
+        let mut sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -100_000,
+            floorz: 100_000,
+            ..SectorT::default()
+        }];
+        let mut walls = vec![
+            WallT {
+                x: -10_000,
+                y: -10_000,
+                point2: 1,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: -10_000,
+                point2: 2,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: 10_000,
+                point2: 3,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: -10_000,
+                y: 10_000,
+                point2: 0,
+                nextsector: -1,
+                ..WallT::default()
+            },
+        ];
+        let projectile_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile_index = projectile_id as usize;
+        sprites[projectile_index] = SpriteT {
+            x: 9_800,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_000,
+            xvel: 1_000,
+            yvel: 1,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let mut actor_temps = vec![ActorConTemps::default(); projectile_index + 1];
+        actor_temps[projectile_index].projectile_workslike =
+            crate::shoot::PROJECTILE_FLAG_RPG | crate::shoot::PROJECTILE_FLAG_BOUNCESOFFWALLS;
+        actor_temps[projectile_index].projectile_velmult = 2;
+        actor_temps[projectile_index].projectile_bsound = 77;
+        let mut players = Vec::new();
+        let mut randomseed = 17;
+        let mut picnum = vec![0; projectile_index + 1];
+
+        moveweapons(
+            &mut lists,
+            &mut sprites,
+            &mut sectors,
+            &mut walls,
+            &mut players,
+            &mut randomseed,
+            &mut actor_temps,
+            &mut picnum,
+            None,
+            &[],
+        );
+
+        assert_eq!(lists.sprite_stat[projectile_index], STAT_PROJECTILE);
+        assert_eq!(
+            sprites[projectile_index].ang, 1024,
+            "projectile={:?}, temp={:?}",
+            sprites[projectile_index], actor_temps[projectile_index]
+        );
+        assert_eq!(sprites[projectile_index].yvel, 0);
+        assert!(sprites[projectile_index].x < 9_800);
+        assert_eq!(actor_temps[projectile_index].pending_actor_sounds, [77]);
+    }
+
+    #[test]
+    fn eduke_custom_rpg_projectile_bounces_from_sprites_without_wall_budget() {
+        let mut lists = SpriteLists::new();
+        let mut sprites = vec![SpriteT::default(); room_build_engine::world::MAXSPRITES];
+        let mut sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -100_000,
+            floorz: 100_000,
+            ..SectorT::default()
+        }];
+        let mut walls = vec![
+            WallT {
+                x: -10_000,
+                y: -10_000,
+                point2: 1,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: -10_000,
+                point2: 2,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: 10_000,
+                point2: 3,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: -10_000,
+                y: 10_000,
+                point2: 0,
+                nextsector: -1,
+                ..WallT::default()
+            },
+        ];
+        let projectile_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile_index = projectile_id as usize;
+        sprites[projectile_index] = SpriteT {
+            x: 1_000,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_000,
+            xvel: 400,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let target_id = lists.insertsprite(0, STAT_ACTOR);
+        let target_index = target_id as usize;
+        sprites[target_index] = SpriteT {
+            x: 1_200,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_001,
+            cstat: 257,
+            clipdist: 20,
+            xrepeat: 40,
+            yrepeat: 40,
+            extra: 100,
+            ..SpriteT::default()
+        };
+        let mut actor_temps = vec![ActorConTemps::default(); target_index + 1];
+        actor_temps[projectile_index].projectile_workslike =
+            crate::shoot::PROJECTILE_FLAG_RPG | crate::shoot::PROJECTILE_FLAG_BOUNCESOFFSPRITES;
+        actor_temps[projectile_index].projectile_velmult = 2;
+        actor_temps[projectile_index].projectile_bsound = 77;
+        let mut players = Vec::new();
+        let mut randomseed = 17;
+        let mut picnum = vec![0; target_index + 1];
+
+        moveweapons(
+            &mut lists,
+            &mut sprites,
+            &mut sectors,
+            &mut walls,
+            &mut players,
+            &mut randomseed,
+            &mut actor_temps,
+            &mut picnum,
+            None,
+            &[],
+        );
+
+        assert_eq!(lists.sprite_stat[projectile_index], STAT_PROJECTILE);
+        assert_eq!(sprites[projectile_index].ang, 1024);
+        assert!(sprites[projectile_index].x < 1_000);
+        assert_eq!(sprites[projectile_index].yvel, 0);
+        assert_eq!(actor_temps[target_index].hit_extra, -1);
+        assert_eq!(actor_temps[projectile_index].pending_actor_sounds, [77]);
+    }
+
+    #[test]
+    fn eduke_custom_rpg_impact_flag_applies_direct_sprite_damage() {
+        let mut lists = SpriteLists::new();
+        let mut sprites = vec![SpriteT::default(); room_build_engine::world::MAXSPRITES];
+        let mut sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -100_000,
+            floorz: 100_000,
+            ..SectorT::default()
+        }];
+        let mut walls = vec![
+            WallT {
+                x: -10_000,
+                y: -10_000,
+                point2: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: -10_000,
+                point2: 2,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: 10_000,
+                point2: 3,
+                ..WallT::default()
+            },
+            WallT {
+                x: -10_000,
+                y: 10_000,
+                point2: 0,
+                ..WallT::default()
+            },
+        ];
+        let projectile_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile_index = projectile_id as usize;
+        sprites[projectile_index] = SpriteT {
+            x: 1_000,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_000,
+            xvel: 400,
+            extra: 5,
+            owner: -1,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let target_id = lists.insertsprite(0, STAT_ACTOR);
+        let target_index = target_id as usize;
+        sprites[target_index] = SpriteT {
+            x: 1_200,
+            y: 1_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_001,
+            cstat: 257,
+            clipdist: 20,
+            xrepeat: 40,
+            yrepeat: 40,
+            extra: 100,
+            ..SpriteT::default()
+        };
+        let projectile2_id = lists.insertsprite(0, STAT_PROJECTILE);
+        let projectile2_index = projectile2_id as usize;
+        sprites[projectile2_index] = SpriteT {
+            x: 1_000,
+            y: 3_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_002,
+            xvel: 400,
+            extra: 5,
+            owner: -1,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let radius_target_id = lists.insertsprite(0, STAT_DEFAULT);
+        let radius_target_index = radius_target_id as usize;
+        sprites[radius_target_index] = SpriteT {
+            x: 1_200,
+            y: 3_000,
+            z: 30_000,
+            sectnum: 0,
+            picnum: 9_003,
+            cstat: 257,
+            clipdist: 20,
+            xrepeat: 40,
+            yrepeat: 40,
+            extra: 100,
+            ..SpriteT::default()
+        };
+        let mut actor_temps = vec![ActorConTemps::default(); radius_target_index + 1];
+        actor_temps[projectile_index].projectile_workslike = 2 | 32_768;
+        actor_temps[projectile_index].projectile_spawns = 9_004;
+        actor_temps[projectile_index].projectile_isound = 75;
+        actor_temps[projectile_index].projectile_sxrepeat = 13;
+        actor_temps[projectile_index].projectile_syrepeat = 14;
+        actor_temps[projectile2_index].projectile_workslike =
+            2 | crate::shoot::PROJECTILE_FLAG_TIMED | crate::shoot::PROJECTILE_FLAG_EXPLODEONTIMER;
+        actor_temps[projectile2_index].projectile_hitradius = 512;
+        actor_temps[projectile2_index].projectile_range = 1;
+        actor_temps[projectile2_index].projectile_age = 1;
+        let mut players = Vec::new();
+        let mut randomseed = 17;
+        let mut picnum = vec![0; radius_target_index + 1];
+
+        moveweapons(
+            &mut lists,
+            &mut sprites,
+            &mut sectors,
+            &mut walls,
+            &mut players,
+            &mut randomseed,
+            &mut actor_temps,
+            &mut picnum,
+            None,
+            &[],
+        );
+
+        assert_eq!(actor_temps[target_index].hit_picnum, 9_000);
+        assert_eq!(actor_temps[target_index].hit_extra, 5);
+        assert_eq!(actor_temps[target_index].hit_owner, -1);
+        assert_eq!(lists.sprite_stat[projectile_index], STAT_MISC);
+        assert_eq!(actor_temps[projectile_index].pending_actor_sounds, [75]);
+        let impact_spawns = sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                lists.sprite_stat[*index] == STAT_ACTOR && sprite.picnum == 9_004
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(impact_spawns.len(), 1);
+        assert_eq!(impact_spawns[0].xrepeat, 13);
+        assert_eq!(impact_spawns[0].yrepeat, 14);
+        assert_eq!(actor_temps[radius_target_index].hit_picnum, RADIUSEXPLOSION);
+        assert!(actor_temps[radius_target_index].hit_extra > 0);
+        assert_eq!(lists.sprite_stat[projectile2_index], STAT_MISC);
+    }
+
+    #[test]
     fn rpg_damage_uses_atomic_three_radius_bands() {
         let mut seed = 17_i32;
         let inner = rpg_radius_damage(0, &mut seed, 140);
@@ -4559,7 +5378,6 @@ mod tests {
         assert!((35..70).contains(&outer));
     }
 }
-
 
 /// True when a projectile's hitscan probe hit something past this tic's
 /// `movesprite` step `(dx, dy, dz)` — i.e. no collision this tic.
@@ -4583,6 +5401,236 @@ fn hit_beyond_step(
     } else {
         (hit.hitz - sz).abs() > dz.abs()
     }
+}
+
+/// Keep content-controlled repeated projectile movement bounded per tic.
+/// Ordinary EDuke32 mods use small values; this prevents one malformed
+/// `PROJ_VEL_MULT` value from making a single actor consume unbounded work.
+const MAX_PROJECTILE_VEL_MULT_PER_TIC: i32 = 256;
+
+/// Emit the EDuke32 `PROJECTILE_WATERBUBBLES` underwater cue for a moving
+/// user projectile. The EGS arguments and random draw order match the existing
+/// Build underwater tracer path.
+#[allow(clippy::too_many_arguments)]
+fn spawn_custom_projectile_water_bubble(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    sector: i16,
+    x: i32,
+    y: i32,
+    z: i32,
+    owner: i16,
+) {
+    let underwater = usize::try_from(sector)
+        .ok()
+        .and_then(|index| sectors.get(index))
+        .is_some_and(|sector| sector.lotag == 2);
+    if !underwater {
+        return;
+    }
+
+    // Match the existing `tracers` EGS call (32-bit argument evaluation is
+    // right-to-left): angle, yrepeat, then xrepeat consume the random stream.
+    let angle = (krand_step(randomseed) & 2047) as i16;
+    let yrepeat = (4 + (krand_step(randomseed) & 3)) as u8;
+    let xrepeat = (4 + (krand_step(randomseed) & 3)) as u8;
+    let _ = egs(
+        lists,
+        sprites,
+        picnum,
+        actor_temps,
+        script,
+        sector,
+        x,
+        y,
+        z,
+        WATERBUBBLE,
+        -32,
+        xrepeat,
+        yrepeat,
+        angle,
+        0,
+        0,
+        owner,
+        STAT_MISC,
+    );
+}
+
+/// Advance a projectile through EDuke32's repeated per-tic movement steps.
+/// Each step gets its own hitscan, sector update, and collision decision so
+/// rounding and portal transitions follow repeated `movesprite` calls.
+#[allow(clippy::too_many_arguments)]
+fn advance_projectile_with_sweeps(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    sprite_index: i16,
+    steps: i32,
+    projectile_workslike: i32,
+    mirror_tile: i16,
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+    sec_z: &[SectorZ],
+    sprite_hits: &[SpriteHit],
+    walls: &[WallT],
+) -> room_build_engine::geom::HitScan {
+    let iu = sprite_index as usize;
+    for _ in 0..steps.clamp(0, MAX_PROJECTILE_VEL_MULT_PER_TIC) {
+        let current = sprites[iu];
+        let (sin, cos) = sincos_q14(i32::from(current.ang) & 2047);
+        let xv = i32::from(current.xvel);
+        let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
+        let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
+        let dz = (i32::from(current.zvel) * TICSPERFRAME) >> 3;
+        let hit = hitscan_full(
+            current.x,
+            current.y,
+            current.z,
+            current.sectnum,
+            dx,
+            dy,
+            dz,
+            (256 << 16) + 64,
+            sec_w,
+            wxy,
+            sprite_hits,
+            Some(sec_z),
+        );
+        if hit.hitsect >= 0 && !hit_beyond_step(&hit, current.x, current.y, current.z, dx, dy, dz) {
+            if hit.hitwall >= 0 {
+                let wall_bounces =
+                    projectile_workslike & crate::shoot::PROJECTILE_FLAG_BOUNCESOFFWALLS != 0;
+                let mirror_bounces =
+                    projectile_workslike & crate::shoot::PROJECTILE_FLAG_BOUNCESOFFMIRRORS != 0;
+                let wall_index = hit.hitwall as usize;
+                let is_mirror = walls.get(wall_index).is_some_and(|wall| {
+                    wall.picnum == mirror_tile || wall.overpicnum == mirror_tile
+                });
+                if (wall_bounces || (mirror_bounces && is_mirror))
+                    && sprites[iu].yvel > 0
+                    && bounce_custom_projectile_from_wall(
+                        &mut sprites[iu],
+                        hit.hitwall,
+                        hit.hitx,
+                        hit.hity,
+                        hit.hitz,
+                        hit.hitsect,
+                        walls,
+                    )
+                {
+                    sprites[iu].yvel -= 1;
+                    if hit.hitsect >= 0 && lists.sprite_sect[iu] != hit.hitsect {
+                        let _ = lists.changespritesect(sprite_index, hit.hitsect);
+                    }
+                    queue_custom_projectile_bounce_sound(actor_temps, iu);
+                    continue;
+                }
+            } else if hit.hitsprite >= 0
+                && projectile_workslike & crate::shoot::PROJECTILE_FLAG_BOUNCESOFFSPRITES != 0
+                && let Some(target) = sprites.get(hit.hitsprite as usize).copied()
+                && bounce_custom_projectile_from_sprite(
+                    &mut sprites[iu],
+                    target,
+                    hit.hitx,
+                    hit.hity,
+                    hit.hitz,
+                    hit.hitsect,
+                )
+            {
+                if hit.hitsect >= 0 && lists.sprite_sect[iu] != hit.hitsect {
+                    let _ = lists.changespritesect(sprite_index, hit.hitsect);
+                }
+                queue_custom_projectile_bounce_sound(actor_temps, iu);
+                continue;
+            }
+            return hit;
+        }
+        step_projectile(lists, sprites, sprite_index, dx, dy, dz, sec_w, wxy);
+    }
+    room_build_engine::geom::HitScan::MISS
+}
+
+fn queue_custom_projectile_bounce_sound(actor_temps: &mut Vec<ActorConTemps>, sprite_index: usize) {
+    if actor_temps.len() <= sprite_index {
+        actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
+    }
+    let sound = actor_temps[sprite_index].projectile_bsound;
+    if sound >= 0 {
+        actor_temps[sprite_index]
+            .pending_actor_sounds
+            .push(sound as i16);
+    }
+}
+
+/// Reflect an RPG workslike projectile at a wall and move it a few Build
+/// units away from the collision plane so the next tic does not immediately
+/// report the same zero-distance hit.
+fn bounce_custom_projectile_from_wall(
+    sprite: &mut SpriteT,
+    wall_index: i16,
+    x: i32,
+    y: i32,
+    z: i32,
+    sectnum: i16,
+    walls: &[WallT],
+) -> bool {
+    let Some(wall) = usize::try_from(wall_index)
+        .ok()
+        .and_then(|index| walls.get(index))
+    else {
+        return false;
+    };
+    let Some(end) = usize::try_from(wall.point2)
+        .ok()
+        .and_then(|index| walls.get(index))
+    else {
+        return false;
+    };
+    let wall_angle = getangle(end.x.wrapping_sub(wall.x), end.y.wrapping_sub(wall.y));
+    sprite.ang = ((wall_angle * 2 - i32::from(sprite.ang)) & 2047) as i16;
+    sprite.x = x;
+    sprite.y = y;
+    sprite.z = z;
+    sprite.sectnum = sectnum;
+    nudge_custom_projectile_from_impact(sprite);
+    true
+}
+
+/// Reflect an RPG workslike projectile away from the surface normal of a hit
+/// sprite. EDuke32's wall bounce counter is deliberately untouched here.
+fn bounce_custom_projectile_from_sprite(
+    sprite: &mut SpriteT,
+    target: SpriteT,
+    x: i32,
+    y: i32,
+    z: i32,
+    sectnum: i16,
+) -> bool {
+    let normal_angle = getangle(x.wrapping_sub(target.x), y.wrapping_sub(target.y));
+    let incoming_angle = i32::from(sprite.ang);
+    let outgoing = if x == target.x && y == target.y {
+        (incoming_angle + 1024) & 2047
+    } else {
+        (2 * normal_angle + 1024 - incoming_angle) & 2047
+    };
+    sprite.ang = outgoing as i16;
+    sprite.x = x;
+    sprite.y = y;
+    sprite.z = z;
+    sprite.sectnum = sectnum;
+    nudge_custom_projectile_from_impact(sprite);
+    true
+}
+
+fn nudge_custom_projectile_from_impact(sprite: &mut SpriteT) {
+    let (sin, cos) = sincos_q14(i32::from(sprite.ang) & 2047);
+    sprite.x = sprite.x.wrapping_add((cos * 8) >> 14);
+    sprite.y = sprite.y.wrapping_add((sin * 8) >> 14);
 }
 
 /// Advance a projectile by one unobstructed step and refresh its sector.

@@ -370,22 +370,34 @@
       color: #d5dbe6; pointer-events: none; user-select: none; font-variant-numeric: tabular-nums;
     }
     body.touch #fps { right: calc(156px + env(safe-area-inset-right)); }
+    /* Match over: a small card top-right, so the in-game results (and the
+       world behind) stay readable. */
     #matchover {
-      position: fixed; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center;
-      background: radial-gradient(ellipse at center, rgba(40, 10, 10, 0.78), rgba(4, 4, 8, 0.92));
-      pointer-events: auto;
+      position: fixed; z-index: 9; pointer-events: auto;
+      top: calc(max(8px, env(safe-area-inset-top)) + 32px); right: max(12px, env(safe-area-inset-right));
     }
     #matchover .panel {
-      box-sizing: border-box; width: min(30rem, calc(100vw - 1.5rem)); max-height: calc(100dvh - 1.5rem); overflow-y: auto;
-      padding: 1.4rem 1.5rem; background: rgba(16, 18, 26, 0.95); border: 1px solid #4a2a2a; border-radius: 12px;
-      box-shadow: 0 16px 60px rgba(0,0,0,0.6); text-align: center;
+      box-sizing: border-box; width: min(22rem, calc(100vw - 1.5rem)); max-height: calc(100dvh - 5rem); overflow-y: auto;
+      padding: 0.9rem 1rem 1rem; background: rgba(16, 18, 26, 0.94); border: 1px solid #4a2a2a; border-radius: 10px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.55); text-align: left;
     }
-    #matchover h1 { margin: 0 0 0.25rem; font-size: 1.9rem; letter-spacing: 0.06em; color: #ffd27a; text-transform: uppercase; }
+    #matchover .panel { position: relative; }
+    #matchover.min .panel > :not(.actions):not(#matchover-min) { display: none; }
+    #matchover.min .panel { padding: 0.5rem 2.6rem 0.5rem 0.5rem; }
+    #matchover-min {
+      position: absolute; top: 0.45rem; right: 0.45rem; width: 1.9rem; height: 1.9rem; padding: 0;
+      border: 1px solid #5a4a4a; border-radius: 5px; background: transparent; color: #d8c8c0;
+      font: 700 1rem/1 system-ui, sans-serif; cursor: pointer;
+    }
+    #matchover-min:hover { background: rgba(255, 255, 255, 0.08); }
+    #matchover table[hidden] { display: none; }
+    #matchover h1 { margin: 0 0 0.2rem; font-size: 1.3rem; letter-spacing: 0.06em; color: #ffd27a; text-transform: uppercase; }
     #matchover h1.lost { color: #e8a0a0; }
-    #matchover .sub { margin: 0 0 1rem; color: #9aa3b2; font-size: 0.92rem; }
-    #matchover table { width: 100%; border-collapse: collapse; margin: 0 0 1.1rem; font-size: 0.92rem; }
+    #matchover .sub { margin: 0 0 0.8rem; color: #9aa3b2; font-size: 0.85rem; line-height: 1.35; }
+    #matchover .sub:empty { display: none; }
+    #matchover table { width: 100%; border-collapse: collapse; margin: 0 0 0.9rem; font-size: 0.85rem; }
     #matchover th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7a8494; font-weight: 600; padding: 0 0.4rem 0.35rem; }
-    #matchover td { padding: 0.45rem 0.4rem; border-top: 1px solid rgba(60, 66, 82, 0.6); color: #d8dee9; font-variant-numeric: tabular-nums; }
+    #matchover td { padding: 0.3rem 0.35rem; border-top: 1px solid rgba(60, 66, 82, 0.6); color: #d8dee9; font-variant-numeric: tabular-nums; }
     #matchover th, #matchover td { text-align: right; white-space: nowrap; }
     #matchover th.place, #matchover td.place { text-align: center; width: 2.2rem; }
     #matchover th.name, #matchover td.name { text-align: left; width: 100%; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
@@ -393,9 +405,9 @@
     #matchover tr.me td { color: #fff; background: rgba(90, 140, 70, 0.18); }
     #matchover tr.first td.place { color: #ffd27a; font-weight: 700; }
     #matchover .out { color: #8a6a6a; }
-    #matchover .actions { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; }
+    #matchover .actions { display: flex; gap: 0.5rem; justify-content: flex-start; flex-wrap: wrap; }
     #matchover .actions a, #matchover .actions button {
-      min-height: 44px; padding: 0.55rem 1.1rem; border-radius: 6px; cursor: pointer; text-decoration: none;
+      min-height: 40px; padding: 0.45rem 0.9rem; border-radius: 6px; cursor: pointer; text-decoration: none;
       border: 1px solid #4a6e36; background: #3a5a2a; color: #e8ffe0; font: 0.95rem system-ui, sans-serif;
       display: inline-flex; align-items: center;
     }
@@ -581,11 +593,19 @@
     #netGraph.is-stalling { border-color: var(--r-red) var(--r-lo) var(--r-lo) var(--r-red); }
 
     /* Match over */
-    #matchover { background: rgba(0, 0, 0, 0.8); }
+    #matchover { background: none; }
     #matchover table { background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); }
     #matchover td { border-top: 1px solid #2a2a2a; color: var(--r-bone); }
     #matchover tr.me td { background: rgba(196, 16, 16, 0.3); color: #fff; }
     #matchover tr.first td.place { color: var(--r-amber); }
+    #matchover .actions { padding-left: 0; gap: 0.45rem; }
+    #matchover .actions a, #matchover .actions button {
+      min-height: 34px; padding: 0.35rem 0.75rem; font-size: 0.85rem; white-space: nowrap;
+    }
+    #matchover .actions > *::before { display: none; }
+    #matchover h1 { padding-right: 2.2rem; }
+    #matchover .actions .secondary { background: transparent; border-color: #5a4a4a; color: #d8c8c0; }
+    #matchover .actions .secondary:hover { background: rgba(255, 255, 255, 0.06); }
 
     /* ---- Boot screen polish ------------------------------------------------ */
     /* The settings bar stays behind ☰ until a game is running. */
@@ -757,11 +777,12 @@
   </div>
   <div id="fps" aria-hidden="true">— fps</div>
   <div id="matchclock" hidden></div>
-  <div id="matchover" hidden role="dialog" aria-modal="true" aria-labelledby="matchover-title">
+  <div id="matchover" hidden role="dialog" aria-modal="false" aria-labelledby="matchover-title">
     <div class="panel">
+      <button type="button" id="matchover-min" aria-label="Hide results" title="Hide">–</button>
       <h1 id="matchover-title">Match over</h1>
       <p class="sub" id="matchover-sub"></p>
-      <table>
+      <table id="matchover-table">
         <thead><tr><th class="place">#</th><th class="name">Player</th><th id="matchover-frags">Frags</th><th id="matchover-col">Deaths</th><th class="state"></th></tr></thead>
         <tbody id="matchover-rows"></tbody>
       </table>
@@ -861,6 +882,13 @@
       const rows = document.getElementById("matchover-rows");
       const actions = document.getElementById("matchover-actions");
       over.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      const minBtn = document.getElementById("matchover-min");
+      minBtn.addEventListener("click", () => {
+        const min = over.classList.toggle("min");
+        minBtn.textContent = min ? "+" : "–";
+        minBtn.title = min ? "Show" : "Hide";
+        minBtn.setAttribute("aria-label", min ? "Show results" : "Hide results");
+      });
       over.addEventListener("keydown", (ev) => ev.stopPropagation());
       const ws = params.get("ws") || "";
       let lobbyUrl = "/";
@@ -912,9 +940,15 @@
           return `<tr class="${cls}"><td class="place">${r.place}</td><td class="name">${esc(r.name)}</td>` +
             `<td>${r.frags}</td><td>${extra}</td><td class="state">${state}</td></tr>`;
         }).join("");
-        actions.innerHTML = ws
+        // The game draws its own results board (Battle Royale): no second copy here.
+        document.getElementById("matchover-table").hidden = byDamage || !(st.rows || []).length;
+        const btns = [];
+        btns.push(ws
           ? `<a href="${esc(lobbyUrl)}">Back to lobby</a>`
-          : `<button type="button" id="matchover-again">Play again</button>`;
+          : `<button type="button" id="matchover-again">Play again</button>`);
+        // This room is done; other games running on the server can be watched.
+        if (ws) btns.push(`<a href="${esc(lobbyUrl)}#netgames" class="secondary">Watch a live game</a>`);
+        actions.innerHTML = btns.join("");
         const again = document.getElementById("matchover-again");
         if (again) again.addEventListener("click", () => location.reload());
         if (document.pointerLockElement) document.exitPointerLock();
@@ -1473,7 +1507,31 @@
           sel.value = String(Math.min(Math.max(keep, first), first + SKILL_NAMES[kind].length - 1));
         }
       };
+      // Play solo › Generate a new map (`?gen={…room-mapgen options…, maps}`):
+      // build the maps for this IWAD once, as a PWAD mounted like any add-on.
+      const genParam = params.get("gen");
+      let genDone = false;
+      const ensureGenerated = (bytes) => {
+        if (!genParam || genDone || isGrpBytes(bytes)) return true;
+        genDone = true;
+        try {
+          const opts = JSON.parse(genParam);
+          const count = Math.max(1, Math.min(9, Number(opts.maps) || 1));
+          status.textContent = count > 1 ? `Generating ${count} maps…` : "Generating the map…";
+          const t0 = performance.now();
+          const wad = mod.roomGenerateWad(JSON.stringify(opts), bytes, count);
+          addUserPwad(count > 1 ? "generated-episode.wad" : "generated-map.wad", wad, false);
+          console.info(`[Room mapgen] ${count} map(s), seed ${opts.seed}, ${Math.round(performance.now() - t0)} ms`);
+          return true;
+        } catch (err) {
+          console.error(err);
+          status.textContent = `Could not generate the map: ${err.message || err}`;
+          status.style.color = "#f66";
+          return false;
+        }
+      };
       const startWithBytes = (bytes, label) => {
+        if (!ensureGenerated(bytes)) return false;
         if (isGrpBytes(bytes) && !ROOM_UI_SHOW_DUKE) {
           status.textContent = "Duke Nukem 3D is hidden in this UI — choose a Doom IWAD";
           status.style.color = "#f66";

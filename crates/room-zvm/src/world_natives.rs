@@ -53,7 +53,13 @@ pub(crate) fn float_at(heap: &ZvmHeap, h: ObjHandle, slot: Option<usize>, k: usi
     }
 }
 
-pub(crate) fn set_float_at(heap: &mut ZvmHeap, h: ObjHandle, slot: Option<usize>, k: usize, v: f64) {
+pub(crate) fn set_float_at(
+    heap: &mut ZvmHeap,
+    h: ObjHandle,
+    slot: Option<usize>,
+    k: usize,
+    v: f64,
+) {
     let Some(slot) = slot.map(|s| s + k) else {
         return;
     };
@@ -127,9 +133,20 @@ fn distance(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>, three_d: bool, squa
         ret_f(regs, 0.0);
         return;
     };
-    let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], if three_d { b[2] - a[2] } else { 0.0 });
+    let (dx, dy, dz) = (
+        b[0] - a[0],
+        b[1] - a[1],
+        if three_d { b[2] - a[2] } else { 0.0 },
+    );
     let sq = dx * dx + dy * dy + dz * dz;
-    ret_f(regs, if squared { sq } else { room_core::dmath::sqrt(sq) });
+    ret_f(
+        regs,
+        if squared {
+            sq
+        } else {
+            room_core::dmath::sqrt(sq)
+        },
+    );
 }
 
 fn distance_2d(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -166,7 +183,10 @@ fn angle_to(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap>
         ret_f(regs, 0.0);
         return Ok(());
     };
-    ret_f(regs, rad_to_deg(room_core::dmath::atan2(b[1] - a[1], b[0] - a[0])));
+    ret_f(
+        regs,
+        rad_to_deg(room_core::dmath::atan2(b[1] - a[1], b[0] - a[0])),
+    );
     Ok(())
 }
 
@@ -205,7 +225,11 @@ fn vec2_offset_z(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), 
 /// `Vec3Angle(length, angle, z, absolute)` / `Vec2Angle(length, angle, absolute)`.
 fn vec3_angle(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     let p = pos_of(ctx, arg_a(regs, 0)).unwrap_or([0.0; 3]);
-    let (len, ang, z) = (arg_f(regs, 0, 0.0), arg_f(regs, 1, 0.0), arg_f(regs, 2, 0.0));
+    let (len, ang, z) = (
+        arg_f(regs, 0, 0.0),
+        arg_f(regs, 1, 0.0),
+        arg_f(regs, 2, 0.0),
+    );
     let r = deg_to_rad(ang);
     ret_vec(
         regs,
@@ -320,7 +344,11 @@ fn class_arg(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn inventory_entry(ctx: &ZvmCtx<'_>, owner: ObjHandle, class: &str) -> Option<(i32, i32)> {
+pub(crate) fn inventory_entry(
+    ctx: &ZvmCtx<'_>,
+    owner: ObjHandle,
+    class: &str,
+) -> Option<(i32, i32)> {
     ctx.play
         .inventory
         .iter()
@@ -428,7 +456,10 @@ pub const TYPED_NATIVES: &[&str] = &[
 #[must_use]
 pub fn typed_native_vector_result(name: &str) -> Option<u8> {
     match name.to_ascii_lowercase().as_str() {
-        "actor.vec2to" | "actor.vec2offset" | "actor.vec2angle" | "texman.getscaledsize"
+        "actor.vec2to"
+        | "actor.vec2offset"
+        | "actor.vec2angle"
+        | "texman.getscaledsize"
         | "texman.getscaledoffset" => Some(2),
         "actor.vec3to" | "actor.vec3offset" | "actor.vec2offsetz" | "actor.vec3angle" => Some(3),
         "quat.fromangles" | "quat.axisangle" | "quat.slerp" | "quat.nlerp" => Some(4),

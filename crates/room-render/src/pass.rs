@@ -1446,13 +1446,13 @@ impl UnlitPass {
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };
-            let Some(albedo_view) = catalog
-                .textures
-                .get(id)
-                .and_then(|e| e.view.clone().or_else(|| {
-                    e.gpu.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
-                }))
-            else {
+            let Some(albedo_view) = catalog.textures.get(id).and_then(|e| {
+                e.view.clone().or_else(|| {
+                    e.gpu
+                        .as_ref()
+                        .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                })
+            }) else {
                 pass.set_bind_group(1, &self.mat_bind, &[]);
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
@@ -1460,7 +1460,9 @@ impl UnlitPass {
             let bright_owned = bright_id.and_then(|bid| {
                 catalog.textures.get(bid).and_then(|e| {
                     e.view.clone().or_else(|| {
-                        e.gpu.as_ref().map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+                        e.gpu
+                            .as_ref()
+                            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
                     })
                 })
             });

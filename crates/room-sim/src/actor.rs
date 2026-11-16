@@ -99,14 +99,24 @@ fn default_value(part: BonePart) -> [f64; 4] {
 fn lerp_part(part: BonePart, a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
     let i = 1.0 - t;
     if part != BonePart::Rotation {
-        return [a[0] * i + b[0] * t, a[1] * i + b[1] * t, a[2] * i + b[2] * t, 0.0];
+        return [
+            a[0] * i + b[0] * t,
+            a[1] * i + b[1] * t,
+            a[2] * i + b[2] * t,
+            0.0,
+        ];
     }
     let mut r = [a[0] * i, a[1] * i, a[2] * i, a[3] * i];
     let dot = r[0] * b[0] * t + r[1] * b[1] * t + r[2] * b[2] * t + r[3] * b[3] * t;
     if dot < 0.0 {
         r = [-r[0], -r[1], -r[2], -r[3]];
     }
-    let q = [r[0] + b[0] * t, r[1] + b[1] * t, r[2] + b[2] * t, r[3] + b[3] * t];
+    let q = [
+        r[0] + b[0] * t,
+        r[1] + b[1] * t,
+        r[2] + b[2] * t,
+        r[3] + b[3] * t,
+    ];
     let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
     if len < 1e-12 {
         return [0.0, 0.0, 0.0, 1.0];
@@ -132,7 +142,11 @@ impl BoneComponent {
         } else {
             self.mode
         };
-        self.cur = if mode == 0 { default_value(part) } else { value };
+        self.cur = if mode == 0 {
+            default_value(part)
+        } else {
+            value
+        };
         self.switch_tic = tic;
         self.interp_len = interp_len.max(0.0);
         self.mode = mode;
@@ -168,7 +182,8 @@ impl ActorModelState {
         mode: i32,
     ) {
         let pos = self.bones.iter().position(|b| {
-            (index.is_some() && b.index == index) || (!name.is_empty() && b.name.eq_ignore_ascii_case(name))
+            (index.is_some() && b.index == index)
+                || (!name.is_empty() && b.name.eq_ignore_ascii_case(name))
         });
         let slot = match pos {
             Some(p) => &mut self.bones[p],

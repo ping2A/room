@@ -317,7 +317,9 @@ struct Lines {
 
 impl Lines {
     fn new(seconds: f32, rate: f32, extra: usize) -> Self {
-        let n = ((seconds * rate).ceil() as usize + extra).next_power_of_two().max(4);
+        let n = ((seconds * rate).ceil() as usize + extra)
+            .next_power_of_two()
+            .max(4);
         Self {
             buf: std::array::from_fn(|_| vec![0.0; n]),
             mask: n - 1,
@@ -427,7 +429,15 @@ struct T60 {
 }
 
 impl T60 {
-    fn calc(&mut self, length: f32, lf_decay: f32, mf_decay: f32, hf_decay: f32, lf0: f32, hf0: f32) {
+    fn calc(
+        &mut self,
+        length: f32,
+        lf_decay: f32,
+        mf_decay: f32,
+        hf_decay: f32,
+        lf0: f32,
+        hf0: f32,
+    ) {
         let mf = decay_coeff(length, mf_decay);
         let lf = decay_coeff(length, lf_decay) / mf;
         let hf = decay_coeff(length, hf_decay) / mf;
@@ -459,7 +469,9 @@ impl Glide {
     fn next(&mut self) -> f32 {
         if self.step != 0.0 {
             self.cur += self.step;
-            if (self.step > 0.0 && self.cur >= self.target) || (self.step < 0.0 && self.cur <= self.target) {
+            if (self.step > 0.0 && self.cur >= self.target)
+                || (self.step < 0.0 && self.cur <= self.target)
+            {
                 self.cur = self.target;
                 self.step = 0.0;
             }
@@ -726,7 +738,10 @@ impl Pipeline {
             let o1 = self.l_delay.get(j, tap.wrapping_sub(1));
             let o2 = self.l_delay.get(j, tap.wrapping_sub(2));
             let o3 = self.l_delay.get(j, tap.wrapping_sub(3));
-            let v = (o0 * cubic.c0(frac) + o1 * cubic.c1(frac) + o2 * cubic.c2(frac) + o3 * cubic.c3(frac))
+            let v = (o0 * cubic.c0(frac)
+                + o1 * cubic.c1(frac)
+                + o2 * cubic.c2(frac)
+                + o3 * cubic.c3(frac))
                 * self.t60[j].mid;
             let v = self.t60[j].hf.process(v);
             *lj = self.t60[j].lf.process(v);
@@ -806,7 +821,11 @@ impl EfxReverb {
             rate,
             params: None,
             full_key: [f32::NAN; 9],
-            main: Lines::new(MAX_REFLECTIONS_DELAY + EARLY_TAP_LENGTHS[3] * m, rate, FADE_SAMPLES),
+            main: Lines::new(
+                MAX_REFLECTIONS_DELAY + EARLY_TAP_LENGTHS[3] * m,
+                rate,
+                FADE_SAMPLES,
+            ),
             pipes: [Pipeline::new(rate), Pipeline::new(rate)],
             cur: 0,
             old_left: 0,
@@ -878,7 +897,16 @@ impl EfxReverb {
             pipe.mix_x = x;
             pipe.mix_y = y;
             pipe.update_modulator(p.modulation_time, p.modulation_depth, rate);
-            pipe.update_late(dm, p.diffusion, lf_decay, p.decay_time, hf_decay, lf0, hf0, rate);
+            pipe.update_late(
+                dm,
+                p.diffusion,
+                lf_decay,
+                p.decay_time,
+                hf_decay,
+                lf0,
+                hf0,
+                rate,
+            );
         }
         // Time for the late reverb to reach −60 dB, for the next fade-out.
         let base = p.gain * p.late_reverb_gain;
@@ -972,7 +1000,13 @@ mod tests {
         r.set_params(p);
         let n = (seconds * 44_100.0) as usize;
         (0..n)
-            .map(|i| r.process_bformat(if i == 0 { [1.0, 0.0, 0.0, 0.0] } else { [0.0; 4] }))
+            .map(|i| {
+                r.process_bformat(if i == 0 {
+                    [1.0, 0.0, 0.0, 0.0]
+                } else {
+                    [0.0; 4]
+                })
+            })
             .collect()
     }
 
@@ -999,7 +1033,11 @@ mod tests {
         // Soft's shelf reaches `gain²`, see `shelf_reaches_gain_squared`).
         for (id, want) in [(0x0001, 1.49f32), (0x0800, 2.91), (0x0900, 7.24)] {
             let mut p = params(id);
-            assert!((p.decay_time - want).abs() < 0.01, "{id:#x}: {}", p.decay_time);
+            assert!(
+                (p.decay_time - want).abs() < 0.01,
+                "{id:#x}: {}",
+                p.decay_time
+            );
             p.decay_hf_ratio = 1.0;
             p.decay_lf_ratio = 1.0;
             let ir = impulse(&p, want * 2.5);
@@ -1017,11 +1055,17 @@ mod tests {
         let mut p = params(0x0001);
         p.reflections_delay = 0.1;
         let ir = impulse(&p, 0.3);
-        let first = ir.iter().position(|(l, r)| l.abs() + r.abs() > 1e-6).unwrap();
+        let first = ir
+            .iter()
+            .position(|(l, r)| l.abs() + r.abs() > 1e-6)
+            .unwrap();
         let at = first as f32 / 44_100.0;
         assert!((0.099..0.11).contains(&at), "first output at {at} s");
         let off = impulse(&params(ENV_OFF), 0.5);
-        let peak = off.iter().map(|(l, r)| l.abs().max(r.abs())).fold(0.0, f32::max);
+        let peak = off
+            .iter()
+            .map(|(l, r)| l.abs().max(r.abs()))
+            .fold(0.0, f32::max);
         assert!(peak < 1e-3, "Off peak {peak}");
     }
 
@@ -1031,10 +1075,14 @@ mod tests {
         right.reflections_pan = [1.0, 0.0, 0.0];
         right.late_reverb_pan = [1.0, 0.0, 0.0];
         let ir = impulse(&right, 1.0);
-        let (el, er) = ir.iter().fold((0.0, 0.0), |a, (l, r)| (a.0 + l * l, a.1 + r * r));
+        let (el, er) = ir
+            .iter()
+            .fold((0.0, 0.0), |a, (l, r)| (a.0 + l * l, a.1 + r * r));
         assert!(er > el * 4.0, "right {er} vs left {el}");
         let centre = impulse(&params(0x0001), 1.0);
-        let (cl, cr) = centre.iter().fold((0.0, 0.0), |a, (l, r)| (a.0 + l * l, a.1 + r * r));
+        let (cl, cr) = centre
+            .iter()
+            .fold((0.0, 0.0), |a, (l, r)| (a.0 + l * l, a.1 + r * r));
         assert!((cl / cr - 1.0).abs() < 0.5, "centred {cl} vs {cr}");
     }
 
@@ -1120,7 +1168,11 @@ mod tests {
             f.set_shelf(high, 0.1, 0.5, 1.0);
             let mut peak = 0.0f32;
             for i in 0..4000 {
-                let x = if at_nyquist { if i % 2 == 0 { 1.0 } else { -1.0 } } else { 1.0 };
+                let x = if at_nyquist {
+                    if i % 2 == 0 { 1.0 } else { -1.0 }
+                } else {
+                    1.0
+                };
                 let y = f.process(x);
                 if i > 3000 {
                     peak = peak.max(y.abs());

@@ -10,7 +10,6 @@ pub use aot::AotPolicy;
 #[cfg(feature = "aot-web")]
 pub use aot::web_backend;
 pub use provider::{AotProvider, provide_aot, set_aot_provider};
-mod provider;
 pub mod aot_abi;
 mod budget;
 mod coverage;
@@ -22,6 +21,7 @@ mod ops;
 mod peephole;
 mod program;
 mod program_codec;
+mod provider;
 mod tier1;
 mod trap;
 mod uz3_natives;

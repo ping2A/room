@@ -12,7 +12,14 @@ use crate::player::{DUKE_GC, TileZMeta};
 use crate::shoot::{egs, script_tile_or};
 use crate::stat::{STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_MISC, STAT_STANDABLE};
 
-const BOSS_NAMES: [&str; 6] = ["BOSS1", "BOSS2", "BOSS3", "BOSS4", "BOSS1STAYPUT", "BOSS4STAYPUT"];
+const BOSS_NAMES: [&str; 6] = [
+    "BOSS1",
+    "BOSS2",
+    "BOSS3",
+    "BOSS4",
+    "BOSS1STAYPUT",
+    "BOSS4STAYPUT",
+];
 const TROOP_NAMES: [&str; 8] = [
     "LIZTROOP",
     "LIZTROOPONTOILET",
@@ -24,11 +31,35 @@ const TROOP_NAMES: [&str; 8] = [
     "LIZTROOPJUSTSIT",
 ];
 const ITEM_NAMES: [&str; 29] = [
-    "ATOMICHEALTH", "STEROIDS", "HEATSENSOR", "SHIELD", "AIRTANK", "TRIPBOMBSPRITE", "JETPACK",
-    "HOLODUKE", "FIRSTGUNSPRITE", "CHAINGUNSPRITE", "SHOTGUNSPRITE", "RPGSPRITE",
-    "SHRINKERSPRITE", "FREEZESPRITE", "DEVISTATORSPRITE", "SHOTGUNAMMO", "FREEZEAMMO",
-    "HBOMBAMMO", "CRYSTALAMMO", "GROWAMMO", "BATTERYAMMO", "DEVISTATORAMMO", "RPGAMMO", "BOOTS",
-    "AMMO", "AMMOLOTS", "COLA", "FIRSTAID", "SIXPAK",
+    "ATOMICHEALTH",
+    "STEROIDS",
+    "HEATSENSOR",
+    "SHIELD",
+    "AIRTANK",
+    "TRIPBOMBSPRITE",
+    "JETPACK",
+    "HOLODUKE",
+    "FIRSTGUNSPRITE",
+    "CHAINGUNSPRITE",
+    "SHOTGUNSPRITE",
+    "RPGSPRITE",
+    "SHRINKERSPRITE",
+    "FREEZESPRITE",
+    "DEVISTATORSPRITE",
+    "SHOTGUNAMMO",
+    "FREEZEAMMO",
+    "HBOMBAMMO",
+    "CRYSTALAMMO",
+    "GROWAMMO",
+    "BATTERYAMMO",
+    "DEVISTATORAMMO",
+    "RPGAMMO",
+    "BOOTS",
+    "AMMO",
+    "AMMOLOTS",
+    "COLA",
+    "FIRSTAID",
+    "SIXPAK",
 ];
 
 fn named(script: &ScriptImage, name: &str) -> i16 {
@@ -55,7 +86,10 @@ pub(crate) fn init_spawned_badguy(
 ) {
     let cu = child as usize;
     let pn = sprites[cu].picnum;
-    let parent_sprite = usize::try_from(parent).ok().and_then(|p| sprites.get(p)).copied();
+    let parent_sprite = usize::try_from(parent)
+        .ok()
+        .and_then(|p| sprites.get(p))
+        .copied();
     let from_respawn = parent_sprite.is_some_and(|p| p.picnum == crate::spawn::RESPAWN);
     if from_respawn {
         sprites[cu].pal = parent_sprite.map_or(0, |p| p.pal);
@@ -102,12 +136,24 @@ pub(crate) fn init_spawned_badguy(
             sprites[cu].ang = p.ang;
         }
     }
-    let actortype = script.actortype.get(pn.max(0) as usize).copied().unwrap_or(0);
+    let actortype = script
+        .actortype
+        .get(pn.max(0) as usize)
+        .copied()
+        .unwrap_or(0);
     if actortype & 2 != 0 {
         temps[cu].actorstayput = sprites[cu].sectnum;
     }
     let peers = sprites.to_vec();
-    crate::spawn::makeitfall(&mut sprites[cu], sectors, walls, &peers, tile_meta, DUKE_GC, false);
+    crate::spawn::makeitfall(
+        &mut sprites[cu],
+        sectors,
+        walls,
+        &peers,
+        tile_meta,
+        DUKE_GC,
+        false,
+    );
     let _ = lists.changespritestat(child, STAT_ACTOR);
 }
 
@@ -132,8 +178,24 @@ pub(crate) fn spawn_from(
     }
     let parent = sprites[ju];
     let i = egs(
-        lists, sprites, picnum_out, temps, Some(script), parent.sectnum, parent.x, parent.y,
-        parent.z, pn, 0, 0, 0, 0, 0, 0, j, STAT_DEFAULT,
+        lists,
+        sprites,
+        picnum_out,
+        temps,
+        Some(script),
+        parent.sectnum,
+        parent.x,
+        parent.y,
+        parent.z,
+        pn,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        j,
+        STAT_DEFAULT,
     );
     if i < 0 {
         return -1;
@@ -145,7 +207,9 @@ pub(crate) fn spawn_from(
 
     // Enemies (explicit badguy cases and CON `actortype & 3`).
     if badguy_pic(pn, script.actortype.as_slice()) && !is("EGG") {
-        init_spawned_badguy(lists, sprites, sectors, walls, temps, tile_meta, script, i, j);
+        init_spawned_badguy(
+            lists, sprites, sectors, walls, temps, tile_meta, script, i, j,
+        );
         return i;
     }
     if is("BLOOD") {
@@ -174,7 +238,11 @@ pub(crate) fn spawn_from(
                 );
                 s1 >= 0 && sectors[s1 as usize].floorz == floorz
             });
-        if !flat_ok || sectors.get(sect.max(0) as usize).is_some_and(|s| s.lotag == 1) {
+        if !flat_ok
+            || sectors
+                .get(sect.max(0) as usize)
+                .is_some_and(|s| s.lotag == 1)
+        {
             sprites[iu].xrepeat = 0;
             sprites[iu].yrepeat = 0;
             let _ = lists.changespritestat(i, STAT_MISC);
@@ -187,7 +255,11 @@ pub(crate) fn spawn_from(
                 && parent.picnum != named(script, "NUKEBARREL")
                 && parent.picnum != named(script, "TIRE")
             {
-                if parent.picnum == named(script, "FECES") { 7 } else { 2 }
+                if parent.picnum == named(script, "FECES") {
+                    7
+                } else {
+                    2
+                }
             } else {
                 0
             };
@@ -270,7 +342,12 @@ pub(crate) fn spawn_from(
         return i;
     }
     let explosion_like = [
-        "EXPLOSION2", "EXPLOSION2BOT", "BURNING", "BURNING2", "SMALLSMOKE", "SHRINKEREXPLOSION",
+        "EXPLOSION2",
+        "EXPLOSION2BOT",
+        "BURNING",
+        "BURNING2",
+        "SMALLSMOKE",
+        "SHRINKEREXPLOSION",
         "COOLEXPLOSION1",
     ];
     if explosion_like.iter().any(|n| is(n)) {

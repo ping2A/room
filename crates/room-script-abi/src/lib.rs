@@ -670,7 +670,9 @@ impl ModifyDamageV1 {
             flags: i(32),
             dtype_len: i(36),
         };
-        let len = usize::try_from(h.dtype_len).ok()?.min(bytes.len() - Self::SIZE);
+        let len = usize::try_from(h.dtype_len)
+            .ok()?
+            .min(bytes.len() - Self::SIZE);
         Some((h, &bytes[Self::SIZE..Self::SIZE + len]))
     }
 }

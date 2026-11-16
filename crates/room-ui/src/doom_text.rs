@@ -107,7 +107,10 @@ pub fn draw_stcfn_string(list: &mut UiDrawList, mut x: f32, y: f32, text: &str, 
 }
 
 /// Doom `STCFN033`–`STCFN095` patch widths (doom2.wad; Freedoom is close).
-const STCFN_WIDTHS: [u8; 63] = [4,7,7,7,9,8,4,7,7,7,5,4,6,4,7,8,5,8,8,7,7,8,8,8,8,4,4,5,5,5,8,9,8,8,8,8,8,8,8,8,4,8,8,8,9,8,8,8,8,8,7,8,8,7,9,9,8,7,5,7,5,7,8];
+const STCFN_WIDTHS: [u8; 63] = [
+    4, 7, 7, 7, 9, 8, 4, 7, 7, 7, 5, 4, 6, 4, 7, 8, 5, 8, 8, 7, 7, 8, 8, 8, 8, 4, 4, 5, 5, 5, 8, 9,
+    8, 8, 8, 8, 8, 8, 8, 8, 4, 8, 8, 8, 9, 8, 8, 8, 8, 8, 7, 8, 8, 7, 9, 9, 8, 7, 5, 7, 5, 7, 8,
+];
 /// Doom's HUD font space advance.
 const STCFN_SPACE: f32 = 4.0;
 /// Gap between glyphs: Doom draws them edge to edge; one pixel reads

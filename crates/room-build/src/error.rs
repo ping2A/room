@@ -17,6 +17,9 @@ pub enum BuildError {
     /// A Build GRP that is not Duke Nukem 3D.
     #[error("unsupported Build game: {0}")]
     Unsupported(&'static str),
+    /// A referenced resource could not be decoded.
+    #[error("resource: {0}")]
+    Resource(String),
     /// Writing the output WAD failed.
     #[error("wad: {0}")]
     Wad(String),

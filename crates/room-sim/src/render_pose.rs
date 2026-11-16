@@ -133,10 +133,20 @@ pub const PIXEL_STRETCH: f64 = 1.2;
 /// camera. `(1, pitch)` unless a tilt keeps the sprite inside its radius.
 /// `floordistfact` / `cotfloor` are `FRenderViewpoint::SetViewAngle`'s.
 #[must_use]
-pub fn isometric_sprite(radius: f64, width: f64, height: f64, yaw_deg: f64, pitch_deg: f64) -> (f64, f64) {
+pub fn isometric_sprite(
+    radius: f64,
+    width: f64,
+    height: f64,
+    yaw_deg: f64,
+    pitch_deg: f64,
+) -> (f64, f64) {
     let (ys, yc) = yaw_deg.to_radians().sin_cos();
     let (ps, pc) = pitch_deg.to_radians().sin_cos();
-    let (big, small) = if yc.abs() > ys.abs() { (yc.abs(), ys.abs()) } else { (ys.abs(), yc.abs()) };
+    let (big, small) = if yc.abs() > ys.abs() {
+        (yc.abs(), ys.abs())
+    } else {
+        (ys.abs(), yc.abs())
+    };
     let floordistfact = std::f64::consts::SQRT_2 + 1.0 / big.max(1e-9);
     let cotfloor = small / big.max(1e-9);
     let mut scale_y = 1.0;
@@ -270,7 +280,9 @@ pub fn sprite_view(
 /// styles.
 #[must_use]
 pub fn casts_sprite_shadow(world: &crate::world::World, id: crate::ActorId, mode: u8) -> bool {
-    use crate::class::{FLAG_COUNTKILL, FLAG_FLATSPRITE, FLAG_ISMONSTER, FLAG_WALLSPRITE, RenderStyle};
+    use crate::class::{
+        FLAG_COUNTKILL, FLAG_FLATSPRITE, FLAG_ISMONSTER, FLAG_WALLSPRITE, RenderStyle,
+    };
     let Some(a) = world.actors.get(id) else {
         return false;
     };
@@ -322,7 +334,9 @@ pub fn view_eye(
     let (x, y, mut z) = a.camera_eye(eye_z);
     let flags = a.view_pos.map_or(0, |v| v.3);
     if a.view_pos.is_some() && flags & 8 == 0 {
-        if let Some(s) = crate::physics::sector_at_xy(world, x, y).and_then(|i| world.sectors.get(i)) {
+        if let Some(s) =
+            crate::physics::sector_at_xy(world, x, y).and_then(|i| world.sectors.get(i))
+        {
             let (floor, ceil) = (s.floor_z + 4.0, s.ceiling_z - 4.0);
             if ceil >= floor {
                 z = z.clamp(floor, ceil);

@@ -232,7 +232,11 @@ pub fn default_pad_binds() -> Vec<(PadButton, Key)> {
 
 /// Keys held through the controller this tic (triggers count past the threshold).
 #[must_use]
-pub fn gamepad_keys(pad: &GamepadState, binds: &[(PadButton, Key)], cfg: &GamepadConfig) -> Vec<Key> {
+pub fn gamepad_keys(
+    pad: &GamepadState,
+    binds: &[(PadButton, Key)],
+    cfg: &GamepadConfig,
+) -> Vec<Key> {
     let mut held = *pad;
     held.set(
         PadButton::LeftTrigger,
@@ -262,7 +266,10 @@ pub fn apply_gamepad(cmd: &mut TicCmdBits, pad: &GamepadState, cfg: &GamepadConf
     // Stick right turns clockwise (negative angleturn).
     cmd.yaw = add(cmd.yaw, -lx * PAD_TURN * cfg.look_sensitivity);
     let pitch_sign = if cfg.invert_pitch { -1.0 } else { 1.0 };
-    cmd.pitch = add(cmd.pitch, ly * PAD_PITCH * cfg.look_sensitivity * pitch_sign);
+    cmd.pitch = add(
+        cmd.pitch,
+        ly * PAD_PITCH * cfg.look_sensitivity * pitch_sign,
+    );
 }
 
 #[cfg(test)]

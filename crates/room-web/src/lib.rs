@@ -62,6 +62,7 @@ pub use demo_map::load_embedded_demo_map;
 mod browser {
     mod editor;
     mod faces;
+    mod mapgen_play;
 
     use crate::input_hub;
     use crate::load_embedded_demo_map;
@@ -1202,6 +1203,15 @@ mod browser {
             // the deterministic exit request is then resolved by every peer
             // from the same lockstep state.
             session.campaign = duke_campaign_progress(&map);
+            if let Err(error) = session.validate_network_content() {
+                let message = format!("Duke multiplayer unavailable: {error}");
+                set_status(&message);
+                set_lobby_html(&format!(
+                    "<h2>Multiplayer unavailable</h2><p class=\"err\">{}</p>",
+                    html_escape(&message)
+                ));
+                return Err(JsValue::from_str(&message));
+            }
             session
                 .configure_multiplayer_mode(usize::from(players), game_mode, friendly_fire)
                 .map_err(|e| JsValue::from_str(&format!("Duke coop setup: {e}")))?;
@@ -2728,17 +2738,27 @@ mod browser {
                             let _ = input_hub::take_duke_rts_requests();
                         }
                         // Hear the world from this client's own player.
-                        let (view_posx, view_posy, view_posz, view_ang, view_time_before_exit, view_cursectnum) = {
-                            let p = session
-                                .player_for_seat(duke_view_seat(network.as_ref()))
-                                .unwrap_or(&session.player);
-                            (p.posx, p.posy, p.posz, p.ang, p.time_before_exit, p.cursectnum)
-                        };
-                        let listener = [
+                        let (
                             view_posx,
                             view_posy,
                             view_posz,
-                        ];
+                            view_ang,
+                            view_time_before_exit,
+                            view_cursectnum,
+                        ) = {
+                            let p = session
+                                .player_for_seat(duke_view_seat(network.as_ref()))
+                                .unwrap_or(&session.player);
+                            (
+                                p.posx,
+                                p.posy,
+                                p.posz,
+                                p.ang,
+                                p.time_before_exit,
+                                p.cursectnum,
+                            )
+                        };
+                        let listener = [view_posx, view_posy, view_posz];
                         let to_audio_point = |position: [i32; 3]| {
                             room_core::DVec3::new(
                                 f64::from(position[0]) / 16.0,
@@ -2746,8 +2766,8 @@ mod browser {
                                 f64::from(position[2]) / 256.0,
                             )
                         };
-                        let listener_angle = f64::from(view_ang.rem_euclid(2048))
-                            * (std::f64::consts::TAU / 2048.0);
+                        let listener_angle =
+                            f64::from(view_ang.rem_euclid(2048)) * (std::f64::consts::TAU / 2048.0);
                         mixer.set_listener(to_audio_point(listener), listener_angle);
                         mixer.set_reverb_level(i32::from(session.duke_reverb_level));
                         let visibility_geometry = session.world.as_ref().map(|world| {
@@ -2796,9 +2816,7 @@ mod browser {
                                 }]);
                                 continue;
                             }
-                            if view_time_before_exit > 0
-                                && view_time_before_exit <= 26 * 3
-                            {
+                            if view_time_before_exit > 0 && view_time_before_exit <= 26 * 3 {
                                 // Chocolate rejects new `xyzsound` starts during
                                 // the final three seconds of a timed exit.
                                 continue;
@@ -3059,11 +3077,25 @@ mod browser {
                     renderer,
                     network,
                     ..
-                } => session.render_world().map(|world| {
+                } => (|| -> Option<Canvas> {
+                    let view_seat = duke_view_seat(network.as_ref());
+                    let world = match session.render_world_with_eduke_events(view_seat) {
+                        Ok(Some(world)) => world,
+                        Ok(None) => return None,
+                        Err(error) => {
+                            web_sys::console::warn_1(
+                                &format!("Duke CON EVENT_ANIMATESPRITES failed: {error}").into(),
+                            );
+                            session.render_world()?
+                        }
+                    };
+                    for error in session.take_eduke_runtime_errors() {
+                        web_sys::console::error_1(&format!("Duke CON {error}").into());
+                    }
                     // Each client looks through its own player (seat 0 is
                     // only the host's view).
                     let view = session
-                        .player_for_seat(duke_view_seat(network.as_ref()))
+                        .player_for_seat(view_seat)
                         .unwrap_or(&session.player);
                     let pixels = renderer.render_rgba_at_with_quake_view(
                         &world,
@@ -3076,8 +3108,8 @@ mod browser {
                     );
                     let mut canvas = Canvas::new();
                     canvas.blit_rgba(0.0, 0.0, native_fb_width, native_fb_height, pixels);
-                    canvas
-                }),
+                    Some(canvas)
+                })(),
                 _ => None,
             };
             if let Some(hud) = hud_canvas {
@@ -3465,7 +3497,10 @@ mod browser {
         if w <= HUD_MAX_WIDTH {
             (w.max(1), h.max(1))
         } else {
-            (HUD_MAX_WIDTH, ((u64::from(h) * u64::from(HUD_MAX_WIDTH) / u64::from(w)) as u32).max(1))
+            (
+                HUD_MAX_WIDTH,
+                ((u64::from(h) * u64::from(HUD_MAX_WIDTH) / u64::from(w)) as u32).max(1),
+            )
         }
     }
 

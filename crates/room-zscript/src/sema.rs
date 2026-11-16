@@ -469,10 +469,7 @@ class T
         assert!(new.iter().all(|m| m.contains("const method")), "{new:?}");
         assert!(new.iter().any(|m| m.contains("'list'")), "{new:?}");
         let old = errors("4.14");
-        assert!(
-            old.iter().all(|m| !m.contains("const method")),
-            "{old:?}"
-        );
+        assert!(old.iter().all(|m| !m.contains("const method")), "{old:?}");
     }
 
     #[test]
@@ -503,7 +500,10 @@ class User
         };
         let new = warns("4.15.1");
         assert_eq!(new.len(), 1, "{new:?}");
-        assert!(new[0].contains("OldBox") && new[0].contains("Map<String"), "{new:?}");
+        assert!(
+            new[0].contains("OldBox") && new[0].contains("Map<String"),
+            "{new:?}"
+        );
         assert!(warns("4.14").is_empty());
     }
 

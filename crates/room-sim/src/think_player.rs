@@ -277,7 +277,9 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
             }
         }
         if cmd.buttons.any(Buttons::USE) && !world.no_player_respawn {
-            if world.fire_player_respawning(seat, mo) && world.respawn_player_at_seat(player, seat as usize) {
+            if world.fire_player_respawning(seat, mo)
+                && world.respawn_player_at_seat(player, seat as usize)
+            {
                 world.fire_player_respawned(seat, mo);
                 if let Some(mo) = player.mo {
                     crate::acs::start_respawn_scripts(world, mo);
@@ -1171,7 +1173,11 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
 /// Layer argument of an `A_Overlay*` call: a number, `OverlayID()`, or 0 for
 /// the layer running the action (UZDoom `stateinfo->mPSPIndex`).
 fn layer_arg(player: &Player, args: &[String]) -> i32 {
-    let current = if player.psp_current == 0 { 1 } else { player.psp_current };
+    let current = if player.psp_current == 0 {
+        1
+    } else {
+        player.psp_current
+    };
     let Some(raw) = args.first() else {
         return 1;
     };
@@ -1281,7 +1287,12 @@ fn overlay_extra_layer_action(
             let t = s.trim().trim_matches('"');
             t.eq_ignore_ascii_case("true") || t == "1"
         });
-        if no_override && player.psp_layers.get(&id).is_some_and(|l| l.state.is_some()) {
+        if no_override
+            && player
+                .psp_layers
+                .get(&id)
+                .is_some_and(|l| l.state.is_some())
+        {
             return true;
         }
         match weapon_label_state(world, player, &label) {
@@ -1362,7 +1373,11 @@ fn overlay_extra_layer_action(
         }
         "A_OverlayRotate" => {
             let a = action_f64(args, 1, 0.0);
-            layer.angle = if action_i32(args, 2, 0) & 4 != 0 { layer.angle + a } else { a };
+            layer.angle = if action_i32(args, 2, 0) & 4 != 0 {
+                layer.angle + a
+            } else {
+                a
+            };
         }
         "A_OverlayRenderStyle" => {
             layer.style = Some(render_style_code(action_i32(args, 1, 1)));
@@ -1609,216 +1624,213 @@ fn overlay_action(world: &mut World, player: &mut Player, action: &str, args: &[
         return true;
     }
     match action {
-                "A_WeaponOffset" => {
-                    apply_weapon_offset(
-                        player,
-                        action_f64(&args, 0, 0.0),
-                        action_f64(&args, 1, crate::player::WEAPON_TOP),
-                        action_i32(&args, 2, 0),
-                    );
+        "A_WeaponOffset" => {
+            apply_weapon_offset(
+                player,
+                action_f64(&args, 0, 0.0),
+                action_f64(&args, 1, crate::player::WEAPON_TOP),
+                action_i32(&args, 2, 0),
+            );
+        }
+        "A_ClearOverlays" => {
+            let start = action_i32(&args, 0, 0);
+            let stop = action_i32(&args, 1, 0);
+            // Defaults clear all safe overlays; this runtime currently
+            // models the weapon overlay at id 2 (GZDoom reserves id 1
+            // for the weapon and id 0 for CHAN_AUTO-like selection).
+            if (start == 0 && stop == 0) || (start <= 2 && stop >= 2) {
+                player.clear_secondary_overlay();
+            }
+        }
+        "A_OverlayScale" => {
+            // A Y of 0 copies X. Layer 1 is the gun. Layer 2 is the overlay.
+            let sx = action_f64(&args, 1, 1.0);
+            let sy_arg = action_f64(&args, 2, 0.0);
+            let sy = if sy_arg == 0.0 { sx } else { sy_arg };
+            let flags = action_i32(&args, 3, 0);
+            match layer_arg(player, &args) {
+                1 => {
+                    player.weapon_scale = Some(scaled_pair(player.weapon_scale, sx, sy, flags));
                 }
-                "A_ClearOverlays" => {
-                    let start = action_i32(&args, 0, 0);
-                    let stop = action_i32(&args, 1, 0);
-                    // Defaults clear all safe overlays; this runtime currently
-                    // models the weapon overlay at id 2 (GZDoom reserves id 1
-                    // for the weapon and id 0 for CHAN_AUTO-like selection).
-                    if (start == 0 && stop == 0) || (start <= 2 && stop >= 2) {
-                        player.clear_secondary_overlay();
-                    }
+                2 => {
+                    player.overlay2_scale = Some(scaled_pair(player.overlay2_scale, sx, sy, flags));
                 }
-                "A_OverlayScale" => {
-                    // A Y of 0 copies X. Layer 1 is the gun. Layer 2 is the overlay.
-                    let sx = action_f64(&args, 1, 1.0);
-                    let sy_arg = action_f64(&args, 2, 0.0);
-                    let sy = if sy_arg == 0.0 { sx } else { sy_arg };
-                    let flags = action_i32(&args, 3, 0);
-                    match layer_arg(player, &args) {
-                        1 => {
-                            player.weapon_scale =
-                                Some(scaled_pair(player.weapon_scale, sx, sy, flags));
-                        }
-                        2 => {
-                            player.overlay2_scale =
-                                Some(scaled_pair(player.overlay2_scale, sx, sy, flags));
-                        }
-                        _ => {}
-                    }
-                }
-                "A_Overlay" => {
-                    // Layer 2 plays `start` on the ready weapon. Layer 1 stays the gun.
-                    if layer_arg(player, &args) == 2 {
-                        if let Some(wpn) = player.ready_weapon {
-                            let label = args
-                                .get(1)
-                                .map(|s| s.trim().trim_matches('"').to_string())
-                                .unwrap_or_default();
-                            if let Some(state) = world.states.find_label(wpn, &label) {
-                                if let Some(st) = world.states.get(state) {
-                                    player.overlay2_state = Some(state);
-                                    player.overlay2_tics =
-                                        overlay2_frame_tics(player, world, i32::from(st.tics));
-                                    if !crate::state::sprite_unchanged(&st.sprite)
-                                        && !st.sprite.is_empty()
-                                    {
-                                        player.overlay2_sprite = st.sprite.clone();
-                                        player.overlay2_frame = st.frame;
-                                    }
-                                }
+                _ => {}
+            }
+        }
+        "A_Overlay" => {
+            // Layer 2 plays `start` on the ready weapon. Layer 1 stays the gun.
+            if layer_arg(player, &args) == 2 {
+                if let Some(wpn) = player.ready_weapon {
+                    let label = args
+                        .get(1)
+                        .map(|s| s.trim().trim_matches('"').to_string())
+                        .unwrap_or_default();
+                    if let Some(state) = world.states.find_label(wpn, &label) {
+                        if let Some(st) = world.states.get(state) {
+                            player.overlay2_state = Some(state);
+                            player.overlay2_tics =
+                                overlay2_frame_tics(player, world, i32::from(st.tics));
+                            if !crate::state::sprite_unchanged(&st.sprite) && !st.sprite.is_empty()
+                            {
+                                player.overlay2_sprite = st.sprite.clone();
+                                player.overlay2_frame = st.frame;
                             }
                         }
                     }
                 }
-                "A_OverlayFlags" => {
-                    use crate::player::pspf;
-                    let layer = layer_arg(player, &args);
-                    let flags = action_i32(&args, 1, 0) as u32;
-                    let enable = args.get(2).is_none_or(|s| {
-                        let t = s.trim().trim_matches('"');
-                        !t.eq_ignore_ascii_case("false") && t != "0"
-                    });
-                    // UZDoom bit layout (`p_pspr.h`).
-                    if layer == 2 {
-                        if flags & pspf::FLIP != 0 {
-                            player.overlay2_flip = enable;
-                        }
-                        if flags & pspf::MIRROR != 0 {
-                            player.overlay2_mirror = enable;
-                        }
-                        if flags & pspf::PIVOTPERCENT != 0 {
-                            player.overlay2_pivot_percent = enable;
-                        }
-                        if flags & pspf::ADDBOB != 0 {
-                            player.overlay2_add_bob = enable;
-                        }
-                        if flags & pspf::ADDWEAPON != 0 {
-                            player.overlay2_add_weapon = enable;
-                        }
-                        if flags & pspf::INTERPOLATE != 0 {
-                            player.overlay2_interpolate = enable;
-                        }
-                        if flags & pspf::FORCEALPHA != 0 {
-                            player.overlay2_force_alpha = enable;
-                        }
-                        if flags & pspf::FORCESTYLE != 0 {
-                            player.overlay2_force_style = enable;
-                        }
-                        if flags & pspf::CVARFAST != 0 {
-                            player.overlay2_cvar_fast = enable;
-                        }
-                        if flags & pspf::POWDOUBLE != 0 {
-                            player.overlay2_pow_double = enable;
-                        }
-                    } else if layer == 1 {
-                        if flags & pspf::FLIP != 0 {
-                            player.weapon_flip = enable;
-                        }
-                        if flags & pspf::ADDBOB != 0 {
-                            player.weapon_add_bob = enable;
-                        }
-                        if flags & pspf::ADDWEAPON != 0 {
-                            player.weapon_add_ofs = enable;
-                        }
-                        if flags & pspf::CVARFAST != 0 {
-                            player.weapon_cvar_fast = enable;
-                        }
-                        if flags & pspf::POWDOUBLE != 0 {
-                            player.weapon_pow_double = enable;
-                        }
-                        if flags & pspf::MIRROR != 0 {
-                            player.weapon_mirror = enable;
-                        }
-                        if flags & pspf::PIVOTPERCENT != 0 {
-                            player.weapon_pivot_percent = enable;
-                        }
-                        if flags & pspf::FORCEALPHA != 0 {
-                            player.weapon_force_alpha = enable;
-                        }
-                        if flags & pspf::FORCESTYLE != 0 {
-                            player.weapon_force_style = enable;
-                        }
-                        if flags & pspf::INTERPOLATE != 0 {
-                            player.weapon_interpolate = enable;
-                        }
-                    }
+            }
+        }
+        "A_OverlayFlags" => {
+            use crate::player::pspf;
+            let layer = layer_arg(player, &args);
+            let flags = action_i32(&args, 1, 0) as u32;
+            let enable = args.get(2).is_none_or(|s| {
+                let t = s.trim().trim_matches('"');
+                !t.eq_ignore_ascii_case("false") && t != "0"
+            });
+            // UZDoom bit layout (`p_pspr.h`).
+            if layer == 2 {
+                if flags & pspf::FLIP != 0 {
+                    player.overlay2_flip = enable;
                 }
-                "A_OverlayPivot" => {
-                    let pivot = (action_f64(&args, 1, 0.5), action_f64(&args, 2, 0.5));
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_pivot = Some(pivot),
-                        2 => player.overlay2_pivot = Some(pivot),
-                        _ => {}
-                    }
+                if flags & pspf::MIRROR != 0 {
+                    player.overlay2_mirror = enable;
                 }
-                "A_OverlayPivotAlign" => {
-                    // 0 = left/top, 1 = center, 2 = right/bottom.
-                    let axis = |slot: usize| match action_i32(&args, slot, 1) {
-                        0 => 0.0,
-                        2 => 1.0,
-                        _ => 0.5,
-                    };
-                    let pivot = (axis(1), axis(2));
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_pivot = Some(pivot),
-                        2 => player.overlay2_pivot = Some(pivot),
-                        _ => {}
-                    }
+                if flags & pspf::PIVOTPERCENT != 0 {
+                    player.overlay2_pivot_percent = enable;
                 }
-                "A_OverlayRotate" => {
-                    // Degrees, positive is counter-clockwise.
-                    let angle = action_f64(&args, 1, 0.0);
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_angle = angle,
-                        2 => player.overlay2_angle = angle,
-                        _ => {}
-                    }
+                if flags & pspf::ADDBOB != 0 {
+                    player.overlay2_add_bob = enable;
                 }
-                "A_OverlayRenderStyle" => {
-                    // `STYLE_Fuzzy` is 2, `STYLE_Normal` is 1.
-                    let style = render_style_code(action_i32(&args, 1, 1));
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_style = Some(style),
-                        2 => player.overlay2_style = Some(style),
-                        _ => {}
-                    }
+                if flags & pspf::ADDWEAPON != 0 {
+                    player.overlay2_add_weapon = enable;
                 }
-                "A_OverlayTranslation" => {
-                    // "None" clears the tint.
-                    let name = args
-                        .get(1)
-                        .map(|s| s.trim().trim_matches('"').to_string())
-                        .unwrap_or_default();
-                    let name = if name.eq_ignore_ascii_case("none") {
-                        String::new()
-                    } else {
-                        name
-                    };
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_translation = name,
-                        2 => player.overlay2_translation = name,
-                        _ => {}
-                    }
+                if flags & pspf::INTERPOLATE != 0 {
+                    player.overlay2_interpolate = enable;
                 }
-                "A_OverlayAlpha" => {
-                    let alpha = action_f64(&args, 1, 1.0).clamp(0.0, 1.0);
-                    match layer_arg(player, &args) {
-                        1 => player.weapon_alpha = Some(alpha),
-                        2 => player.overlay2_alpha = Some(alpha),
-                        _ => {}
-                    }
+                if flags & pspf::FORCEALPHA != 0 {
+                    player.overlay2_force_alpha = enable;
                 }
-                "A_OverlayOffset" => {
-                    let layer = layer_arg(player, &args);
-                    let wx = action_f64(&args, 1, 0.0);
-                    let wy = action_f64(&args, 2, crate::player::WEAPON_TOP);
-                    let flags = action_i32(&args, 3, 0);
-                    if layer == 1 {
-                        apply_weapon_offset(player, wx, wy, flags);
-                    } else if layer == 2 {
-                        apply_overlay2_offset(player, wx, wy, flags);
-                    }
+                if flags & pspf::FORCESTYLE != 0 {
+                    player.overlay2_force_style = enable;
                 }
-                _ => return false,
+                if flags & pspf::CVARFAST != 0 {
+                    player.overlay2_cvar_fast = enable;
+                }
+                if flags & pspf::POWDOUBLE != 0 {
+                    player.overlay2_pow_double = enable;
+                }
+            } else if layer == 1 {
+                if flags & pspf::FLIP != 0 {
+                    player.weapon_flip = enable;
+                }
+                if flags & pspf::ADDBOB != 0 {
+                    player.weapon_add_bob = enable;
+                }
+                if flags & pspf::ADDWEAPON != 0 {
+                    player.weapon_add_ofs = enable;
+                }
+                if flags & pspf::CVARFAST != 0 {
+                    player.weapon_cvar_fast = enable;
+                }
+                if flags & pspf::POWDOUBLE != 0 {
+                    player.weapon_pow_double = enable;
+                }
+                if flags & pspf::MIRROR != 0 {
+                    player.weapon_mirror = enable;
+                }
+                if flags & pspf::PIVOTPERCENT != 0 {
+                    player.weapon_pivot_percent = enable;
+                }
+                if flags & pspf::FORCEALPHA != 0 {
+                    player.weapon_force_alpha = enable;
+                }
+                if flags & pspf::FORCESTYLE != 0 {
+                    player.weapon_force_style = enable;
+                }
+                if flags & pspf::INTERPOLATE != 0 {
+                    player.weapon_interpolate = enable;
+                }
+            }
+        }
+        "A_OverlayPivot" => {
+            let pivot = (action_f64(&args, 1, 0.5), action_f64(&args, 2, 0.5));
+            match layer_arg(player, &args) {
+                1 => player.weapon_pivot = Some(pivot),
+                2 => player.overlay2_pivot = Some(pivot),
+                _ => {}
+            }
+        }
+        "A_OverlayPivotAlign" => {
+            // 0 = left/top, 1 = center, 2 = right/bottom.
+            let axis = |slot: usize| match action_i32(&args, slot, 1) {
+                0 => 0.0,
+                2 => 1.0,
+                _ => 0.5,
+            };
+            let pivot = (axis(1), axis(2));
+            match layer_arg(player, &args) {
+                1 => player.weapon_pivot = Some(pivot),
+                2 => player.overlay2_pivot = Some(pivot),
+                _ => {}
+            }
+        }
+        "A_OverlayRotate" => {
+            // Degrees, positive is counter-clockwise.
+            let angle = action_f64(&args, 1, 0.0);
+            match layer_arg(player, &args) {
+                1 => player.weapon_angle = angle,
+                2 => player.overlay2_angle = angle,
+                _ => {}
+            }
+        }
+        "A_OverlayRenderStyle" => {
+            // `STYLE_Fuzzy` is 2, `STYLE_Normal` is 1.
+            let style = render_style_code(action_i32(&args, 1, 1));
+            match layer_arg(player, &args) {
+                1 => player.weapon_style = Some(style),
+                2 => player.overlay2_style = Some(style),
+                _ => {}
+            }
+        }
+        "A_OverlayTranslation" => {
+            // "None" clears the tint.
+            let name = args
+                .get(1)
+                .map(|s| s.trim().trim_matches('"').to_string())
+                .unwrap_or_default();
+            let name = if name.eq_ignore_ascii_case("none") {
+                String::new()
+            } else {
+                name
+            };
+            match layer_arg(player, &args) {
+                1 => player.weapon_translation = name,
+                2 => player.overlay2_translation = name,
+                _ => {}
+            }
+        }
+        "A_OverlayAlpha" => {
+            let alpha = action_f64(&args, 1, 1.0).clamp(0.0, 1.0);
+            match layer_arg(player, &args) {
+                1 => player.weapon_alpha = Some(alpha),
+                2 => player.overlay2_alpha = Some(alpha),
+                _ => {}
+            }
+        }
+        "A_OverlayOffset" => {
+            let layer = layer_arg(player, &args);
+            let wx = action_f64(&args, 1, 0.0);
+            let wy = action_f64(&args, 2, crate::player::WEAPON_TOP);
+            let flags = action_i32(&args, 3, 0);
+            if layer == 1 {
+                apply_weapon_offset(player, wx, wy, flags);
+            } else if layer == 2 {
+                apply_overlay2_offset(player, wx, wy, flags);
+            }
+        }
+        _ => return false,
     }
     true
 }
@@ -3038,11 +3050,17 @@ mod tests {
         player.cmd.buttons = Buttons(Buttons::INVUSE);
         player_think(&mut w, &mut player);
         assert_eq!(crate::inventory::count_inventory(&w, mo, kit), 1);
-        assert_eq!(crate::inventory::count_inventory(&w, mo, clip), clip_before + 3);
+        assert_eq!(
+            crate::inventory::count_inventory(&w, mo, clip),
+            clip_before + 3
+        );
         w.players[0] = Some(player);
         let items = w.status_bar_items(0).unwrap();
         assert_eq!(items.inv_sel.as_deref(), Some("BarMedkit"));
-        assert_eq!(items.inv_bar, vec!["BarMedkit".to_owned(), "BarTorch".to_owned()]);
+        assert_eq!(
+            items.inv_bar,
+            vec!["BarMedkit".to_owned(), "BarTorch".to_owned()]
+        );
     }
 
     #[test]
@@ -3966,7 +3984,10 @@ actor LoaderGun : Weapon
         player.pspr_y = crate::player::WEAPON_TOP;
         set_psprite(&mut w, &mut player, mo, reload);
         assert_eq!(w.inventory.count(mo, round), 30, "all 30 rounds in one tic");
-        assert_eq!((player.pspr_sprite.as_str(), player.pspr_frame), ("PIST", 1));
+        assert_eq!(
+            (player.pspr_sprite.as_str(), player.pspr_frame),
+            ("PIST", 1)
+        );
         assert_eq!(player.pspr_tics, 5);
         w.players[0] = Some(player);
     }
@@ -5195,7 +5216,10 @@ actor BdPistol : Weapon
         let ids: Vec<i32> = hud.layers.iter().map(|l| l.id).collect();
         assert_eq!(ids, vec![-3, 5]);
         let glow_hud = &hud.layers[1];
-        assert!((glow_hud.alpha - 0.5).abs() < 1e-6, "PSPF_ALPHA uses the layer alpha");
+        assert!(
+            (glow_hud.alpha - 0.5).abs() < 1e-6,
+            "PSPF_ALPHA uses the layer alpha"
+        );
         assert!(glow_hud.flip);
         assert_eq!(hud.layers[0].patch, "PISFB0");
         player = w.players[0].take().unwrap();
@@ -5203,7 +5227,10 @@ actor BdPistol : Weapon
         for _ in 0..3 {
             player_think(&mut w, &mut player);
         }
-        assert!(!player.psp_layers.contains_key(&-3), "Stop removes the layer");
+        assert!(
+            !player.psp_layers.contains_key(&-3),
+            "Stop removes the layer"
+        );
         assert!(player.psp_layers.contains_key(&5), "glow holds at -1");
         // `A_ClearOverlays(4, 10)` drops layer 5.
         player_think(&mut w, &mut player);

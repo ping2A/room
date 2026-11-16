@@ -460,7 +460,14 @@ pub fn lower(
     }
     let mut field_base: BTreeMap<String, [u16; 4]> = BTreeMap::new();
     for key in merged_fields.keys() {
-        layout_base(key, &merged_fields, &layout_parent, &type_names, &mut field_base, 0);
+        layout_base(
+            key,
+            &merged_fields,
+            &layout_parent,
+            &type_names,
+            &mut field_base,
+            0,
+        );
     }
     let mut laid_out: BTreeMap<String, u32> = BTreeMap::new();
     for (name, parent, members, is_extend) in layouts {
@@ -482,11 +489,19 @@ pub fn lower(
                 .and_then(|p| field_base.get(p).copied().map(|b| (p, b)))
                 .map(|(p, base)| {
                     let own = own_field_counts(p, &merged_fields, &type_names);
-                    [base[0] + own[0], base[1] + own[1], base[2] + own[2], base[3] + own[3]]
+                    [
+                        base[0] + own[0],
+                        base[1] + own[1],
+                        base[2] + own[2],
+                        base[3] + own[3],
+                    ]
                 })
                 .unwrap_or([0; 4]);
             let fields = merged_fields.get(&name_l).cloned().unwrap_or_default();
-            let parent_name = layout_parent.get(&name_l).cloned().unwrap_or(parent.clone());
+            let parent_name = layout_parent
+                .get(&name_l)
+                .cloned()
+                .unwrap_or(parent.clone());
             let mut out = layout_members(&name, &parent_name, &fields, &type_names, start);
             if out.0.parent.is_empty() {
                 out.0.parent = parent.clone();
@@ -495,7 +510,9 @@ pub fn lower(
         };
         let floats_slot = float_fields.entry(name_l.clone()).or_default();
         for (fname, slot, dim) in floats {
-            floats_slot.entry(fname.to_ascii_lowercase()).or_insert((slot, dim));
+            floats_slot
+                .entry(fname.to_ascii_lowercase())
+                .or_insert((slot, dim));
         }
         // `extend class` adds members. Keep fields already declared on the class.
         let arrays_slot = array_fields.entry(name_l.clone()).or_default();
@@ -696,10 +713,9 @@ pub fn lower(
             .collect();
         for (pi, p) in meth.params.iter().enumerate() {
             params.push(value_bank(&p.ty, &lx.class_ids));
-            if p.mode
-                .as_deref()
-                .is_some_and(|m| m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref"))
-            {
+            if p.mode.as_deref().is_some_and(|m| {
+                m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref")
+            }) {
                 outs.push(pi);
             }
         }
@@ -743,10 +759,9 @@ pub fn lower(
             .collect();
         for (pi, p) in meth.params.iter().enumerate() {
             params.push(value_bank(&p.ty, &lx.class_ids));
-            if p.mode
-                .as_deref()
-                .is_some_and(|m| m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref"))
-            {
+            if p.mode.as_deref().is_some_and(|m| {
+                m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref")
+            }) {
                 outs.push(pi);
             }
         }
@@ -830,7 +845,8 @@ pub fn lower(
         // (`docs/37` ZW5). Over-approximated from the AST text, so a global
         // that is used is never skipped.
         let mentioned = format!("{:?}{:?}", meth.body, meth.params).to_ascii_lowercase();
-        let mentions = |name: &str| mentioned.contains(&format!("\"{}\"", name.to_ascii_lowercase()));
+        let mentions =
+            |name: &str| mentioned.contains(&format!("\"{}\"", name.to_ascii_lowercase()));
         // Global objects live on struct `_` (`level`, `deh`, …).
         if let Some(fields) = lx.object_fields.get("_").cloned() {
             for (fname, (_slot, ty)) in fields {
@@ -957,10 +973,9 @@ pub fn lower(
             }
         }
         lx.out_reg = meth.params.iter().find_map(|p| {
-            let out = p
-                .mode
-                .as_deref()
-                .is_some_and(|m| m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref"));
+            let out = p.mode.as_deref().is_some_and(|m| {
+                m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref")
+            });
             if out && value_bank(&p.ty, &lx.class_ids) == 0 {
                 lx.locals.get(&p.name).copied()
             } else {
@@ -1084,7 +1099,9 @@ fn value_field_types(merged: &BTreeMap<String, Vec<Member>>) -> BTreeMap<String,
             }
         }
     }
-    seen.into_iter().filter_map(|(k, v)| v.map(|t| (k, t))).collect()
+    seen.into_iter()
+        .filter_map(|(k, v)| v.map(|t| (k, t)))
+        .collect()
 }
 
 /// The value struct type of `expr` (`inv.Icon`, a `TextureID` local, a
@@ -1149,8 +1166,7 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                 || type_name.is_some_and(|t| {
                     t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
                 })
-                || (ty.is_none()
-                && init.as_ref().is_some_and(|e| expr_yields_string(e, lx)));
+                || (ty.is_none() && init.as_ref().is_some_and(|e| expr_yields_string(e, lx)));
             let float_local = type_name.is_some_and(is_float_type_name)
                 || (ty.is_none() && init.as_ref().is_some_and(|e| expr_is_float(e, lx)));
             let class_local = if let Some(t) = type_name {
@@ -1204,7 +1220,11 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                         } else {
                             load_i(f, lx, 0)
                         };
-                        let op = if string_elem { Op::ArrayPushS } else { Op::ArrayPushI };
+                        let op = if string_elem {
+                            Op::ArrayPushS
+                        } else {
+                            Op::ArrayPushI
+                        };
                         let n = n.clamp(0, 1 << 16);
                         if n <= 16 {
                             for _ in 0..n {
@@ -1299,11 +1319,20 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
         }
         Stmt::Return { values, .. } => {
             let (bank, r) = if lx.ret_bank == 3 {
-                (3, values.first().map(|e| emit_expr_a(f, e, lx)).unwrap_or(0))
+                (
+                    3,
+                    values.first().map(|e| emit_expr_a(f, e, lx)).unwrap_or(0),
+                )
             } else if lx.ret_bank == 1 {
-                (1, values.first().map(|e| emit_expr_f(f, e, lx)).unwrap_or(0))
+                (
+                    1,
+                    values.first().map(|e| emit_expr_f(f, e, lx)).unwrap_or(0),
+                )
             } else if lx.ret_bank == 2 {
-                (2, values.first().map(|e| emit_expr_s(f, e, lx)).unwrap_or(0))
+                (
+                    2,
+                    values.first().map(|e| emit_expr_s(f, e, lx)).unwrap_or(0),
+                )
             } else {
                 let r = values
                     .first()
@@ -1446,7 +1475,10 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
 }
 
 fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
-    if matches!(expr, Expr::Ident(..) | Expr::Member { .. } | Expr::Call { .. }) {
+    if matches!(
+        expr,
+        Expr::Ident(..) | Expr::Member { .. } | Expr::Call { .. }
+    ) {
         if let Some(r) = try_emit_float_read(f, lx, expr) {
             return f2i(f, lx, r);
         }
@@ -2109,7 +2141,15 @@ fn emit_type_call(
     if let Some(t) = lookup_method(lx, &class, field, None) {
         if let Some(sig) = lx.funcs.get(&t.key).cloned() {
             if sig.instance {
-                return Some(emit_sig_call(f, lx, &t.key, &sig, Some(reg), args, ret_bank));
+                return Some(emit_sig_call(
+                    f,
+                    lx,
+                    &t.key,
+                    &sig,
+                    Some(reg),
+                    args,
+                    ret_bank,
+                ));
             }
         }
     }
@@ -2707,8 +2747,7 @@ fn object_base(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> Option<(u8
                 let dest = emit_cast(f, lx, &class, args.first());
                 return Some((dest, class.to_ascii_lowercase()));
             }
-            let result_class =
-                call_result_class(callee, lx).unwrap_or_else(|| "object".to_owned());
+            let result_class = call_result_class(callee, lx).unwrap_or_else(|| "object".to_owned());
             if let Some(dest) = emit_type_call(f, lx, callee, args, 3) {
                 return Some((dest, result_class));
             }
@@ -2962,7 +3001,15 @@ fn emit_unresolved_call(
             if let Some(ty) = lx.local_types.get(&name.to_ascii_lowercase()).cloned() {
                 let mut with_self = vec![obj.as_ref().clone()];
                 with_self.extend(args.iter().cloned());
-                return emit_native(f, lx, &format!("{ty}.{field}"), None, &with_self, ret_bank, None);
+                return emit_native(
+                    f,
+                    lx,
+                    &format!("{ty}.{field}"),
+                    None,
+                    &with_self,
+                    ret_bank,
+                    None,
+                );
             }
         }
     }
@@ -2982,7 +3029,15 @@ fn emit_unresolved_call(
                 } else {
                     "String"
                 };
-                return emit_native(f, lx, &format!("{owner}.{field}"), Some(&recv), args, ret_bank, None);
+                return emit_native(
+                    f,
+                    lx,
+                    &format!("{owner}.{field}"),
+                    Some(&recv),
+                    args,
+                    ret_bank,
+                    None,
+                );
             }
         }
     }
@@ -3523,10 +3578,12 @@ fn array_elem_kind(ty: &TypeRef) -> Option<bool> {
     match ty {
         // Strings, names and class values (`Array< Class<Ammo> >`) are
         // carried by name, so they live in string arrays.
-        TypeRef::Array(inner) => Some(matches!(
-            inner.as_ref(),
-            TypeRef::Named(t) if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
-        ) || matches!(inner.as_ref(), TypeRef::ClassOf(_))),
+        TypeRef::Array(inner) => Some(
+            matches!(
+                inner.as_ref(),
+                TypeRef::Named(t) if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
+            ) || matches!(inner.as_ref(), TypeRef::ClassOf(_)),
+        ),
         // `Array<T>` is a named type once the generic arguments are skipped.
         TypeRef::Named(t) if t.eq_ignore_ascii_case("array") => Some(false),
         TypeRef::Map(_, _) => Some(false),
@@ -3586,12 +3643,19 @@ fn layout_base(
     if let Some(base) = memo.get(class) {
         return *base;
     }
-    let parent = parents.get(class).filter(|p| !p.is_empty() && p.as_str() != class);
+    let parent = parents
+        .get(class)
+        .filter(|p| !p.is_empty() && p.as_str() != class);
     let base = match parent {
         Some(p) if depth < 64 => {
             let pb = layout_base(p, merged, parents, type_names, memo, depth + 1);
             let own = own_field_counts(p, merged, type_names);
-            [pb[0] + own[0], pb[1] + own[1], pb[2] + own[2], pb[3] + own[3]]
+            [
+                pb[0] + own[0],
+                pb[1] + own[1],
+                pb[2] + own[2],
+                pb[3] + own[3],
+            ]
         }
         _ => [0; 4],
     };
@@ -4482,7 +4546,10 @@ fn scoped_const(lx: &Lx, name: &str) -> Option<i64> {
     let mut cur = Some(lx.class_name.to_ascii_lowercase());
     for _ in 0..64 {
         let class = cur?;
-        if let Some(&v) = lx.consts.get(&format!("{class}.{name}").to_ascii_lowercase()) {
+        if let Some(&v) = lx
+            .consts
+            .get(&format!("{class}.{name}").to_ascii_lowercase())
+        {
             return Some(v);
         }
         cur = parent_of(lx, &class);
@@ -4552,7 +4619,12 @@ fn emit_destructure(
         } else if let Some(r) = fvec::float_local(lx, name) {
             let v = if bank == 1 { reg } else { i2f(f, lx, reg) };
             f.emit(Op::MoveF, r, v, 0);
-        } else if let Some(&r) = lx.locals_s.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, r)| r) {
+        } else if let Some(&r) = lx
+            .locals_s
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, r)| r)
+        {
             f.emit(Op::MoveS, r, reg, 0);
         } else if let Some((r, _)) = object_local(lx, name) {
             f.emit(Op::MoveA, r, reg, 0);
@@ -4796,7 +4868,9 @@ fn emit_binary(
     if matches!(op, "+" | "-" | "*" | "/")
         && (expr_is_float(lhs, lx)
             || expr_is_float(rhs, lx)
-            || (op == "*" && expr_vector_dim(lhs, lx).is_some() && expr_vector_dim(rhs, lx).is_some()))
+            || (op == "*"
+                && expr_vector_dim(lhs, lx).is_some()
+                && expr_vector_dim(rhs, lx).is_some()))
     {
         let whole = Expr::Binary {
             op: op.to_owned(),
@@ -5144,7 +5218,10 @@ class V
     }
 }
 "#;
-        assert_eq!(run(src, "V.AllDefaults", &[]), 400000 + 20000 + 3000 + 150 + 78);
+        assert_eq!(
+            run(src, "V.AllDefaults", &[]),
+            400000 + 20000 + 3000 + 150 + 78
+        );
         assert_eq!(run(src, "V.SomeGiven", &[]), 100000 + 9000 + 50 + 78);
         // Three calls, k = 0, 1, 2; a fresh local starts at 0.
         assert_eq!(run(src, "V.Temps", &[]), 3 * 228 + 3000);

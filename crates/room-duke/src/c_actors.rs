@@ -8,8 +8,8 @@ use room_build_engine::geom::{
 };
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::krand_step;
-use room_build_engine::world::SpriteLists;
 use room_build_engine::types::{SectorT, SpriteT, WallT};
+use room_build_engine::world::SpriteLists;
 
 use crate::con::{ActorConTemps, ScriptImage};
 use crate::fta::findplayer_dist;
@@ -53,7 +53,9 @@ const SLEEPTIME: i16 = 24 * 64;
 /// Whether `pic` is one of the C-only actors handled by [`move_c_actor`].
 #[must_use]
 pub(crate) fn is_c_actor(pic: i16) -> bool {
-    matches!(pic, RECON | RAT | OOZ | OOZ2) || (GREENSLIME..=GREENSLIME + 7).contains(&pic) || pic == CAMERA1
+    matches!(pic, RECON | RAT | OOZ | OOZ2)
+        || (GREENSLIME..=GREENSLIME + 7).contains(&pic)
+        || pic == CAMERA1
 }
 
 /// Shared world references for one C actor tick.
@@ -100,7 +102,16 @@ impl CActorCtx<'_> {
     fn getglobalz(&mut self, i: usize) {
         let s = self.sprites[i];
         let (_, sec_z, wxy) = self.geometry();
-        let range = getzrange(s.x, s.y, s.z - 256, s.sectnum, 127, (1 << 16) | 1, &sec_z, &wxy);
+        let range = getzrange(
+            s.x,
+            s.y,
+            s.z - 256,
+            s.sectnum,
+            127,
+            (1 << 16) | 1,
+            &sec_z,
+            &wxy,
+        );
         if range.ceilz != i32::MIN {
             self.temps[i].hit_ceilingz = range.ceilz;
             self.temps[i].hit_floorz = range.florz;
@@ -110,7 +121,15 @@ impl CActorCtx<'_> {
     fn makeitfall(&mut self, i: usize) {
         let peers = self.sprites.to_vec();
         let mut s = self.sprites[i];
-        crate::spawn::makeitfall(&mut s, self.sectors, self.walls, &peers, self.tile_meta, DUKE_GC, false);
+        crate::spawn::makeitfall(
+            &mut s,
+            self.sectors,
+            self.walls,
+            &peers,
+            self.tile_meta,
+            DUKE_GC,
+            false,
+        );
         self.sprites[i] = s;
     }
 
@@ -156,7 +175,21 @@ impl CActorCtx<'_> {
         let z = src.z - (8 << 8) - (self.rand() & 8191);
         let y = src.y + (self.rand() & 255) - 128;
         let x = src.x + (self.rand() & 255) - 128;
-        self.egs(src.sectnum, x, y, z, pn, -8, 48, 48, ang, xvel, zvel, i as i16, crate::stat::STAT_MISC);
+        self.egs(
+            src.sectnum,
+            x,
+            y,
+            z,
+            pn,
+            -8,
+            48,
+            48,
+            ang,
+            xvel,
+            zvel,
+            i as i16,
+            crate::stat::STAT_MISC,
+        );
     }
 
     /// Green slime gore: `EGS(SCRAP3+(TRAND&3), …)` with pal 6.
@@ -166,7 +199,21 @@ impl CActorCtx<'_> {
         let xvel = ((self.rand() & 63) + 64) as i16;
         let ang = (self.rand() & 2047) as i16;
         let pn = SCRAP3 + (self.rand() & 3) as i16;
-        let j = self.egs(src.sectnum, src.x, src.y, src.z - (8 << 8), pn, -8, 48, 48, ang, xvel, zvel, i as i16, 5);
+        let j = self.egs(
+            src.sectnum,
+            src.x,
+            src.y,
+            src.z - (8 << 8),
+            pn,
+            -8,
+            48,
+            48,
+            ang,
+            xvel,
+            zvel,
+            i as i16,
+            5,
+        );
         if j >= 0 {
             self.sprites[j as usize].pal = 6;
         }
@@ -218,7 +265,15 @@ impl CActorCtx<'_> {
         let mut s = self.sprites[i];
         let cd = if s.xrepeat > 60 {
             1024
-        } else if self.script.actortype.get(s.picnum.max(0) as usize).copied().unwrap_or(0) & 3 != 0 {
+        } else if self
+            .script
+            .actortype
+            .get(s.picnum.max(0) as usize)
+            .copied()
+            .unwrap_or(0)
+            & 3
+            != 0
+        {
             i32::from(s.clipdist) << 2
         } else {
             192
@@ -417,8 +472,7 @@ fn move_rat(ctx: &mut CActorCtx<'_>, i: usize) {
         if ctx.rand() & 255 < 3 {
             ctx.sound(i, RATTY);
         }
-        let wobble = (ctx.rand() & 31) - 15
-            + (sintable((ctx.temps[i].g_t[0] << 8) & 2047) >> 11);
+        let wobble = (ctx.rand() & 31) - 15 + (sintable((ctx.temps[i].g_t[0] << 8) & 2047) >> 11);
         ctx.sprites[i].ang = ((i32::from(ctx.sprites[i].ang) + wobble) & 2047) as i16;
     } else {
         ctx.temps[i].g_t[0] += 1;
@@ -439,7 +493,11 @@ fn move_rat(ctx: &mut CActorCtx<'_>, i: usize) {
 fn move_recon(ctx: &mut CActorCtx<'_>, i: usize) {
     ctx.getglobalz(i);
     let sect = ctx.sprites[i].sectnum;
-    let Some(sector) = usize::try_from(sect).ok().and_then(|s| ctx.sectors.get(s)).copied() else {
+    let Some(sector) = usize::try_from(sect)
+        .ok()
+        .and_then(|s| ctx.sectors.get(s))
+        .copied()
+    else {
         return;
     };
     {
@@ -550,12 +608,16 @@ fn move_recon(ctx: &mut CActorCtx<'_>, i: usize) {
         }
         let s = ctx.sprites[i];
         let goal = getangle(ppx - s.x, ppy - s.y);
-        ctx.sprites[i].ang = ((i32::from(s.ang) + (getincangle(i32::from(s.ang), goal) >> 2)) & 2047) as i16;
+        ctx.sprites[i].ang =
+            ((i32::from(s.ang) + (getincangle(i32::from(s.ang), goal) >> 2)) & 2047) as i16;
     }
 
     let t0 = ctx.temps[i].g_t[0];
     if t0 != 2 && t0 != 3 {
-        let owner = usize::try_from(j).ok().and_then(|o| ctx.sprites.get(o)).copied();
+        let owner = usize::try_from(j)
+            .ok()
+            .and_then(|o| ctx.sprites.get(o))
+            .copied();
         let s = ctx.sprites[i];
         let a = match owner {
             Some(target) if ldist(&target, &s) > 1524 => getangle(target.x - s.x, target.y - s.y),
@@ -608,7 +670,11 @@ fn move_recon(ctx: &mut CActorCtx<'_>, i: usize) {
         let turn = getincangle(i32::from(s.ang), a);
         ctx.temps[i].g_t[3] = turn;
         ctx.sprites[i].ang = ((i32::from(s.ang) + (turn >> 3)) & 2047) as i16;
-        if let Some(target) = usize::try_from(j).ok().and_then(|o| ctx.sprites.get(o)).copied() {
+        if let Some(target) = usize::try_from(j)
+            .ok()
+            .and_then(|o| ctx.sprites.get(o))
+            .copied()
+        {
             if ctx.sprites[i].z < target.z {
                 ctx.sprites[i].z += 1024;
             } else {
@@ -641,7 +707,9 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
         ctx.temps[i].timetosleep += 1;
         if ctx.temps[i].timetosleep > SLEEPTIME {
             ctx.temps[i].timetosleep = 0;
-            let _ = ctx.lists.changespritestat(i as i16, crate::stat::STAT_DUMMY);
+            let _ = ctx
+                .lists
+                .changespritestat(i as i16, crate::stat::STAT_DUMMY);
             return;
         }
     }
@@ -662,7 +730,10 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
             || (weapon != HANDREMOTE_WEAPON
                 && weapon != HANDBOMB_WEAPON
                 && weapon != TRIPBOMB_WEAPON
-                && player.ammo.get(weapon.max(0) as usize).is_some_and(|&a| a >= 0));
+                && player
+                    .ammo
+                    .get(weapon.max(0) as usize)
+                    .is_some_and(|&a| a >= 0));
         if firing && player.extra > 0 && can_swat {
             for _ in 0..8 {
                 ctx.slime_scrap(i);
@@ -686,7 +757,8 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
         }
         let player = &ctx.players[p];
         let t2 = ctx.temps[i].g_t[2];
-        ctx.sprites[i].z = player.posz + i32::from(player.pyoff) - t2 + (8 << 8)
+        ctx.sprites[i].z = player.posz + i32::from(player.pyoff) - t2
+            + (8 << 8)
             + ((100 - i32::from(player.horiz)) << 4);
         if t2 > 512 {
             ctx.temps[i].g_t[2] -= 128;
@@ -730,7 +802,11 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
     } else if ctx.sprites[i].xvel < 64 && x < 768 && ctx.players[p].something_on_player.is_none() {
         ctx.players[p].something_on_player = Some(i as i16);
         let t0 = ctx.temps[i].g_t[0];
-        ctx.temps[i].g_t[2] = if t0 == 3 || t0 == 2 { 12 << 8 } else { -(13 << 8) };
+        ctx.temps[i].g_t[2] = if t0 == 3 || t0 == 2 {
+            12 << 8
+        } else {
+            -(13 << 8)
+        };
         ctx.temps[i].g_t[0] = -4;
     }
 
@@ -784,7 +860,9 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
     if t0 == -2 {
         // Engulfing another enemy.
         ctx.makeitfall(i);
-        let victim = usize::try_from(ctx.temps[i].g_t[5]).ok().filter(|&v| v < ctx.sprites.len());
+        let victim = usize::try_from(ctx.temps[i].g_t[5])
+            .ok()
+            .filter(|&v| v < ctx.sprites.len());
         let Some(v) = victim else {
             ctx.temps[i].g_t[0] = 0;
             return;
@@ -831,7 +909,10 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
         }
     }
 
-    let sector = usize::try_from(sect).ok().and_then(|s| ctx.sectors.get(s)).copied();
+    let sector = usize::try_from(sect)
+        .ok()
+        .and_then(|s| ctx.sectors.get(s))
+        .copied();
     let Some(sector) = sector else { return };
     let t0 = ctx.temps[i].g_t[0];
     if t0 == 0 || t0 == 2 {
@@ -862,14 +943,13 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
             return;
         }
         let t1 = ctx.temps[i].g_t[1];
-        ctx.sprites[i].xvel =
-            (64 - (sintable((t1 + 512) & 2047)) >> 9) as i16;
+        ctx.sprites[i].xvel = (64 - (sintable((t1 + 512) & 2047)) >> 9) as i16;
         let player = &ctx.players[p];
         let s = ctx.sprites[i];
         let goal = getangle(player.posx - s.x, player.posy - s.y);
-        ctx.sprites[i].ang = ((i32::from(s.ang) + (getincangle(i32::from(s.ang), goal) >> 3)) & 2047) as i16;
-        ctx.sprites[i].xrepeat =
-            (36 + (sintable((t1 + 512) & 2047)) >> 11) as u8;
+        ctx.sprites[i].ang =
+            ((i32::from(s.ang) + (getincangle(i32::from(s.ang), goal) >> 3)) & 2047) as i16;
+        ctx.sprites[i].xrepeat = (36 + (sintable((t1 + 512) & 2047)) >> 11) as u8;
         ctx.sprites[i].yrepeat = (16 + (sintable(t1 & 2047)) >> 13) as u8;
         if rnd(ctx, 4)
             && sector.ceilingstat & 1 == 0

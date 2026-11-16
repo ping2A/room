@@ -1,4 +1,5 @@
-//! Build `.MAP` files, versions 7 (Duke Nukem 3D) and 8 (EDuke32 limits):
+//! Build `.MAP` files, versions 7 (Duke Nukem 3D), 8 (EDuke32 limits), and
+//! 9 (EDuke32 TROR sector metadata):
 //! header (start position), then sectors (40 bytes), walls (32 bytes) and
 //! sprites (44 bytes), all little-endian.
 
@@ -87,7 +88,7 @@ pub struct Sprite {
 /// A parsed map.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildMap {
-    /// File version (7 or 8).
+    /// File version (7, 8, or 9).
     pub version: i32,
     /// Player start x, y, z.
     pub start: [i32; 3],
@@ -149,13 +150,13 @@ pub fn is_build_map(data: &[u8]) -> bool {
     parse_map(data).is_ok()
 }
 
-/// Parse a version 7 / 8 `.MAP` file.
+/// Parse a version 7, 8, or 9 `.MAP` file.
 pub fn parse_map(data: &[u8]) -> Result<BuildMap, BuildError> {
     let mut r = Rd { data, pos: 0 };
     let version = r.i32()?;
-    if !(7..=8).contains(&version) {
+    if !(7..=9).contains(&version) {
         return Err(BuildError::Invalid(
-            "MAP version (only 7 and 8 are supported)",
+            "MAP version (only 7, 8, and 9 are supported)",
         ));
     }
     let start = [r.i32()?, r.i32()?, r.i32()?];
@@ -278,11 +279,15 @@ impl BuildMap {
         out
     }
 
-    /// Serialise back to version 7 bytes (tests, tools).
+    /// Serialise the modeled fields in the selected version's binary layout.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut o = Vec::new();
-        let version: i32 = if self.version == 8 { 8 } else { 7 };
+        let version: i32 = if (7..=9).contains(&self.version) {
+            self.version
+        } else {
+            7
+        };
         o.extend_from_slice(&version.to_le_bytes());
         for v in self.start {
             o.extend_from_slice(&v.to_le_bytes());
@@ -423,5 +428,13 @@ mod tests {
         let mut v = bytes.clone();
         v[0] = 6;
         assert!(parse_map(&v).is_err());
+    }
+
+    #[test]
+    fn parses_and_serializes_version_nine_record_layout() {
+        let mut map = square_map();
+        map.version = 9;
+        let bytes = map.to_bytes();
+        assert_eq!(parse_map(&bytes).unwrap(), map);
     }
 }

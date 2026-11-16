@@ -5,13 +5,18 @@
 
 use room_build_engine::helpers::sincos_q14;
 use room_build_engine::numeric::{krand_step, krand_unstep};
+use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::{
     BuildWorld, MAXSECTORS, MAXSPRITES, MAXSTATUS, MAXWALLS, SpriteLists,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
-use crate::con::{ActorConTemps, ScriptImage};
+use crate::con::{
+    ActorConTemps, ConDialect, EdActorMember, EdExecution, EdItemSprayKind, EdSoundMode,
+    EdSpriteListKind, EdStructKind, EdukeStructAccess, EdukeVmError, EdukeVmState, ScriptImage,
+};
 use crate::effectors::{
     init_true_drop_planes, init_warp_elevator_effectors, move_cascade_effectors,
     move_elevator_shade_effectors, move_light_effectors, move_reactor_effectors,
@@ -23,8 +28,7 @@ use crate::moveplayers::{moveplayers, process_player_deaths};
 use crate::player::{
     DUKE_FRICTION, DUKE_GC, DukeInput, INPUT_INVENTORY_LEFT, INPUT_INVENTORY_RIGHT,
     INPUT_INVENTORY_USE, INPUT_OPEN, PHEIGHT, Player, TileZMeta, check_available_inventory,
-    cycle_inventory, processinput_move_with_lists, processinput_move_with_lists_clipping,
-    sync_player_sprite,
+    cycle_inventory, processinput_move_with_lists_clipping_eduke, sync_player_sprite,
 };
 use crate::prelevel::{ShadeCycler, prelevel_sprites_with_state};
 use crate::shoot::{
@@ -42,6 +46,15 @@ use crate::transports::movetransports;
 use crate::wall_animations::{AnimWall, animate_walls, init_animated_walls, restore_anim_walls};
 use crate::weapons::{apply_pending_weapon, apply_weapon_input};
 use crate::weapons_move::moveweapons;
+
+/// One bounded `EVENT_ANIMATESPRITES` pass across every opted-in sprite.
+const EDUKE_ANIMATE_SPRITES_INSTRUCTION_BUDGET: usize = 65_536;
+const EDUKE_ANIMATE_SPRITES_STATE_DEPTH_LIMIT: usize = 64;
+const EDUKE_GAME_EVENT_INSTRUCTION_BUDGET: usize = 2_000_000;
+const EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT: usize = 64;
+const EDUKE_SFLAG_NOEVENTS: u32 = 128;
+const EDUKE_NO_EVENT_CONTEXT: usize = usize::MAX;
+const EDUKE_SPAWN_EVENT_DEPTH_LIMIT: usize = 32;
 
 /// Chocolate `checkplayerhurt` response for a sprite or wall returned by `clipmove`.
 #[allow(clippy::too_many_arguments)]
@@ -205,7 +218,7 @@ pub struct DukeSoundEvent {
 }
 
 const DUKE_FSAVE_MAGIC: &str = "ROOM-DUKE-FSAVE";
-const DUKE_FSAVE_VERSION: u32 = 1;
+const DUKE_FSAVE_VERSION: u32 = 2;
 const MAX_DUKE_FSAVE_BYTES: usize = 64 * 1024 * 1024;
 
 fn duke_sound_voice_policy(
@@ -257,6 +270,9 @@ pub enum DukeSaveError {
     /// The saved world contains dimensions or sprite links outside limits.
     #[error("Duke fsave contains invalid world dimensions or sprite lists")]
     InvalidWorld,
+    /// The saved EDuke32 VM data does not match its loaded script image.
+    #[error("Duke fsave contains EDuke32 state incompatible with the loaded CON")]
+    InvalidScriptState,
     /// No parsed Atomic save template is available to supply the unmodeled tables.
     #[error("Atomic Duke save requires a loaded GAME#.SAV template")]
     MissingAtomicTemplate,
@@ -327,6 +343,57 @@ struct DukeFsaveState {
     atomic_sav_template: Option<Vec<u8>>,
     #[serde(default)]
     campaign: Option<crate::campaign::DukeCampaignProgress>,
+    /// Saveable state for the EDuke32 CON VM, when an EDuke32 script is loaded.
+    #[serde(default)]
+    eduke_vm_state: Option<EdukeVmState>,
+    /// EDuke32 `userdef` fields used by CON scripts and the VM context.
+    #[serde(default)]
+    userdef: DukeUserDefState,
+    /// Compiled and runtime-mutated EDuke32 projectile properties by tile.
+    #[serde(default)]
+    projectile_defs: BTreeMap<i32, BTreeMap<String, i32>>,
+}
+
+/// Modeled EDuke32 `userdef` fields exercised by the Brutal Duke target.
+///
+/// `userdef` is a singleton in EDuke32; its bracket expression is ignored.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct DukeUserDefState {
+    vm_sprite: i32,
+    #[serde(skip)]
+    totalclock: i32,
+    /// EDuke32 `inittimer` rate; omitted from saves like the host timer phase.
+    #[serde(skip)]
+    timer_rate: i32,
+    return_values: [i32; 16],
+    drawweapon: i32,
+    statusbarscale: i32,
+    crosshairscale: i32,
+    weaponscale: i32,
+    pause_on: i32,
+    respawn_monsters: i32,
+    respawn_items: i32,
+    respawn_inventory: i32,
+}
+
+impl Default for DukeUserDefState {
+    fn default() -> Self {
+        Self {
+            vm_sprite: 0,
+            totalclock: 0,
+            timer_rate: 120,
+            return_values: [0; 16],
+            drawweapon: 1,
+            statusbarscale: 100,
+            crosshairscale: 100,
+            weaponscale: 100,
+            pause_on: 0,
+            respawn_monsters: 0,
+            respawn_items: 0,
+            respawn_inventory: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -336,6 +403,20 @@ struct DukePlayerStart {
     z: i32,
     angle: i16,
     sector: i16,
+}
+
+/// One transient EDuke32 render sprite exposed to `EVENT_ANIMATESPRITES`.
+///
+/// The source sprite ID is the `THISACTOR` / `gettspr[]` index; edits affect
+/// this render instance and do not mutate the Build world sprite.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DukeTspr {
+    /// Build sprite whose render copy is being visited.
+    pub source_sprite: i32,
+    /// Mutable render-only sprite fields.
+    pub sprite: SpriteT,
+    /// EDuke32 render blend mode.
+    pub blend: i32,
 }
 
 /// Retained Atomic save globals so an import followed by `.fsave` does not
@@ -2802,6 +2883,4160 @@ pub struct DukeSession {
     pub atomic_globals: Option<AtomicSaveGlobals>,
     /// Full modeled Atomic save template from the loaded game save.
     atomic_sav_template: Option<Vec<u8>>,
+    /// Mutable EDuke32 gamevars, arrays, quotes, and random streams.
+    pub eduke_vm_state: Option<EdukeVmState>,
+    /// EDuke32 singleton user preferences and active VM sprite context.
+    userdef: DukeUserDefState,
+    /// EDuke32 projectile definitions, including `setprojectile` overrides.
+    projectile_defs: BTreeMap<i32, BTreeMap<String, i32>>,
+    /// Error from EDuke32 runtime initialization, exposed for load diagnostics.
+    pub eduke_vm_state_error: Option<String>,
+    /// Runtime errors from automatically dispatched EDuke32 tick events.
+    pending_eduke_runtime_errors: Vec<String>,
+}
+
+struct DukeSessionStructAccess<'a> {
+    world: &'a mut BuildWorld,
+    script: &'a ScriptImage,
+    tile_meta: &'a mut [TileZMeta],
+    randomseed: &'a mut i32,
+    player: &'a mut Player,
+    coop_players: &'a mut [Player],
+    actor_temps: &'a mut Vec<ActorConTemps>,
+    picnum: &'a mut Vec<i16>,
+    inputs: &'a mut [DukeInput],
+    userdef: &'a mut DukeUserDefState,
+    skill: &'a mut u8,
+    tspr: Option<&'a mut DukeTspr>,
+    projectile_defs: &'a mut BTreeMap<i32, BTreeMap<String, i32>>,
+    spawned_actor_ids: &'a mut Vec<i32>,
+    active_sound_owners: Option<&'a [Option<i16>]>,
+}
+
+impl DukeSessionStructAccess<'_> {
+    fn actor_fire_ray(
+        &mut self,
+        actor: SpriteT,
+        angle: i16,
+        actor_is_badguy: bool,
+    ) -> Result<(i32, i16, bool), EdukeVmError> {
+        const CLIPMASK1: u32 = (256 << 16) + 64;
+
+        let z_offset = if actor_is_badguy {
+            42 << 8
+        } else if actor.picnum == 1405 {
+            39 << 8
+        } else {
+            0
+        };
+        let (sin, cos) = sincos_q14(i32::from(angle) & 2047);
+        let hit = self.hit_scan(
+            [
+                actor.x,
+                actor.y,
+                actor.z.wrapping_sub(z_offset),
+                i32::from(actor.sectnum),
+            ],
+            [cos, sin, 0],
+            CLIPMASK1,
+        )?;
+        let distance = if hit[0] < 0 && hit[1] < 0 && hit[2] < 0 {
+            i32::MAX
+        } else {
+            crate::actors::find_distance_2d(
+                hit[3].wrapping_sub(actor.x),
+                hit[4].wrapping_sub(actor.y),
+            )
+        };
+        let hit_sprite = i16::try_from(hit[2]).unwrap_or(-1);
+        let forcefield = actor_is_badguy
+            && usize::try_from(hit[1])
+                .ok()
+                .and_then(|index| self.world.walls.get(index))
+                .is_some_and(|wall| wall.cstat & 16 != 0);
+        Ok((distance, hit_sprite, forcefield))
+    }
+
+    fn checked_id(kind: EdStructKind, id: i32, extent: usize) -> Result<usize, EdukeVmError> {
+        let index = usize::try_from(id).map_err(|_| EdukeVmError::InvalidStructId { kind, id })?;
+        if index >= extent {
+            return Err(EdukeVmError::InvalidStructId { kind, id });
+        }
+        Ok(index)
+    }
+
+    fn closest_player_index(&self, fallback: usize, actor: i32) -> Result<usize, EdukeVmError> {
+        let Some(actor_index) = usize::try_from(actor).ok() else {
+            return Ok(fallback);
+        };
+        let actor_sprite =
+            self.world
+                .sprites
+                .get(actor_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let mut nearest_player = None;
+        let mut nearest_distance = i32::MAX;
+        for (index, candidate) in std::iter::once(&*self.player)
+            .chain(self.coop_players.iter())
+            .enumerate()
+        {
+            if candidate.sprite_i < 0 {
+                continue;
+            }
+            let distance =
+                room_build_engine::numeric::klabs(candidate.oposx.wrapping_sub(actor_sprite.x))
+                    .wrapping_add(room_build_engine::numeric::klabs(
+                        candidate.oposy.wrapping_sub(actor_sprite.y),
+                    ))
+                    .wrapping_add(
+                        room_build_engine::numeric::klabs(
+                            candidate
+                                .oposz
+                                .wrapping_sub(actor_sprite.z)
+                                .wrapping_add(28 << 8),
+                        ) >> 4,
+                    );
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_player = Some(index);
+            }
+        }
+        Ok(nearest_player.unwrap_or(fallback))
+    }
+
+    fn actor_temps_mut(&mut self, actor: i32) -> Result<&mut ActorConTemps, EdukeVmError> {
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        if self.actor_temps.len() <= index {
+            let new_len = index + 1;
+            self.actor_temps
+                .try_reserve_exact(new_len - self.actor_temps.len())
+                .map_err(|_| EdukeVmError::AllocationFailed {
+                    kind: "actor sound queue",
+                    name: actor.to_string(),
+                })?;
+            self.actor_temps
+                .resize_with(new_len, ActorConTemps::default);
+        }
+        Ok(&mut self.actor_temps[index])
+    }
+
+    fn checked_member_index(
+        kind: EdStructKind,
+        member: &str,
+        index: Option<i32>,
+        extent: usize,
+    ) -> Result<usize, EdukeVmError> {
+        let raw = index.unwrap_or(0);
+        let selected = usize::try_from(raw).map_err(|_| EdukeVmError::IndexOutOfBounds {
+            kind: "member",
+            name: format!("{kind:?}.{member}"),
+            index: usize::MAX,
+            extent,
+        })?;
+        if selected >= extent {
+            return Err(EdukeVmError::IndexOutOfBounds {
+                kind: "member",
+                name: format!("{kind:?}.{member}"),
+                index: selected,
+                extent,
+            });
+        }
+        Ok(selected)
+    }
+
+    fn unknown_member(kind: EdStructKind, member: &str) -> EdukeVmError {
+        EdukeVmError::UnknownStructMember {
+            kind,
+            member: member.to_owned(),
+        }
+    }
+
+    fn readonly_member(kind: EdStructKind, member: &str) -> EdukeVmError {
+        EdukeVmError::ReadOnlyStructMember {
+            kind,
+            member: member.to_owned(),
+        }
+    }
+
+    fn is_projectile_member(member: &str) -> bool {
+        matches!(
+            member,
+            "bounces"
+                | "bsound"
+                | "clipdist"
+                | "cstat"
+                | "decal"
+                | "drop"
+                | "extra"
+                | "extra_rand"
+                | "flashcolor"
+                | "hitradius"
+                | "isound"
+                | "offset"
+                | "pal"
+                | "range"
+                | "shade"
+                | "shooter"
+                | "sound"
+                | "spawns"
+                | "sxrepeat"
+                | "syrepeat"
+                | "tnum"
+                | "toffset"
+                | "trail"
+                | "txrepeat"
+                | "tyrepeat"
+                | "userdata"
+                | "vel"
+                | "velmult"
+                | "workslike"
+                | "xrepeat"
+                | "yrepeat"
+        )
+    }
+
+    fn tile_data_value(meta: &TileZMeta, member: &str) -> Option<i32> {
+        Some(match member {
+            "xsize" => i32::from(meta.width),
+            "ysize" => i32::from(meta.height),
+            "xoffset" => i32::from(meta.x_offset),
+            "yoffset" => i32::from(meta.y_offset),
+            "animframes" => i32::from(meta.anim_frames),
+            "animspeed" => i32::from(meta.anim_speed),
+            "animtype" => i32::from(meta.anim_type),
+            "gameflags" => meta.game_flags as i32,
+            _ => return None,
+        })
+    }
+
+    fn write_tile_data(meta: &mut TileZMeta, member: &str, value: i32) -> Result<(), EdukeVmError> {
+        match member {
+            "xsize" => meta.width = Self::narrow(EdStructKind::TileData, member, value)?,
+            "ysize" => meta.height = Self::narrow(EdStructKind::TileData, member, value)?,
+            "xoffset" => meta.x_offset = Self::narrow(EdStructKind::TileData, member, value)?,
+            "yoffset" => meta.y_offset = Self::narrow(EdStructKind::TileData, member, value)?,
+            "animframes" if (0..=63).contains(&value) => meta.anim_frames = value as u8,
+            "animspeed" if (0..=15).contains(&value) => meta.anim_speed = value as u8,
+            "animtype" if (0..=3).contains(&value) => meta.anim_type = value as u8,
+            "animframes" | "animspeed" | "animtype" => {
+                return Err(EdukeVmError::StructMemberValueOutOfRange {
+                    kind: EdStructKind::TileData,
+                    member: member.to_owned(),
+                    value,
+                });
+            }
+            "gameflags" => meta.game_flags = value as u32,
+            _ => return Err(Self::unknown_member(EdStructKind::TileData, member)),
+        }
+        Ok(())
+    }
+
+    fn narrow<T>(kind: EdStructKind, member: &str, value: i32) -> Result<T, EdukeVmError>
+    where
+        T: TryFrom<i32>,
+    {
+        T::try_from(value).map_err(|_| EdukeVmError::StructMemberValueOutOfRange {
+            kind,
+            member: member.to_owned(),
+            value,
+        })
+    }
+
+    fn read_tspr(tspr: &DukeTspr, member: &str) -> Option<i32> {
+        let sprite = &tspr.sprite;
+        Some(match member {
+            "tsprx" => sprite.x,
+            "tspry" => sprite.y,
+            "tsprz" => sprite.z,
+            "tsprang" => i32::from(sprite.ang),
+            "tsprcstat" => i32::from(sprite.cstat),
+            "tsprclipdist" => i32::from(sprite.clipdist),
+            "tsprextra" => i32::from(sprite.extra),
+            "tsprblend" => tspr.blend,
+            "tsprhitag" => i32::from(sprite.hitag),
+            "tsprlotag" => i32::from(sprite.lotag),
+            "tsprowner" => i32::from(sprite.owner),
+            "tsprpal" => i32::from(sprite.pal),
+            "tsprpicnum" => i32::from(sprite.picnum),
+            "tsprsectnum" => i32::from(sprite.sectnum),
+            "tsprshade" => i32::from(sprite.shade),
+            "tsprstatnum" => i32::from(sprite.statnum),
+            "tsprxoffset" => i32::from(sprite.xoffset),
+            "tsprxrepeat" => i32::from(sprite.xrepeat),
+            "tsprxvel" => i32::from(sprite.xvel),
+            "tspryoffset" => i32::from(sprite.yoffset),
+            "tspryrepeat" => i32::from(sprite.yrepeat),
+            "tspryvel" => i32::from(sprite.yvel),
+            "tsprzvel" => i32::from(sprite.zvel),
+            _ => return None,
+        })
+    }
+
+    fn write_tspr(tspr: &mut DukeTspr, member: &str, value: i32) -> Result<(), EdukeVmError> {
+        if member == "tsprblend" {
+            tspr.blend = value;
+            return Ok(());
+        }
+        let sprite = &mut tspr.sprite;
+        match member {
+            "tsprx" => sprite.x = value,
+            "tspry" => sprite.y = value,
+            "tsprz" => sprite.z = value,
+            "tsprang" => sprite.ang = Self::narrow(EdStructKind::Tspr, member, value)?,
+            // The renderer never receives TSPR sprites carrying Build's
+            // invisible cstat bit; EDuke32 ignores attempts to add that bit.
+            "tsprcstat" => {
+                sprite.cstat = Self::narrow::<u16>(EdStructKind::Tspr, member, value)? & !32768
+            }
+            "tsprclipdist" => sprite.clipdist = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprextra" => sprite.extra = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprhitag" => sprite.hitag = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprlotag" => sprite.lotag = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprowner" => sprite.owner = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprpal" => sprite.pal = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprpicnum" => sprite.picnum = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprsectnum" => sprite.sectnum = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprshade" => sprite.shade = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprstatnum" => sprite.statnum = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprxoffset" => sprite.xoffset = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprxrepeat" => sprite.xrepeat = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprxvel" => sprite.xvel = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tspryoffset" => sprite.yoffset = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tspryrepeat" => sprite.yrepeat = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tspryvel" => sprite.yvel = Self::narrow(EdStructKind::Tspr, member, value)?,
+            "tsprzvel" => sprite.zvel = Self::narrow(EdStructKind::Tspr, member, value)?,
+            _ => return Err(Self::unknown_member(EdStructKind::Tspr, member)),
+        }
+        Ok(())
+    }
+
+    fn read_actor(
+        sprite: &SpriteT,
+        temps: Option<&ActorConTemps>,
+        member: &str,
+        member_index: Option<i32>,
+    ) -> Result<i32, EdukeVmError> {
+        Ok(match member {
+            "x" => sprite.x,
+            "y" => sprite.y,
+            "z" => sprite.z,
+            "cstat" => i32::from(sprite.cstat),
+            "picnum" => i32::from(sprite.picnum),
+            "shade" => i32::from(sprite.shade),
+            "pal" => i32::from(sprite.pal),
+            "clipdist" => i32::from(sprite.clipdist),
+            "xrepeat" => i32::from(sprite.xrepeat),
+            "yrepeat" => i32::from(sprite.yrepeat),
+            "xoffset" => i32::from(sprite.xoffset),
+            "yoffset" => i32::from(sprite.yoffset),
+            "sectnum" => i32::from(sprite.sectnum),
+            "statnum" => i32::from(sprite.statnum),
+            "ang" => i32::from(sprite.ang),
+            "owner" => i32::from(sprite.owner),
+            "xvel" => i32::from(sprite.xvel),
+            "yvel" => i32::from(sprite.yvel),
+            "zvel" => i32::from(sprite.zvel),
+            "lotag" => i32::from(sprite.lotag),
+            "hitag" => i32::from(sprite.hitag),
+            "extra" => i32::from(sprite.extra),
+            "blend" => temps.map_or(0, |temps| temps.sprite_blend),
+            "alpha" => temps.map_or(0, |temps| i32::from(temps.sprite_ext.alpha)),
+            "angoff" => temps.map_or(0, |temps| temps.sprite_ext.angoff),
+            "mdflags" => temps.map_or(0, |temps| temps.sprite_ext.mdflags),
+            "mdxoff" => temps.map_or(0, |temps| temps.sprite_ext.mdxoff),
+            "mdyoff" => temps.map_or(0, |temps| temps.sprite_ext.mdyoff),
+            "mdzoff" => temps.map_or(0, |temps| temps.sprite_ext.mdzoff),
+            "pitch" => temps.map_or(0, |temps| temps.sprite_ext.pitch),
+            "roll" => temps.map_or(0, |temps| temps.sprite_ext.roll),
+            "xpanning" => temps.map_or(0, |temps| temps.sprite_ext.xpanning),
+            "ypanning" => temps.map_or(0, |temps| temps.sprite_ext.ypanning),
+            "t_data" | "htg_t" | "g_t" => {
+                let temps = temps.ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: -1,
+                })?;
+                let slot = Self::checked_member_index(
+                    EdStructKind::Actor,
+                    member,
+                    member_index,
+                    temps.g_t.len(),
+                )?;
+                temps.g_t[slot]
+            }
+            "htactorstayput" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .actorstayput,
+            ),
+            "httempang" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .tempang,
+            ),
+            "htfloorzoffset" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .floor_z_offset,
+            ),
+            "htwaterzoffset" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .water_z_offset,
+            ),
+            "htmovflag" | "movflag" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .movflag,
+            ),
+            "htflags" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_flags
+            }
+            "htextra" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_extra,
+            ),
+            "htpicnum" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_picnum,
+            ),
+            "htdispicnum" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .dispicnum,
+            ),
+            "htang" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_ang,
+            ),
+            "htowner" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_owner,
+            ),
+            "httimetosleep" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .timetosleep,
+            ),
+            "htcgg" => i32::from(
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .cgg,
+            ),
+            "htlastvx" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .lastvx
+            }
+            "htlastvy" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .lastvy
+            }
+            "htfloorz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_floorz
+            }
+            "htceilingz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .hit_ceilingz
+            }
+            "htbposx" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .bposx
+            }
+            "htbposy" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .bposy
+            }
+            "htbposz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId {
+                        kind: EdStructKind::Actor,
+                        id: -1,
+                    })?
+                    .bposz
+            }
+            _ => return Err(Self::unknown_member(EdStructKind::Actor, member)),
+        })
+    }
+
+    fn write_actor(
+        sprite: &mut SpriteT,
+        temps: Option<&mut ActorConTemps>,
+        picnum_mirror: Option<&mut i16>,
+        member: &str,
+        member_index: Option<i32>,
+        value: i32,
+    ) -> Result<(), EdukeVmError> {
+        let kind = EdStructKind::Actor;
+        match member {
+            "x" => sprite.x = value,
+            "y" => sprite.y = value,
+            "z" => sprite.z = value,
+            "cstat" => sprite.cstat = Self::narrow(kind, member, value)?,
+            "picnum" => {
+                sprite.picnum = Self::narrow(kind, member, value)?;
+                if let Some(mirror) = picnum_mirror {
+                    *mirror = sprite.picnum;
+                }
+            }
+            "shade" => sprite.shade = Self::narrow(kind, member, value)?,
+            "pal" => sprite.pal = Self::narrow(kind, member, value)?,
+            "clipdist" => sprite.clipdist = Self::narrow(kind, member, value)?,
+            "xrepeat" => sprite.xrepeat = Self::narrow(kind, member, value)?,
+            "yrepeat" => sprite.yrepeat = Self::narrow(kind, member, value)?,
+            "xoffset" => sprite.xoffset = Self::narrow(kind, member, value)?,
+            "yoffset" => sprite.yoffset = Self::narrow(kind, member, value)?,
+            "sectnum" | "statnum" => return Err(Self::readonly_member(kind, member)),
+            "ang" => sprite.ang = Self::narrow(kind, member, value)?,
+            "owner" => sprite.owner = Self::narrow(kind, member, value)?,
+            "xvel" => sprite.xvel = Self::narrow(kind, member, value)?,
+            "yvel" => sprite.yvel = Self::narrow(kind, member, value)?,
+            "zvel" => sprite.zvel = Self::narrow(kind, member, value)?,
+            "lotag" => sprite.lotag = Self::narrow(kind, member, value)?,
+            "hitag" => sprite.hitag = Self::narrow(kind, member, value)?,
+            "extra" => sprite.extra = Self::narrow(kind, member, value)?,
+            "blend" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_blend = value;
+            }
+            "alpha" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .alpha = Self::narrow(kind, member, value)?;
+            }
+            "angoff" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .angoff = value;
+            }
+            "mdflags" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .mdflags = value;
+            }
+            "mdxoff" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .mdxoff = value;
+            }
+            "mdyoff" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .mdyoff = value;
+            }
+            "mdzoff" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .mdzoff = value;
+            }
+            "pitch" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .pitch = value;
+            }
+            "roll" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .roll = value;
+            }
+            "xpanning" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .xpanning = value;
+            }
+            "ypanning" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .sprite_ext
+                    .ypanning = value;
+            }
+            "t_data" | "htg_t" | "g_t" => {
+                let temps = temps.ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?;
+                let slot = Self::checked_member_index(kind, member, member_index, temps.g_t.len())?;
+                temps.g_t[slot] = value;
+            }
+            "htactorstayput" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .actorstayput = Self::narrow(kind, member, value)?;
+            }
+            "httempang" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .tempang = Self::narrow(kind, member, value)?;
+            }
+            "htfloorzoffset" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .floor_z_offset = Self::narrow(kind, member, value)?;
+            }
+            "htwaterzoffset" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .water_z_offset = Self::narrow(kind, member, value)?;
+            }
+            "htmovflag" | "movflag" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .movflag = Self::narrow(kind, member, value)?;
+            }
+            "htflags" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_flags = value;
+            }
+            "htextra" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_extra = Self::narrow(kind, member, value)?;
+            }
+            "htpicnum" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_picnum = Self::narrow(kind, member, value)?;
+            }
+            "htdispicnum" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .dispicnum = Self::narrow(kind, member, value)?;
+            }
+            "htang" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_ang = Self::narrow(kind, member, value)?;
+            }
+            "htowner" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_owner = Self::narrow(kind, member, value)?;
+            }
+            "httimetosleep" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .timetosleep = Self::narrow(kind, member, value)?;
+            }
+            "htcgg" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .cgg = Self::narrow(kind, member, value)?;
+            }
+            "htlastvx" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .lastvx = value;
+            }
+            "htlastvy" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .lastvy = value;
+            }
+            "htfloorz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_floorz = value;
+            }
+            "htceilingz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .hit_ceilingz = value;
+            }
+            "htbposx" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .bposx = value
+            }
+            "htbposy" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .bposy = value
+            }
+            "htbposz" => {
+                temps
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
+                    .bposz = value
+            }
+            _ => return Err(Self::unknown_member(kind, member)),
+        }
+        Ok(())
+    }
+
+    fn read_sector(sector: &SectorT, member: &str) -> Result<i32, EdukeVmError> {
+        Ok(match member {
+            "wallptr" => i32::from(sector.wallptr),
+            "wallnum" => i32::from(sector.wallnum),
+            "ceilingz" => sector.ceilingz,
+            "floorz" => sector.floorz,
+            "ceilingstat" => i32::from(sector.ceilingstat),
+            "floorstat" => i32::from(sector.floorstat),
+            "ceilingpicnum" => i32::from(sector.ceilingpicnum),
+            "ceilingheinum" | "ceilingslope" => i32::from(sector.ceilingheinum),
+            "ceilingshade" => i32::from(sector.ceilingshade),
+            "ceilingpal" => i32::from(sector.ceilingpal),
+            "ceilingxpanning" => i32::from(sector.ceilingxpanning),
+            "ceilingypanning" => i32::from(sector.ceilingypanning),
+            "floorpicnum" => i32::from(sector.floorpicnum),
+            "floorheinum" | "floorslope" => i32::from(sector.floorheinum),
+            "floorshade" => i32::from(sector.floorshade),
+            "floorpal" => i32::from(sector.floorpal),
+            "floorxpanning" => i32::from(sector.floorxpanning),
+            "floorypanning" => i32::from(sector.floorypanning),
+            "visibility" => i32::from(sector.visibility),
+            "lotag" => i32::from(sector.lotag),
+            "hitag" => i32::from(sector.hitag),
+            "extra" => i32::from(sector.extra),
+            _ => return Err(Self::unknown_member(EdStructKind::Sector, member)),
+        })
+    }
+
+    fn write_sector(sector: &mut SectorT, member: &str, value: i32) -> Result<(), EdukeVmError> {
+        let kind = EdStructKind::Sector;
+        match member {
+            "wallptr" | "wallnum" => return Err(Self::readonly_member(kind, member)),
+            "ceilingz" => sector.ceilingz = value,
+            "floorz" => sector.floorz = value,
+            "ceilingstat" => sector.ceilingstat = Self::narrow(kind, member, value)?,
+            "floorstat" => sector.floorstat = Self::narrow(kind, member, value)?,
+            "ceilingpicnum" => sector.ceilingpicnum = Self::narrow(kind, member, value)?,
+            "ceilingheinum" | "ceilingslope" => {
+                sector.ceilingheinum = Self::narrow(kind, member, value)?
+            }
+            "ceilingshade" => sector.ceilingshade = Self::narrow(kind, member, value)?,
+            "ceilingpal" => sector.ceilingpal = Self::narrow(kind, member, value)?,
+            "ceilingxpanning" => sector.ceilingxpanning = Self::narrow(kind, member, value)?,
+            "ceilingypanning" => sector.ceilingypanning = Self::narrow(kind, member, value)?,
+            "floorpicnum" => sector.floorpicnum = Self::narrow(kind, member, value)?,
+            "floorheinum" | "floorslope" => sector.floorheinum = Self::narrow(kind, member, value)?,
+            "floorshade" => sector.floorshade = Self::narrow(kind, member, value)?,
+            "floorpal" => sector.floorpal = Self::narrow(kind, member, value)?,
+            "floorxpanning" => sector.floorxpanning = Self::narrow(kind, member, value)?,
+            "floorypanning" => sector.floorypanning = Self::narrow(kind, member, value)?,
+            "visibility" => sector.visibility = Self::narrow(kind, member, value)?,
+            "lotag" => sector.lotag = Self::narrow(kind, member, value)?,
+            "hitag" => sector.hitag = Self::narrow(kind, member, value)?,
+            "extra" => sector.extra = Self::narrow(kind, member, value)?,
+            _ => return Err(Self::unknown_member(kind, member)),
+        }
+        Ok(())
+    }
+
+    fn read_wall(wall: &WallT, member: &str) -> Result<i32, EdukeVmError> {
+        Ok(match member {
+            "x" => wall.x,
+            "y" => wall.y,
+            "point2" => i32::from(wall.point2),
+            "nextwall" => i32::from(wall.nextwall),
+            "nextsector" => i32::from(wall.nextsector),
+            "cstat" => i32::from(wall.cstat),
+            "picnum" => i32::from(wall.picnum),
+            "overpicnum" => i32::from(wall.overpicnum),
+            "shade" => i32::from(wall.shade),
+            "pal" => i32::from(wall.pal),
+            "xrepeat" => i32::from(wall.xrepeat),
+            "yrepeat" => i32::from(wall.yrepeat),
+            "xpanning" => i32::from(wall.xpanning),
+            "ypanning" => i32::from(wall.ypanning),
+            "lotag" => i32::from(wall.lotag),
+            "hitag" => i32::from(wall.hitag),
+            "extra" => i32::from(wall.extra),
+            _ => return Err(Self::unknown_member(EdStructKind::Wall, member)),
+        })
+    }
+
+    fn write_wall(wall: &mut WallT, member: &str, value: i32) -> Result<(), EdukeVmError> {
+        let kind = EdStructKind::Wall;
+        match member {
+            "x" => wall.x = value,
+            "y" => wall.y = value,
+            "point2" | "nextwall" | "nextsector" => {
+                return Err(Self::readonly_member(kind, member));
+            }
+            "cstat" => wall.cstat = Self::narrow(kind, member, value)?,
+            "picnum" => wall.picnum = Self::narrow(kind, member, value)?,
+            "overpicnum" => wall.overpicnum = Self::narrow(kind, member, value)?,
+            "shade" => wall.shade = Self::narrow(kind, member, value)?,
+            "pal" => wall.pal = Self::narrow(kind, member, value)?,
+            "xrepeat" => wall.xrepeat = Self::narrow(kind, member, value)?,
+            "yrepeat" => wall.yrepeat = Self::narrow(kind, member, value)?,
+            "xpanning" => wall.xpanning = Self::narrow(kind, member, value)?,
+            "ypanning" => wall.ypanning = Self::narrow(kind, member, value)?,
+            "lotag" => wall.lotag = Self::narrow(kind, member, value)?,
+            "hitag" => wall.hitag = Self::narrow(kind, member, value)?,
+            "extra" => wall.extra = Self::narrow(kind, member, value)?,
+            _ => return Err(Self::unknown_member(kind, member)),
+        }
+        Ok(())
+    }
+
+    fn read_player(
+        player: &Player,
+        member: &str,
+        member_index: Option<i32>,
+    ) -> Result<i32, EdukeVmError> {
+        let kind = EdStructKind::Player;
+        Ok(match member {
+            "i" | "sprite_i" => i32::from(player.sprite_i),
+            "posx" => player.posx,
+            "posy" => player.posy,
+            "posz" => player.posz,
+            "oposx" => player.oposx,
+            "oposy" => player.oposy,
+            "oposz" => player.oposz,
+            "ang" => i32::from(player.ang),
+            "horiz" => i32::from(player.horiz),
+            "q16horiz" => i32::from(player.horiz).wrapping_shl(16),
+            "horizoff" => i32::from(player.horizoff),
+            "rotscrnang" => i32::from(player.rotscrnang),
+            "pyoff" => player.pyoff,
+            "pycount" => i32::from(player.pycount),
+            "cursectnum" => i32::from(player.cursectnum),
+            "posxv" => player.posxv,
+            "posyv" => player.posyv,
+            "poszv" => player.poszv,
+            "truefz" => player.true_floor_z,
+            "truecz" => player.true_ceiling_z,
+            "bobcounter" => player.bob_counter,
+            "bobposx" => player.bobposx,
+            "bobposy" => player.bobposy,
+            "fta" => i32::from(player.quote_timer),
+            "ftq" => i32::from(player.quote_id),
+            "pals_time" => i32::from(player.palette_flash_tics),
+            "palette" => player.game_palette,
+            "pals" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.palette_flash.len(),
+                )?;
+                i32::from(player.palette_flash[slot])
+            }
+            "curr_weapon" | "currweapon" => i32::from(player.curr_weapon),
+            "kickback_pic" => i32::from(player.kickback_pic),
+            "quick_kick" => i32::from(player.quick_kick),
+            "weapon_pos" => i32::from(player.weapon_pos),
+            "last_weapon" => i32::from(player.last_weapon),
+            "hbomb_hold_delay" => i32::from(player.hbomb_hold_delay),
+            "holster_weapon" => i32::from(player.holster_weapon),
+            "extra" => i32::from(player.extra),
+            "last_extra" => i32::from(player.last_extra),
+            "extra_extra8" => i32::from(player.extra_extra8),
+            "airleft" => i32::from(player.airleft),
+            "shield_amount" => i32::from(player.shield_amount),
+            "max_shield_amount" => i32::from(player.max_shield_amount),
+            "steroids_amount" => i32::from(player.steroids_amount),
+            "scuba_amount" => i32::from(player.scuba_amount),
+            "holoduke_amount" => i32::from(player.holoduke_amount),
+            "jetpack_amount" => i32::from(player.jetpack_amount),
+            "heat_amount" => i32::from(player.heat_amount),
+            "firstaid_amount" => i32::from(player.firstaid_amount),
+            "boot_amount" => i32::from(player.boot_amount),
+            "jetpack_on" => i32::from(player.jetpack_on),
+            "hard_landing" => i32::from(player.hard_landing),
+            "footprintcount" | "footprint_count" => i32::from(player.footprint_count),
+            "footprintpal" => i32::from(player.footprint_pal),
+            "footprintshade" => i32::from(player.footprint_shade),
+            "access_incs" => i32::from(player.access_incs),
+            "on_ground" => i32::from(player.on_ground),
+            "spritebridge" => i32::from(player.sprite_bridge),
+            "sbs" => i32::from(player.bridge_sprite),
+            "god_mode" => i32::from(player.god_mode),
+            "heat_on" => i32::from(player.heat_on),
+            "holoduke_on" => i32::from(player.holoduke_on),
+            "ammo" | "ammo_amount" => {
+                let slot =
+                    Self::checked_member_index(kind, member, member_index, player.ammo.len())?;
+                i32::from(player.ammo[slot])
+            }
+            "gotweapon" => {
+                let slot =
+                    Self::checked_member_index(kind, member, member_index, player.gotweapon.len())?;
+                i32::from(player.gotweapon[slot])
+            }
+            "max_ammo_amount" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.max_ammo_amount.len(),
+                )?;
+                i32::from(player.max_ammo_amount[slot])
+            }
+            "weapon_choices" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.weapon_choices.len(),
+                )?;
+                i32::from(player.weapon_choices[slot])
+            }
+            _ => return Err(Self::unknown_member(kind, member)),
+        })
+    }
+
+    fn write_player(
+        player: &mut Player,
+        member: &str,
+        member_index: Option<i32>,
+        value: i32,
+    ) -> Result<(), EdukeVmError> {
+        let kind = EdStructKind::Player;
+        match member {
+            "i" | "sprite_i" => player.sprite_i = Self::narrow(kind, member, value)?,
+            "posx" => player.posx = value,
+            "posy" => player.posy = value,
+            "posz" => player.posz = value,
+            "oposx" => player.oposx = value,
+            "oposy" => player.oposy = value,
+            "oposz" => player.oposz = value,
+            "ang" => player.ang = Self::narrow(kind, member, value)?,
+            "horiz" => player.horiz = Self::narrow(kind, member, value)?,
+            "q16horiz" => player.horiz = Self::narrow(kind, member, value >> 16)?,
+            "horizoff" => player.horizoff = Self::narrow(kind, member, value)?,
+            "rotscrnang" => player.rotscrnang = Self::narrow(kind, member, value)?,
+            "pyoff" => player.pyoff = value,
+            "pycount" => player.pycount = Self::narrow(kind, member, value)?,
+            "cursectnum" => player.cursectnum = Self::narrow(kind, member, value)?,
+            "posxv" => player.posxv = value,
+            "posyv" => player.posyv = value,
+            "poszv" => player.poszv = value,
+            "truefz" => player.true_floor_z = value,
+            "truecz" => player.true_ceiling_z = value,
+            "bobcounter" => player.bob_counter = value,
+            "bobposx" => player.bobposx = value,
+            "bobposy" => player.bobposy = value,
+            "fta" => player.quote_timer = Self::narrow(kind, member, value)?,
+            "ftq" => player.quote_id = Self::narrow(kind, member, value)?,
+            "pals_time" => player.palette_flash_tics = Self::narrow(kind, member, value)?,
+            "palette" => player.game_palette = value,
+            "pals" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.palette_flash.len(),
+                )?;
+                player.palette_flash[slot] = Self::narrow(kind, member, value)?;
+            }
+            "curr_weapon" | "currweapon" => player.curr_weapon = Self::narrow(kind, member, value)?,
+            "kickback_pic" => player.kickback_pic = Self::narrow(kind, member, value)?,
+            "quick_kick" => player.quick_kick = Self::narrow(kind, member, value)?,
+            "weapon_pos" => player.weapon_pos = Self::narrow(kind, member, value)?,
+            "last_weapon" => player.last_weapon = Self::narrow(kind, member, value)?,
+            "hbomb_hold_delay" => player.hbomb_hold_delay = Self::narrow(kind, member, value)?,
+            "holster_weapon" => player.holster_weapon = Self::narrow(kind, member, value)?,
+            "extra" => player.extra = Self::narrow(kind, member, value)?,
+            "last_extra" => player.last_extra = Self::narrow(kind, member, value)?,
+            "extra_extra8" => player.extra_extra8 = Self::narrow(kind, member, value)?,
+            "airleft" => player.airleft = Self::narrow(kind, member, value)?,
+            "shield_amount" => player.shield_amount = Self::narrow(kind, member, value)?,
+            "max_shield_amount" => player.max_shield_amount = Self::narrow(kind, member, value)?,
+            "steroids_amount" => player.steroids_amount = Self::narrow(kind, member, value)?,
+            "scuba_amount" => player.scuba_amount = Self::narrow(kind, member, value)?,
+            "holoduke_amount" => player.holoduke_amount = Self::narrow(kind, member, value)?,
+            "jetpack_amount" => player.jetpack_amount = Self::narrow(kind, member, value)?,
+            "heat_amount" => player.heat_amount = Self::narrow(kind, member, value)?,
+            "firstaid_amount" => player.firstaid_amount = Self::narrow(kind, member, value)?,
+            "boot_amount" => player.boot_amount = Self::narrow(kind, member, value)?,
+            "jetpack_on" => player.jetpack_on = Self::narrow(kind, member, value)?,
+            "hard_landing" => player.hard_landing = Self::narrow(kind, member, value)?,
+            "footprintcount" | "footprint_count" => {
+                player.footprint_count = Self::narrow(kind, member, value)?;
+            }
+            "footprintpal" => player.footprint_pal = Self::narrow(kind, member, value)?,
+            "footprintshade" => player.footprint_shade = Self::narrow(kind, member, value)?,
+            "access_incs" => player.access_incs = Self::narrow(kind, member, value)?,
+            "on_ground" => player.on_ground = value != 0,
+            "spritebridge" => player.sprite_bridge = value != 0,
+            "sbs" => player.bridge_sprite = Self::narrow(kind, member, value)?,
+            "god_mode" => player.god_mode = value != 0,
+            "heat_on" => player.heat_on = value != 0,
+            "holoduke_on" => player.holoduke_on = Self::narrow(kind, member, value)?,
+            "ammo" | "ammo_amount" => {
+                let slot =
+                    Self::checked_member_index(kind, member, member_index, player.ammo.len())?;
+                player.ammo[slot] = Self::narrow(kind, member, value)?;
+            }
+            "gotweapon" => {
+                let slot =
+                    Self::checked_member_index(kind, member, member_index, player.gotweapon.len())?;
+                player.gotweapon[slot] = value != 0;
+            }
+            "max_ammo_amount" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.max_ammo_amount.len(),
+                )?;
+                player.max_ammo_amount[slot] = Self::narrow(kind, member, value)?;
+            }
+            "weapon_choices" => {
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    player.weapon_choices.len(),
+                )?;
+                player.weapon_choices[slot] = Self::narrow(kind, member, value)?;
+            }
+            _ => return Err(Self::unknown_member(kind, member)),
+        }
+        Ok(())
+    }
+
+    fn world_geometry(
+        &self,
+        context: &str,
+    ) -> Result<
+        (
+            Vec<room_build_engine::geom::SectorZ>,
+            Vec<room_build_engine::geom::WallXY>,
+        ),
+        EdukeVmError,
+    > {
+        let sector_extent = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        let mut sectors = Vec::new();
+        sectors
+            .try_reserve_exact(sector_extent)
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 geometry sectors",
+                name: context.to_owned(),
+            })?;
+        sectors.extend(self.world.sectors.iter().take(sector_extent).map(|source| {
+            room_build_engine::geom::SectorZ {
+                wallptr: source.wallptr,
+                wallnum: source.wallnum,
+                ceilingz: source.ceilingz,
+                floorz: source.floorz,
+                ceilingstat: source.ceilingstat,
+                floorstat: source.floorstat,
+                ceilingheinum: source.ceilingheinum,
+                floorheinum: source.floorheinum,
+            }
+        }));
+
+        let wall_extent = usize::try_from(self.world.numwalls)
+            .unwrap_or(0)
+            .min(self.world.walls.len());
+        let mut walls = Vec::new();
+        walls
+            .try_reserve_exact(wall_extent)
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 geometry walls",
+                name: context.to_owned(),
+            })?;
+        walls.extend(self.world.walls.iter().take(wall_extent).map(WallT::xy));
+        Ok((sectors, walls))
+    }
+}
+
+/// Resolve an integer or `define` used by an EDuke32 tile metadata directive.
+fn eduke_script_constant(script: &ScriptImage, token: &str) -> Option<i32> {
+    token
+        .parse::<i32>()
+        .ok()
+        .or_else(|| token.parse::<u32>().ok().map(|value| value as i32))
+        .or_else(|| {
+            script
+                .labels
+                .iter()
+                .find(|(name, label)| name.eq_ignore_ascii_case(token) && !label.is_ptr)
+                .map(|(_, label)| label.value)
+        })
+}
+
+fn projectile_property_member(property: &str) -> Option<&'static str> {
+    Some(match property.to_ascii_uppercase().as_str() {
+        "PROJ_BOUNCES" => "bounces",
+        "PROJ_BSOUND" => "bsound",
+        "PROJ_CLIPDIST" => "clipdist",
+        "PROJ_CSTAT" => "cstat",
+        "PROJ_DECAL" => "decal",
+        "PROJ_DROP" => "drop",
+        "PROJ_EXTRA" => "extra",
+        "PROJ_EXTRA_RAND" => "extra_rand",
+        "PROJ_FLASH_COLOR" => "flashcolor",
+        "PROJ_HITRADIUS" => "hitradius",
+        "PROJ_ISOUND" => "isound",
+        "PROJ_OFFSET" => "offset",
+        "PROJ_PAL" => "pal",
+        "PROJ_RANGE" => "range",
+        "PROJ_SHADE" => "shade",
+        "PROJ_SHOOTER" => "shooter",
+        "PROJ_SOUND" => "sound",
+        "PROJ_SPAWNS" => "spawns",
+        "PROJ_SXREPEAT" => "sxrepeat",
+        "PROJ_SYREPEAT" => "syrepeat",
+        "PROJ_TNUM" => "tnum",
+        "PROJ_TOFFSET" => "toffset",
+        "PROJ_TRAIL" => "trail",
+        "PROJ_TXREPEAT" => "txrepeat",
+        "PROJ_TYREPEAT" => "tyrepeat",
+        "PROJ_USERDATA" => "userdata",
+        "PROJ_VEL" => "vel",
+        "PROJ_VEL_MULT" => "velmult",
+        "PROJ_WORKSLIKE" => "workslike",
+        "PROJ_XREPEAT" => "xrepeat",
+        "PROJ_YREPEAT" => "yrepeat",
+        _ => return None,
+    })
+}
+
+/// Build the bounded runtime property table from compiled `defineprojectile`
+/// directives. Later declarations replace earlier values for the same tile.
+fn eduke_projectile_definitions(script: &ScriptImage) -> BTreeMap<i32, BTreeMap<String, i32>> {
+    const MAX_PROJECTILE_TILE: i32 = 32_768;
+    let mut definitions = BTreeMap::new();
+    for property in &script.eduke_projectiles {
+        let Some(tile) = eduke_script_constant(script, &property.projectile)
+            .filter(|tile| (0..MAX_PROJECTILE_TILE).contains(tile))
+        else {
+            continue;
+        };
+        let Some(member) = projectile_property_member(&property.property) else {
+            continue;
+        };
+        let Some(value) = eduke_script_constant(script, &property.value) else {
+            continue;
+        };
+        definitions
+            .entry(tile)
+            .or_insert_with(BTreeMap::new)
+            .insert(member.to_owned(), value);
+    }
+    definitions
+}
+
+/// EDuke32's CON-visible projectile defaults when a tile omits a property.
+/// Unlisted numeric properties start at zero; these four have documented
+/// nonzero/conditional defaults in `defineprojectile`.
+fn eduke_projectile_default(
+    script: &ScriptImage,
+    definitions: &BTreeMap<i32, BTreeMap<String, i32>>,
+    tile: i32,
+    member: &str,
+) -> i32 {
+    match member {
+        "spawns" => eduke_script_constant(script, "SMALLSMOKE").unwrap_or(0),
+        "bsound" => eduke_script_constant(script, "PIPEBOMB_BOUNCE").unwrap_or(0),
+        "extra_rand" => 5,
+        "tnum" => {
+            let has_trail = definitions
+                .get(&tile)
+                .and_then(|properties| properties.get("trail"))
+                .is_some_and(|trail| *trail != 0);
+            i32::from(has_trail)
+        }
+        _ => 0,
+    }
+}
+
+/// Apply the EDuke32 tile-level flags to the ART metadata table.
+fn apply_eduke_tile_flags(script: &ScriptImage, tile_meta: &mut [TileZMeta]) {
+    if script.dialect != ConDialect::EDuke32 {
+        return;
+    }
+
+    for meta in tile_meta.iter_mut() {
+        meta.game_flags = 0;
+    }
+    for (directive, operands) in &script.eduke_sprite_directives {
+        let Some(tile) = operands
+            .first()
+            .and_then(|token| eduke_script_constant(script, token))
+            .and_then(|id| usize::try_from(id).ok())
+            .and_then(|id| tile_meta.get_mut(id))
+        else {
+            continue;
+        };
+        match directive.to_ascii_lowercase().as_str() {
+            "spritenoshade" => tile.game_flags |= 4,
+            "spritenopal" => tile.game_flags |= 64,
+            "spriteflags" => {
+                if let Some(flags) = operands
+                    .get(1)
+                    .and_then(|token| eduke_script_constant(script, token))
+                {
+                    tile.game_flags = flags as u32;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // EDuke32 actor type 2 (`useractor enemy`) and `defineprojectile`
+    // populate the flags read through `gettiledata[].gameflags`.
+    for (tile, &actor_type) in script.actortype.iter().enumerate() {
+        if actor_type == 2
+            && let Some(meta) = tile_meta.get_mut(tile)
+        {
+            meta.game_flags |= 32;
+        }
+    }
+    for projectile in &script.eduke_projectiles {
+        if let Some(meta) = eduke_script_constant(script, &projectile.projectile)
+            .and_then(|tile| usize::try_from(tile).ok())
+            .and_then(|tile| tile_meta.get_mut(tile))
+        {
+            meta.game_flags |= 8;
+        }
+    }
+}
+
+impl EdukeStructAccess for DukeSessionStructAccess<'_> {
+    fn game_random_seed(&mut self) -> Option<i32> {
+        Some(*self.randomseed)
+    }
+
+    fn set_game_random_seed(&mut self, seed: i32) -> bool {
+        *self.randomseed = seed;
+        true
+    }
+
+    fn next_game_random(&mut self) -> Option<i32> {
+        Some(krand_step(self.randomseed))
+    }
+
+    fn add_player_health(
+        &mut self,
+        player_index: usize,
+        actor: usize,
+        amount: i32,
+    ) -> Result<(), EdukeVmError> {
+        let atomic_health_tile = self
+            .script
+            .labels
+            .get("ATOMICHEALTH")
+            .filter(|label| !label.is_ptr)
+            .map(|label| label.value);
+        let is_atomic_health = atomic_health_tile.is_some_and(|tile| {
+            self.world
+                .sprites
+                .get(actor)
+                .is_some_and(|sprite| i32::from(sprite.picnum) == tile)
+        });
+
+        let player = if player_index == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        if player.god_mode {
+            return Ok(());
+        }
+        let max_health = self
+            .script
+            .gamestartup
+            .get(2)
+            .copied()
+            .unwrap_or(100)
+            .clamp(1, i32::from(i16::MAX));
+        let mut health = i32::from(player.extra);
+        if !is_atomic_health && health > max_health && amount > 0 {
+            return Ok(());
+        }
+        if health > 0 {
+            health = health.saturating_add(amount);
+        }
+        let cap = if is_atomic_health {
+            max_health.saturating_mul(2)
+        } else {
+            max_health
+        };
+        if health > cap && amount > 0 {
+            health = cap;
+        }
+        let crosses_low_health =
+            amount > 0 && health - amount < (max_health >> 2) && health >= (max_health >> 2);
+        let updated = health.max(0).min(i32::from(i16::MAX)) as i16;
+        player.extra = updated;
+        if amount > 0 {
+            player.last_extra = updated;
+        }
+        let body = player.sprite_i;
+        if body >= 0
+            && let Some(body) = self.world.sprites.get_mut(body as usize)
+        {
+            body.extra = updated;
+        }
+        if crosses_low_health {
+            queue_player_sound(
+                Some(self.script),
+                "DUKE_GOTHEALTHATLOW",
+                player,
+                self.actor_temps,
+            );
+        }
+        Ok(())
+    }
+
+    fn player_weapon_op(
+        &mut self,
+        player_index: usize,
+        actor: i32,
+        add_weapon: bool,
+        weapon: i32,
+        ammo: i32,
+    ) -> Result<bool, EdukeVmError> {
+        let selected_player = self.closest_player_index(player_index, actor)?;
+        let player = if selected_player == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(selected_player - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(selected_player).unwrap_or(i32::MAX),
+                })?
+        };
+        Ok(crate::weapons::con_weapon_op(
+            player,
+            add_weapon,
+            weapon as i16,
+            ammo as i16,
+        ))
+    }
+
+    fn add_player_inventory(
+        &mut self,
+        player_index: usize,
+        actor: i32,
+        item: i32,
+        amount: i32,
+    ) -> Result<(), EdukeVmError> {
+        let selected_player = self.closest_player_index(player_index, actor)?;
+        let actor_palette = if item == 6 {
+            usize::try_from(actor)
+                .ok()
+                .and_then(|index| self.world.sprites.get(index))
+                .map(|sprite| sprite.pal)
+        } else {
+            None
+        };
+        let player = if selected_player == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(selected_player - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(selected_player).unwrap_or(i32::MAX),
+                })?
+        };
+        let value = amount.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        let icon = match item {
+            0 => {
+                player.steroids_amount = value;
+                Some(2)
+            }
+            1 => {
+                player.shield_amount = i32::from(player.shield_amount)
+                    .saturating_add(amount)
+                    .min(i32::from(player.max_shield_amount))
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                    as i16;
+                None
+            }
+            2 => {
+                player.scuba_amount = value;
+                Some(6)
+            }
+            3 => {
+                player.holoduke_amount = value;
+                Some(3)
+            }
+            4 => {
+                player.jetpack_amount = value;
+                Some(4)
+            }
+            6 => {
+                let access_bit = match actor_palette {
+                    Some(0) => 1,
+                    Some(21) => 2,
+                    Some(23) => 4,
+                    _ => 0,
+                };
+                player.got_access |= access_bit;
+                None
+            }
+            7 => {
+                player.heat_amount = value;
+                Some(5)
+            }
+            9 => {
+                player.firstaid_amount = value;
+                Some(1)
+            }
+            10 => {
+                player.boot_amount = value;
+                Some(7)
+            }
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            player.inventory_icon = icon;
+            player.refresh_inventory = 1;
+        }
+        Ok(())
+    }
+
+    fn spawn_debris(&mut self, actor: i32, tile: i32, count: i32) -> Result<(), EdukeVmError> {
+        let parent_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let parent =
+            *self
+                .world
+                .sprites
+                .get(parent_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let sector_count = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        if parent.sectnum < 0 || usize::from(parent.sectnum as u16) >= sector_count {
+            return Ok(());
+        }
+        let tile = tile as i16;
+        let count = count.clamp(0, MAXSPRITES as i32);
+        let label_tile = |name: &str, fallback: i16| {
+            self.script
+                .labels
+                .get(name)
+                .filter(|label| !label.is_ptr)
+                .map_or(fallback, |label| label.value as i16)
+        };
+        let is_blimp_scrap =
+            parent.picnum == label_tile("BLIMP", 3400) && tile == label_tile("SCRAP1", 2400);
+        for shard_index in (0..count).rev() {
+            let variant = if is_blimp_scrap {
+                0
+            } else {
+                (krand_step(self.randomseed) % 3) as i16
+            };
+            // Chocolate's EGS call evaluates C arguments right to left: the
+            // z velocity consumes the first draw after the scrap variant.
+            let zvel = (-(krand_step(self.randomseed) & 2047)) as i16;
+            let xvel = ((krand_step(self.randomseed) & 127) + 32) as i16;
+            let angle = (krand_step(self.randomseed) & 2047) as i16;
+            let yrepeat = 32 + (krand_step(self.randomseed) & 15) as u8;
+            let xrepeat = 32 + (krand_step(self.randomseed) & 15) as u8;
+            let z = parent
+                .z
+                .wrapping_sub(8 << 8)
+                .wrapping_sub(krand_step(self.randomseed) & 8191);
+            let y = parent
+                .y
+                .wrapping_add(krand_step(self.randomseed) & 255)
+                .wrapping_sub(128);
+            let x = parent
+                .x
+                .wrapping_add(krand_step(self.randomseed) & 255)
+                .wrapping_sub(128);
+            let child = crate::shoot::egs(
+                &mut self.world.lists,
+                self.world.sprites.as_mut(),
+                self.picnum,
+                self.actor_temps,
+                Some(self.script),
+                parent.sectnum,
+                x,
+                y,
+                z,
+                tile.wrapping_add(variant),
+                parent.shade,
+                xrepeat,
+                yrepeat,
+                angle,
+                xvel,
+                zvel,
+                actor as i16,
+                crate::stat::STAT_MISC,
+            );
+            if child >= 0 {
+                let child_sprite = &mut self.world.sprites[child as usize];
+                child_sprite.yvel = if is_blimp_scrap {
+                    crate::actors::BLIMP_WEAPON_SPRITES
+                        [shard_index as usize % crate::actors::BLIMP_WEAPON_SPRITES.len()]
+                } else {
+                    -1
+                };
+                child_sprite.pal = parent.pal;
+                self.spawned_actor_ids.push(i32::from(child));
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_guts(
+        &mut self,
+        player: usize,
+        actor: i32,
+        tile: i32,
+        count: i32,
+    ) -> Result<(), EdukeVmError> {
+        let parent_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let parent =
+            *self
+                .world
+                .sprites
+                .get(parent_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let sector_count = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        if parent.sectnum < 0 || usize::from(parent.sectnum as u16) >= sector_count {
+            return Ok(());
+        }
+        let tile = tile as i16;
+        let count = count.clamp(0, MAXSPRITES as i32);
+        let is_badguy = crate::badguy::badguy_pic(parent.picnum, &self.script.actortype);
+        let size = if is_badguy && parent.xrepeat < 16 {
+            8
+        } else {
+            32
+        };
+        let (floor_z, _) = self.get_slope_z(i32::from(parent.sectnum), parent.x, parent.y)?;
+        let mut guts_z = parent.z.saturating_sub(8 << 8);
+        let floor_limit = floor_z.saturating_sub(8 << 8);
+        if guts_z > floor_limit {
+            guts_z = floor_limit;
+        }
+        let commander_tile = self
+            .script
+            .labels
+            .get("COMMANDER")
+            .filter(|label| !label.is_ptr)
+            .map_or(1920, |label| label.value as i16);
+        if parent.picnum == commander_tile {
+            guts_z = guts_z.saturating_sub(24 << 8);
+        }
+        let jibs2_tile = self
+            .script
+            .labels
+            .get("JIBS2")
+            .filter(|label| !label.is_ptr)
+            .map_or(2250, |label| label.value as i16);
+        let repeats = if tile == jibs2_tile { size >> 2 } else { size };
+        let palette = if is_badguy && parent.pal == 6 { 6 } else { 0 };
+        let owner = if player == 0 {
+            self.player.sprite_i
+        } else {
+            self.coop_players
+                .get(player - 1)
+                .map_or(-1, |player| player.sprite_i)
+        };
+        for _ in 0..count {
+            // Chocolate's C call evaluates EGS arguments right to left, after
+            // the angle draw: z velocity, X velocity, Z, Y, then X.
+            let angle = (krand_step(self.randomseed) & 2047) as i16;
+            let zvel = (-512 - (krand_step(self.randomseed) & 2047)) as i16;
+            let xvel = (48 + (krand_step(self.randomseed) & 31)) as i16;
+            let z = guts_z.wrapping_sub(krand_step(self.randomseed) & 8191);
+            let y = parent
+                .y
+                .wrapping_add(krand_step(self.randomseed) & 255)
+                .wrapping_sub(128);
+            let x = parent
+                .x
+                .wrapping_add(krand_step(self.randomseed) & 255)
+                .wrapping_sub(128);
+            let child = crate::shoot::egs(
+                &mut self.world.lists,
+                self.world.sprites.as_mut(),
+                self.picnum,
+                self.actor_temps,
+                Some(self.script),
+                parent.sectnum,
+                x,
+                y,
+                z,
+                tile,
+                -32,
+                repeats,
+                repeats,
+                angle,
+                xvel,
+                zvel,
+                owner,
+                crate::stat::STAT_MISC,
+            );
+            if child >= 0 {
+                let child_index = child as usize;
+                if palette == 6 {
+                    self.world.sprites[child_index].pal = 6;
+                }
+                self.spawned_actor_ids.push(i32::from(child));
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_lots_of_glass(&mut self, actor: i32, count: i32) -> Result<(), EdukeVmError> {
+        let parent_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let parent =
+            *self
+                .world
+                .sprites
+                .get(parent_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let sector_count = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        if parent.sectnum < 0 || usize::from(parent.sectnum as u16) >= sector_count {
+            return Ok(());
+        }
+        let glass_tile = self
+            .script
+            .labels
+            .get("GLASSPIECES")
+            .filter(|label| !label.is_ptr)
+            .map_or(1031, |label| label.value as i16);
+        let count = count.clamp(0, MAXSPRITES as i32);
+        for shard in (1..=count).rev() {
+            // Chocolate `spriteglass`: angle and Z are evaluated before the
+            // EGS call, whose C arguments then consume Z velocity, X velocity
+            // and shade from right to left.
+            let angle = (krand_step(self.randomseed) & 2047) as i16;
+            let z = parent
+                .z
+                .wrapping_sub((krand_step(self.randomseed) & 16) << 8);
+            let zvel = (-512 - (krand_step(self.randomseed) & 2047)) as i16;
+            let xvel = (32 + (krand_step(self.randomseed) & 63)) as i16;
+            let shade = (krand_step(self.randomseed) & 15) as i8;
+            let child = crate::shoot::egs(
+                &mut self.world.lists,
+                self.world.sprites.as_mut(),
+                self.picnum,
+                self.actor_temps,
+                Some(self.script),
+                parent.sectnum,
+                parent.x,
+                parent.y,
+                z,
+                glass_tile.wrapping_add((shard % 3) as i16),
+                shade,
+                36,
+                36,
+                angle,
+                xvel,
+                zvel,
+                actor as i16,
+                crate::stat::STAT_MISC,
+            );
+            if child >= 0 {
+                self.world.sprites[child as usize].pal = parent.pal;
+                self.spawned_actor_ids.push(i32::from(child));
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_item_spray(
+        &mut self,
+        actor: i32,
+        kind: EdItemSprayKind,
+        count: i32,
+    ) -> Result<(), EdukeVmError> {
+        let parent_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let parent =
+            *self
+                .world
+                .sprites
+                .get(parent_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let sector_count = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        if parent.sectnum < 0 || usize::from(parent.sectnum as u16) >= sector_count {
+            return Ok(());
+        }
+        let (label, default_tile) = match kind {
+            EdItemSprayKind::Money => ("MONEY", 1233),
+            EdItemSprayKind::Mail => ("MAIL", 4410),
+            EdItemSprayKind::Paper => ("PAPER", 4460),
+        };
+        let item_tile = self
+            .script
+            .labels
+            .get(label)
+            .filter(|label| !label.is_ptr)
+            .map_or(default_tile, |label| label.value as i16);
+        for _ in 0..count.clamp(0, MAXSPRITES as i32) {
+            // Chocolate `lotsofmoney` evaluates angle then height, invokes
+            // EGS, and consumes the cstat roll even if the sprite pool is full.
+            let angle = (krand_step(self.randomseed) & 2047) as i16;
+            let z = parent
+                .z
+                .wrapping_sub(krand_step(self.randomseed) % (47 << 8));
+            let bill = crate::shoot::egs(
+                &mut self.world.lists,
+                self.world.sprites.as_mut(),
+                self.picnum,
+                self.actor_temps,
+                Some(self.script),
+                parent.sectnum,
+                parent.x,
+                parent.y,
+                z,
+                item_tile,
+                -32,
+                8,
+                8,
+                angle,
+                0,
+                0,
+                0,
+                crate::stat::STAT_MISC,
+            );
+            let cstat = (krand_step(self.randomseed) & 12) as u16;
+            if bill >= 0 {
+                self.world.sprites[bill as usize].cstat = cstat;
+                self.spawned_actor_ids.push(i32::from(bill));
+            }
+        }
+        Ok(())
+    }
+
+    fn request_actor_operate(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+        self.actor_temps_mut(actor)?.pending_operate = true;
+        Ok(())
+    }
+
+    fn set_game_palette(&mut self, player_index: usize, palette: i32) -> Result<(), EdukeVmError> {
+        let player = if player_index == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        player.game_palette = palette;
+        Ok(())
+    }
+
+    fn begin_end_of_game(&mut self, player_index: usize, delay: i32) -> Result<(), EdukeVmError> {
+        let player = if player_index == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        player.time_before_exit = delay as i16;
+        player.custom_exit_sound = -1;
+        player.end_of_game = true;
+        Ok(())
+    }
+
+    fn set_timer_rate(&mut self, rate: i32) -> Result<(), EdukeVmError> {
+        self.userdef.timer_rate = rate.clamp(4, 480);
+        Ok(())
+    }
+
+    fn apply_hitradius(
+        &mut self,
+        actor: i32,
+        radius: i32,
+        damage: [i32; 4],
+    ) -> Result<(), EdukeVmError> {
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let source_i = i16::try_from(actor_index).map_err(|_| EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Actor,
+            id: actor,
+        })?;
+        // The blast helper accepts a contiguous player slice; preserve the
+        // session's split primary/co-op storage while applying its mutations.
+        let mut players = Vec::with_capacity(self.coop_players.len().saturating_add(1));
+        players.push(self.player.clone());
+        players.extend(self.coop_players.iter().cloned());
+        crate::weapons_move::apply_con_hitradius(
+            &mut self.world.lists,
+            &mut self.world.sprites[..],
+            &mut self.world.sectors,
+            &mut self.world.walls,
+            self.picnum,
+            self.actor_temps,
+            &mut players,
+            self.randomseed,
+            source_i,
+            radius,
+            damage,
+            self.script.actortype.as_slice(),
+            Some(self.script),
+            self.tile_meta,
+        );
+        if let Some(primary) = players.first().cloned() {
+            *self.player = primary;
+        }
+        for (destination, source) in self.coop_players.iter_mut().zip(players.iter().skip(1)) {
+            *destination = source.clone();
+        }
+        Ok(())
+    }
+
+    fn request_player_quick_kick(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let sprite = self
+            .world
+            .sprites
+            .get(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        if sprite.picnum == crate::spawn::APLAYER {
+            return Ok(());
+        }
+        self.actor_temps_mut(actor)?.pending_quick_kick = true;
+        Ok(())
+    }
+
+    fn display_quote(&mut self, player_index: usize, quote: usize) -> Result<(), EdukeVmError> {
+        let quote_id = i16::try_from(quote).map_err(|_| EdukeVmError::QuoteIndexOutOfBounds {
+            index: quote,
+            extent: self.script.quotes.len(),
+        })?;
+        let player = if player_index == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        // EDuke32 `quote` is the direct-display form (equivalent to setting
+        // `fta` and `ftq`), so it does not use the ordinary FTA toggle.
+        player.quote_id = quote_id;
+        player.quote_timer = 100;
+        Ok(())
+    }
+
+    fn palette_from(&mut self, player_index: usize, values: [i32; 4]) -> Result<(), EdukeVmError> {
+        let player = if player_index == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        player.palette_flash_tics = values[0].clamp(0, 255) as u8;
+        player.palette_flash = [
+            values[1].clamp(0, 255) as u8,
+            values[2].clamp(0, 255) as u8,
+            values[3].clamp(0, 255) as u8,
+        ];
+        Ok(())
+    }
+
+    fn get_member(
+        &mut self,
+        kind: EdStructKind,
+        id: i32,
+        member: &str,
+        member_index: Option<i32>,
+    ) -> Result<i32, EdukeVmError> {
+        let member_key = member.to_ascii_lowercase();
+        match kind {
+            EdStructKind::Actor => {
+                let index = Self::checked_id(kind, id, MAXSPRITES)?;
+                let sprite = self
+                    .world
+                    .sprites
+                    .get(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::read_actor(
+                    sprite,
+                    self.actor_temps.get(index),
+                    &member_key,
+                    member_index,
+                )
+            }
+            EdStructKind::ThisProjectile => {
+                let index = Self::checked_id(kind, id, MAXSPRITES)?;
+                let temps = self.actor_temps.get(index);
+                Ok(match member_key.as_str() {
+                    "bounces" => self
+                        .world
+                        .sprites
+                        .get(index)
+                        .map_or(0, |sprite| i32::from(sprite.yvel)),
+                    "range" => temps.map_or(0, |temps| temps.projectile_range),
+                    "velmult" => temps.map_or(0, |temps| temps.projectile_velmult),
+                    "spawns" => temps.map_or(0, |temps| temps.projectile_spawns),
+                    "isound" => temps.map_or(0, |temps| temps.projectile_isound),
+                    "sound" => temps.map_or(0, |temps| temps.projectile_sound),
+                    "trail" => temps.map_or(0, |temps| temps.projectile_trail),
+                    "tnum" => temps.map_or(0, |temps| temps.projectile_tnum),
+                    "txrepeat" => temps.map_or(0, |temps| temps.projectile_txrepeat),
+                    "tyrepeat" => temps.map_or(0, |temps| temps.projectile_tyrepeat),
+                    "toffset" => temps.map_or(0, |temps| temps.projectile_toffset),
+                    "sxrepeat" => temps.map_or(0, |temps| temps.projectile_sxrepeat),
+                    "syrepeat" => temps.map_or(0, |temps| temps.projectile_syrepeat),
+                    "workslike" => temps.map_or(0, |temps| temps.projectile_workslike),
+                    "bsound" => temps.map_or(0, |temps| temps.projectile_bsound),
+                    "drop" => temps.map_or(0, |temps| temps.projectile_drop),
+                    "hitradius" => temps.map_or(0, |temps| temps.projectile_hitradius),
+                    _ => return Err(Self::unknown_member(kind, &member_key)),
+                })
+            }
+            EdStructKind::Projectile => {
+                Self::checked_id(kind, id, 32_768)?;
+                if !Self::is_projectile_member(&member_key) {
+                    return Err(Self::unknown_member(kind, &member_key));
+                }
+                Ok(self
+                    .projectile_defs
+                    .get(&id)
+                    .and_then(|definition| definition.get(&member_key))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        eduke_projectile_default(self.script, self.projectile_defs, id, &member_key)
+                    }))
+            }
+            EdStructKind::Tspr => {
+                let tspr = self
+                    .tspr
+                    .as_deref()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                if id != tspr.source_sprite {
+                    return Err(EdukeVmError::InvalidStructId { kind, id });
+                }
+                Self::read_tspr(tspr, &member_key)
+                    .ok_or_else(|| Self::unknown_member(kind, &member_key))
+            }
+            EdStructKind::Sector => {
+                let extent = usize::try_from(self.world.numsectors)
+                    .unwrap_or(0)
+                    .min(self.world.sectors.len());
+                let index = Self::checked_id(kind, id, extent)?;
+                let sector = self
+                    .world
+                    .sectors
+                    .get(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::read_sector(sector, &member_key)
+            }
+            EdStructKind::Wall => {
+                let extent = usize::try_from(self.world.numwalls)
+                    .unwrap_or(0)
+                    .min(self.world.walls.len());
+                let index = Self::checked_id(kind, id, extent)?;
+                let wall = self
+                    .world
+                    .walls
+                    .get(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::read_wall(wall, &member_key)
+            }
+            EdStructKind::Player => {
+                let extent = self.coop_players.len().saturating_add(1);
+                let index = Self::checked_id(kind, id, extent)?;
+                let player = if index == 0 {
+                    &*self.player
+                } else {
+                    self.coop_players
+                        .get(index - 1)
+                        .ok_or(EdukeVmError::InvalidStructId { kind, id })?
+                };
+                Self::read_player(player, &member_key, member_index)
+            }
+            EdStructKind::Input => {
+                let index = Self::checked_id(kind, id, self.inputs.len())?;
+                let input = self
+                    .inputs
+                    .get(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Ok(match member_key.as_str() {
+                    "fvel" => i32::from(input.fvel),
+                    "svel" => i32::from(input.svel),
+                    "avel" => i32::from(input.avel),
+                    "horz" | "horizon" => i32::from(input.horz),
+                    "bits" => input.bits as i32,
+                    _ => return Err(Self::unknown_member(kind, &member_key)),
+                })
+            }
+            EdStructKind::TileData => {
+                let index = Self::checked_id(kind, id, self.tile_meta.len())?;
+                let meta = self
+                    .tile_meta
+                    .get(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::tile_data_value(meta, &member_key)
+                    .ok_or_else(|| Self::unknown_member(kind, &member_key))
+            }
+            EdStructKind::UserDef => Ok(match member_key.as_str() {
+                "vm_sprite" => self.userdef.vm_sprite,
+                "player_skill" => i32::from(*self.skill),
+                "drawweapon" => self.userdef.drawweapon,
+                "statusbarscale" => self.userdef.statusbarscale,
+                "crosshairscale" => self.userdef.crosshairscale,
+                "weaponscale" => self.userdef.weaponscale,
+                "pause_on" => self.userdef.pause_on,
+                "respawn_monsters" => self.userdef.respawn_monsters,
+                "respawn_items" => self.userdef.respawn_items,
+                "respawn_inventory" => self.userdef.respawn_inventory,
+                "return" => {
+                    let index = Self::checked_member_index(
+                        kind,
+                        &member_key,
+                        member_index,
+                        self.userdef.return_values.len(),
+                    )?;
+                    self.userdef.return_values[index]
+                }
+                _ => return Err(Self::unknown_member(kind, &member_key)),
+            }),
+        }
+    }
+
+    fn set_member(
+        &mut self,
+        kind: EdStructKind,
+        id: i32,
+        member: &str,
+        member_index: Option<i32>,
+        value: i32,
+    ) -> Result<(), EdukeVmError> {
+        let member_key = member.to_ascii_lowercase();
+        match kind {
+            EdStructKind::Actor => {
+                let index = Self::checked_id(kind, id, MAXSPRITES)?;
+                let sprite = self
+                    .world
+                    .sprites
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                if self.actor_temps.len() <= index {
+                    let new_len = index + 1;
+                    self.actor_temps
+                        .try_reserve_exact(new_len - self.actor_temps.len())
+                        .map_err(|_| EdukeVmError::AllocationFailed {
+                            kind: "actor",
+                            name: id.to_string(),
+                        })?;
+                    self.actor_temps
+                        .resize_with(new_len, ActorConTemps::default);
+                }
+                Self::write_actor(
+                    sprite,
+                    self.actor_temps.get_mut(index),
+                    self.picnum.get_mut(index),
+                    &member_key,
+                    member_index,
+                    value,
+                )
+            }
+            EdStructKind::ThisProjectile => {
+                let index = Self::checked_id(kind, id, MAXSPRITES)?;
+                if member_key == "bounces" {
+                    let sprite = self
+                        .world
+                        .sprites
+                        .get_mut(index)
+                        .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                    sprite.yvel = Self::narrow(kind, "bounces", value)?;
+                    return Ok(());
+                }
+                if self.actor_temps.len() <= index {
+                    let new_len = index + 1;
+                    self.actor_temps
+                        .try_reserve_exact(new_len - self.actor_temps.len())
+                        .map_err(|_| EdukeVmError::AllocationFailed {
+                            kind: "thisprojectile",
+                            name: id.to_string(),
+                        })?;
+                    self.actor_temps
+                        .resize_with(new_len, ActorConTemps::default);
+                }
+                let temps = self
+                    .actor_temps
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                match member_key.as_str() {
+                    "workslike" => temps.projectile_workslike = value,
+                    "bsound" => temps.projectile_bsound = value,
+                    "drop" => temps.projectile_drop = value,
+                    "hitradius" => temps.projectile_hitradius = value,
+                    "range" => temps.projectile_range = value,
+                    "velmult" => temps.projectile_velmult = value,
+                    "spawns" => temps.projectile_spawns = value,
+                    "isound" => temps.projectile_isound = value,
+                    "sound" => temps.projectile_sound = value,
+                    "trail" => temps.projectile_trail = value,
+                    "tnum" => temps.projectile_tnum = value,
+                    "txrepeat" => temps.projectile_txrepeat = value,
+                    "tyrepeat" => temps.projectile_tyrepeat = value,
+                    "toffset" => temps.projectile_toffset = value,
+                    "sxrepeat" => temps.projectile_sxrepeat = value,
+                    "syrepeat" => temps.projectile_syrepeat = value,
+                    _ => return Err(Self::unknown_member(kind, &member_key)),
+                }
+                Ok(())
+            }
+            EdStructKind::Projectile => {
+                Self::checked_id(kind, id, 32_768)?;
+                if !Self::is_projectile_member(&member_key) {
+                    return Err(Self::unknown_member(kind, &member_key));
+                }
+                self.projectile_defs
+                    .entry(id)
+                    .or_default()
+                    .insert(member_key, value);
+                Ok(())
+            }
+            EdStructKind::Tspr => {
+                let tspr = self
+                    .tspr
+                    .as_deref_mut()
+                    .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                if id != tspr.source_sprite {
+                    return Err(EdukeVmError::InvalidStructId { kind, id });
+                }
+                Self::write_tspr(tspr, &member_key, value)
+            }
+            EdStructKind::Sector => {
+                let extent = usize::try_from(self.world.numsectors)
+                    .unwrap_or(0)
+                    .min(self.world.sectors.len());
+                let index = Self::checked_id(kind, id, extent)?;
+                let sector = self
+                    .world
+                    .sectors
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::write_sector(sector, &member_key, value)
+            }
+            EdStructKind::Wall => {
+                let extent = usize::try_from(self.world.numwalls)
+                    .unwrap_or(0)
+                    .min(self.world.walls.len());
+                let index = Self::checked_id(kind, id, extent)?;
+                let wall = self
+                    .world
+                    .walls
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::write_wall(wall, &member_key, value)
+            }
+            EdStructKind::Player => {
+                let extent = self.coop_players.len().saturating_add(1);
+                let index = Self::checked_id(kind, id, extent)?;
+                let player = if index == 0 {
+                    &mut *self.player
+                } else {
+                    self.coop_players
+                        .get_mut(index - 1)
+                        .ok_or(EdukeVmError::InvalidStructId { kind, id })?
+                };
+                Self::write_player(player, &member_key, member_index, value)
+            }
+            EdStructKind::Input => {
+                let index = Self::checked_id(kind, id, self.inputs.len())?;
+                let input = self
+                    .inputs
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                match member_key.as_str() {
+                    "fvel" => input.fvel = Self::narrow(kind, &member_key, value)?,
+                    "svel" => input.svel = Self::narrow(kind, &member_key, value)?,
+                    "avel" => input.avel = Self::narrow(kind, &member_key, value)?,
+                    "horz" | "horizon" => input.horz = Self::narrow(kind, &member_key, value)?,
+                    "bits" => input.bits = value as u32,
+                    _ => return Err(Self::unknown_member(kind, &member_key)),
+                }
+                Ok(())
+            }
+            EdStructKind::TileData => {
+                let index = Self::checked_id(kind, id, self.tile_meta.len())?;
+                let meta = self
+                    .tile_meta
+                    .get_mut(index)
+                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                Self::write_tile_data(meta, &member_key, value)
+            }
+            EdStructKind::UserDef => match member_key.as_str() {
+                "vm_sprite" => {
+                    Self::checked_id(kind, value, MAXSPRITES)?;
+                    self.userdef.vm_sprite = value;
+                    Ok(())
+                }
+                "player_skill" if (0..=4).contains(&value) => {
+                    *self.skill = value as u8;
+                    Ok(())
+                }
+                "player_skill" => Err(EdukeVmError::StructMemberValueOutOfRange {
+                    kind,
+                    member: member_key,
+                    value,
+                }),
+                "drawweapon" => {
+                    self.userdef.drawweapon = value;
+                    Ok(())
+                }
+                "statusbarscale" => {
+                    self.userdef.statusbarscale = value;
+                    Ok(())
+                }
+                "crosshairscale" => {
+                    self.userdef.crosshairscale = value;
+                    Ok(())
+                }
+                "weaponscale" => {
+                    self.userdef.weaponscale = value;
+                    Ok(())
+                }
+                "pause_on" => {
+                    self.userdef.pause_on = value;
+                    Ok(())
+                }
+                "respawn_monsters" => {
+                    self.userdef.respawn_monsters = value;
+                    Ok(())
+                }
+                "respawn_items" => {
+                    self.userdef.respawn_items = value;
+                    Ok(())
+                }
+                "respawn_inventory" => {
+                    self.userdef.respawn_inventory = value;
+                    Ok(())
+                }
+                "return" => {
+                    let index = Self::checked_member_index(
+                        kind,
+                        &member_key,
+                        member_index,
+                        self.userdef.return_values.len(),
+                    )?;
+                    self.userdef.return_values[index] = value;
+                    Ok(())
+                }
+                _ => Err(Self::unknown_member(kind, &member_key)),
+            },
+        }
+    }
+
+    fn play_sound(
+        &mut self,
+        actor: i32,
+        sound: i32,
+        mode: EdSoundMode,
+    ) -> Result<(), EdukeVmError> {
+        let sound_id = match u16::try_from(sound) {
+            Ok(sound_id)
+                if self
+                    .script
+                    .sounds
+                    .get(usize::from(sound_id))
+                    .is_some_and(Option::is_some) =>
+            {
+                sound_id
+            }
+            _ => return Ok(()),
+        };
+        let source_actor = if mode == EdSoundMode::Global {
+            i32::from(self.player.sprite_i)
+        } else {
+            actor
+        };
+        if source_actor < 0 {
+            return Ok(());
+        }
+        let source = self.actor_temps_mut(source_actor)?;
+        let sound_id = i16::try_from(sound_id).map_err(|_| EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Actor,
+            id: sound,
+        })?;
+        match mode {
+            EdSoundMode::Actor => source.pending_actor_sounds.push(sound_id),
+            EdSoundMode::ActorOnce => source.pending_actor_sounds_once.push(sound_id),
+            EdSoundMode::Global => source.pending_global_sounds.push(sound_id),
+        }
+        Ok(())
+    }
+
+    fn stop_sound(&mut self, actor: i32, sound: i32) -> Result<(), EdukeVmError> {
+        let Ok(sound_id) = i16::try_from(sound) else {
+            return Ok(());
+        };
+        let source_actor = if actor < 0 {
+            i32::from(self.player.sprite_i)
+        } else {
+            actor
+        };
+        if source_actor >= 0 {
+            self.actor_temps_mut(source_actor)?
+                .pending_sound_stops
+                .push(sound_id);
+        }
+        Ok(())
+    }
+
+    fn set_actor_member(
+        &mut self,
+        actor: i32,
+        member: EdActorMember,
+        value: i32,
+    ) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        if member == EdActorMember::Palette {
+            let (picnum, palette) = self
+                .world
+                .sprites
+                .get(index)
+                .map(|sprite| (sprite.picnum, sprite.pal))
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+            if picnum != 1405 {
+                self.actor_temps_mut(actor)?.tempang = i16::from(palette);
+            }
+        }
+        if matches!(member, EdActorMember::Count | EdActorMember::SleepTime) {
+            let temps = self.actor_temps_mut(actor)?;
+            match member {
+                EdActorMember::Count => temps.g_t[0] = i32::from(value as i16),
+                EdActorMember::SleepTime => temps.timetosleep = value as i16,
+                _ => unreachable!(),
+            }
+            return Ok(());
+        }
+        let sprite = self
+            .world
+            .sprites
+            .get_mut(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        match member {
+            EdActorMember::Strength => {
+                sprite.extra = value as i16;
+            }
+            EdActorMember::AddStrength => {
+                sprite.extra = sprite.extra.wrapping_add(value as i16);
+            }
+            EdActorMember::Cstat => {
+                sprite.cstat = value as i16 as u16;
+            }
+            EdActorMember::CstatOr => {
+                sprite.cstat |= value as i16 as u16;
+            }
+            EdActorMember::Tile => {
+                sprite.picnum = value as i16;
+                if let Some(mirror) = self.picnum.get_mut(index) {
+                    *mirror = sprite.picnum;
+                }
+            }
+            EdActorMember::Palette => {
+                sprite.pal = value as u8;
+            }
+            EdActorMember::ClipDistance => {
+                sprite.clipdist = value as i16 as u8;
+            }
+            EdActorMember::Count | EdActorMember::SleepTime => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn add_actor_kills(
+        &mut self,
+        player: i32,
+        actor: i32,
+        amount: i32,
+    ) -> Result<(), EdukeVmError> {
+        Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let player_index = if player == 0 {
+            None
+        } else {
+            Some(Self::checked_id(
+                EdStructKind::Player,
+                player,
+                self.coop_players.len().saturating_add(1),
+            )?)
+        };
+        self.actor_temps_mut(actor)?.actorstayput = -1;
+        if let Some(player_index) = player_index {
+            let player = self.coop_players.get_mut(player_index - 1).ok_or(
+                EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: player,
+                },
+            )?;
+            player.actors_killed = player.actors_killed.wrapping_add(amount as u8);
+        } else {
+            self.player.actors_killed = self.player.actors_killed.wrapping_add(amount as u8);
+        }
+        Ok(())
+    }
+
+    fn restore_actor_palette(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let picnum = self
+            .world
+            .sprites
+            .get(index)
+            .map(|sprite| sprite.picnum)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        let last_palette = self.actor_temps_mut(actor)?.tempang;
+        self.actor_temps_mut(actor)?.tempang = 0;
+        if picnum != 1405 {
+            self.world.sprites[index].pal = last_palette as u8;
+        }
+        Ok(())
+    }
+
+    fn set_actor_size_to(
+        &mut self,
+        actor: i32,
+        target_x: i32,
+        target_y: i32,
+    ) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        self.actor_temps_mut(actor)?;
+        let sprite = self
+            .world
+            .sprites
+            .get(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        let mut xrepeat = i32::from(sprite.xrepeat);
+        let mut yrepeat = i32::from(sprite.yrepeat);
+        let picnum = sprite.picnum;
+        let (hit_floorz, hit_ceilingz) = self
+            .actor_temps
+            .get(index)
+            .map_or((0, 0), |temps| (temps.hit_floorz, temps.hit_ceilingz));
+        let tile_height = self
+            .tile_meta
+            .get(usize::try_from(picnum).unwrap_or(usize::MAX))
+            .map_or(0, |meta| i32::from(meta.height));
+        let x_step = target_x.wrapping_sub(xrepeat).wrapping_mul(2).signum();
+        xrepeat = xrepeat.saturating_add(x_step);
+        if (picnum == 1405 && yrepeat < 36)
+            || target_y < yrepeat
+            || yrepeat
+                .saturating_mul(tile_height.saturating_add(8))
+                .saturating_mul(4)
+                < hit_floorz.saturating_sub(hit_ceilingz)
+        {
+            let y_step = target_y.wrapping_sub(yrepeat).wrapping_mul(2).signum();
+            yrepeat = yrepeat.saturating_add(y_step);
+        }
+        let sprite = self
+            .world
+            .sprites
+            .get_mut(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        sprite.xrepeat = xrepeat as u8;
+        sprite.yrepeat = yrepeat as u8;
+        Ok(())
+    }
+
+    fn fall_actor(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        self.actor_temps_mut(actor)?;
+        let peers = self.world.sprites.clone();
+        let mut sprite = peers
+            .get(index)
+            .copied()
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        crate::spawn::con_fall(
+            &mut sprite,
+            &self.world.sectors,
+            &self.world.walls,
+            &peers[..],
+            self.tile_meta,
+            DUKE_GC,
+            &mut self.actor_temps[index],
+        );
+        self.world.sprites[index] = sprite;
+        Ok(())
+    }
+
+    fn reset_actor_counter(&mut self, actor: i32, action: bool) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let temps = self.actor_temps_mut(actor)?;
+        temps.g_t[if action { 2 } else { 0 }] = 0;
+        Ok(())
+    }
+
+    fn set_actor_size(&mut self, actor: i32, x: i32, y: i32) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let sprite = self
+            .world
+            .sprites
+            .get_mut(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+        sprite.xrepeat = x as u8;
+        sprite.yrepeat = y as u8;
+        Ok(())
+    }
+
+    fn set_actor_action(&mut self, actor: i32, action: i32) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let temps = self.actor_temps_mut(actor)?;
+        temps.g_t[2] = 0;
+        temps.g_t[3] = 0;
+        temps.g_t[4] = if action == 2048 { 0 } else { action };
+        if temps.g_t[4] > 0 {
+            temps.script_pointer_mask |= 2;
+        } else {
+            temps.script_pointer_mask &= !2;
+        }
+        Ok(())
+    }
+
+    fn set_actor_move(
+        &mut self,
+        actor: i32,
+        movement: i32,
+        flags: i32,
+    ) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let pending_ang = if flags & 8 != 0 {
+            Some((krand_step(self.randomseed) & 2047) as i16)
+        } else {
+            None
+        };
+        let temps = self.actor_temps_mut(actor)?;
+        temps.g_t[0] = 0;
+        temps.g_t[1] = movement;
+        if movement > 0 {
+            temps.script_pointer_mask |= 1;
+        } else {
+            temps.script_pointer_mask &= !1;
+        }
+        if let Some(angle) = pending_ang {
+            temps.pending_ang = Some(angle);
+        }
+        self.world
+            .sprites
+            .get_mut(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?
+            .hitag = flags as i16;
+        Ok(())
+    }
+
+    fn set_actor_ai(&mut self, actor: i32, ai: i32) -> Result<(), EdukeVmError> {
+        if actor < 0 {
+            return Ok(());
+        }
+        let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let temps = self.actor_temps_mut(actor)?;
+        temps.g_t[5] = ai;
+        if ai > 0 {
+            temps.script_pointer_mask |= 4;
+        } else {
+            temps.script_pointer_mask &= !4;
+        }
+        if ai > 0 {
+            let ai_index = usize::try_from(ai).unwrap_or(usize::MAX);
+            let action = self.script.script.get(ai_index).copied().unwrap_or(0);
+            let movement = ai_index
+                .checked_add(1)
+                .and_then(|offset| self.script.script.get(offset))
+                .copied()
+                .unwrap_or(0);
+            let flags = ai_index
+                .checked_add(2)
+                .and_then(|offset| self.script.script.get(offset))
+                .copied()
+                .unwrap_or(0);
+            let pending_ang = if flags & 8 != 0 {
+                Some((krand_step(self.randomseed) & 2047) as i16)
+            } else {
+                None
+            };
+            let temps = self.actor_temps_mut(actor)?;
+            temps.g_t[4] = action;
+            temps.g_t[1] = movement;
+            if action > 0 {
+                temps.script_pointer_mask |= 2;
+            } else {
+                temps.script_pointer_mask &= !2;
+            }
+            if movement > 0 {
+                temps.script_pointer_mask |= 1;
+            } else {
+                temps.script_pointer_mask &= !1;
+            }
+            if let Some(angle) = pending_ang {
+                temps.pending_ang = Some(angle);
+            }
+            self.world
+                .sprites
+                .get_mut(index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?
+                .hitag = flags as i16;
+        }
+        let temps = self.actor_temps_mut(actor)?;
+        temps.g_t[0] = 0;
+        temps.g_t[2] = 0;
+        temps.g_t[3] = 0;
+        Ok(())
+    }
+
+    fn current_actor(&mut self) -> Option<i32> {
+        Some(self.userdef.vm_sprite)
+    }
+
+    fn predefined_variable(&mut self, name: &str) -> Option<i32> {
+        match name {
+            "numsectors" | "NUMSECTORS" => Some(i32::from(self.world.numsectors)),
+            "NUMWALLS" => Some(i32::from(self.world.numwalls)),
+            "totalclock" => Some(self.userdef.totalclock),
+            // EDuke32 exposes getticks as an unsynchronized wall clock.
+            // Room derives the same millisecond scale from its deterministic
+            // 120 Hz Build clock so script reads remain replay-safe.
+            "getticks" => {
+                Some((u64::from(self.userdef.totalclock as u32) * 1000 / 120) as u32 as i32)
+            }
+            "Numsprites" => Some(
+                i32::try_from(
+                    self.world
+                        .lists
+                        .sprite_stat
+                        .iter()
+                        .filter(|&&status| status != MAXSTATUS as i16)
+                        .count(),
+                )
+                .unwrap_or(i32::MAX),
+            ),
+            "RESPAWN_MONSTERS" => Some(self.userdef.respawn_monsters),
+            "RESPAWN_ITEMS" => Some(self.userdef.respawn_items),
+            "RESPAWN_INVENTORY" => Some(self.userdef.respawn_inventory),
+            _ => None,
+        }
+    }
+
+    fn set_predefined_variable(&mut self, name: &str, value: i32) -> bool {
+        match name {
+            "RESPAWN_MONSTERS" => self.userdef.respawn_monsters = value,
+            "RESPAWN_ITEMS" => self.userdef.respawn_items = value,
+            "RESPAWN_INVENTORY" => self.userdef.respawn_inventory = value,
+            _ => return false,
+        }
+        true
+    }
+
+    fn get_slope_z(&mut self, sector: i32, x: i32, y: i32) -> Result<(i32, i32), EdukeVmError> {
+        let extent = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        let index = Self::checked_id(EdStructKind::Sector, sector, extent)?;
+        let (sectors, walls) = self.world_geometry(&sector.to_string())?;
+        let sector_id = i16::try_from(index).map_err(|_| EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Sector,
+            id: sector,
+        })?;
+        Ok(room_build_engine::geom::getzsofslope(
+            sector_id, x, y, &sectors, &walls,
+        ))
+    }
+
+    fn sector_of_wall(&mut self, wall: i32) -> Result<i32, EdukeVmError> {
+        if wall < 0 {
+            return Ok(-1);
+        }
+        let sector_count = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        for (sector_id, sector) in self.world.sectors.iter().take(sector_count).enumerate() {
+            let start = i32::from(sector.wallptr);
+            let end = start + i32::from(sector.wallnum);
+            if start <= wall && wall < end {
+                return i32::try_from(sector_id).map_err(|_| EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Sector,
+                    id: i32::MAX,
+                });
+            }
+        }
+        Ok(-1)
+    }
+
+    fn get_z_range(
+        &mut self,
+        point: [i32; 4],
+        wall_distance: i32,
+        clipmask: u32,
+    ) -> Result<[i32; 4], EdukeVmError> {
+        let (sectors, walls) = self.world_geometry("getzrange")?;
+        let active_count = self
+            .world
+            .lists
+            .sprite_stat
+            .iter()
+            .filter(|&&status| status != MAXSTATUS as i16)
+            .count();
+        let mut sprites = Vec::new();
+        sprites
+            .try_reserve_exact(active_count)
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 getzrange sprites",
+                name: "active sprites".to_owned(),
+            })?;
+        sprites.extend(
+            self.world
+                .sprites
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| self.world.lists.sprite_stat[*index] != MAXSTATUS as i16)
+                .map(|(_, sprite)| crate::player::sprite_z_clip(sprite, self.tile_meta)),
+        );
+        let sector = i16::try_from(point[3]).unwrap_or(-1);
+        let range = room_build_engine::geom::getzrange_with_sprites(
+            point[0],
+            point[1],
+            point[2],
+            sector,
+            wall_distance,
+            clipmask,
+            &sectors,
+            &walls,
+            &sprites,
+        );
+        Ok([range.ceilz, range.ceilhit, range.florz, range.florhit])
+    }
+
+    fn can_see(&mut self, start: [i32; 4], end: [i32; 4]) -> Result<bool, EdukeVmError> {
+        let (sectors, walls) = self.world_geometry("cansee")?;
+        let (Ok(start_sector), Ok(end_sector)) = (i16::try_from(start[3]), i16::try_from(end[3]))
+        else {
+            return Ok(false);
+        };
+        Ok(room_build_engine::geom::cansee(
+            start[0],
+            start[1],
+            start[2],
+            start_sector,
+            end[0],
+            end[1],
+            end[2],
+            end_sector,
+            &sectors,
+            &walls,
+        ))
+    }
+
+    fn actor_seen_by_player(&mut self, actor: usize) -> Result<(), EdukeVmError> {
+        let id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let temps = self
+            .actor_temps
+            .get_mut(actor)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id,
+            })?;
+        temps.timetosleep = crate::fta::SLEEPTIME;
+        Ok(())
+    }
+
+    fn actor_can_shoot_target(
+        &mut self,
+        _player: usize,
+        actor: usize,
+    ) -> Result<bool, EdukeVmError> {
+        let actor_id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor_id, MAXSPRITES)?;
+        let sprite = *self
+            .world
+            .sprites
+            .get(actor_index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor_id,
+            })?;
+        if self.player_distance(actor_id)? <= 1024 {
+            return Ok(true);
+        }
+
+        let actor_is_badguy =
+            crate::badguy::badguy_pic(sprite.picnum, self.script.actortype.as_slice());
+        let (clip_distance, angle_offset) = if actor_is_badguy && sprite.xrepeat > 56 {
+            (3084, 48)
+        } else {
+            (768, 16)
+        };
+        let is_same_actor_type = |hit_sprite: i16, sprites: &[SpriteT]| {
+            usize::try_from(hit_sprite)
+                .ok()
+                .and_then(|index| sprites.get(index))
+                .is_some_and(|hit| hit.picnum == sprite.picnum)
+        };
+
+        let first = self.actor_fire_ray(sprite, sprite.ang, actor_is_badguy)?;
+        if first.2 {
+            return Ok(true);
+        }
+        if first.0 <= clip_distance || is_same_actor_type(first.1, &self.world.sprites[..]) {
+            return Ok(false);
+        }
+        let second = self.actor_fire_ray(
+            sprite,
+            sprite.ang.wrapping_add(angle_offset),
+            actor_is_badguy,
+        )?;
+        if second.0 <= clip_distance || is_same_actor_type(second.1, &self.world.sprites[..]) {
+            return Ok(false);
+        }
+        let third = self.actor_fire_ray(
+            sprite,
+            sprite.ang.wrapping_sub(angle_offset),
+            actor_is_badguy,
+        )?;
+        Ok(third.0 > 768 && !is_same_actor_type(third.1, &self.world.sprites[..]))
+    }
+
+    fn actor_bullet_near(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let actor_id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor_id, MAXSPRITES)?;
+        let actor_sprite =
+            *self
+                .world
+                .sprites
+                .get(actor_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor_id,
+                })?;
+        let (actor_sin, actor_cos) = sincos_q14(i32::from(actor_sprite.ang) & 2047);
+        let threatened = self
+            .world
+            .sprites
+            .iter()
+            .enumerate()
+            .any(|(index, projectile)| {
+                if self.world.lists.sprite_stat[index] != crate::stat::STAT_PROJECTILE
+                    || projectile.owner == actor_id as i16
+                    || projectile.sectnum != actor_sprite.sectnum
+                {
+                    return false;
+                }
+                let dx = projectile.x.wrapping_sub(actor_sprite.x);
+                let dy = projectile.y.wrapping_sub(actor_sprite.y);
+                let (bullet_sin, bullet_cos) = sincos_q14(i32::from(projectile.ang) & 2047);
+                let actor_forward = actor_cos
+                    .wrapping_mul(dx)
+                    .wrapping_add(actor_sin.wrapping_mul(dy));
+                let bullet_toward_actor = bullet_cos
+                    .wrapping_mul(dx)
+                    .wrapping_add(bullet_sin.wrapping_mul(dy));
+                let cross = bullet_cos
+                    .wrapping_mul(dy)
+                    .wrapping_sub(bullet_sin.wrapping_mul(dx));
+                actor_forward >= 0 && bullet_toward_actor < 0 && cross.wrapping_abs() < 65_536 * 64
+            });
+        if !threatened {
+            return Ok(false);
+        }
+        let random = krand_step(self.randomseed);
+        let angle = actor_sprite.ang.wrapping_sub(512 + (random & 1024) as i16);
+        self.world.sprites[actor_index].ang = angle;
+        self.actor_temps_mut(actor_id)?.pending_ang = Some(angle);
+        Ok(true)
+    }
+
+    fn actor_respawn_enabled(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let actor_id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor_id, MAXSPRITES)?;
+        let sprite = self
+            .world
+            .sprites
+            .get(actor_index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor_id,
+            })?;
+        let useractor_is_enemy = usize::try_from(sprite.picnum)
+            .ok()
+            .and_then(|tile| self.script.actortype.get(tile))
+            .is_some_and(|actor_kind| actor_kind & 0x03 != 0);
+        let enabled = if crate::badguy::badguy_pic(sprite.picnum, &[]) || useractor_is_enemy {
+            self.userdef.respawn_monsters
+        } else if matches!(sprite.picnum, 53 | 55 | 56 | 57 | 59 | 61 | 1348) {
+            self.userdef.respawn_inventory
+        } else {
+            self.userdef.respawn_items
+        };
+        Ok(enabled != 0)
+    }
+
+    fn actor_has_active_sound(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let actor = i16::try_from(actor).map_err(|_| EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Actor,
+            id: i32::try_from(actor).unwrap_or(i32::MAX),
+        })?;
+        let active_sound_owners = self
+            .active_sound_owners
+            .ok_or(EdukeVmError::StructAccessUnavailable)?;
+        Ok(active_sound_owners
+            .iter()
+            .skip(1)
+            .any(|owner| *owner == Some(actor)))
+    }
+
+    fn actor_not_stayput(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let actor_id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor_id, MAXSPRITES)?;
+        let stayput_sector = self
+            .actor_temps
+            .get(actor_index)
+            .map_or(-1, |temps| temps.actorstayput);
+        Ok(stayput_sector == -1)
+    }
+
+    fn actor_weapon_reservation(
+        &mut self,
+        player: usize,
+        actor: usize,
+        register: bool,
+    ) -> Result<bool, EdukeVmError> {
+        let actor_id = i32::try_from(actor).unwrap_or(i32::MAX);
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor_id, MAXSPRITES)?;
+        let sprite = *self
+            .world
+            .sprites
+            .get(actor_index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor_id,
+            })?;
+        if self.coop_players.is_empty() {
+            return Ok(false);
+        }
+        let player_id = i32::try_from(player).unwrap_or(i32::MAX);
+        let active_player = if player == 0 {
+            &mut *self.player
+        } else {
+            self.coop_players
+                .get_mut(player - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: player_id,
+                })?
+        };
+        if !active_player.coop_mode {
+            return Ok(false);
+        }
+        if register {
+            let count = usize::from(active_player.weapon_reservation_count)
+                .min(active_player.weapon_reservations.len());
+            if count < active_player.weapon_reservations.len() {
+                active_player.weapon_reservations[count] = sprite.picnum;
+                active_player.weapon_reservation_count = u8::try_from(count + 1).unwrap_or(u8::MAX);
+            }
+            Ok(sprite.owner == actor_id as i16)
+        } else {
+            let count = usize::from(active_player.weapon_reservation_count)
+                .min(active_player.weapon_reservations.len());
+            Ok(
+                active_player.weapon_reservations[..count].contains(&sprite.picnum)
+                    && sprite.owner == actor_id as i16,
+            )
+        }
+    }
+
+    fn hit_scan(
+        &mut self,
+        origin: [i32; 4],
+        vector: [i32; 3],
+        clipmask: u32,
+    ) -> Result<[i32; 6], EdukeVmError> {
+        let (sector_z, walls) = self.world_geometry("hitscan")?;
+        let Ok(start_sector) = i16::try_from(origin[3]) else {
+            return Ok([-1, -1, -1, 0, 0, 0]);
+        };
+        let sectors: Vec<_> = sector_z
+            .iter()
+            .copied()
+            .map(|sector| sector.walls())
+            .collect();
+        let mut sprite_hits = Vec::new();
+        sprite_hits
+            .try_reserve_exact(MAXSPRITES)
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 hitscan sprites",
+                name: "hitscan".to_owned(),
+            })?;
+        for (index, sprite) in self.world.sprites.iter().enumerate() {
+            let active = self.world.lists.sprite_stat[index] != MAXSTATUS as i16;
+            let meta = self
+                .tile_meta
+                .get(sprite.picnum.max(0) as usize)
+                .copied()
+                .unwrap_or_default();
+            let z = sprite.z.wrapping_sub(
+                i32::from(meta.y_offset)
+                    .wrapping_mul(i32::from(sprite.yrepeat))
+                    .wrapping_mul(4),
+            );
+            sprite_hits.push(room_build_engine::geom::SpriteHit {
+                x: sprite.x,
+                y: sprite.y,
+                z,
+                sectnum: if active { sprite.sectnum } else { -1 },
+                clipdist: i32::from(sprite.clipdist) << 2,
+                cstat: if active { sprite.cstat } else { 0 },
+                face_span: i32::from(meta.width) * i32::from(sprite.xrepeat),
+                face_height: (i32::from(meta.height) * i32::from(sprite.yrepeat)) << 2,
+            });
+        }
+        let hit = room_build_engine::geom::hitscan_full(
+            origin[0],
+            origin[1],
+            origin[2],
+            start_sector,
+            vector[0],
+            vector[1],
+            vector[2],
+            clipmask,
+            &sectors,
+            &walls,
+            &sprite_hits,
+            Some(&sector_z),
+        );
+        Ok([
+            i32::from(hit.hitsect),
+            i32::from(hit.hitwall),
+            i32::from(hit.hitsprite),
+            hit.hitx,
+            hit.hity,
+            hit.hitz,
+        ])
+    }
+
+    fn active_sprite_ids(&mut self) -> Result<Vec<i32>, EdukeVmError> {
+        let active_count = self
+            .world
+            .lists
+            .sprite_stat
+            .iter()
+            .filter(|&&status| status != MAXSTATUS as i16)
+            .count();
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(active_count)
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 sprite iterator",
+                name: "allsprites".to_owned(),
+            })?;
+        // Sprite slots are the stable iterator order used by Build's fixed
+        // MAXSPRITES table; take a per-loop snapshot so spawns do not extend
+        // the current traversal.
+        ids.extend(
+            self.world
+                .lists
+                .sprite_stat
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &status)| {
+                    (status != MAXSTATUS as i16).then_some(index as i32)
+                }),
+        );
+        Ok(ids)
+    }
+
+    fn update_sector(
+        &mut self,
+        hint: i32,
+        x: i32,
+        y: i32,
+        z: Option<i32>,
+    ) -> Result<i32, EdukeVmError> {
+        let (sectors_z, walls) = self.world_geometry("updatesector")?;
+        let mut sectors = Vec::new();
+        sectors
+            .try_reserve_exact(sectors_z.len())
+            .map_err(|_| EdukeVmError::AllocationFailed {
+                kind: "EDuke32 sector geometry",
+                name: "updatesector".to_owned(),
+            })?;
+        sectors.extend(sectors_z.iter().map(|sector| sector.walls()));
+
+        let contains_point = |index: usize| -> Option<i16> {
+            let sector_id = i16::try_from(index).ok()?;
+            if !room_build_engine::geom::inside(x, y, sector_id, &sectors, &walls) {
+                return None;
+            }
+            if let Some(z) = z {
+                let (floor_z, ceiling_z) =
+                    room_build_engine::geom::getzsofslope(sector_id, x, y, &sectors_z, &walls);
+                if z < ceiling_z || z > floor_z {
+                    return None;
+                }
+            }
+            Some(sector_id)
+        };
+
+        // Build searches the hint first, then its linked portal neighbours,
+        // then all sectors in index order. Keep that ordering for overlapping
+        // polygons and use it as the tie-break for stacked sectors.
+        if let Ok(hint_index) = usize::try_from(hint) {
+            if hint_index < sectors.len() {
+                if let Some(sector_id) = contains_point(hint_index) {
+                    return Ok(i32::from(sector_id));
+                }
+
+                let sector = sectors[hint_index];
+                let start = usize::try_from(sector.wallptr).unwrap_or(0);
+                let end = start
+                    .saturating_add(usize::try_from(sector.wallnum).unwrap_or(0))
+                    .min(walls.len());
+                for wall in walls.iter().take(end).skip(start) {
+                    let neighbour = wall.nextsector;
+                    if neighbour < 0 || neighbour as usize == hint_index {
+                        continue;
+                    }
+                    if let Some(sector_id) = contains_point(neighbour as usize) {
+                        return Ok(i32::from(sector_id));
+                    }
+                }
+            }
+        }
+
+        for index in 0..sectors.len() {
+            if Some(index) == usize::try_from(hint).ok() {
+                continue;
+            }
+            if let Some(sector_id) = contains_point(index) {
+                return Ok(i32::from(sector_id));
+            }
+        }
+        Ok(-1)
+    }
+
+    fn sprite_distance(
+        &mut self,
+        first: i32,
+        second: i32,
+        three_dimensional: bool,
+    ) -> Result<i32, EdukeVmError> {
+        let first_index = Self::checked_id(EdStructKind::Actor, first, MAXSPRITES)?;
+        let second_index = Self::checked_id(EdStructKind::Actor, second, MAXSPRITES)?;
+        let first_sprite =
+            self.world
+                .sprites
+                .get(first_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: first,
+                })?;
+        let second_sprite =
+            self.world
+                .sprites
+                .get(second_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: second,
+                })?;
+        if three_dimensional {
+            Ok(room_build_engine::numeric::find_distance_3d(
+                first_sprite.x.wrapping_sub(second_sprite.x),
+                first_sprite.y.wrapping_sub(second_sprite.y),
+                first_sprite.z.wrapping_sub(second_sprite.z) >> 4,
+            ))
+        } else {
+            Ok(crate::shoot::ldist(first_sprite, second_sprite))
+        }
+    }
+
+    fn player_distance(&mut self, actor: i32) -> Result<i32, EdukeVmError> {
+        let actor_index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let actor_sprite =
+            *self
+                .world
+                .sprites
+                .get(actor_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: actor,
+                })?;
+        let mut nearest = i32::MAX;
+        for player in std::iter::once(&*self.player).chain(self.coop_players.iter()) {
+            if player.sprite_i < 0 {
+                continue;
+            }
+            // EDuke32's `findplayer` distance (`g_x`) uses previous position
+            // and adds vertical separation in 1/16 Build-unit steps.
+            let dx = room_build_engine::numeric::klabs(player.oposx.wrapping_sub(actor_sprite.x));
+            let dy = room_build_engine::numeric::klabs(player.oposy.wrapping_sub(actor_sprite.y));
+            let dz = room_build_engine::numeric::klabs(
+                player
+                    .oposz
+                    .wrapping_sub(actor_sprite.z)
+                    .wrapping_add(28 << 8),
+            ) >> 4;
+            nearest = nearest.min(dx.wrapping_add(dy).wrapping_add(dz));
+        }
+        Ok(nearest)
+    }
+
+    fn player_inventory_condition(
+        &mut self,
+        item: i32,
+        amount: i32,
+        player_index: usize,
+        actor_index: usize,
+    ) -> Result<bool, EdukeVmError> {
+        let actor_sprite =
+            self.world
+                .sprites
+                .get(actor_index)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: i32::try_from(actor_index).unwrap_or(i32::MAX),
+                })?;
+        let mut nearest_player = None;
+        let mut nearest_distance = i32::MAX;
+        for (index, candidate) in std::iter::once(&*self.player)
+            .chain(self.coop_players.iter())
+            .enumerate()
+        {
+            if candidate.sprite_i < 0 {
+                continue;
+            }
+            let distance =
+                room_build_engine::numeric::klabs(candidate.oposx.wrapping_sub(actor_sprite.x))
+                    .wrapping_add(room_build_engine::numeric::klabs(
+                        candidate.oposy.wrapping_sub(actor_sprite.y),
+                    ))
+                    .wrapping_add(
+                        room_build_engine::numeric::klabs(
+                            candidate
+                                .oposz
+                                .wrapping_sub(actor_sprite.z)
+                                .wrapping_add(28 << 8),
+                        ) >> 4,
+                    );
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_player = Some(index);
+            }
+        }
+        let selected_player = nearest_player.unwrap_or(player_index);
+        let player = if selected_player == 0 {
+            &*self.player
+        } else {
+            self.coop_players
+                .get(selected_player.saturating_sub(1))
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(selected_player).unwrap_or(i32::MAX),
+                })?
+        };
+        let actual = match item {
+            0 => i32::from(player.steroids_amount),
+            1 => i32::from(player.shield_amount),
+            2 => i32::from(player.scuba_amount),
+            3 => i32::from(player.holoduke_amount),
+            4 => i32::from(player.jetpack_amount),
+            6 => {
+                let key_mask = match actor_sprite.pal {
+                    0 => 1,
+                    21 => 2,
+                    23 => 4,
+                    _ => 0,
+                };
+                return Ok(key_mask != 0 && i32::from(player.got_access) & key_mask != 0);
+            }
+            7 => i32::from(player.heat_amount),
+            9 => i32::from(player.firstaid_amount),
+            10 => i32::from(player.boot_amount),
+            _ => return Ok(false),
+        };
+        Ok(actual != amount)
+    }
+
+    fn if_player(
+        &mut self,
+        flags: i32,
+        player_index: usize,
+        actor: usize,
+    ) -> Result<bool, EdukeVmError> {
+        let player = if player_index == 0 {
+            &*self.player
+        } else {
+            self.coop_players
+                .get(player_index - 1)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    id: i32::try_from(player_index).unwrap_or(i32::MAX),
+                })?
+        };
+        let actor_sprite = self
+            .world
+            .sprites
+            .get(actor)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::try_from(actor).unwrap_or(i32::MAX),
+            })?;
+        let player_sprite = if player.sprite_i >= 0 {
+            self.world.sprites.get(player.sprite_i as usize)
+        } else {
+            None
+        };
+        let input_bits = self.inputs.get(player_index).map_or(0, |input| input.bits);
+        let actor_speed = i32::from(actor_sprite.xvel);
+
+        if flags & 8 != 0 && player.on_ground && input_bits & 2 != 0 {
+            return Ok(true);
+        }
+        if flags & 16 != 0
+            && player.jumping_counter == 0
+            && !player.on_ground
+            && player.poszv > 2048
+        {
+            return Ok(true);
+        }
+        if flags & 32 != 0 && player.jumping_counter > 348 {
+            return Ok(true);
+        }
+        if flags & 1 != 0 && (0..8).contains(&actor_speed) {
+            return Ok(true);
+        }
+        if flags & 2 != 0 && actor_speed >= 8 && input_bits & (1 << 5) == 0 {
+            return Ok(true);
+        }
+        if flags & 4 != 0 && actor_speed >= 8 && input_bits & (1 << 5) != 0 {
+            return Ok(true);
+        }
+        if flags & 64 != 0 && player.posz < actor_sprite.z.wrapping_sub(48 << 8) {
+            return Ok(true);
+        }
+        if flags & 128 != 0 && actor_speed <= -8 && input_bits & (1 << 5) == 0 {
+            return Ok(true);
+        }
+        if flags & 256 != 0 && actor_speed <= -8 && input_bits & (1 << 5) != 0 {
+            return Ok(true);
+        }
+        if flags & 512 != 0
+            && (player.quick_kick > 0 || (player.curr_weapon == 0 && player.kickback_pic > 0))
+        {
+            return Ok(true);
+        }
+        if flags & 1024 != 0 && player_sprite.is_some_and(|sprite| sprite.xrepeat < 32) {
+            return Ok(true);
+        }
+        if flags & 2048 != 0 && player.jetpack_on != 0 {
+            return Ok(true);
+        }
+        if flags & 4096 != 0 && player.steroids_amount > 0 {
+            return Ok(true);
+        }
+        if flags & 8192 != 0 && player.on_ground {
+            return Ok(true);
+        }
+        if flags & 16384 != 0
+            && player_sprite.is_some_and(|sprite| sprite.xrepeat > 32)
+            && player.extra > 0
+            && player.time_before_exit == 0
+        {
+            return Ok(true);
+        }
+        if flags & 32768 != 0 && player.extra <= 0 {
+            return Ok(true);
+        }
+        if flags & 65536 != 0 {
+            let goal = room_build_engine::helpers::getangle(
+                actor_sprite.x.wrapping_sub(player.posx),
+                actor_sprite.y.wrapping_sub(player.posy),
+            );
+            let delta = (goal - i32::from(player.ang) + 1024).rem_euclid(2048) - 1024;
+            if delta > -128 && delta < 128 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn player_input_bits(&mut self, player: usize) -> Result<u32, EdukeVmError> {
+        if player >= crate::con::EDUKE_MAXPLAYERS {
+            return Err(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Player,
+                id: i32::try_from(player).unwrap_or(i32::MAX),
+            });
+        }
+        Ok(self.inputs.get(player).map_or(0, |input| input.bits))
+    }
+
+    fn actor_squished(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let actor_sprite = *self
+            .world
+            .sprites
+            .get(actor)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::try_from(actor).unwrap_or(i32::MAX),
+            })?;
+        let sector_id = actor_sprite.sectnum;
+        let sector = usize::try_from(sector_id)
+            .ok()
+            .and_then(|index| self.world.sectors.get(index))
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Sector,
+                id: i32::from(sector_id),
+            })?;
+        if sector.lotag == 23 {
+            return Ok(false);
+        }
+
+        let gap = sector.floorz.wrapping_sub(sector.ceilingz);
+        let palette_one = actor_sprite.pal == 1;
+        let squished = if palette_one {
+            i32::from(sector.lotag) & 32_768 == 0 && gap < (32 << 8)
+        } else {
+            gap < (12 << 8)
+        };
+        if squished && palette_one {
+            let temps = self
+                .actor_temps
+                .get_mut(actor)
+                .ok_or(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: i32::try_from(actor).unwrap_or(i32::MAX),
+                })?;
+            temps.hit_picnum = crate::shoot::SHOTSPARK1;
+            temps.hit_extra = 1;
+            return Ok(false);
+        }
+        Ok(squished)
+    }
+
+    fn actor_hit_by_weapon(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
+        let sprite = *self
+            .world
+            .sprites
+            .get(actor)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::try_from(actor).unwrap_or(i32::MAX),
+            })?;
+        let temps = self
+            .actor_temps
+            .get(actor)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::try_from(actor).unwrap_or(i32::MAX),
+            })?;
+        let hit_extra = temps.hit_extra;
+        let hit_picnum = temps.hit_picnum;
+
+        if hit_extra < 0 || sprite.extra < 0 || sprite.picnum == crate::spawn::APLAYER {
+            self.actor_temps[actor].hit_extra = -1;
+            return Ok(false);
+        }
+        if hit_extra == 0 && hit_picnum == 1646 && sprite.xrepeat < 24 {
+            // Shrink hits against tiny actors remain queued for the next probe,
+            // matching the vanilla early-out before hittype.extra is cleared.
+            return Ok(false);
+        }
+
+        self.world.sprites[actor].extra = sprite.extra.saturating_sub(hit_extra);
+        self.actor_temps[actor].hit_extra = -1;
+        Ok(hit_picnum >= 0)
+    }
+
+    fn read_sprite_list(
+        &mut self,
+        kind: EdSpriteListKind,
+        index: i32,
+    ) -> Result<i32, EdukeVmError> {
+        let list_index = usize::try_from(index).map_err(|_| EdukeVmError::IndexOutOfBounds {
+            kind: "sprite list",
+            name: format!("{kind:?}"),
+            index: usize::MAX,
+            extent: match kind {
+                EdSpriteListKind::HeadStatus => MAXSTATUS + 1,
+                EdSpriteListKind::HeadSector => MAXSECTORS,
+                EdSpriteListKind::NextStatus | EdSpriteListKind::NextSector => MAXSPRITES,
+            },
+        })?;
+        let invalid_index = |extent| EdukeVmError::IndexOutOfBounds {
+            kind: "sprite list",
+            name: format!("{kind:?}"),
+            index: list_index,
+            extent,
+        };
+        let sprite = match kind {
+            EdSpriteListKind::HeadStatus => *self
+                .world
+                .lists
+                .headspritestat
+                .get(list_index)
+                .ok_or_else(|| invalid_index(MAXSTATUS + 1))?,
+            EdSpriteListKind::NextStatus => *self
+                .world
+                .lists
+                .nextspritestat
+                .get(list_index)
+                .ok_or_else(|| invalid_index(MAXSPRITES))?,
+            EdSpriteListKind::HeadSector => {
+                let extent = usize::try_from(self.world.numsectors).unwrap_or(0);
+                if list_index >= extent {
+                    return Err(invalid_index(extent));
+                }
+                *self
+                    .world
+                    .lists
+                    .headspritesect
+                    .get(list_index)
+                    .ok_or_else(|| invalid_index(MAXSECTORS + 1))?
+            }
+            EdSpriteListKind::NextSector => *self
+                .world
+                .lists
+                .nextspritesect
+                .get(list_index)
+                .ok_or_else(|| invalid_index(MAXSPRITES))?,
+        };
+        Ok(i32::from(sprite))
+    }
+
+    fn change_sprite_list(
+        &mut self,
+        sprite: i32,
+        index: i32,
+        status: bool,
+    ) -> Result<(), EdukeVmError> {
+        let sprite_index = Self::checked_id(EdStructKind::Actor, sprite, MAXSPRITES)?;
+        let sprite_id = i16::try_from(sprite_index).map_err(|_| EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Actor,
+            id: sprite,
+        })?;
+        if status {
+            let status_index =
+                usize::try_from(index).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite status",
+                    name: "changespritestat".to_owned(),
+                    index: usize::MAX,
+                    extent: MAXSTATUS,
+                })?;
+            if status_index >= MAXSTATUS {
+                return Err(EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite status",
+                    name: "changespritestat".to_owned(),
+                    index: status_index,
+                    extent: MAXSTATUS,
+                });
+            }
+            let status_id =
+                i16::try_from(status_index).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite status",
+                    name: "changespritestat".to_owned(),
+                    index: status_index,
+                    extent: MAXSTATUS,
+                })?;
+            if !self.world.lists.changespritestat(sprite_id, status_id) {
+                return Err(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: sprite,
+                });
+            }
+            self.world.sprites[sprite_index].statnum = status_id;
+        } else {
+            let sector_extent = usize::try_from(self.world.numsectors).unwrap_or(0);
+            let sector_index =
+                usize::try_from(index).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite sector",
+                    name: "changespritesect".to_owned(),
+                    index: usize::MAX,
+                    extent: sector_extent,
+                })?;
+            if sector_index >= sector_extent {
+                return Err(EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite sector",
+                    name: "changespritesect".to_owned(),
+                    index: sector_index,
+                    extent: sector_extent,
+                });
+            }
+            let sector_id =
+                i16::try_from(sector_index).map_err(|_| EdukeVmError::IndexOutOfBounds {
+                    kind: "sprite sector",
+                    name: "changespritesect".to_owned(),
+                    index: sector_index,
+                    extent: sector_extent,
+                })?;
+            if !self.world.lists.changespritesect(sprite_id, sector_id) {
+                return Err(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: sprite,
+                });
+            }
+            self.world.sprites[sprite_index].sectnum = sector_id;
+        }
+        Ok(())
+    }
+
+    fn set_sprite_position(
+        &mut self,
+        sprite: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<(), EdukeVmError> {
+        let sprite_index = Self::checked_id(EdStructKind::Actor, sprite, MAXSPRITES)?;
+        if self.world.lists.sprite_stat[sprite_index] == MAXSTATUS as i16 {
+            return Err(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: sprite,
+            });
+        }
+        let old_sector = i32::from(self.world.lists.sprite_sect[sprite_index]);
+        let new_sector = self.update_sector(old_sector, x, y, Some(z))?;
+        if new_sector >= 0 {
+            let sector_id =
+                i16::try_from(new_sector).map_err(|_| EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Sector,
+                    id: new_sector,
+                })?;
+            if !self
+                .world
+                .lists
+                .changespritesect(sprite_index as i16, sector_id)
+            {
+                return Err(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: sprite,
+                });
+            }
+            self.world.sprites[sprite_index].sectnum = sector_id;
+        }
+        let target = &mut self.world.sprites[sprite_index];
+        target.x = x;
+        target.y = y;
+        target.z = z;
+        Ok(())
+    }
+
+    fn spawn_actor(&mut self, parent: i32, tile: i32) -> Result<i32, EdukeVmError> {
+        let (Ok(parent_id), Ok(tile_id)) = (i16::try_from(parent), i16::try_from(tile)) else {
+            return Ok(-1);
+        };
+        let numsectors = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        let numwalls = usize::try_from(self.world.numwalls)
+            .unwrap_or(0)
+            .min(self.world.walls.len());
+        let child = crate::spawn_rt::spawn_from(
+            &mut self.world.lists,
+            self.world.sprites.as_mut(),
+            &self.world.sectors[..numsectors],
+            &self.world.walls[..numwalls],
+            self.picnum,
+            self.actor_temps,
+            self.tile_meta,
+            self.script,
+            self.randomseed,
+            parent_id,
+            tile_id,
+        );
+        if child >= 0 {
+            self.spawned_actor_ids.push(i32::from(child));
+        }
+        Ok(i32::from(child))
+    }
+
+    fn shoot_actor(
+        &mut self,
+        parent: i32,
+        tile: i32,
+        vertical_velocity: Option<i32>,
+    ) -> Result<i32, EdukeVmError> {
+        let projectile = self.projectile_defs.get(&tile).cloned();
+        let workslike = projectile
+            .as_ref()
+            .and_then(|properties| properties.get("workslike"))
+            .copied()
+            .unwrap_or(0);
+        let projectile_is_hitscan = workslike
+            & (crate::shoot::PROJECTILE_FLAG_HITSCAN | crate::shoot::PROJECTILE_FLAG_KNEE)
+            != 0;
+        let aimed_solution = if vertical_velocity.is_none()
+            && workslike & crate::shoot::PROJECTILE_FLAG_NOAIM == 0
+        {
+            let parent_index = usize::try_from(parent).ok();
+            let shooter = parent_index.and_then(|index| self.world.sprites.get(index).copied());
+            let firing_player = std::iter::once(&*self.player)
+                .chain(self.coop_players.iter())
+                .find(|player| i32::from(player.sprite_i) == parent)
+                .cloned();
+            match (shooter, firing_player) {
+                (Some(shooter), Some(player))
+                    if (player.auto_aim == 2
+                        && workslike
+                            & (crate::shoot::PROJECTILE_FLAG_HITSCAN
+                                | crate::shoot::PROJECTILE_FLAG_KNEE
+                                | crate::shoot::PROJECTILE_FLAG_RPG)
+                            != 0)
+                        || (player.auto_aim == 1
+                            && workslike & crate::shoot::PROJECTILE_FLAG_HITSCAN != 0) =>
+                {
+                    let target = crate::shoot::aim(
+                        &shooter,
+                        crate::shoot::AUTO_AIM_ANGLE,
+                        true,
+                        &self.world.lists,
+                        &self.world.sprites[..],
+                        &self.world.sectors,
+                        &self.world.walls,
+                        self.script.actortype.as_slice(),
+                        Some(&player),
+                    );
+                    usize::try_from(target)
+                        .ok()
+                        .and_then(|index| self.world.sprites.get(index).copied())
+                        .map(|target| {
+                            let angle = if target.picnum == crate::shoot::RECON {
+                                shooter.ang
+                            } else {
+                                room_build_engine::helpers::getangle(
+                                    target.x.wrapping_sub(shooter.x),
+                                    target.y.wrapping_sub(shooter.y),
+                                ) as i16
+                            };
+                            let speed = projectile
+                                .as_ref()
+                                .and_then(|properties| properties.get("vel"))
+                                .copied()
+                                .unwrap_or(0);
+                            let target_height = self
+                                .tile_meta
+                                .get(target.picnum.max(0) as usize)
+                                .map_or(0_i64, |meta| i64::from(meta.height));
+                            let target_offset = i64::from(target.xrepeat)
+                                .saturating_mul(target_height)
+                                .saturating_mul(2)
+                                .saturating_add(i64::from(8 << 8));
+                            let delta_z = i64::from(target.z.wrapping_sub(shooter.z))
+                                .wrapping_sub(target_offset);
+                            let distance = i64::from(crate::shoot::ldist(&shooter, &target).max(1));
+                            let zvel = (delta_z.wrapping_mul(i64::from(speed)) / distance)
+                                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                as i32;
+                            (angle, zvel)
+                        })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let child = self.spawn_actor(parent, tile)?;
+        let Ok(index) = usize::try_from(child) else {
+            return Ok(child);
+        };
+        let actor = self
+            .world
+            .sprites
+            .get_mut(index)
+            .ok_or(EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: child,
+            })?;
+        if let Ok(owner) = i16::try_from(parent) {
+            actor.owner = owner;
+        }
+        if let Some(vertical_velocity) = vertical_velocity {
+            actor.zvel = Self::narrow(EdStructKind::Actor, "zvel", vertical_velocity)?;
+        }
+        if let Some((angle, vertical_velocity)) = aimed_solution {
+            actor.ang = angle;
+            actor.zvel = Self::narrow(EdStructKind::Actor, "zvel", vertical_velocity)?;
+        }
+        if let Some(properties) = projectile.as_ref() {
+            if let Some(&velocity) = properties.get("vel") {
+                actor.xvel = Self::narrow(EdStructKind::Actor, "xvel", velocity)?;
+            }
+            if let Some(&repeat) = properties.get("xrepeat") {
+                actor.xrepeat = Self::narrow(EdStructKind::Actor, "xrepeat", repeat)?;
+            }
+            if let Some(&repeat) = properties.get("yrepeat") {
+                actor.yrepeat = Self::narrow(EdStructKind::Actor, "yrepeat", repeat)?;
+            }
+            let clipdist = if workslike & crate::shoot::PROJECTILE_FLAG_REALCLIPDIST != 0 {
+                properties.get("clipdist").copied().unwrap_or(4)
+            } else {
+                4
+            };
+            actor.clipdist = Self::narrow(EdStructKind::Actor, "clipdist", clipdist)?;
+            if let Some(&cstat) = properties.get("cstat") {
+                actor.cstat = Self::narrow(EdStructKind::Actor, "cstat", cstat)?;
+            }
+            if let Some(&shade) = properties.get("shade") {
+                actor.shade = Self::narrow(EdStructKind::Actor, "shade", shade)?;
+            }
+            if let Some(&palette) = properties.get("pal") {
+                actor.pal = Self::narrow(EdStructKind::Actor, "pal", palette)?;
+            }
+            if let Some(&extra) = properties.get("extra") {
+                actor.extra = Self::narrow(EdStructKind::Actor, "extra", extra)?;
+            }
+            if let Some(&bounces) = properties.get("bounces") {
+                actor.yvel = Self::narrow(EdStructKind::Actor, "yvel", bounces)?;
+            }
+            if !self
+                .world
+                .lists
+                .changespritestat(child as i16, crate::stat::STAT_PROJECTILE)
+            {
+                return Err(EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Actor,
+                    id: child,
+                });
+            }
+            actor.statnum = crate::stat::STAT_PROJECTILE;
+            if self.actor_temps.len() <= index {
+                self.actor_temps
+                    .resize_with(index + 1, ActorConTemps::default);
+            }
+            self.actor_temps[index].projectile_workslike =
+                properties.get("workslike").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_bsound =
+                properties.get("bsound").copied().unwrap_or_else(|| {
+                    eduke_projectile_default(self.script, self.projectile_defs, tile, "bsound")
+                });
+            self.actor_temps[index].projectile_drop = properties.get("drop").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_hitradius =
+                properties.get("hitradius").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_range =
+                properties.get("range").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_velmult =
+                properties.get("velmult").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_spawns =
+                properties.get("spawns").copied().unwrap_or_else(|| {
+                    eduke_projectile_default(self.script, self.projectile_defs, tile, "spawns")
+                });
+            self.actor_temps[index].projectile_isound =
+                properties.get("isound").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_sound =
+                properties.get("sound").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_trail =
+                properties.get("trail").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_tnum =
+                properties.get("tnum").copied().unwrap_or_else(|| {
+                    eduke_projectile_default(self.script, self.projectile_defs, tile, "tnum")
+                });
+            self.actor_temps[index].projectile_txrepeat =
+                properties.get("txrepeat").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_tyrepeat =
+                properties.get("tyrepeat").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_toffset =
+                properties.get("toffset").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_sxrepeat =
+                properties.get("sxrepeat").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_syrepeat =
+                properties.get("syrepeat").copied().unwrap_or(0);
+            self.actor_temps[index].projectile_age = 0;
+            if !projectile_is_hitscan
+                && let Some(sound) = properties.get("sound").copied().filter(|sound| *sound > 0)
+                && let Ok(sound) = i16::try_from(sound)
+                && let Ok(parent_index) = usize::try_from(parent)
+                && parent_index < self.world.sprites.len()
+            {
+                if self.actor_temps.len() <= parent_index {
+                    self.actor_temps
+                        .resize_with(parent_index + 1, ActorConTemps::default);
+                }
+                self.actor_temps[parent_index]
+                    .pending_actor_sounds
+                    .push(sound);
+            }
+        }
+        if projectile_is_hitscan {
+            let Some(mut source) = usize::try_from(parent)
+                .ok()
+                .and_then(|parent_index| self.world.sprites.get(parent_index).copied())
+            else {
+                return Ok(child);
+            };
+            let firing_player = std::iter::once(&*self.player)
+                .chain(self.coop_players.iter())
+                .find(|player| i32::from(player.sprite_i) == parent)
+                .cloned();
+            if let Some(player) = firing_player.as_ref() {
+                source.x = player.posx;
+                source.y = player.posy;
+                source.z = player.posz + player.pyoff + (2 << 8);
+                if vertical_velocity.is_none() && aimed_solution.is_none() {
+                    self.world.sprites[index].zvel =
+                        ((100 - i32::from(player.horiz) - i32::from(player.horizoff)) << 5)
+                            .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                            as i16;
+                }
+            } else {
+                let height = self
+                    .tile_meta
+                    .get(source.picnum.max(0) as usize)
+                    .map_or(0, |meta| i32::from(meta.height));
+                source.z = source
+                    .z
+                    .wrapping_sub((i32::from(source.yrepeat) * height) << 1)
+                    .wrapping_sub(3 << 8);
+            }
+            source.ang = self.world.sprites[index].ang;
+            self.world.sprites[index].x = source.x;
+            self.world.sprites[index].y = source.y;
+            self.world.sprites[index].z = source.z;
+            self.world.sprites[index].sectnum = source.sectnum;
+            if let Some(current_sector) = self.world.lists.sprite_sect.get(index).copied()
+                && current_sector != source.sectnum
+            {
+                let _ = self
+                    .world
+                    .lists
+                    .changespritesect(child as i16, source.sectnum);
+            }
+            let properties = self.projectile_defs.get(&tile);
+            let range = properties
+                .and_then(|properties| properties.get("range"))
+                .copied()
+                .unwrap_or(0);
+            let damage = properties
+                .and_then(|properties| properties.get("extra"))
+                .copied()
+                .unwrap_or(0);
+            let damage_random = properties
+                .and_then(|properties| properties.get("extra_rand"))
+                .copied()
+                .unwrap_or_else(|| {
+                    eduke_projectile_default(self.script, self.projectile_defs, tile, "extra_rand")
+                });
+            let decal_tile = properties
+                .and_then(|properties| properties.get("decal"))
+                .copied()
+                .unwrap_or(-1);
+            let decal_xrepeat = properties
+                .and_then(|properties| properties.get("xrepeat"))
+                .map(|repeat| *repeat as u8);
+            let decal_yrepeat = properties
+                .and_then(|properties| properties.get("yrepeat"))
+                .map(|repeat| *repeat as u8);
+            let trail_tile = properties
+                .and_then(|properties| properties.get("trail"))
+                .copied()
+                .unwrap_or(0);
+            let trail_count = properties
+                .and_then(|properties| properties.get("tnum"))
+                .copied()
+                .unwrap_or_else(|| {
+                    eduke_projectile_default(self.script, self.projectile_defs, tile, "tnum")
+                });
+            let trail_xrepeat = properties
+                .and_then(|properties| properties.get("txrepeat"))
+                .copied()
+                .unwrap_or(0);
+            let trail_yrepeat = properties
+                .and_then(|properties| properties.get("tyrepeat"))
+                .copied()
+                .unwrap_or(0);
+            let trail_offset = properties
+                .and_then(|properties| properties.get("toffset"))
+                .copied()
+                .unwrap_or(0);
+            let mut firing_players = Vec::with_capacity(1 + self.coop_players.len());
+            firing_players.push(self.player.clone());
+            firing_players.extend(self.coop_players.iter().cloned());
+            let hit = crate::shoot::shoot_defined_hitscan(
+                &mut self.world.lists,
+                self.world.sprites.as_mut(),
+                &mut self.world.sectors,
+                &mut self.world.walls,
+                self.picnum,
+                self.actor_temps,
+                self.tile_meta,
+                Some(self.script),
+                &firing_players,
+                self.randomseed,
+                child as i16,
+                range,
+                damage,
+                damage_random,
+                decal_tile,
+                decal_xrepeat,
+                decal_yrepeat,
+                trail_tile,
+                trail_count,
+                trail_xrepeat,
+                trail_yrepeat,
+                trail_offset,
+                workslike,
+            );
+            if hit.hitsect >= 0
+                && let Some(sound) = properties
+                    .and_then(|properties| properties.get("sound"))
+                    .copied()
+                    .filter(|sound| *sound > 0)
+                && let Ok(sound) = i16::try_from(sound)
+                && let Ok(parent_index) = usize::try_from(parent)
+                && parent_index < self.world.sprites.len()
+            {
+                if self.actor_temps.len() <= parent_index {
+                    self.actor_temps
+                        .resize_with(parent_index + 1, ActorConTemps::default);
+                }
+                self.actor_temps[parent_index]
+                    .pending_actor_sounds
+                    .push(sound);
+            }
+        }
+        Ok(child)
+    }
 }
 
 impl Default for DukeSession {
@@ -2856,10 +7091,15 @@ impl DukeSession {
             player_restart_ready: false,
             atomic_globals: None,
             atomic_sav_template: None,
+            eduke_vm_state: None,
+            userdef: DukeUserDefState::default(),
+            projectile_defs: BTreeMap::new(),
+            eduke_vm_state_error: None,
+            pending_eduke_runtime_errors: Vec::new(),
         }
     }
 
-    /// Encode the native Room Duke save format (`.fsave`, version 1).
+    /// Encode the native Room Duke save format (`.fsave`, version 2).
     ///
     /// The save includes the complete Build world and mutable simulation
     /// state. The compiled CON image remains content and must be loaded before
@@ -2902,6 +7142,9 @@ impl DukeSession {
             level_exit_ready: self.level_exit_ready,
             atomic_globals: self.atomic_globals.clone(),
             atomic_sav_template: self.atomic_sav_template.clone(),
+            eduke_vm_state: self.eduke_vm_state.clone(),
+            userdef: self.userdef.clone(),
+            projectile_defs: self.projectile_defs.clone(),
         };
         let bytes = serde_json::to_vec(&DukeFsave {
             magic: DUKE_FSAVE_MAGIC.to_owned(),
@@ -2928,7 +7171,7 @@ impl DukeSession {
         if save.magic != DUKE_FSAVE_MAGIC {
             return Err(DukeSaveError::BadMagic);
         }
-        if save.version != DUKE_FSAVE_VERSION {
+        if !matches!(save.version, 1 | DUKE_FSAVE_VERSION) {
             return Err(DukeSaveError::UnsupportedVersion(save.version));
         }
         let Some(script) = &self.script else {
@@ -2937,6 +7180,22 @@ impl DukeSession {
         if script_fingerprint(script) != save.script_sha256 {
             return Err(DukeSaveError::ScriptMismatch);
         }
+        let eduke_vm_state = match save.state.eduke_vm_state.as_ref() {
+            Some(vm_state) => {
+                let mut vm_state = vm_state.clone();
+                vm_state
+                    .validate_for_image(script)
+                    .map_err(|_| DukeSaveError::InvalidScriptState)?;
+                vm_state
+                    .ensure_return_variable()
+                    .map_err(|_| DukeSaveError::InvalidScriptState)?;
+                Some(vm_state)
+            }
+            None if script.dialect == ConDialect::EDuke32 => Some(
+                EdukeVmState::from_image(script).map_err(|_| DukeSaveError::InvalidScriptState)?,
+            ),
+            None => None,
+        };
         if !valid_saved_world(&save.state.world, &save.state.lists, &save.state.cyclers)
             || save.state.actor_temps.len() > MAXSPRITES
             || save.state.picnum.len() > MAXSPRITES
@@ -2955,6 +7214,7 @@ impl DukeSession {
             .to_runtime(lists.clone())
             .ok_or(DukeSaveError::InvalidWorld)?;
         self.tic = state.tic;
+        self.userdef.totalclock = self.tic.wrapping_mul(4) as i32;
         self.randomseed = state.randomseed;
         self.global_random = state.global_random;
         self.campaign = state.campaign;
@@ -2991,6 +7251,15 @@ impl DukeSession {
         self.level_exit_ready = state.level_exit_ready;
         self.atomic_globals = state.atomic_globals;
         self.atomic_sav_template = state.atomic_sav_template;
+        self.eduke_vm_state = eduke_vm_state;
+        self.userdef = state.userdef;
+        self.userdef.totalclock = self.tic.wrapping_mul(4) as i32;
+        self.projectile_defs = if state.projectile_defs.is_empty() {
+            eduke_projectile_definitions(script)
+        } else {
+            state.projectile_defs
+        };
+        self.eduke_vm_state_error = None;
         self.pad_pre_override = None;
         self.pad_pre_explode_override = None;
         self.trace_fixups = false;
@@ -4697,7 +8966,7 @@ impl DukeSession {
             restore_anim_walls(anim_wall_records, saved_anim_wall_count, numwalls)
                 .ok_or("Atomic save has invalid animated-wall records")?;
         let picnum = world.sprites.iter().map(|s| s.picnum).collect();
-        self.script = Some(restored_script);
+        self.load_script(restored_script);
         self.world = Some(world);
         self.duke_reverb_level = 0;
         self.lists = self
@@ -4712,6 +8981,7 @@ impl DukeSession {
         self.global_random = save.room_global_random().unwrap_or(0);
         self.earthquake_time = save.earthquaketime.unwrap_or(0).clamp(0, 255) as u8;
         self.tic = save.lockclock.unwrap_or(0).max(0) as u32;
+        self.userdef.totalclock = self.tic.wrapping_mul(4) as i32;
         self.skill = save.skill.clamp(0, 4) as u8;
         self.monsters_off = save.room_monsters_off().unwrap_or(false);
         self.everyothertime = 0;
@@ -4728,6 +8998,9 @@ impl DukeSession {
             u8::try_from(save.volume).unwrap_or(u8::MAX),
             u8::try_from(save.level).unwrap_or(u8::MAX),
         );
+        self.userdef.respawn_monsters = save.respawn_monsters.unwrap_or(0);
+        self.userdef.respawn_items = save.respawn_items.unwrap_or(0);
+        self.userdef.respawn_inventory = save.respawn_inventory.unwrap_or(0);
         if let Some(progress) = &mut self.campaign {
             progress.from_bonus = save.from_bonus.unwrap_or(0).clamp(0, i32::from(u8::MAX)) as u8;
         }
@@ -4815,15 +9088,18 @@ impl DukeSession {
         Some(u64::from_le_bytes(digest[..8].try_into().ok()?))
     }
 
-    /// Install ART tile Z metadata (heights / picanm y-offsets).
+    /// Install ART tile dimensions, offsets, animation data, and runtime flags.
     pub fn set_tile_meta(&mut self, meta: Vec<TileZMeta>) {
         self.tile_meta = meta;
+        if let Some(script) = self.script.as_ref() {
+            apply_eduke_tile_flags(script, &mut self.tile_meta);
+        }
     }
 
     /// Playsim rate in tics per second.
     #[must_use]
     pub fn tic_rate(&self) -> u32 {
-        DUKE_TIC_RATE
+        u32::try_from(self.userdef.timer_rate.clamp(4, 480) / 4).unwrap_or(DUKE_TIC_RATE)
     }
 
     /// Drain sound ids emitted by the preceding native gameplay tics.
@@ -4931,6 +9207,159 @@ impl DukeSession {
     /// (CON action frames, rotation views, scrap tumbling).
     #[must_use]
     pub fn render_world(&self) -> Option<BuildWorld> {
+        let mut view = self.animated_render_world()?;
+        self.hide_first_person_player(&mut view);
+        Some(view)
+    }
+
+    /// Render copy with EDuke32's per-viewer `EVENT_ANIMATESPRITES` hooks.
+    /// Ordinary structure writes run against a disposable snapshot; only
+    /// `gettspr` / `settspr` changes are copied to the returned render world.
+    pub fn render_world_with_eduke_events(
+        &mut self,
+        player: usize,
+    ) -> Result<Option<BuildWorld>, EdukeVmError> {
+        let Some(mut view) = self.animated_render_world() else {
+            return Ok(None);
+        };
+        let Some(image) = self.script.as_ref().filter(|image| {
+            image.dialect == ConDialect::EDuke32
+                && image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_ANIMATESPRITES"))
+        }) else {
+            self.hide_first_person_player(&mut view);
+            return Ok(Some(view));
+        };
+
+        // EDuke32 screen events are unsynchronized. Their ordinary structure
+        // writes must not leak from a render pass into the lockstep world.
+        let Some(mut event_world) = self.world.clone() else {
+            return Ok(Some(view));
+        };
+        let mut event_tile_meta = self.tile_meta.clone();
+        let mut event_randomseed = self.randomseed;
+        let mut event_player = self.player.clone();
+        let mut event_coop_players = self.coop_players.clone();
+        let mut event_actor_temps = self.actor_temps.clone();
+        let mut event_picnum = self.picnum.clone();
+        let mut event_userdef = self.userdef.clone();
+        let mut event_skill = self.skill;
+        let mut event_projectile_defs = self.projectile_defs.clone();
+        let viewer = self.player_for_seat(player).unwrap_or(&self.player);
+        let (view_x, view_y, view_z, view_ang, view_sector) = viewer.remote_camera.unwrap_or((
+            viewer.posx,
+            viewer.posy,
+            viewer.posz,
+            viewer.view_ang(),
+            viewer.cursectnum,
+        ));
+        let visible_sectors = view
+            .build_view(
+                view_x,
+                view_y,
+                view_z,
+                view_ang,
+                viewer.view_horizon(),
+                view_sector,
+            )
+            .visible_sectors;
+        let num_players =
+            i32::try_from(self.player_count().min(crate::con::EDUKE_MAXPLAYERS)).unwrap_or(1);
+        let vm_error = self
+            .eduke_vm_state_error
+            .clone()
+            .unwrap_or_else(|| "no EDuke32 state is initialized".to_owned());
+        let vm = self
+            .eduke_vm_state
+            .as_mut()
+            .ok_or(EdukeVmError::RuntimeUnavailable(vm_error))?;
+        vm.set_num_players(num_players);
+        vm.set_multimode(num_players);
+
+        let sprite_count = view.sprites.len().min(view.lists.sprite_stat.len());
+        let mut remaining_budget = EDUKE_ANIMATE_SPRITES_INSTRUCTION_BUDGET;
+        for index in 0..sprite_count {
+            if remaining_budget == 0 {
+                break;
+            }
+            if view.lists.sprite_stat[index] == MAXSTATUS as i16 {
+                continue;
+            }
+            let sprite = view.sprites[index];
+            if sprite.sectnum < 0
+                || sprite.cstat & 32768 != 0
+                || sprite.xrepeat == 0
+                || sprite.yrepeat == 0
+                || (view.numsectors > 0 && !visible_sectors.contains(&sprite.sectnum))
+            {
+                continue;
+            }
+            let mdflags = self
+                .actor_temps
+                .get(index)
+                .map_or(0, |temps| temps.sprite_ext.mdflags);
+            if mdflags & 16 == 0 {
+                continue;
+            }
+            let actor = i32::try_from(index).map_err(|_| EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::MAX,
+            })?;
+            event_userdef.vm_sprite = actor;
+            let mut tspr = DukeTspr {
+                source_sprite: actor,
+                sprite,
+                blend: self
+                    .actor_temps
+                    .get(index)
+                    .map_or(0, |temps| temps.sprite_blend),
+            };
+            let executions = {
+                let mut inputs = [];
+                let mut spawned_actor_ids = Vec::new();
+                let mut access = DukeSessionStructAccess {
+                    world: &mut event_world,
+                    script: image,
+                    tile_meta: &mut event_tile_meta,
+                    randomseed: &mut event_randomseed,
+                    player: &mut event_player,
+                    coop_players: &mut event_coop_players,
+                    actor_temps: &mut event_actor_temps,
+                    picnum: &mut event_picnum,
+                    inputs: &mut inputs,
+                    userdef: &mut event_userdef,
+                    skill: &mut event_skill,
+                    tspr: Some(&mut tspr),
+                    projectile_defs: &mut event_projectile_defs,
+                    spawned_actor_ids: &mut spawned_actor_ids,
+                    active_sound_owners: Some(self.active_sound_owners.as_slice()),
+                };
+                vm.execute_registered_event_hooks_with_access(
+                    image,
+                    "EVENT_ANIMATESPRITES",
+                    player,
+                    index,
+                    remaining_budget,
+                    EDUKE_ANIMATE_SPRITES_STATE_DEPTH_LIMIT,
+                    &mut access,
+                )?
+            };
+            let used = executions.iter().fold(0_usize, |total, execution| {
+                total.saturating_add(execution.steps)
+            });
+            remaining_budget = remaining_budget.saturating_sub(used);
+            view.sprites[index] = tspr.sprite;
+        }
+
+        self.hide_first_person_player(&mut view);
+        Ok(Some(view))
+    }
+
+    /// Apply action-frame and player-mirror selection without hiding the local
+    /// player. EDuke32's per-tsprite event runs between these steps.
+    fn animated_render_world(&self) -> Option<BuildWorld> {
         let mut view = self.world.as_ref()?.clone();
         crate::animate::animatesprites(
             &mut view,
@@ -4963,6 +9392,15 @@ impl DukeSession {
                     own.cstat &= !4;
                 }
             }
+        }
+        Some(view)
+    }
+
+    fn hide_first_person_player(&self, view: &mut BuildWorld) {
+        if let Some(own) = usize::try_from(self.player.sprite_i)
+            .ok()
+            .and_then(|i| view.sprites.get_mut(i))
+        {
             // Zero height hides it; `xrepeat` stays so the HUD can still
             // tell a shrunk player (Chocolate's `xrepeat < 40` fists).
             let real_yrepeat = own.yrepeat;
@@ -4972,7 +9410,6 @@ impl DukeSession {
                 view.mirror_viewer = Some((self.player.sprite_i, real_yrepeat));
             }
         }
-        Some(view)
     }
 
     /// Display frame of the local APLAYER as seen in the nearest mirror:
@@ -5019,7 +9456,11 @@ impl DukeSession {
         // `body_xvel` is Chocolate's `ksqrt` step length (a magnitude).
         let speed = i32::from(player.body_xvel);
         let name = if !player.on_ground {
-            if player.poszv < 0 { "PJUMPING" } else { "PFALLING" }
+            if player.poszv < 0 {
+                "PJUMPING"
+            } else {
+                "PFALLING"
+            }
         } else if speed >= 90 {
             "PRUN"
         } else if speed >= 8 {
@@ -5030,9 +9471,14 @@ impl DukeSession {
         let label = script.labels.get(name)?;
         let ptr = usize::try_from(label.value).ok()?;
         let action = |k: usize| script.script.get(ptr + k).copied().unwrap_or(0);
-        let (start, frames, views, inc, delay) = (action(0), action(1), action(2), action(3), action(4));
+        let (start, frames, views, inc, delay) =
+            (action(0), action(1), action(2), action(3), action(4));
         let period = (delay / 4 + 1).max(1) as u32;
-        let frame = if frames > 1 { (self.tic / period) as i32 % frames } else { 0 };
+        let frame = if frames > 1 {
+            (self.tic / period) as i32 % frames
+        } else {
+            0
+        };
         let t3 = frame * inc;
         let g = room_build_engine::helpers::getangle(body.x - cam_x, body.y - cam_y);
         let mut k = (((i32::from(body.ang) + 3072 + 128 - g) & 2047) >> 8) & 7;
@@ -5044,7 +9490,10 @@ impl DukeSession {
             k = 0;
         }
         let pic = i32::from(body.picnum) + k + start + views * t3;
-        i16::try_from(pic).ok().filter(|&p| p > 0).map(|p| (p, xflip))
+        i16::try_from(pic)
+            .ok()
+            .filter(|&p| p > 0)
+            .map(|p| (p, xflip))
     }
 
     /// Active Atomic `definequote` text requested by CON `quote`.
@@ -5053,10 +9502,18 @@ impl DukeSession {
         if self.player.quote_timer <= 0 || self.player.quote_id < 0 {
             return None;
         }
+        let quote_index = self.player.quote_id as usize;
+        if let Some(runtime_quote) = self
+            .eduke_vm_state
+            .as_ref()
+            .and_then(|state| state.quote(quote_index).ok())
+        {
+            return (!runtime_quote.is_empty()).then_some(runtime_quote);
+        }
         self.script
             .as_ref()?
             .quotes
-            .get(self.player.quote_id as usize)
+            .get(quote_index)
             .map(String::as_str)
             .filter(|text| !text.is_empty())
     }
@@ -5069,7 +9526,358 @@ impl DukeSession {
 
     /// Install a compiled CON image for later `moveactors` / `execute`.
     pub fn load_script(&mut self, image: ScriptImage) {
+        let state = if image.dialect == ConDialect::EDuke32 {
+            EdukeVmState::from_image(&image).map(Some)
+        } else {
+            Ok(None)
+        };
         self.script = Some(image);
+        if let Some(script) = self.script.as_ref() {
+            apply_eduke_tile_flags(script, &mut self.tile_meta);
+            self.projectile_defs = eduke_projectile_definitions(script);
+        }
+        match state {
+            Ok(state) => {
+                self.eduke_vm_state = state;
+                self.eduke_vm_state_error = None;
+            }
+            Err(error) => {
+                self.eduke_vm_state = None;
+                self.eduke_vm_state_error = Some(error.to_string());
+            }
+        }
+    }
+
+    /// Install a compiled CON image and initialize its EDuke32 VM state.
+    pub fn try_load_script(&mut self, image: ScriptImage) -> Result<(), EdukeVmError> {
+        let eduke_vm_state = if image.dialect == ConDialect::EDuke32 {
+            Some(EdukeVmState::from_image(&image)?)
+        } else {
+            None
+        };
+        self.script = Some(image);
+        if let Some(script) = self.script.as_ref() {
+            apply_eduke_tile_flags(script, &mut self.tile_meta);
+            self.projectile_defs = eduke_projectile_definitions(script);
+        }
+        self.eduke_vm_state = eduke_vm_state;
+        self.eduke_vm_state_error = None;
+        Ok(())
+    }
+
+    /// Run registered EDuke32 CON hooks for an event in source order.
+    ///
+    /// With a loaded Build world, actor/sector/wall/player structure access is
+    /// routed to the live session. The native engine does not yet invoke this
+    /// automatically at each EDuke32 call site.
+    pub fn execute_eduke_event(
+        &mut self,
+        event: &str,
+        player: usize,
+        actor: usize,
+        instruction_budget: usize,
+        state_depth_limit: usize,
+    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+        self.execute_eduke_event_with_inputs(
+            event,
+            player,
+            actor,
+            &mut [],
+            instruction_budget,
+            state_depth_limit,
+        )
+    }
+
+    /// Run registered hooks with the active sync-input records available to
+    /// EDuke32 `getinput` / `setinput` structure access.
+    pub fn execute_eduke_event_with_inputs(
+        &mut self,
+        event: &str,
+        player: usize,
+        actor: usize,
+        inputs: &mut [DukeInput],
+        instruction_budget: usize,
+        state_depth_limit: usize,
+    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+        self.execute_eduke_event_with_context(
+            event,
+            player,
+            actor,
+            inputs,
+            None,
+            instruction_budget,
+            state_depth_limit,
+        )
+    }
+
+    /// Run registered hooks with one current render-only TSPR available for
+    /// EDuke32 `gettspr` / `settspr` access, as used by `EVENT_ANIMATESPRITES`.
+    pub fn execute_eduke_event_with_tspr(
+        &mut self,
+        event: &str,
+        player: usize,
+        actor: usize,
+        tspr: &mut DukeTspr,
+        instruction_budget: usize,
+        state_depth_limit: usize,
+    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+        self.execute_eduke_event_with_context(
+            event,
+            player,
+            actor,
+            &mut [],
+            Some(tspr),
+            instruction_budget,
+            state_depth_limit,
+        )
+    }
+
+    /// Drain pending messages from EDuke32 CON `echo` instructions for the
+    /// desktop/web console or an embedding application.
+    pub fn take_eduke_console_output(&mut self) -> Vec<String> {
+        self.eduke_vm_state
+            .as_mut()
+            .map_or_else(Vec::new, EdukeVmState::take_console_output)
+    }
+
+    fn execute_eduke_event_with_context(
+        &mut self,
+        event: &str,
+        player: usize,
+        actor: usize,
+        inputs: &mut [DukeInput],
+        tspr: Option<&mut DukeTspr>,
+        instruction_budget: usize,
+        state_depth_limit: usize,
+    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+        self.execute_eduke_event_with_spawn_depth(
+            event,
+            player,
+            actor,
+            inputs,
+            tspr,
+            instruction_budget,
+            state_depth_limit,
+            0,
+        )
+    }
+
+    fn execute_eduke_event_with_spawn_depth(
+        &mut self,
+        event: &str,
+        player: usize,
+        actor: usize,
+        inputs: &mut [DukeInput],
+        tspr: Option<&mut DukeTspr>,
+        instruction_budget: usize,
+        state_depth_limit: usize,
+        spawn_depth: usize,
+    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+        self.userdef.vm_sprite = if actor == EDUKE_NO_EVENT_CONTEXT {
+            -1
+        } else {
+            i32::try_from(actor).map_err(|_| EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::MAX,
+            })?
+        };
+        let mut spawned_actor_ids = Vec::new();
+        let dispatch_spawn_hooks = tspr.is_none();
+        let result = {
+            let image = self.script.as_ref().ok_or_else(|| {
+                EdukeVmError::RuntimeUnavailable("no CON image is loaded".to_owned())
+            })?;
+            let num_players =
+                i32::try_from(self.player_count().min(crate::con::EDUKE_MAXPLAYERS)).unwrap_or(1);
+            let vm = self.eduke_vm_state.as_mut().ok_or_else(|| {
+                EdukeVmError::RuntimeUnavailable(
+                    self.eduke_vm_state_error
+                        .clone()
+                        .unwrap_or_else(|| "no EDuke32 state is initialized".to_owned()),
+                )
+            })?;
+            vm.set_num_players(num_players);
+            vm.set_multimode(num_players);
+            if let Some(world) = self.world.as_mut() {
+                let result = {
+                    let mut access = DukeSessionStructAccess {
+                        world,
+                        script: image,
+                        tile_meta: &mut self.tile_meta,
+                        randomseed: &mut self.randomseed,
+                        player: &mut self.player,
+                        coop_players: &mut self.coop_players,
+                        actor_temps: &mut self.actor_temps,
+                        picnum: &mut self.picnum,
+                        inputs,
+                        userdef: &mut self.userdef,
+                        skill: &mut self.skill,
+                        tspr,
+                        projectile_defs: &mut self.projectile_defs,
+                        spawned_actor_ids: &mut spawned_actor_ids,
+                        active_sound_owners: Some(self.active_sound_owners.as_slice()),
+                    };
+                    vm.execute_registered_event_hooks_with_access(
+                        image,
+                        event,
+                        player,
+                        actor,
+                        instruction_budget,
+                        state_depth_limit,
+                        &mut access,
+                    )
+                };
+                self.lists = self
+                    .world
+                    .as_ref()
+                    .map_or_else(SpriteLists::new, |world| world.lists.clone());
+                result
+            } else {
+                vm.execute_registered_event_hooks(
+                    image,
+                    event,
+                    player,
+                    actor,
+                    instruction_budget,
+                    state_depth_limit,
+                )
+            }
+        };
+        let mut executions = result?;
+        if dispatch_spawn_hooks && !event.eq_ignore_ascii_case("EVENT_KILLIT") {
+            let kill_requests: Vec<_> = executions
+                .iter()
+                .filter_map(|execution| execution.kill_actor_id)
+                .collect();
+            if !kill_requests.is_empty() {
+                let used = executions.iter().fold(0_usize, |total, execution| {
+                    total.saturating_add(execution.steps)
+                });
+                let mut remaining_budget = instruction_budget.saturating_sub(used);
+                for actor_id in kill_requests {
+                    let Ok(actor_index) = usize::try_from(actor_id) else {
+                        continue;
+                    };
+                    let kill_player = self.eduke_closest_player(actor_index);
+                    if let Some(vm) = self.eduke_vm_state.as_mut() {
+                        vm.set_variable("RETURN", kill_player, actor_index, 0)?;
+                    }
+                    let has_killit_event = self.script.as_ref().is_some_and(|image| {
+                        image
+                            .eduke_event_entries
+                            .iter()
+                            .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_KILLIT"))
+                    });
+                    let mut cancel_kill = false;
+                    if has_killit_event {
+                        if spawn_depth >= EDUKE_SPAWN_EVENT_DEPTH_LIMIT {
+                            return Err(EdukeVmError::SpawnEventDepthExceeded {
+                                limit: EDUKE_SPAWN_EVENT_DEPTH_LIMIT,
+                            });
+                        }
+                        if remaining_budget == 0 {
+                            return Err(EdukeVmError::InstructionBudgetExceeded {
+                                budget: instruction_budget,
+                            });
+                        }
+                        let nested = self.execute_eduke_event_with_spawn_depth(
+                            "EVENT_KILLIT",
+                            kill_player,
+                            actor_index,
+                            inputs,
+                            None,
+                            remaining_budget,
+                            state_depth_limit,
+                            spawn_depth + 1,
+                        )?;
+                        let nested_steps = nested.iter().fold(0_usize, |total, execution| {
+                            total.saturating_add(execution.steps)
+                        });
+                        remaining_budget = remaining_budget.saturating_sub(nested_steps);
+                        executions.extend(nested);
+                        if let Some(vm) = self.eduke_vm_state.as_ref() {
+                            cancel_kill = vm.get_variable("RETURN", kill_player, actor_index)? != 0;
+                        }
+                    }
+                    if !cancel_kill {
+                        self.apply_eduke_killit(actor_id)?;
+                    }
+                }
+            }
+        }
+        if dispatch_spawn_hooks && !spawned_actor_ids.is_empty() {
+            let used = executions.iter().fold(0_usize, |total, execution| {
+                total.saturating_add(execution.steps)
+            });
+            let mut remaining_budget = instruction_budget.saturating_sub(used);
+            for spawned_id in spawned_actor_ids {
+                let Ok(spawned_actor) = usize::try_from(spawned_id) else {
+                    continue;
+                };
+                let player = self.eduke_closest_player(spawned_actor);
+                for spawned_event in ["EVENT_EGS", "EVENT_SPAWN"] {
+                    let has_event = self.script.as_ref().is_some_and(|image| {
+                        image
+                            .eduke_event_entries
+                            .iter()
+                            .any(|(name, _, _)| name.eq_ignore_ascii_case(spawned_event))
+                    });
+                    if !has_event {
+                        continue;
+                    }
+                    if spawn_depth >= EDUKE_SPAWN_EVENT_DEPTH_LIMIT {
+                        return Err(EdukeVmError::SpawnEventDepthExceeded {
+                            limit: EDUKE_SPAWN_EVENT_DEPTH_LIMIT,
+                        });
+                    }
+                    if remaining_budget == 0 {
+                        return Err(EdukeVmError::InstructionBudgetExceeded {
+                            budget: instruction_budget,
+                        });
+                    }
+                    let nested = self.execute_eduke_event_with_spawn_depth(
+                        spawned_event,
+                        player,
+                        spawned_actor,
+                        inputs,
+                        None,
+                        remaining_budget,
+                        state_depth_limit,
+                        spawn_depth + 1,
+                    )?;
+                    let nested_steps = nested.iter().fold(0_usize, |total, execution| {
+                        total.saturating_add(execution.steps)
+                    });
+                    remaining_budget = remaining_budget.saturating_sub(nested_steps);
+                    executions.extend(nested);
+                }
+            }
+        }
+        Ok(executions)
+    }
+
+    fn apply_eduke_killit(&mut self, actor: i32) -> Result<(), EdukeVmError> {
+        let index = DukeSessionStructAccess::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
+        let Some(world) = self.world.as_mut() else {
+            return Ok(());
+        };
+        let status = world.lists.sprite_stat[index];
+        if status == MAXSTATUS as i16 {
+            return Ok(());
+        }
+        if status == crate::stat::STAT_ACTOR || status == crate::stat::STAT_MISC {
+            let sprite_index = i16::try_from(index).map_err(|_| EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: actor,
+            })?;
+            let _ = world.lists.deletesprite(sprite_index);
+        } else if let Some(sprite) = world.sprites.get_mut(index) {
+            // EDuke32 hides sprites outside STAT_ACTOR/STAT_MISC. Their engine
+            // code later decides whether and when their slot can be reclaimed.
+            sprite.xrepeat = 0;
+        }
+        self.lists.clone_from(&world.lists);
+        Ok(())
     }
 
     /// Take ownership of a loaded [`BuildWorld`], run prelevel culls, classify.
@@ -5079,6 +9887,33 @@ impl DukeSession {
 
     /// Like [`Self::set_world`] with an explicit Duke skill (0..=4).
     pub fn set_world_with_skill(&mut self, mut world: BuildWorld, skill: u8) {
+        // EDuke32 enters prelevel before sector/player/sprite setup. The map is
+        // replacing any old world, so run this global hook with no host-world
+        // access and reset actor-scoped script values first.
+        self.world = None;
+        self.randomseed = ENTERLEVEL_RANDOMSEED;
+        self.global_random = 0;
+        self.earthquake_time = 0;
+        self.skill = skill;
+        self.everyothertime = 0;
+        let actor_reset =
+            self.script
+                .as_ref()
+                .zip(self.eduke_vm_state.as_mut())
+                .map(|(image, vm)| {
+                    vm.reset_actor_variables(image)?;
+                    vm.set_variable("randomseed", 0, 0, self.randomseed)
+                });
+        if let Some(Err(error)) = actor_reset {
+            self.record_eduke_runtime_error(format!("EVENT_PRELEVEL setup: {error}"));
+        }
+        self.run_eduke_global_event("EVENT_PRELEVEL");
+        if let Some(vm) = self.eduke_vm_state.as_ref() {
+            self.randomseed = vm
+                .get_variable("randomseed", 0, 0)
+                .unwrap_or(self.randomseed);
+        }
+
         // Chocolate prelevel caches `one_parallax_sectnum` before any SE13
         // setup flips a ceiling's parallax bit. Keep the original material and
         // shade so later SE13 markers never select a different sky sector.
@@ -5120,12 +9955,6 @@ impl DukeSession {
                     sector: sprite.sectnum,
                 }),
         );
-        // Match Chocolate `premap`: seed 17 before prelevel TRAND traffic.
-        self.randomseed = ENTERLEVEL_RANDOMSEED;
-        self.global_random = 0;
-        self.earthquake_time = 0;
-        self.skill = skill;
-        self.everyothertime = 0;
         let mirror_tile = self
             .script
             .as_ref()
@@ -5176,6 +10005,13 @@ impl DukeSession {
             &mut self.picnum,
             skill,
         );
+        let map_actor_ids: Vec<usize> = world
+            .lists
+            .sprite_stat
+            .iter()
+            .enumerate()
+            .filter_map(|(actor, &status)| (status != MAXSTATUS as i16).then_some(actor))
+            .collect();
         // Chocolate resets these counters in `resetprestat`, then increments
         // `max_secret_rooms` while scanning sectors and `max_actors_killed`
         // from the eligible `spawn()` branches. Keep the level totals on the
@@ -5219,7 +10055,12 @@ impl DukeSession {
         // `hittype.floorz/ceilingz` from its sector; runtime children inherit
         // them through EGS (e.g. TOILETWATER's `sizeto` height test).
         for index in 0..world.sprites.len() {
-            if world.lists.sprite_stat.get(index).copied().unwrap_or(MAXSTATUS as i16)
+            if world
+                .lists
+                .sprite_stat
+                .get(index)
+                .copied()
+                .unwrap_or(MAXSTATUS as i16)
                 == MAXSTATUS as i16
             {
                 continue;
@@ -5231,7 +10072,8 @@ impl DukeSession {
                 continue;
             };
             if self.actor_temps.len() <= index {
-                self.actor_temps.resize_with(index + 1, ActorConTemps::default);
+                self.actor_temps
+                    .resize_with(index + 1, ActorConTemps::default);
             }
             let temps = &mut self.actor_temps[index];
             if temps.hit_floorz == 0 && temps.hit_ceilingz == 0 {
@@ -5475,6 +10317,8 @@ impl DukeSession {
         self.player.frag_ps = 0;
         self.world = Some(world);
         self.duke_reverb_level = 0;
+        self.run_eduke_map_actor_events(&map_actor_ids);
+        self.run_eduke_enterlevel_event();
     }
 
     /// Configure a deterministic local Duke roster from the map's APLAYER
@@ -5648,6 +10492,27 @@ impl DukeSession {
         self.lists = world.lists.clone();
         self.actor_temps
             .resize_with(world.sprites.len(), ActorConTemps::default);
+        Ok(())
+    }
+
+    /// Reject unsupported EDuke32 CON content before placing it in a network
+    /// lockstep room. Atomic CON multiplayer remains available.
+    ///
+    /// # Errors
+    ///
+    /// Returns a user-facing explanation when the loaded script uses the
+    /// EDuke32 dialect, whose event/VM state is not part of network checksums.
+    pub fn validate_network_content(&self) -> Result<(), String> {
+        if self
+            .script
+            .as_ref()
+            .is_some_and(|script| script.dialect == ConDialect::EDuke32)
+        {
+            return Err(
+                "EDuke32 CON content is solo-only; network Duke rooms currently support Atomic CON content"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -5870,6 +10735,575 @@ impl DukeSession {
         }
     }
 
+    /// Drain runtime faults from automatically dispatched EDuke32 events.
+    /// Shells should forward these to their developer console.
+    pub fn take_eduke_runtime_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_eduke_runtime_errors)
+    }
+
+    fn record_eduke_runtime_error(&mut self, message: String) {
+        const MAX_PENDING_ERRORS: usize = 128;
+        if self.pending_eduke_runtime_errors.last() == Some(&message) {
+            return;
+        }
+        if self.pending_eduke_runtime_errors.len() == MAX_PENDING_ERRORS {
+            self.pending_eduke_runtime_errors.remove(0);
+        }
+        self.pending_eduke_runtime_errors.push(message);
+    }
+
+    /// EDuke32's PREWORLD and WORLD hooks run once each per game tic without a
+    /// current player or actor, even when the map has no active sprites.
+    fn run_eduke_global_event(&mut self, event: &str) {
+        let has_event = self.script.as_ref().is_some_and(|image| {
+            image.dialect == ConDialect::EDuke32
+                && image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
+        });
+        if !has_event {
+            return;
+        }
+        if let Err(error) = self.execute_eduke_event(
+            event,
+            EDUKE_NO_EVENT_CONTEXT,
+            EDUKE_NO_EVENT_CONTEXT,
+            EDUKE_GAME_EVENT_INSTRUCTION_BUDGET,
+            EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+        ) {
+            self.record_eduke_runtime_error(format!("{event}: {error}"));
+        }
+    }
+
+    /// EVENT_ENTERLEVEL starts with the first player and uses the reserved
+    /// RETURN variable to request another call for each remaining seat.
+    fn run_eduke_enterlevel_event(&mut self) {
+        let has_event = self.script.as_ref().is_some_and(|image| {
+            image.dialect == ConDialect::EDuke32
+                && image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_ENTERLEVEL"))
+        });
+        if !has_event {
+            return;
+        }
+        let actors: Vec<usize> = std::iter::once(&self.player)
+            .chain(self.coop_players.iter())
+            .map(|player| usize::try_from(player.sprite_i).unwrap_or(EDUKE_NO_EVENT_CONTEXT))
+            .take(crate::con::EDUKE_MAXPLAYERS)
+            .collect();
+        if let Some(vm) = self.eduke_vm_state.as_mut()
+            && let Err(error) = vm.set_variable("RETURN", 0, 0, 0)
+        {
+            self.record_eduke_runtime_error(format!("EVENT_ENTERLEVEL: {error}"));
+            return;
+        }
+
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        let mut continue_for_next_player = true;
+        for (seat, actor) in actors.into_iter().enumerate() {
+            if !continue_for_next_player || remaining_budget == 0 {
+                break;
+            }
+            match self.execute_eduke_event(
+                "EVENT_ENTERLEVEL",
+                seat,
+                actor,
+                remaining_budget,
+                EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+            ) {
+                Ok(executions) => {
+                    let used = executions.iter().fold(0_usize, |total, execution| {
+                        total.saturating_add(execution.steps)
+                    });
+                    remaining_budget = remaining_budget.saturating_sub(used);
+                    continue_for_next_player = self
+                        .eduke_vm_state
+                        .as_ref()
+                        .and_then(|vm| vm.get_variable("RETURN", seat, actor).ok())
+                        .is_some_and(|value| value != 0);
+                }
+                Err(error) => {
+                    self.record_eduke_runtime_error(format!(
+                        "EVENT_ENTERLEVEL player {seat}: {error}"
+                    ));
+                    break;
+                }
+            }
+        }
+        if remaining_budget == 0 && continue_for_next_player {
+            self.record_eduke_runtime_error(
+                "EVENT_ENTERLEVEL: per-tic instruction budget exhausted".to_owned(),
+            );
+        }
+    }
+
+    /// Run map-load actor hooks after Room has initialized the captured map
+    /// sprites but before EVENT_ENTERLEVEL starts the level timer.
+    fn run_eduke_map_actor_events(&mut self, actors: &[usize]) {
+        let has_event = |session: &Self, event: &str| {
+            session.script.as_ref().is_some_and(|image| {
+                image.dialect == ConDialect::EDuke32
+                    && image
+                        .eduke_event_entries
+                        .iter()
+                        .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
+            })
+        };
+        let has_load_actor = has_event(self, "EVENT_LOADACTOR");
+        let has_spawn = has_event(self, "EVENT_SPAWN");
+        if !has_load_actor && !has_spawn {
+            return;
+        }
+        let mut load_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        let mut spawn_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for &actor in actors {
+            let active = self
+                .lists
+                .sprite_stat
+                .get(actor)
+                .is_some_and(|&status| status != MAXSTATUS as i16);
+            if !active {
+                continue;
+            }
+            if has_load_actor {
+                if load_budget == 0 {
+                    self.record_eduke_runtime_error(
+                        "EVENT_LOADACTOR: per-level instruction budget exhausted".to_owned(),
+                    );
+                    break;
+                }
+                match self.execute_eduke_event(
+                    "EVENT_LOADACTOR",
+                    EDUKE_NO_EVENT_CONTEXT,
+                    actor,
+                    load_budget,
+                    EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                ) {
+                    Ok(executions) => {
+                        let used = executions.iter().fold(0_usize, |total, execution| {
+                            total.saturating_add(execution.steps)
+                        });
+                        load_budget = load_budget.saturating_sub(used);
+                    }
+                    Err(error) => {
+                        self.record_eduke_runtime_error(format!(
+                            "EVENT_LOADACTOR actor {actor}: {error}"
+                        ));
+                        break;
+                    }
+                }
+            }
+            let still_active = self
+                .lists
+                .sprite_stat
+                .get(actor)
+                .is_some_and(|&status| status != MAXSTATUS as i16);
+            if has_spawn && still_active {
+                if spawn_budget == 0 {
+                    self.record_eduke_runtime_error(
+                        "EVENT_SPAWN: per-level instruction budget exhausted".to_owned(),
+                    );
+                    break;
+                }
+                let player = self.eduke_closest_player(actor);
+                match self.execute_eduke_event(
+                    "EVENT_SPAWN",
+                    player,
+                    actor,
+                    spawn_budget,
+                    EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                ) {
+                    Ok(executions) => {
+                        let used = executions.iter().fold(0_usize, |total, execution| {
+                            total.saturating_add(execution.steps)
+                        });
+                        spawn_budget = spawn_budget.saturating_sub(used);
+                    }
+                    Err(error) => {
+                        self.record_eduke_runtime_error(format!(
+                            "EVENT_SPAWN actor {actor}: {error}"
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch input hooks once for each active player before native input
+    /// handling; edits are written into the same sync records consumed later
+    /// this tic.
+    fn run_eduke_processinput_events(&mut self, inputs: &mut [DukeInput]) {
+        if self.world.is_none() {
+            return;
+        }
+        let has_event = self.script.as_ref().is_some_and(|image| {
+            image.dialect == ConDialect::EDuke32
+                && image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_PROCESSINPUT"))
+        });
+        if !has_event {
+            return;
+        }
+        let players: Vec<usize> = std::iter::once(&self.player)
+            .chain(self.coop_players.iter())
+            .map(|player| usize::try_from(player.sprite_i).unwrap_or(EDUKE_NO_EVENT_CONTEXT))
+            .collect();
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (seat, actor) in players.into_iter().enumerate().take(inputs.len()) {
+            if remaining_budget == 0 {
+                self.record_eduke_runtime_error(
+                    "EVENT_PROCESSINPUT: per-tic instruction budget exhausted".to_owned(),
+                );
+                break;
+            }
+            match self.execute_eduke_event_with_inputs(
+                "EVENT_PROCESSINPUT",
+                seat,
+                actor,
+                inputs,
+                remaining_budget,
+                EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+            ) {
+                Ok(executions) => {
+                    let used = executions.iter().fold(0_usize, |total, execution| {
+                        total.saturating_add(execution.steps)
+                    });
+                    remaining_budget = remaining_budget.saturating_sub(used);
+                }
+                Err(error) => {
+                    self.record_eduke_runtime_error(format!(
+                        "EVENT_PROCESSINPUT player {seat}: {error}"
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// EDukeWiki documents EVENT_GAME and EVENT_PREGAME once for each active
+    /// sprite without SFLAG_NOEVENTS. Freeze sprite ids for the phase so
+    /// spawns/removals made by a hook take effect on the next phase.
+    fn run_eduke_sprite_event(&mut self, event: &str) {
+        let has_event = self.script.as_ref().is_some_and(|image| {
+            image.dialect == ConDialect::EDuke32
+                && image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
+        });
+        if !has_event {
+            return;
+        }
+
+        let actors = {
+            let Some(world) = self.world.as_ref() else {
+                return;
+            };
+            let mut actors = Vec::new();
+            for (index, sprite) in world.sprites.iter().enumerate() {
+                if self.lists.sprite_stat[index] == MAXSTATUS as i16 {
+                    continue;
+                }
+                let tile_flags = usize::try_from(sprite.picnum)
+                    .ok()
+                    .and_then(|tile| self.tile_meta.get(tile))
+                    .map_or(0, |metadata| metadata.game_flags);
+                let actor_flags = self
+                    .actor_temps
+                    .get(index)
+                    .map_or(0, |temps| temps.hit_flags as u32);
+                if (tile_flags ^ actor_flags) & EDUKE_SFLAG_NOEVENTS == 0 {
+                    actors.push(index);
+                }
+            }
+            actors
+        };
+
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (ordinal, actor) in actors.iter().copied().enumerate() {
+            if remaining_budget == 0 {
+                if ordinal < actors.len() {
+                    self.record_eduke_runtime_error(format!(
+                        "{event} actor {actor}: per-tic instruction budget exhausted"
+                    ));
+                }
+                break;
+            }
+            let player = self.eduke_closest_player(actor);
+            match self.execute_eduke_event(
+                event,
+                player,
+                actor,
+                remaining_budget,
+                EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+            ) {
+                Ok(executions) => {
+                    let used = executions.iter().fold(0_usize, |total, execution| {
+                        total.saturating_add(execution.steps)
+                    });
+                    remaining_budget = remaining_budget.saturating_sub(used);
+                }
+                Err(error) => {
+                    self.record_eduke_runtime_error(format!("{event} actor {actor}: {error}"));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Run each active EDuke32 actor's compiled `actor` / `useractor` body
+    /// once before the native `moveactors` pass. The CON body updates the same
+    /// actor temporaries and sprite fields consumed by that pass.
+    fn run_eduke_actor_scripts(&mut self, inputs: &mut [DukeInput]) {
+        let actors = {
+            let Some(world) = self.world.as_ref() else {
+                return;
+            };
+            let Some(image) = self.script.as_ref() else {
+                return;
+            };
+            if image.dialect != ConDialect::EDuke32 || image.eduke_actor_entries.is_empty() {
+                return;
+            }
+            world
+                .sprites
+                .iter()
+                .enumerate()
+                .filter_map(|(actor, sprite)| {
+                    (self.lists.sprite_stat[actor] == STAT_ACTOR)
+                        .then(|| image.eduke_actor_entries.get(&sprite.picnum).copied())
+                        .flatten()
+                        .map(|entry| (actor, entry))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (actor, entry) in actors {
+            if remaining_budget == 0 {
+                self.record_eduke_runtime_error(
+                    "EDuke32 actor scripts: per-tic instruction budget exhausted".to_owned(),
+                );
+                break;
+            }
+            let player = self.eduke_closest_player(actor);
+            match self.execute_eduke_actor_entry(actor, entry, player, inputs, remaining_budget) {
+                Ok((execution, spawned_actor_ids)) => {
+                    remaining_budget = remaining_budget.saturating_sub(execution.steps);
+                    if let Err(error) = self.finish_eduke_actor_execution(
+                        execution,
+                        spawned_actor_ids,
+                        inputs,
+                        &mut remaining_budget,
+                    ) {
+                        self.record_eduke_runtime_error(format!("EDuke32 actor {actor}: {error}"));
+                        break;
+                    }
+                }
+                Err(error) => {
+                    self.record_eduke_runtime_error(format!("EDuke32 actor {actor}: {error}"));
+                    break;
+                }
+            }
+        }
+    }
+
+    fn execute_eduke_actor_entry(
+        &mut self,
+        actor: usize,
+        entry: usize,
+        player: usize,
+        inputs: &mut [DukeInput],
+        instruction_budget: usize,
+    ) -> Result<(EdExecution, Vec<i32>), EdukeVmError> {
+        self.userdef.vm_sprite =
+            i32::try_from(actor).map_err(|_| EdukeVmError::InvalidStructId {
+                kind: EdStructKind::Actor,
+                id: i32::MAX,
+            })?;
+        let mut spawned_actor_ids = Vec::new();
+        let result = {
+            let image = self.script.as_ref().ok_or_else(|| {
+                EdukeVmError::RuntimeUnavailable("no CON image is loaded".to_owned())
+            })?;
+            let num_players =
+                i32::try_from(self.player_count().min(crate::con::EDUKE_MAXPLAYERS)).unwrap_or(1);
+            let vm = self.eduke_vm_state.as_mut().ok_or_else(|| {
+                EdukeVmError::RuntimeUnavailable(
+                    self.eduke_vm_state_error
+                        .clone()
+                        .unwrap_or_else(|| "no EDuke32 state is initialized".to_owned()),
+                )
+            })?;
+            vm.set_num_players(num_players);
+            vm.set_multimode(num_players);
+            let Some(world) = self.world.as_mut() else {
+                return Err(EdukeVmError::RuntimeUnavailable(
+                    "no Build world is loaded".to_owned(),
+                ));
+            };
+            let mut access = DukeSessionStructAccess {
+                world,
+                script: image,
+                tile_meta: &mut self.tile_meta,
+                randomseed: &mut self.randomseed,
+                player: &mut self.player,
+                coop_players: &mut self.coop_players,
+                actor_temps: &mut self.actor_temps,
+                picnum: &mut self.picnum,
+                inputs,
+                userdef: &mut self.userdef,
+                skill: &mut self.skill,
+                tspr: None,
+                projectile_defs: &mut self.projectile_defs,
+                spawned_actor_ids: &mut spawned_actor_ids,
+                active_sound_owners: Some(self.active_sound_owners.as_slice()),
+            };
+            vm.execute_at_with_access(
+                &image.eduke_program,
+                entry,
+                player,
+                actor,
+                instruction_budget,
+                EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                &mut access,
+            )
+        };
+        self.lists = self
+            .world
+            .as_ref()
+            .map_or_else(SpriteLists::new, |world| world.lists.clone());
+        result.map(|execution| (execution, spawned_actor_ids))
+    }
+
+    fn finish_eduke_actor_execution(
+        &mut self,
+        execution: EdExecution,
+        spawned_actor_ids: Vec<i32>,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) -> Result<(), EdukeVmError> {
+        if let Some(actor_id) = execution.kill_actor_id {
+            let Ok(actor_index) = usize::try_from(actor_id) else {
+                return Ok(());
+            };
+            let player = self.eduke_closest_player(actor_index);
+            let has_killit_event = self.script.as_ref().is_some_and(|image| {
+                image
+                    .eduke_event_entries
+                    .iter()
+                    .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_KILLIT"))
+            });
+            let mut cancel_kill = false;
+            if has_killit_event {
+                if *remaining_budget == 0 {
+                    return Err(EdukeVmError::InstructionBudgetExceeded {
+                        budget: EDUKE_GAME_EVENT_INSTRUCTION_BUDGET,
+                    });
+                }
+                if let Some(vm) = self.eduke_vm_state.as_mut() {
+                    vm.set_variable("RETURN", player, actor_index, 0)?;
+                }
+                let nested = self.execute_eduke_event_with_inputs(
+                    "EVENT_KILLIT",
+                    player,
+                    actor_index,
+                    inputs,
+                    *remaining_budget,
+                    EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                )?;
+                let used = nested
+                    .iter()
+                    .fold(0_usize, |total, item| total.saturating_add(item.steps));
+                *remaining_budget = remaining_budget.saturating_sub(used);
+                if let Some(vm) = self.eduke_vm_state.as_ref() {
+                    cancel_kill = vm.get_variable("RETURN", player, actor_index)? != 0;
+                }
+            }
+            if !cancel_kill {
+                self.apply_eduke_killit(actor_id)?;
+            }
+        }
+
+        for spawned_id in spawned_actor_ids {
+            let Ok(spawned_actor) = usize::try_from(spawned_id) else {
+                continue;
+            };
+            let player = self.eduke_closest_player(spawned_actor);
+            for event in ["EVENT_EGS", "EVENT_SPAWN"] {
+                let has_event = self.script.as_ref().is_some_and(|image| {
+                    image
+                        .eduke_event_entries
+                        .iter()
+                        .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
+                });
+                if !has_event {
+                    continue;
+                }
+                if *remaining_budget == 0 {
+                    return Err(EdukeVmError::InstructionBudgetExceeded {
+                        budget: EDUKE_GAME_EVENT_INSTRUCTION_BUDGET,
+                    });
+                }
+                let nested = self.execute_eduke_event_with_inputs(
+                    event,
+                    player,
+                    spawned_actor,
+                    inputs,
+                    *remaining_budget,
+                    EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                )?;
+                let used = nested
+                    .iter()
+                    .fold(0_usize, |total, item| total.saturating_add(item.steps));
+                *remaining_budget = remaining_budget.saturating_sub(used);
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the EDuke32 screen/player slot nearest to an actor, preserving
+    /// the actor's previous-position distance metric and lower-seat tie break.
+    fn eduke_closest_player(&self, actor: usize) -> usize {
+        let Some(sprite) = self
+            .world
+            .as_ref()
+            .and_then(|world| world.sprites.get(actor))
+        else {
+            return 0;
+        };
+        let mut nearest_player = None;
+        let mut nearest_distance = i32::MAX;
+        for (seat, player) in std::iter::once(&self.player)
+            .chain(self.coop_players.iter())
+            .enumerate()
+        {
+            if player.sprite_i < 0 {
+                continue;
+            }
+            let distance = room_build_engine::numeric::klabs(player.oposx.wrapping_sub(sprite.x))
+                .wrapping_add(room_build_engine::numeric::klabs(
+                    player.oposy.wrapping_sub(sprite.y),
+                ))
+                .wrapping_add(
+                    room_build_engine::numeric::klabs(
+                        player.oposz.wrapping_sub(sprite.z).wrapping_add(28 << 8),
+                    ) >> 4,
+                );
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_player = Some(seat);
+            }
+        }
+        nearest_player.unwrap_or(0)
+    }
+
     fn tick_inputs_sim(&mut self, inputs: &[DukeInput]) {
         let mut sync_inputs: Vec<DukeInput> = (0..=self.coop_players.len())
             .map(|seat| inputs.get(seat).copied().unwrap_or_default())
@@ -5899,6 +11333,9 @@ impl DukeSession {
         let mut input = sync_inputs.first().copied().unwrap_or_default();
         crate::fixups::set(self.trace_fixups);
         self.tic = self.tic.wrapping_add(1);
+        // EDuke32's read-only totalclock advances at 120 Hz; Room advances
+        // the deterministic Build simulation at 30 Hz (four clock units/tic).
+        self.userdef.totalclock = self.tic.wrapping_mul(4) as i32;
         self.everyothertime = self.everyothertime.wrapping_add(1);
         if self.player.over_shoulder_on {
             // Chocolate advances `cameradist` by (totalclock - cameraclock)
@@ -5953,6 +11390,12 @@ impl DukeSession {
         // whatever `movefta` burns that tic.
         // Chocolate `short global_random` — truncate like a 16-bit store.
         self.global_random = krand_step(&mut self.randomseed) as i16 as i32;
+        if self.world.is_some() {
+            self.run_eduke_global_event("EVENT_PREWORLD");
+        }
+        self.run_eduke_sprite_event("EVENT_PREGAME");
+        self.run_eduke_processinput_events(&mut sync_inputs);
+        input = sync_inputs.first().copied().unwrap_or_default();
         // Chocolate: `movedummyplayers()` right after `global_random = TRAND`.
         if let Some(world) = self.world.as_mut() {
             let mut plist = Vec::with_capacity(1 + self.coop_players.len());
@@ -6113,7 +11556,7 @@ impl DukeSession {
             let quick_kick_before = self.player.quick_kick;
             let pre_move = PreMovePlayer::of(&self.player);
             let player_move_hit = if self.player.extra > 0 {
-                processinput_move_with_lists_clipping(
+                processinput_move_with_lists_clipping_eduke(
                     &mut self.player,
                     input,
                     &world.sectors[..world.numsectors as usize],
@@ -6123,6 +11566,7 @@ impl DukeSession {
                     DUKE_FRICTION,
                     Some(&self.lists),
                     self.clipping,
+                    self.eduke_vm_state.is_some(),
                 )
             } else {
                 0
@@ -6323,7 +11767,7 @@ impl DukeSession {
                 let quick_kick_before = player.quick_kick;
                 let pre_move = PreMovePlayer::of(player);
                 let player_move_hit = if player.extra > 0 {
-                    processinput_move_with_lists(
+                    processinput_move_with_lists_clipping_eduke(
                         player,
                         seat_input,
                         &world.sectors[..world.numsectors as usize],
@@ -6332,12 +11776,16 @@ impl DukeSession {
                         &self.tile_meta,
                         DUKE_FRICTION,
                         Some(&self.lists),
+                        false,
+                        self.eduke_vm_state.is_some(),
                     )
                 } else {
                     0
                 };
                 sync_player_hit_planes(player, &mut self.actor_temps);
-                let _ = self.lists.changespritesect(player.sprite_i, player.cursectnum);
+                let _ = self
+                    .lists
+                    .changespritesect(player.sprite_i, player.cursectnum);
                 check_player_wall_hurt(
                     player,
                     player_move_hit,
@@ -7060,7 +12508,12 @@ impl DukeSession {
                             &mut self.randomseed,
                         )
                     };
-                    queue_utility_sound(self.script.as_ref(), utility, player, &mut self.actor_temps);
+                    queue_utility_sound(
+                        self.script.as_ref(),
+                        utility,
+                        player,
+                        &mut self.actor_temps,
+                    );
                     let used_nuke_button = used_nuke_button || utility.is_some();
                     if !used_nuke_button
                         && crate::interactions::use_wall_switch(
@@ -7271,6 +12724,7 @@ impl DukeSession {
             }
             world.lists = self.lists.clone();
         }
+        self.run_eduke_actor_scripts(&mut sync_inputs);
         if let (Some(script), Some(world)) = (self.script.as_ref(), self.world.as_mut()) {
             let mut players = Vec::with_capacity(1 + self.coop_players.len());
             players.push(self.player.clone());
@@ -52488,6 +57942,10 @@ impl DukeSession {
                 script,
             );
         }
+        self.run_eduke_sprite_event("EVENT_GAME");
+        if self.world.is_some() {
+            self.run_eduke_global_event("EVENT_WORLD");
+        }
     }
 
     /// Consume Chocolate's completed `timebeforeexit` request.
@@ -52533,7 +57991,11 @@ impl DukeSession {
         let name = self
             .script
             .as_ref()
-            .and_then(|script| script.levels.get(usize::from(volume) * 11 + usize::from(level)))
+            .and_then(|script| {
+                script
+                    .levels
+                    .get(usize::from(volume) * 11 + usize::from(level))
+            })
             .map(|level| level.name.clone())
             .unwrap_or_default();
         crate::bonus::BonusScreen::new(self.level_bonus_stats(), name, volume, self.skill)
@@ -53270,7 +58732,8 @@ fn tick_player_footprints(
         let walls: Vec<_> = world.walls.iter().map(|w| w.xy()).collect();
         let zs: Vec<_> = world.sectors.iter().map(|s| s.z()).collect();
         let pre_floor =
-            room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &zs, &walls).1;
+            room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &zs, &walls)
+                .1;
         if !shrunk
             && (pre.posz - pre_floor).saturating_abs() <= crate::player::PHEIGHT
             && pre.on_ground
@@ -53400,14 +58863,21 @@ fn tick_player_footprints(
     let (fx, fy) = (world.sprites[index].x, world.sprites[index].y);
     let mut s1 = own_sect;
     let mut failed_at = None;
-    for (n, (dx, dy)) in [(84, 84), (-84, -84), (84, -84), (-84, 84)].into_iter().enumerate() {
+    for (n, (dx, dy)) in [(84, 84), (-84, -84), (84, -84), (-84, 84)]
+        .into_iter()
+        .enumerate()
+    {
         room_build_engine::geom::updatesector(fx + dx, fy + dy, &mut s1, &sector_walls, &wall_xy);
         let same_floor = usize::try_from(s1)
             .ok()
             .and_then(|s| world.sectors.get(s))
             .is_some_and(|candidate| candidate.floorz == own_floor);
         // The last probe only fails on a *different* floor, not on `s1 < 0`.
-        let ok = if n == 3 { s1 < 0 || same_floor } else { s1 >= 0 && same_floor };
+        let ok = if n == 3 {
+            s1 < 0 || same_floor
+        } else {
+            s1 >= 0 && same_floor
+        };
         if !ok {
             failed_at = Some(n);
             break;
@@ -53426,7 +58896,10 @@ fn tick_player_footprints(
             footprint.cstat = 32 | ((u16::from(player.footprint_count) & 1) << 2);
             footprint.ang = parent.ang;
             let fsect = footprint.sectnum;
-            if let Some(fs) = usize::try_from(fsect).ok().and_then(|s| world.sectors.get(s)) {
+            if let Some(fs) = usize::try_from(fsect)
+                .ok()
+                .and_then(|s| world.sectors.get(s))
+            {
                 footprint.z = fs.floorz;
                 if fs.lotag != 1 && fs.lotag != 2 {
                     footprint.xrepeat = 32;
@@ -53723,7 +59196,60 @@ fn script_fingerprint(script: &ScriptImage) -> [u8; 32] {
         hash.update((quote.len() as u64).to_le_bytes());
         hash.update(quote.as_bytes());
     }
+    if script.dialect == ConDialect::EDuke32 {
+        hash.update(b"ROOM-DUKE-EDUKE32-IMAGE-v1\0");
+        for variable in &script.eduke_variables {
+            hash_len_prefixed(&mut hash, variable.name.as_bytes());
+            hash_len_prefixed(&mut hash, variable.initial_value.as_bytes());
+            for flag in &variable.flags {
+                hash_len_prefixed(&mut hash, flag.as_bytes());
+            }
+            hash.update([0xff]);
+        }
+        for array in &script.eduke_arrays {
+            hash_len_prefixed(&mut hash, array.name.as_bytes());
+            hash_len_prefixed(&mut hash, array.length.as_bytes());
+            for flag in &array.flags {
+                hash_len_prefixed(&mut hash, flag.as_bytes());
+            }
+            hash.update([0xfe]);
+        }
+        for (name, entry, appended) in &script.eduke_event_entries {
+            hash_len_prefixed(&mut hash, name.as_bytes());
+            hash.update((*entry as u64).to_le_bytes());
+            hash.update([u8::from(*appended)]);
+        }
+        for (name, entry, appended) in &script.eduke_state_entries {
+            hash_len_prefixed(&mut hash, name.as_bytes());
+            hash.update((*entry as u64).to_le_bytes());
+            hash.update([u8::from(*appended)]);
+        }
+        match serde_json::to_vec(&script.eduke_program) {
+            Ok(program) => hash_len_prefixed(&mut hash, &program),
+            Err(_) => hash_len_prefixed(&mut hash, b"<invalid-eduke-program>"),
+        }
+        for projectile in &script.eduke_projectiles {
+            hash_len_prefixed(&mut hash, projectile.projectile.as_bytes());
+            hash_len_prefixed(&mut hash, projectile.property.as_bytes());
+            hash_len_prefixed(&mut hash, projectile.value.as_bytes());
+        }
+        for tile in &script.eduke_damage_event_tiles {
+            hash_len_prefixed(&mut hash, tile.as_bytes());
+        }
+        for (directive, operands) in &script.eduke_sprite_directives {
+            hash_len_prefixed(&mut hash, directive.as_bytes());
+            for operand in operands {
+                hash_len_prefixed(&mut hash, operand.as_bytes());
+            }
+            hash.update([0xfd]);
+        }
+    }
     hash.finalize().into()
+}
+
+fn hash_len_prefixed(hash: &mut Sha256, bytes: &[u8]) {
+    hash.update((bytes.len() as u64).to_le_bytes());
+    hash.update(bytes);
 }
 
 fn valid_saved_world(
@@ -53845,6 +59371,3206 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eduke_sector_slope_aliases_read_and_write_heinum() {
+        let mut sector = SectorT {
+            floorheinum: 123,
+            ceilingheinum: -45,
+            ..SectorT::default()
+        };
+        assert_eq!(
+            DukeSessionStructAccess::read_sector(&sector, "floorslope"),
+            Ok(123)
+        );
+        assert_eq!(
+            DukeSessionStructAccess::read_sector(&sector, "ceilingslope"),
+            Ok(-45)
+        );
+        DukeSessionStructAccess::write_sector(&mut sector, "floorslope", -321).unwrap();
+        DukeSessionStructAccess::write_sector(&mut sector, "ceilingslope", 456).unwrap();
+        assert_eq!(sector.floorheinum, -321);
+        assert_eq!(sector.ceilingheinum, 456);
+    }
+
+    #[test]
+    fn eduke_live_map_count_builtins_read_world_extents_and_active_sprites() {
+        let mut world = BuildWorld::new();
+        world.numsectors = 3;
+        world.numwalls = 12;
+        world.lists.insertsprite(0, 1);
+        world.lists.insertsprite(0, 1);
+        let _ = world.lists.deletesprite(0);
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [DukeInput::default()];
+        let mut userdef = DukeUserDefState {
+            totalclock: 120,
+            ..DukeUserDefState::default()
+        };
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.predefined_variable("numsectors"), Some(3));
+        assert_eq!(access.predefined_variable("NUMSECTORS"), Some(3));
+        assert_eq!(access.predefined_variable("NUMWALLS"), Some(12));
+        assert_eq!(access.predefined_variable("Numsprites"), Some(1));
+        assert_eq!(access.predefined_variable("totalclock"), Some(120));
+        assert_eq!(access.predefined_variable("getticks"), Some(1000));
+    }
+
+    #[test]
+    fn eduke_totalclock_does_not_change_the_fsave_userdef_shape() {
+        let userdef = DukeUserDefState {
+            totalclock: 120,
+            ..DukeUserDefState::default()
+        };
+        let encoded = serde_json::to_value(userdef).expect("userdef serializes");
+        assert_eq!(encoded.get("totalclock"), None);
+        assert_eq!(encoded.get("timer_rate"), None);
+    }
+
+    #[test]
+    fn eduke_inittimer_changes_runtime_rate_but_not_sim_clock_units() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\ninittimer 60\nendofgame 31\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 0, 8, 2)
+            .expect("set slow runtime rate");
+        assert_eq!(session.tic_rate(), 15);
+        assert!(session.player.end_of_game);
+        assert_eq!(session.player.time_before_exit, 31);
+        assert_eq!(session.player.custom_exit_sound, -1);
+        session.tick_inputs_sim(&[]);
+        assert_eq!(session.userdef.totalclock, 4);
+        assert_eq!(session.tic_rate(), 15);
+    }
+
+    #[test]
+    fn eduke_sectorofwall_finds_the_first_sector_owning_each_wall_range() {
+        let mut world = BuildWorld::new();
+        world.numsectors = 2;
+        world.sectors = vec![
+            SectorT {
+                wallptr: 0,
+                wallnum: 3,
+                ..SectorT::default()
+            },
+            SectorT {
+                wallptr: 3,
+                wallnum: 4,
+                ..SectorT::default()
+            },
+        ];
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.sector_of_wall(0), Ok(0));
+        assert_eq!(access.sector_of_wall(2), Ok(0));
+        assert_eq!(access.sector_of_wall(3), Ok(1));
+        assert_eq!(access.sector_of_wall(6), Ok(1));
+        assert_eq!(access.sector_of_wall(-1), Ok(-1));
+        assert_eq!(access.sector_of_wall(7), Ok(-1));
+    }
+
+    #[test]
+    fn eduke_getzrange_uses_live_sector_planes_and_build_hit_codes() {
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.numwalls = 4;
+        world.sectors.push(SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -(16 << 8),
+            floorz: 16 << 8,
+            ..SectorT::default()
+        });
+        world.walls = vec![
+            WallT {
+                x: 0,
+                y: 0,
+                point2: 1,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 4096,
+                y: 0,
+                point2: 2,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 4096,
+                y: 4096,
+                point2: 3,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 0,
+                y: 4096,
+                point2: 0,
+                cstat: 1,
+                ..WallT::default()
+            },
+        ];
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.get_z_range([2048, 2048, 0, 0], 128, crate::player::CLIPMASK0),
+            Ok([-(16 << 8), 16384, 16 << 8, 16384]),
+        );
+        assert_eq!(
+            access.get_z_range([2048, 2048, 0, 7], 128, crate::player::CLIPMASK0),
+            Ok([i32::MIN, -1, i32::MAX, -1]),
+        );
+    }
+
+    #[test]
+    fn eduke_addphealth_updates_the_selected_player_and_atomic_health_cap() {
+        let mut world = BuildWorld::new();
+        world.sprites[2].extra = 20;
+        world.sprites[3].extra = 150;
+        world.sprites[4].picnum = 88;
+        let mut includes = crate::con::NullIncludes;
+        let script = crate::con::compile_with_options(
+            b"define ATOMICHEALTH 88\ndefine DUKE_GOTHEALTHATLOW 229\n",
+            &mut includes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player {
+            sprite_i: 2,
+            extra: 20,
+            ..Player::default()
+        };
+        let mut coop_players = vec![Player {
+            sprite_i: 3,
+            extra: 150,
+            ..Player::default()
+        }];
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        access
+            .add_player_health(0, 5, 10)
+            .expect("ordinary health delta");
+        assert_eq!(access.player.extra, 30);
+        assert_eq!(access.player.last_extra, 30);
+        assert_eq!(access.world.sprites[2].extra, 30);
+        assert_eq!(access.actor_temps[2].pending_actor_sounds, [229]);
+
+        access
+            .add_player_health(0, 5, 200)
+            .expect("regular health remains capped");
+        assert_eq!(access.player.extra, 100);
+        assert_eq!(access.world.sprites[2].extra, 100);
+
+        access
+            .add_player_health(0, 4, 70)
+            .expect("Atomic Health can exceed the regular cap");
+        assert_eq!(access.player.extra, 170);
+        assert_eq!(access.world.sprites[2].extra, 170);
+
+        access
+            .add_player_health(1, 5, 10)
+            .expect("nearest co-op player health delta");
+        assert_eq!(access.coop_players[0].extra, 150);
+        assert_eq!(access.world.sprites[3].extra, 150);
+    }
+
+    #[test]
+    fn eduke_ifp_reads_live_player_input_and_build_sprites() {
+        let mut world = BuildWorld::new();
+        world.sprites[1] = SpriteT {
+            xrepeat: 40,
+            ..SpriteT::default()
+        };
+        world.sprites[7] = SpriteT {
+            x: 100,
+            xvel: 9,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player {
+            sprite_i: 1,
+            on_ground: true,
+            extra: 100,
+            ..Player::default()
+        };
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [DukeInput::default()];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.if_player(8192, 0, 7), Ok(true));
+        assert_eq!(access.if_player(2, 0, 7), Ok(true));
+        access.inputs[0].bits = 1 << 5;
+        assert_eq!(access.if_player(2, 0, 7), Ok(false));
+        assert_eq!(access.if_player(4, 0, 7), Ok(true));
+        assert_eq!(access.if_player(16384, 0, 7), Ok(true));
+        assert_eq!(access.if_player(65536, 0, 7), Ok(true));
+    }
+
+    #[test]
+    fn eduke_ifcanshoottarget_uses_build_hitscan_corridor() {
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.numwalls = 4;
+        world.sectors.push(SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -(16 << 8),
+            floorz: 16 << 8,
+            ..SectorT::default()
+        });
+        world.walls = vec![
+            WallT {
+                x: 0,
+                y: 0,
+                point2: 1,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 4096,
+                y: 0,
+                point2: 2,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 4096,
+                y: 4096,
+                point2: 3,
+                cstat: 1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 0,
+                y: 4096,
+                point2: 0,
+                cstat: 1,
+                ..WallT::default()
+            },
+        ];
+        let actor_id = world.lists.insertsprite(0, STAT_ACTOR);
+        let target_id = world.lists.insertsprite(0, crate::stat::STAT_PLAYER);
+        world.sprites[actor_id as usize] = SpriteT {
+            x: 1024,
+            y: 2048,
+            z: 0,
+            cstat: 257,
+            picnum: 1000,
+            clipdist: 32,
+            xrepeat: 32,
+            yrepeat: 32,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        world.sprites[target_id as usize] = SpriteT {
+            x: 3500,
+            y: 2048,
+            z: 0,
+            cstat: 257,
+            picnum: 1405,
+            clipdist: 32,
+            xrepeat: 32,
+            yrepeat: 32,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage {
+            actortype: vec![0; 1406],
+            ..ScriptImage::default()
+        };
+        let mut tile_meta = vec![TileZMeta::default(); 1406];
+        tile_meta[1000].width = 64;
+        tile_meta[1000].height = 64;
+        tile_meta[1405].width = 64;
+        tile_meta[1405].height = 64;
+        let mut randomseed = 0;
+        let mut player = Player {
+            sprite_i: target_id,
+            oposx: 3500,
+            oposy: 2048,
+            ..Player::default()
+        };
+        let mut coop_players = Vec::new();
+        let mut actor_temps = vec![ActorConTemps::default(); MAXSPRITES];
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.actor_can_shoot_target(0, actor_id as usize),
+            Ok(true)
+        );
+        let blocker_id = access.world.lists.insertsprite(0, STAT_ACTOR);
+        access.world.sprites[blocker_id as usize] = SpriteT {
+            x: 1200,
+            y: 2048,
+            z: 0,
+            cstat: 257,
+            picnum: 1000,
+            clipdist: 32,
+            xrepeat: 32,
+            yrepeat: 32,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        assert_eq!(
+            access.actor_can_shoot_target(0, actor_id as usize),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn eduke_ifbulletnear_detects_only_projectiles_on_an_incoming_path() {
+        let mut world = BuildWorld::new();
+        let actor_id = world.lists.insertsprite(0, STAT_ACTOR);
+        world.sprites[actor_id as usize] = SpriteT {
+            x: 0,
+            y: 0,
+            ang: 0,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        let projectile_id = world.lists.insertsprite(0, crate::stat::STAT_PROJECTILE);
+        world.sprites[projectile_id as usize] = SpriteT {
+            x: 1000,
+            y: 0,
+            ang: 1024,
+            owner: -1,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        let mut expected_seed = 0;
+        let random = krand_step(&mut expected_seed);
+        assert_eq!(access.actor_bullet_near(actor_id as usize), Ok(true));
+        assert_eq!(*access.randomseed, expected_seed);
+        assert_eq!(
+            access.world.sprites[actor_id as usize].ang,
+            0i16.wrapping_sub(512 + (random & 1024) as i16)
+        );
+        access.world.sprites[actor_id as usize].ang = 0;
+        access.world.sprites[projectile_id as usize].y = 500;
+        assert_eq!(access.actor_bullet_near(actor_id as usize), Ok(false));
+        assert_eq!(*access.randomseed, expected_seed);
+        access.world.sprites[projectile_id as usize].y = 0;
+        access.world.sprites[projectile_id as usize].owner = actor_id;
+        assert_eq!(access.actor_bullet_near(actor_id as usize), Ok(false));
+        assert_eq!(*access.randomseed, expected_seed);
+    }
+
+    #[test]
+    fn eduke_ifgotweaponce_registers_and_checks_owned_weapon_actors() {
+        let mut world = BuildWorld::new();
+        let actor_id = world.lists.insertsprite(0, STAT_ACTOR);
+        world.sprites[actor_id as usize] = SpriteT {
+            picnum: 700,
+            owner: actor_id,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player {
+            coop_mode: true,
+            ..Player::default()
+        };
+        let mut coop_players = vec![Player::default()];
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.actor_weapon_reservation(0, actor_id as usize, true),
+            Ok(true)
+        );
+        assert_eq!(access.player.weapon_reservation_count, 1);
+        assert_eq!(access.player.weapon_reservations[0], 700);
+        assert_eq!(
+            access.actor_weapon_reservation(0, actor_id as usize, false),
+            Ok(true)
+        );
+        access.world.sprites[actor_id as usize].owner = -1;
+        assert_eq!(
+            access.actor_weapon_reservation(0, actor_id as usize, false),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn eduke_ifpinventory_uses_nearest_player_and_actor_palette_for_keys() {
+        let mut world = BuildWorld::new();
+        world.sprites[1] = SpriteT {
+            x: 10_000,
+            ..SpriteT::default()
+        };
+        world.sprites[2] = SpriteT {
+            x: 1_001,
+            ..SpriteT::default()
+        };
+        world.sprites[7] = SpriteT {
+            x: 1_000,
+            pal: 21,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player {
+            sprite_i: 1,
+            oposx: 10_000,
+            steroids_amount: 400,
+            got_access: 1,
+            ..Player::default()
+        };
+        let mut coop_players = vec![Player {
+            sprite_i: 2,
+            oposx: 1_001,
+            steroids_amount: 200,
+            got_access: 2,
+            ..Player::default()
+        }];
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.player_inventory_condition(0, 200, 0, 7), Ok(false));
+        assert_eq!(access.player_inventory_condition(0, 201, 0, 7), Ok(true));
+        assert_eq!(access.player_inventory_condition(6, 0, 0, 7), Ok(true));
+        access.coop_players[0].got_access = 1;
+        assert_eq!(access.player_inventory_condition(6, 99, 0, 7), Ok(false));
+    }
+
+    #[test]
+    fn eduke_weapon_and_inventory_commands_target_nearest_player() {
+        let mut world = BuildWorld::new();
+        world.sprites[7] = SpriteT {
+            x: 1_000,
+            pal: 21,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player {
+            sprite_i: 1,
+            oposx: 10_000,
+            ..Player::default()
+        };
+        let mut coop_players = vec![Player {
+            sprite_i: 2,
+            oposx: 1_001,
+            shield_amount: 80,
+            max_shield_amount: 100,
+            ..Player::default()
+        }];
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.player_weapon_op(0, 7, false, 1, 10), Ok(true));
+        assert_eq!(access.player_weapon_op(0, 7, true, 2, 8), Ok(true));
+        assert_eq!(access.player.ammo[1], 48);
+        assert_eq!(access.coop_players[0].ammo[1], 58);
+        assert_eq!(access.coop_players[0].ammo[2], 8);
+        assert!(access.coop_players[0].gotweapon[2]);
+        assert_eq!(access.coop_players[0].curr_weapon, 2);
+
+        access
+            .set_member(EdStructKind::Player, 1, "max_ammo_amount", Some(2), 12)
+            .expect("modifiable per-player ammo cap");
+        assert_eq!(
+            access.get_member(EdStructKind::Player, 1, "max_ammo_amount", Some(2)),
+            Ok(12)
+        );
+        assert_eq!(access.player_weapon_op(0, 7, false, 2, 20), Ok(true));
+        assert_eq!(access.coop_players[0].ammo[2], 12);
+        assert_eq!(access.player_weapon_op(0, 7, false, 2, 1), Ok(false));
+        assert_eq!(access.add_player_inventory(0, 7, 4, 1_600), Ok(()));
+        assert_eq!(access.coop_players[0].jetpack_amount, 1_600);
+        assert_eq!(access.coop_players[0].inventory_icon, 4);
+        assert_eq!(access.coop_players[0].refresh_inventory, 1);
+        assert_eq!(access.add_player_inventory(0, 7, 1, 25), Ok(()));
+        assert_eq!(access.coop_players[0].shield_amount, 100);
+        assert_eq!(access.add_player_inventory(0, 7, 1, -150), Ok(()));
+        assert_eq!(access.coop_players[0].shield_amount, -50);
+        assert_eq!(access.add_player_inventory(0, 7, 6, 0), Ok(()));
+        assert_eq!(access.coop_players[0].got_access, 2);
+    }
+
+    #[test]
+    fn eduke_ifsquished_uses_sector_gap_and_queues_the_palette_one_hit() {
+        let mut world = BuildWorld::new();
+        world.sectors.push(SectorT {
+            floorz: 11 << 8,
+            ..SectorT::default()
+        });
+        world.sprites[7] = SpriteT {
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = vec![ActorConTemps::default(); 8];
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(access.actor_squished(7), Ok(true));
+        access.world.sectors[0].floorz = 12 << 8;
+        assert_eq!(access.actor_squished(7), Ok(false));
+
+        access.world.sprites[7].pal = 1;
+        access.world.sectors[0].floorz = 31 << 8;
+        assert_eq!(access.actor_squished(7), Ok(false));
+        assert_eq!(access.actor_temps[7].hit_picnum, crate::shoot::SHOTSPARK1);
+        assert_eq!(access.actor_temps[7].hit_extra, 1);
+        assert_eq!(access.actor_hit_by_weapon(7), Ok(true));
+        assert_eq!(access.world.sprites[7].extra, -1);
+        assert_eq!(access.actor_temps[7].hit_extra, -1);
+    }
+
+    #[test]
+    fn eduke_gameplay_random_commands_share_the_session_seed() {
+        let image = crate::con::compile_with_options(
+            b"var seed_before 0 0\nvar guaranteed_branch 0 0\nvar random_value 0 0\nvar seed_after_draws 0 0\nappendevent EVENT_GAME\nset seed_before randomseed\nifrnd 255 add guaranteed_branch 1\nrand random_value 100\nset seed_after_draws randomseed\nset randomseed 900\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+        session.randomseed = 123;
+        let mut expected_seed = 123;
+        let _ = krand_step(&mut expected_seed);
+        let random = krand_step(&mut expected_seed) & 0x7fff;
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 0, 64, 4)
+            .expect("run random event against live session state");
+
+        let vm = session.eduke_vm_state.as_ref().expect("VM remains loaded");
+        assert_eq!(vm.get_variable("seed_before", 0, 0), Ok(123));
+        assert_eq!(vm.get_variable("guaranteed_branch", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("random_value", 0, 0), Ok(random % 101));
+        assert_eq!(vm.get_variable("seed_after_draws", 0, 0), Ok(expected_seed));
+        assert_eq!(session.randomseed, 900);
+        assert_eq!(vm.get_variable("randomseed", 0, 0), Ok(900));
+    }
+
+    #[test]
+    fn eduke_killit_frees_actor_and_misc_sprites_but_hides_other_statuses() {
+        let image = crate::con::compile_with_options(
+            b"var should_not_run 0\nappendevent EVENT_GAME\nkillit\nset should_not_run 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        let misc = world.lists.insertsprite(0, crate::stat::STAT_MISC) as usize;
+        let standable = world.lists.insertsprite(0, crate::stat::STAT_STANDABLE) as usize;
+        for index in [actor, misc, standable] {
+            world.sprites[index] = SpriteT {
+                sectnum: 0,
+                xrepeat: 16,
+                yrepeat: 16,
+                ..SpriteT::default()
+            };
+        }
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        for index in [actor, misc, standable] {
+            session
+                .execute_eduke_event("EVENT_GAME", 0, index, 8, 4)
+                .expect("killit should apply through the live session adapter");
+        }
+
+        let world = session.world.as_ref().expect("live world");
+        assert_eq!(world.lists.sprite_stat[actor], MAXSTATUS as i16);
+        assert_eq!(world.lists.sprite_stat[misc], MAXSTATUS as i16);
+        assert_eq!(
+            world.lists.sprite_stat[standable],
+            crate::stat::STAT_STANDABLE
+        );
+        assert_eq!(world.sprites[standable].xrepeat, 0);
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("should_not_run", 0, actor),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn eduke_killit_event_can_cancel_actor_deletion() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_KILLIT\nset RETURN 1\nendevent\nappendevent EVENT_GAME\nkillit\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, actor, 16, 4)
+            .expect("kill event should run before deletion");
+
+        let world = session.world.as_ref().expect("live world");
+        assert_eq!(world.lists.sprite_stat[actor], crate::stat::STAT_ACTOR);
+        assert_eq!(world.sprites[actor].xrepeat, 16);
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("RETURN", 0, actor),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn eduke_sound_commands_reach_the_positioned_audio_queue() {
+        let mut image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\nsound 10\nsoundonce 11\nglobalsound 12\nstopsound 13\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        image.sounds.resize(14, None);
+        for sound in 10..=13 {
+            image.sounds[sound] = Some(crate::con::SoundDef::default());
+        }
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            x: 100,
+            y: 200,
+            z: 300,
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+        session.player.sprite_i = actor as i16;
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, actor, 16, 4)
+            .expect("dispatch EDuke32 sound commands");
+        let script = session.script.as_ref().unwrap();
+        let world = session.world.as_ref().unwrap();
+        collect_actor_sound_events(
+            &mut session.actor_temps,
+            &mut session.pending_actor_sound_events,
+            &world.sprites[..],
+            &session.player,
+            script,
+        );
+        let events = session.drain_sound_events();
+
+        assert_eq!(events.len(), 4, "events={events:?}");
+        assert_eq!(events[0].sound_id, 10);
+        assert_eq!(events[0].source_id, Some(actor as u64));
+        assert!(!events[0].play_once && !events[0].global && !events[0].stop);
+        assert_eq!(events[1].sound_id, 11);
+        assert!(events[1].play_once);
+        assert_eq!(events[2].sound_id, 13);
+        assert!(events[2].stop);
+        assert_eq!(events[3].sound_id, 12);
+        assert_eq!(
+            events[3].position,
+            [
+                session.player.posx,
+                session.player.posy,
+                session.player.posz
+            ]
+        );
+        assert_eq!(events[3].source_id, Some(actor as u64));
+    }
+
+    #[test]
+    fn eduke_action_move_and_ai_update_live_actor_script_state() {
+        let image = crate::con::compile_with_options(
+            b"action ACT_IDLE 0 4 1 1 10\nmove MOVE_RUN 32 0\nai AI_RUN ACT_IDLE MOVE_RUN 8\nappendevent EVENT_GAME\naction ACT_IDLE\nmove MOVE_RUN 0\nai AI_RUN\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let action = image.labels.get("ACT_IDLE").expect("action label").value;
+        let movement = image.labels.get("MOVE_RUN").expect("move label").value;
+        let ai = image.labels.get("AI_RUN").expect("AI label").value;
+        let mut expected_seed = 1234;
+        let expected_angle =
+            (room_build_engine::numeric::krand_step(&mut expected_seed) & 2047) as i16;
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.randomseed = 1234;
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, actor, 16, 4)
+            .expect("run actor action/move/AI commands");
+
+        let temps = session.actor_temps.get(actor).expect("actor temps");
+        assert_eq!(temps.g_t, [0, movement, 0, 0, action, ai]);
+        assert_eq!(temps.script_pointer_mask & 0b111, 0b111);
+        assert_eq!(temps.pending_ang, Some(expected_angle));
+        assert_eq!(session.randomseed, expected_seed);
+        assert_eq!(session.world.as_ref().unwrap().sprites[actor].hitag, 8);
+    }
+
+    #[test]
+    fn eduke_actor_commands_update_live_sprite_and_actor_temps() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\naddkills 3\nstrength 77\naddstrength 5\ncstat 8\ncstator 4\ncactor 101\nspritepal 7\ngetlastpal\nclipdist 32\nsizeat 20 30\nsizeto 22 10\nfall\nresetactioncount\nresetcount\ncount 12\nsleeptime 9\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            picnum: 100,
+            pal: 2,
+            xrepeat: 10,
+            yrepeat: 12,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        session
+            .actor_temps
+            .resize_with(actor + 1, ActorConTemps::default);
+        session.actor_temps[actor].g_t = [9, 0, 4, 7, 0, 0];
+        session.actor_temps[actor].actorstayput = 12;
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, actor, 32, 4)
+            .expect("run actor field, size and fall commands");
+
+        let sprite = &session.world.as_ref().unwrap().sprites[actor];
+        assert_eq!(sprite.extra, 82);
+        assert_eq!(sprite.cstat, 12);
+        assert_eq!(sprite.picnum, 101);
+        assert_eq!(sprite.pal, 2);
+        assert_eq!(sprite.clipdist, 32);
+        assert_eq!((sprite.xrepeat, sprite.yrepeat), (21, 29));
+        let temps = &session.actor_temps[actor];
+        assert_eq!(temps.tempang, 0);
+        assert_eq!(temps.g_t, [12, 0, 0, 7, 0, 0]);
+        assert_eq!(temps.actorstayput, -1);
+        assert_eq!(temps.timetosleep, 9);
+        assert_eq!(session.player.actors_killed, 3);
+    }
+
+    #[test]
+    fn eduke_event_game_runs_at_the_end_of_each_tic() {
+        let image = crate::con::compile_with_options(
+            b"var pregame_events 0 0\nvar tic_events 0 0\nvar event_order 0 0\nappendevent EVENT_PREGAME\nadd pregame_events 1\nset event_order 1\nendevent\nappendevent EVENT_GAME\nadd tic_events 1\nadd event_order 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.player.sprite_i = -1;
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[actor] = SpriteT {
+            picnum: 100,
+            xrepeat: 16,
+            yrepeat: 16,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session.tick_inputs_sim(&[]);
+
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("tic_events", 0, actor),
+            Ok(1)
+        );
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("pregame_events", 0, actor),
+            Ok(1)
+        );
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("event_order", 0, actor),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn eduke_pre_world_and_world_run_once_without_active_sprites() {
+        let image = crate::con::compile_with_options(
+            b"var preworld_events 0 0\nvar world_events 0 0\nvar world_actor 0 0\nvar world_player 0 0\nappendevent EVENT_PREWORLD\nadd preworld_events 1\nset world_actor THISACTOR\nset world_player THISPLAYER\nendevent\nappendevent EVENT_WORLD\nadd world_events 1\nset world_actor THISACTOR\nset world_player THISPLAYER\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+
+        session.tick_inputs_sim(&[]);
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("preworld_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("world_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("world_actor", 0, 0), Ok(-1));
+        assert_eq!(vm.get_variable("world_player", 0, 0), Ok(-1));
+    }
+
+    #[test]
+    fn eduke_global_events_bracket_per_sprite_events() {
+        let image = crate::con::compile_with_options(
+            b"var phase 0 0\nvar preworld_events 0 0\nvar pregame_events 0 0\nvar pregame_phase 0 0\nvar game_events 0 0\nvar world_events 0 0\nvar world_phase 0 0\nvar world_actor 0 0\nappendevent EVENT_PREWORLD\nadd preworld_events 1\nset phase 1\nendevent\nappendevent EVENT_PREGAME\nadd pregame_events 1\nset pregame_phase phase\nendevent\nappendevent EVENT_GAME\nadd game_events 1\nset phase 2\nendevent\nappendevent EVENT_WORLD\nadd world_events 1\nset world_phase phase\nset world_actor THISACTOR\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        for x in [100, 300] {
+            let actor = world.lists.insertsprite(0, 1) as usize;
+            world.sprites[actor] = SpriteT {
+                picnum: 100,
+                x,
+                xrepeat: 16,
+                yrepeat: 16,
+                sectnum: 0,
+                ..SpriteT::default()
+            };
+        }
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session.tick_inputs_sim(&[]);
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("preworld_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("pregame_events", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("pregame_phase", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("game_events", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("world_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("world_phase", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("world_actor", 0, 0), Ok(-1));
+    }
+
+    #[test]
+    fn eduke_processinput_runs_for_each_seat_and_mutates_sync_records() {
+        let image = crate::con::compile_with_options(
+            b"var input_events 0 0\ngamevar seat_events 0 1\nappendevent EVENT_PROCESSINPUT\nadd input_events 1\nadd seat_events 1\nsetinput[THISPLAYER].fvel 123\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+        session.coop_players.push(Player::default());
+        let mut inputs = vec![DukeInput::default(); 2];
+
+        session.run_eduke_processinput_events(&mut inputs);
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("input_events", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("seat_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("seat_events", 1, 0), Ok(1));
+        assert_eq!(inputs[0].fvel, 123);
+        assert_eq!(inputs[1].fvel, 123);
+    }
+
+    #[test]
+    fn eduke_prelevel_resets_actor_values_before_initialization() {
+        let image = crate::con::compile_with_options(
+            b"gamevar actor_value 7 2\nvar prelevel_events 0 0\nvar prelevel_actor 0 0\nvar prelevel_player 0 0\nvar actor_default 0 0\nvar load_events 0 0\nvar load_player 0 0\nvar spawn_events 0 0\nvar enterlevel_events 0 0\nvar level_sectors 0 0\nvar level_walls 0 0\nappendevent EVENT_PRELEVEL\nadd prelevel_events 1\nset prelevel_actor THISACTOR\nset prelevel_player THISPLAYER\ngetactorvar[4].actor_value actor_default\nendevent\nappendevent EVENT_LOADACTOR\nadd load_events 1\nset load_player THISPLAYER\nendevent\nappendevent EVENT_SPAWN\nadd spawn_events 1\nendevent\nappendevent EVENT_ENTERLEVEL\nadd enterlevel_events 1\nset level_sectors NUMSECTORS\nset level_walls NUMWALLS\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session
+            .eduke_vm_state
+            .as_mut()
+            .unwrap()
+            .set_variable("actor_value", 0, 4, 99)
+            .expect("set previous-level actor value");
+
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let actor = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[actor] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("prelevel_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("prelevel_actor", 0, 0), Ok(-1));
+        assert_eq!(vm.get_variable("prelevel_player", 0, 0), Ok(-1));
+        assert_eq!(vm.get_variable("actor_default", 0, 0), Ok(7));
+        assert_eq!(vm.get_variable("load_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("load_player", 0, 0), Ok(-1));
+        assert_eq!(vm.get_variable("spawn_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("enterlevel_events", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("level_sectors", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("level_walls", 0, 0), Ok(0));
+    }
+
+    #[test]
+    fn eduke_enterlevel_return_iterates_the_local_player_roster() {
+        let image = crate::con::compile_with_options(
+            b"gamevar enterlevel_seats 0 1\nappendevent EVENT_ENTERLEVEL\nadd enterlevel_seats 1\nset RETURN 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+        session.coop_players.push(Player::default());
+        session.coop_players.push(Player::default());
+
+        session.run_eduke_enterlevel_event();
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("enterlevel_seats", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("enterlevel_seats", 1, 0), Ok(1));
+        assert_eq!(vm.get_variable("enterlevel_seats", 2, 0), Ok(1));
+    }
+
+    #[test]
+    fn eduke_runtime_spawn_runs_egs_and_spawn_events() {
+        let image = crate::con::compile_with_options(
+            b"var egs_events 0 0\nvar spawn_events 0 0\nappendevent EVENT_GAME\nespawn 9000\nendevent\nappendevent EVENT_EGS\nadd egs_events 1\nsetactor[THISACTOR].pal 2\nendevent\nappendevent EVENT_SPAWN\nadd spawn_events 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        let initial_spawns = session
+            .eduke_vm_state
+            .as_ref()
+            .unwrap()
+            .get_variable("spawn_events", 0, 0)
+            .unwrap();
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("game hook and synchronous spawn events");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("egs_events", 0, 0), Ok(1));
+        assert_eq!(
+            vm.get_variable("spawn_events", 0, 0),
+            Ok(initial_spawns + 1)
+        );
+        let world = session.world.as_ref().unwrap();
+        let child = world
+            .sprites
+            .iter()
+            .position(|sprite| sprite.picnum == 9000)
+            .expect("spawned child sprite");
+        assert_eq!(world.sprites[child].pal, 2);
+    }
+
+    #[test]
+    fn eduke_debris_spawns_live_scraps_and_advances_shared_rng_in_egs_order() {
+        let image = crate::con::compile_with_options(
+            b"define SCRAP1 2400\nappendevent EVENT_GAME\ndebris SCRAP1 2\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            x: 1000,
+            y: -2000,
+            z: 40000,
+            shade: -4,
+            pal: 5,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        let initial_seed = 0x1357_9bdf;
+        session.randomseed = initial_seed;
+        let mut expected_seed = initial_seed;
+        for _ in 0..18 {
+            krand_step(&mut expected_seed);
+        }
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("debris command executes against the live actor");
+
+        assert_eq!(session.randomseed, expected_seed);
+        let world = session.world.as_ref().unwrap();
+        let scraps = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC
+                    && (2400..=2402).contains(&sprite.picnum)
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(scraps.len(), 2);
+        for scrap in scraps {
+            assert_eq!(scrap.owner, parent as i16);
+            assert_eq!(scrap.shade, -4);
+            assert_eq!(scrap.pal, 5);
+            assert_eq!(scrap.sectnum, 0);
+            assert!((32..=47).contains(&scrap.xrepeat));
+            assert!((32..=47).contains(&scrap.yrepeat));
+        }
+    }
+
+    #[test]
+    fn eduke_guts_spawns_palette_matched_fragments_with_player_owner() {
+        let image = crate::con::compile_with_options(
+            b"define GORE_TILE 9000\nappendevent EVENT_GAME\nguts GORE_TILE 2\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            floorz: 65_536,
+            ..SectorT::default()
+        });
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 1680,
+            sectnum: 0,
+            x: 1000,
+            y: -2000,
+            z: 40_000,
+            pal: 6,
+            xrepeat: 8,
+            yrepeat: 8,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        session.player.sprite_i = 77;
+        session.world.as_mut().unwrap().sprites[parent].xrepeat = 8;
+        let initial_seed = 0x2468_ace1;
+        session.randomseed = initial_seed;
+        let mut expected_seed = initial_seed;
+        for _ in 0..12 {
+            krand_step(&mut expected_seed);
+        }
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("guts command executes against the live actor");
+
+        assert_eq!(session.randomseed, expected_seed);
+        let world = session.world.as_ref().unwrap();
+        let fragments = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC && sprite.picnum == 9000
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(fragments.len(), 2);
+        for fragment in fragments {
+            assert_eq!(fragment.owner, 77);
+            assert_eq!(fragment.shade, -32);
+            assert_eq!(fragment.pal, 6);
+            assert_eq!(fragment.sectnum, 0);
+            assert_eq!(fragment.xrepeat, 8);
+            assert_eq!(fragment.yrepeat, 8);
+        }
+    }
+
+    #[test]
+    fn eduke_lotsofglass_spawns_rotating_fragments_and_advances_rng() {
+        let image = crate::con::compile_with_options(
+            b"define GLASSPIECES 9000\nappendevent EVENT_GAME\nlotsofglass 3\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            x: 1000,
+            y: -2000,
+            z: 40_000,
+            pal: 4,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        let initial_seed = 0x3579_bdf1;
+        session.randomseed = initial_seed;
+        let mut expected_seed = initial_seed;
+        for _ in 0..15 {
+            krand_step(&mut expected_seed);
+        }
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("lotsofglass command executes against the live actor");
+
+        assert_eq!(session.randomseed, expected_seed);
+        let world = session.world.as_ref().unwrap();
+        let fragments = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC
+                    && (9000..=9002).contains(&sprite.picnum)
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(fragments.len(), 3);
+        for fragment in fragments {
+            assert_eq!(fragment.owner, parent as i16);
+            assert_eq!(fragment.pal, 4);
+            assert_eq!(fragment.sectnum, 0);
+            assert_eq!(fragment.xrepeat, 36);
+            assert_eq!(fragment.yrepeat, 36);
+            assert!((0..=15).contains(&fragment.shade));
+        }
+    }
+
+    #[test]
+    fn eduke_money_mail_paper_spawn_live_sprites_and_advance_rng() {
+        let image = crate::con::compile_with_options(
+            b"define MONEY 9000\ndefine MAIL 9001\ndefine PAPER 9002\nappendevent EVENT_GAME\nmoney 2\nmail 1\npaper 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("money"), None);
+        assert_eq!(image.eduke_noop_heads.get("mail"), None);
+        assert_eq!(image.eduke_noop_heads.get("paper"), None);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            x: 1000,
+            y: -2000,
+            z: 40_000,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        let initial_seed = 0x2468_ace1;
+        session.randomseed = initial_seed;
+        let mut expected_seed = initial_seed;
+        for _ in 0..12 {
+            krand_step(&mut expected_seed);
+        }
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("item spray commands execute against the live actor");
+
+        assert_eq!(session.randomseed, expected_seed);
+        let world = session.world.as_ref().unwrap();
+        for (tile, expected_count) in [(9000, 2), (9001, 1), (9002, 1)] {
+            let sprites = world
+                .sprites
+                .iter()
+                .enumerate()
+                .filter(|(index, sprite)| {
+                    world.lists.sprite_stat[*index] == crate::stat::STAT_MISC
+                        && sprite.picnum == tile
+                })
+                .map(|(_, sprite)| *sprite)
+                .collect::<Vec<_>>();
+            assert_eq!(sprites.len(), expected_count);
+            for item in sprites {
+                assert_eq!(item.owner, 0);
+                assert_eq!(item.shade, -32);
+                assert_eq!(item.sectnum, 0);
+                assert_eq!(item.xrepeat, 8);
+                assert_eq!(item.yrepeat, 8);
+                assert_eq!(item.cstat & !12, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn eduke_ezshootvar_spawns_defined_projectile_and_returns_its_id() {
+        let image = crate::con::compile_with_options(
+            b"define GIB_TILE 9000\ndefine GIB_SPEED 320\ndefine TRAIL_TILE 9002\ndefineprojectile GIB_TILE PROJ_VEL GIB_SPEED\ndefineprojectile GIB_TILE PROJ_VEL_MULT 3\ndefineprojectile GIB_TILE PROJ_XREPEAT 7\ndefineprojectile GIB_TILE PROJ_YREPEAT 8\ndefineprojectile GIB_TILE PROJ_CLIPDIST 12\ndefineprojectile GIB_TILE PROJ_CSTAT 257\ndefineprojectile GIB_TILE PROJ_SHADE -22\ndefineprojectile GIB_TILE PROJ_PAL 6\ndefineprojectile GIB_TILE PROJ_EXTRA 3\ndefineprojectile GIB_TILE PROJ_WORKSLIKE 524294\ndefine NOCLIP_TILE 9001\ndefineprojectile NOCLIP_TILE PROJ_VEL GIB_SPEED\ndefineprojectile NOCLIP_TILE PROJ_CLIPDIST 12\ndefineprojectile NOCLIP_TILE PROJ_WORKSLIKE 2\ndefineprojectile GIB_TILE PROJ_DROP -32\ndefineprojectile GIB_TILE PROJ_HITRADIUS 512\ndefineprojectile GIB_TILE PROJ_BOUNCES 3\ndefineprojectile GIB_TILE PROJ_TRAIL TRAIL_TILE\ndefineprojectile GIB_TILE PROJ_TNUM 2\ndefineprojectile GIB_TILE PROJ_TXREPEAT 9\ndefineprojectile GIB_TILE PROJ_TYREPEAT 10\ndefineprojectile GIB_TILE PROJ_TOFFSET 1\ndefineprojectile GIB_TILE PROJ_RANGE 30\ndefineprojectile GIB_TILE PROJ_SPAWNS -1\ndefineprojectile GIB_TILE PROJ_ISOUND 75\ndefineprojectile GIB_TILE PROJ_SOUND 76\nvar fired_sprite -1 0\nvar fired_radius 0 0\nvar fired_bounces 0 0\nvar fired_trail 0 0\nvar fired_tnum 0 0\nvar fired_range 0 0\nvar fired_velmult 0 0\nvar no_clip_sprite -1 0\nappendevent EVENT_GAME\nezshootvar 91 GIB_TILE\nset fired_sprite RETURN\ngetthisprojectile[RETURN].hitradius fired_radius\nsetthisprojectile[RETURN].hitradius 700\ngetthisprojectile[RETURN].bounces fired_bounces\nsetthisprojectile[RETURN].bounces 7\ngetthisprojectile[RETURN].trail fired_trail\nsetthisprojectile[RETURN].trail 9003\ngetthisprojectile[RETURN].tnum fired_tnum\ngetthisprojectile[RETURN].range fired_range\nsetthisprojectile[RETURN].range 45\ngetthisprojectile[RETURN].velmult fired_velmult\nsetthisprojectile[RETURN].velmult 4\neshoot NOCLIP_TILE\nset no_clip_sprite RETURN\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT::default());
+        let parent = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[parent] = SpriteT {
+            picnum: 100,
+            sectnum: 0,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, parent, 128, 16)
+            .expect("ezshootvar executes and queues lifecycle events");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        let child = vm.get_variable("fired_sprite", 0, parent).unwrap();
+        assert_eq!(vm.get_variable("fired_radius", 0, parent), Ok(512));
+        assert_eq!(vm.get_variable("fired_bounces", 0, parent), Ok(3));
+        assert_eq!(vm.get_variable("fired_trail", 0, parent), Ok(9002));
+        assert_eq!(vm.get_variable("fired_tnum", 0, parent), Ok(2));
+        assert_eq!(vm.get_variable("fired_range", 0, parent), Ok(30));
+        assert_eq!(vm.get_variable("fired_velmult", 0, parent), Ok(3));
+        assert!(child >= 0);
+        let child_index = child as usize;
+        let world = session.world.as_ref().unwrap();
+        let projectile = world.sprites[child_index];
+        assert_eq!(projectile.picnum, 9000);
+        assert_eq!(projectile.owner, parent as i16);
+        assert_eq!(projectile.xvel, 320);
+        assert_eq!(projectile.zvel, 91);
+        assert_eq!(projectile.xrepeat, 7);
+        assert_eq!(projectile.yrepeat, 8);
+        assert_eq!(projectile.clipdist, 12);
+        assert_eq!(projectile.cstat, 257);
+        assert_eq!(projectile.shade, -22);
+        assert_eq!(projectile.pal, 6);
+        assert_eq!(projectile.extra, 3);
+        assert_eq!(projectile.yvel, 7);
+        assert_eq!(
+            world.lists.sprite_stat[child_index],
+            crate::stat::STAT_PROJECTILE
+        );
+        assert_eq!(
+            session.actor_temps[child_index].projectile_workslike,
+            524_294
+        );
+        assert_eq!(session.actor_temps[child_index].projectile_drop, -32);
+        assert_eq!(session.actor_temps[child_index].projectile_hitradius, 700);
+        assert_eq!(session.actor_temps[child_index].projectile_trail, 9003);
+        assert_eq!(session.actor_temps[child_index].projectile_tnum, 2);
+        assert_eq!(session.actor_temps[child_index].projectile_range, 45);
+        assert_eq!(session.actor_temps[child_index].projectile_velmult, 4);
+        assert_eq!(session.actor_temps[child_index].projectile_isound, 75);
+        assert_eq!(session.actor_temps[child_index].projectile_sound, 76);
+        assert_eq!(session.actor_temps[parent].pending_actor_sounds, [76]);
+        assert_eq!(session.actor_temps[child_index].projectile_spawns, -1);
+        let no_clip = vm.get_variable("no_clip_sprite", 0, parent).unwrap() as usize;
+        assert_eq!(session.world.as_ref().unwrap().sprites[no_clip].clipdist, 4);
+    }
+
+    #[test]
+    fn eduke_defined_hitscan_shoot_uses_live_range_and_queues_impact_damage() {
+        let image = crate::con::compile_with_options(
+            b"define BULLET 9000\ndefine DECAL 9003\ndefine TRAIL 9004\ndefineprojectile BULLET PROJ_WORKSLIKE 33\ndefineprojectile BULLET PROJ_RANGE 12000\ndefineprojectile BULLET PROJ_EXTRA 12\ndefineprojectile BULLET PROJ_EXTRA_RAND 0\ndefineprojectile BULLET PROJ_DECAL DECAL\ndefineprojectile BULLET PROJ_XREPEAT 5\ndefineprojectile BULLET PROJ_YREPEAT 6\ndefineprojectile BULLET PROJ_TRAIL TRAIL\ndefineprojectile BULLET PROJ_TNUM 2\ndefineprojectile BULLET PROJ_TXREPEAT 9\ndefineprojectile BULLET PROJ_TYREPEAT 10\ndefineprojectile BULLET PROJ_TOFFSET 1\nvar fired_sprite -1 0\nappendevent EVENT_GAME\nezshootvar 0 BULLET\nset fired_sprite RETURN\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session.set_tile_meta(vec![TileZMeta::default(); 9_005]);
+        session.tile_meta[9_001].width = 32;
+        session.tile_meta[9_001].height = 32;
+        session.tile_meta[9_002].width = 32;
+        session.tile_meta[9_002].height = 32;
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        assert_eq!(
+            session
+                .projectile_defs
+                .get(&9_000)
+                .and_then(|properties| properties.get("decal")),
+            Some(&9_003)
+        );
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -100_000,
+            floorz: 100_000,
+            lotag: 2,
+            ..SectorT::default()
+        });
+        world.walls.extend([
+            WallT {
+                x: -10_000,
+                y: -10_000,
+                point2: 1,
+                cstat: 64,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: -10_000,
+                point2: 2,
+                cstat: 64,
+                ..WallT::default()
+            },
+            WallT {
+                x: 10_000,
+                y: 10_000,
+                point2: 3,
+                cstat: 64,
+                ..WallT::default()
+            },
+            WallT {
+                x: -10_000,
+                y: 10_000,
+                point2: 0,
+                cstat: 64,
+                ..WallT::default()
+            },
+        ]);
+        let shooter = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[shooter] = SpriteT {
+            x: 1_000,
+            y: 1_000,
+            z: 0,
+            sectnum: 0,
+            picnum: crate::shoot::APLAYER,
+            xrepeat: 16,
+            yrepeat: 16,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let target = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        world.sprites[target] = SpriteT {
+            x: 2_000,
+            y: 1_000,
+            z: 0,
+            sectnum: 0,
+            picnum: 9_002,
+            xrepeat: 32,
+            yrepeat: 32,
+            cstat: 257,
+            extra: 100,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, shooter, 128, 16)
+            .expect("defined hitscan fires against the live world");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        let fired = vm.get_variable("fired_sprite", 0, shooter).unwrap();
+        assert!(fired >= 0);
+        let fired = fired as usize;
+        let world = session.world.as_ref().unwrap();
+        assert_eq!(world.sprites[fired].x, 2_000);
+        assert_eq!(world.sprites[fired].xrepeat, 0);
+        let bubbles = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC
+                    && sprite.picnum == crate::spawn::WATERBUBBLE
+            })
+            .count();
+        assert_eq!(bubbles, 1);
+        assert_eq!(
+            session.actor_temps[target].hit_picnum, 9_000,
+            "fired id={fired} sprite={:?}, target id={target} sprite={:?}, target temps={:?}",
+            world.sprites[fired], world.sprites[target], session.actor_temps[target]
+        );
+        assert_eq!(session.actor_temps[target].hit_extra, 12);
+
+        session.world.as_mut().unwrap().sprites[target].cstat = 0;
+        session.world.as_mut().unwrap().sectors[0].lotag = 0;
+        session
+            .execute_eduke_event("EVENT_GAME", 1, shooter, 128, 16)
+            .expect("defined hitscan adds its configured wall decal");
+        let world = session.world.as_ref().unwrap();
+        let decals = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC && sprite.picnum == 9003
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(decals.len(), 1);
+        assert_eq!(decals[0].xrepeat, 5);
+        assert_eq!(decals[0].yrepeat, 6);
+        assert_eq!(decals[0].cstat, 16);
+        assert_eq!(
+            decals[0].x, 9_999,
+            "wall clipping nudges the decal onto its surface"
+        );
+        let trails = world
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(index, sprite)| {
+                world.lists.sprite_stat[*index] == crate::stat::STAT_MISC && sprite.picnum == 9004
+            })
+            .map(|(_, sprite)| *sprite)
+            .collect::<Vec<_>>();
+        assert_eq!(trails.len(), 4, "two trail sprites for each hitscan impact");
+        assert!(
+            trails
+                .iter()
+                .all(|trail| { trail.xrepeat == 9 && trail.yrepeat == 10 && trail.z == -512 }),
+            "trail sprites: {trails:?}"
+        );
+    }
+
+    #[test]
+    fn eduke_shoot_applies_full_player_autoaim_and_respects_noaim_flag() {
+        let image = crate::con::compile_with_options(
+            b"define GIB_TILE 9000\ndefine NOAIM_TILE 9001\ndefine GIB_SPEED 320\ndefineprojectile GIB_TILE PROJ_VEL GIB_SPEED\ndefineprojectile GIB_TILE PROJ_WORKSLIKE 2\ndefineprojectile NOAIM_TILE PROJ_VEL GIB_SPEED\ndefineprojectile NOAIM_TILE PROJ_WORKSLIKE 4098\nvar aimed_sprite -1 0\nvar noaim_sprite -1 0\nappendevent EVENT_GAME\neshoot GIB_TILE\nset aimed_sprite RETURN\neshoot NOAIM_TILE\nset noaim_sprite RETURN\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session.set_tile_meta(vec![TileZMeta::default(); 1406]);
+        session.tile_meta[1405].height = 10;
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -100_000,
+            floorz: 100_000,
+            ..SectorT::default()
+        });
+        let shooter = world.lists.insertsprite(0, crate::stat::STAT_PLAYER) as usize;
+        world.sprites[shooter] = SpriteT {
+            picnum: crate::shoot::APLAYER,
+            sectnum: 0,
+            xrepeat: 40,
+            yrepeat: 40,
+            cstat: 257,
+            x: 100,
+            y: 100,
+            z: 20_000,
+            ang: 0,
+            ..SpriteT::default()
+        };
+        let target = world.lists.insertsprite(0, crate::stat::STAT_PLAYER) as usize;
+        world.sprites[target] = SpriteT {
+            picnum: crate::shoot::APLAYER,
+            sectnum: 0,
+            xrepeat: 40,
+            yrepeat: 40,
+            cstat: 257,
+            extra: 100,
+            x: 2_100,
+            y: 228,
+            z: 19_000,
+            ..SpriteT::default()
+        };
+        session.set_world_with_skill(world, 2);
+        let world = session.world.as_mut().unwrap();
+        world
+            .lists
+            .changespritestat(shooter as i16, crate::stat::STAT_PLAYER);
+        world
+            .lists
+            .changespritestat(target as i16, crate::stat::STAT_PLAYER);
+        world.sprites[shooter].xrepeat = 40;
+        world.sprites[shooter].yrepeat = 40;
+        world.sprites[shooter].cstat = 257;
+        world.sprites[target].xrepeat = 40;
+        world.sprites[target].yrepeat = 40;
+        world.sprites[target].cstat = 257;
+        world.sprites[target].extra = 100;
+        session.player.sprite_i = shooter as i16;
+        session.player.auto_aim = 2;
+        session.player.horiz = 100;
+        let world = session.world.as_ref().unwrap();
+        assert_eq!(
+            crate::shoot::aim(
+                &world.sprites[shooter],
+                crate::shoot::AUTO_AIM_ANGLE,
+                true,
+                &world.lists,
+                &world.sprites[..],
+                &world.sectors,
+                &world.walls,
+                session.script.as_ref().unwrap().actortype.as_slice(),
+                Some(&session.player),
+            ),
+            target as i16,
+            "target is visible and inside the auto-aim cone"
+        );
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, shooter, 128, 16)
+            .expect("player event fires the configured projectile");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        let aimed = vm.get_variable("aimed_sprite", 0, shooter).unwrap() as usize;
+        let noaim = vm.get_variable("noaim_sprite", 0, shooter).unwrap() as usize;
+        let world = session.world.as_ref().unwrap();
+        let projectile = &world.sprites[aimed];
+        assert_eq!(
+            projectile.ang,
+            room_build_engine::helpers::getangle(2_000, 128) as i16
+        );
+        assert_ne!(
+            projectile.zvel, 0,
+            "auto-aim supplies a vertical trajectory"
+        );
+        assert_eq!(world.sprites[noaim].ang, 0);
+        assert_eq!(world.sprites[noaim].zvel, 0);
+    }
+
+    #[test]
+    fn eduke_event_game_uses_closest_player_and_xors_noevents_flags() {
+        let image = crate::con::compile_with_options(
+            b"define NOEVENT_TILE 1\ndefine SFLAG_NOEVENTS 128\nspriteflags NOEVENT_TILE SFLAG_NOEVENTS\ngamevar seat_events 0 1\nappendevent EVENT_GAME\nadd seat_events 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session.set_tile_meta(vec![TileZMeta::default(); 2]);
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.player.sprite_i = 100;
+        session.player.oposx = 0;
+        let mut other_player = Player::default();
+        other_player.sprite_i = 101;
+        other_player.oposx = 1_000;
+        session.coop_players.push(other_player);
+
+        let mut world = BuildWorld::new();
+        for (tile, x) in [(0, 100), (0, 900), (1, 500), (1, 500)] {
+            let actor = world.lists.insertsprite(0, 1) as usize;
+            world.sprites[actor] = SpriteT {
+                picnum: tile,
+                x,
+                sectnum: 0,
+                ..SpriteT::default()
+            };
+        }
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+        session.actor_temps.resize_with(4, ActorConTemps::default);
+        // Static tile SFLAG_NOEVENTS is XORed with the per-sprite htflags;
+        // this sprite opts back in, while the next one remains excluded.
+        session.actor_temps[2].hit_flags = EDUKE_SFLAG_NOEVENTS as i32;
+
+        session.run_eduke_sprite_event("EVENT_GAME");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("seat_events", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("seat_events", 1, 0), Ok(1));
+    }
+
+    #[test]
+    fn eduke_actor_bodies_run_before_native_actor_movement() {
+        let image = crate::con::compile_with_options(
+            b"gamevar actor_ticks 0 2\nactor 100\nadd actor_ticks 1\nstrength 99\nenda\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            picnum: 100,
+            extra: 25,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+
+        session.run_eduke_actor_scripts(&mut []);
+        session.run_eduke_actor_scripts(&mut []);
+
+        let vm = session.eduke_vm_state.as_ref().expect("initialized VM");
+        assert_eq!(vm.get_variable("actor_ticks", 0, actor), Ok(2));
+        assert_eq!(session.world.as_ref().unwrap().sprites[actor].extra, 99);
+    }
+
+    #[test]
+    fn eduke_actor_body_consumes_live_weapon_damage() {
+        let image = crate::con::compile_with_options(
+            b"gamevar actor_hits 0 2\nactor 100\nifhitweapon\n  add actor_hits 1\nenda\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+
+        let mut world = BuildWorld::new();
+        let actor = world.lists.insertsprite(0, STAT_ACTOR) as usize;
+        world.sprites[actor] = SpriteT {
+            picnum: 100,
+            extra: 30,
+            ..SpriteT::default()
+        };
+        session.lists = world.lists.clone();
+        session.world = Some(world);
+        session
+            .actor_temps
+            .resize_with(actor + 1, ActorConTemps::default);
+        session.actor_temps[actor].hit_picnum = 2595;
+        session.actor_temps[actor].hit_extra = 10;
+
+        session.run_eduke_actor_scripts(&mut []);
+
+        let vm = session.eduke_vm_state.as_ref().expect("initialized VM");
+        assert_eq!(vm.get_variable("actor_hits", 0, actor), Ok(1));
+        assert_eq!(session.world.as_ref().unwrap().sprites[actor].extra, 20);
+        assert_eq!(session.actor_temps[actor].hit_extra, -1);
+    }
+
+    #[test]
+    fn eduke_quote_updates_player_hud_and_uses_runtime_quote_text() {
+        let image = crate::con::compile_with_options(
+            b"definequote 100 \"Hello from CON\"\nappendevent EVENT_GAME\nredefinequote 100 \"Runtime text\"\nquote 100\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 0, 16, 4)
+            .expect("run quote event with a live player context");
+
+        assert_eq!(session.player.quote_id, 100);
+        assert_eq!(session.player.quote_timer, 100);
+        assert_eq!(session.active_quote(), Some("Runtime text"));
+        assert_eq!(session.take_eduke_console_output(), ["Runtime text"]);
+    }
+
+    #[test]
+    fn eduke_palfrom_updates_selected_player_flash_state() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\npalfrom 48\n64 12 0\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("palfrom"), None);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+        session.coop_players.push(Player::default());
+
+        session
+            .execute_eduke_event("EVENT_GAME", 1, 0, 16, 4)
+            .expect("run palette flash for second player");
+
+        assert_eq!(session.player.palette_flash_tics, 0);
+        assert_eq!(session.coop_players[0].palette_flash_tics, 48);
+        assert_eq!(session.coop_players[0].palette_flash, [64, 12, 0]);
+    }
+
+    #[test]
+    fn eduke_player_quote_and_palette_members_are_live_and_indexed() {
+        let image = crate::con::compile_with_options(
+            b"definequote 100 \"Struct quote\"\nvar quote_id 0\nvar palette_blue 0\nvar game_palette 0\nvar previous_x 0\nvar bridge 0\nvar bridge_sprite 0\nappendevent EVENT_GAME\nsetplayer[THISACTOR].ftq 100\nsetplayer[THISACTOR].fta 77\nsetplayer[THISACTOR].pals 2 63\nsetplayer[THISACTOR].pals_time 20\nsetgamepalette 240\nsetplayer[THISACTOR].oposx 321\nsetplayer[THISACTOR].spritebridge 1\nsetplayer[THISACTOR].sbs 7\ngetplayer[THISACTOR].ftq quote_id\ngetplayer[THISACTOR].pals 2 palette_blue\ngetplayer[THISACTOR].palette game_palette\ngetplayer[THISACTOR].oposx previous_x\ngetplayer[THISACTOR].spritebridge bridge\ngetplayer[THISACTOR].sbs bridge_sprite\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 0, 32, 4)
+            .expect("write and read player quote/palette members");
+
+        assert_eq!(session.player.quote_id, 100);
+        assert_eq!(session.player.quote_timer, 77);
+        assert_eq!(session.player.palette_flash, [0, 0, 63]);
+        assert_eq!(session.player.palette_flash_tics, 20);
+        assert_eq!(session.player.game_palette, 240);
+        assert_eq!(session.player.oposx, 321);
+        assert!(session.player.sprite_bridge);
+        assert_eq!(session.player.bridge_sprite, 7);
+        assert_eq!(session.active_quote(), Some("Struct quote"));
+        let state = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(state.get_variable("quote_id", 0, 0), Ok(100));
+        assert_eq!(state.get_variable("palette_blue", 0, 0), Ok(63));
+        assert_eq!(state.get_variable("game_palette", 0, 0), Ok(240));
+        assert_eq!(state.get_variable("previous_x", 0, 0), Ok(321));
+        assert_eq!(state.get_variable("bridge", 0, 0), Ok(1));
+        assert_eq!(state.get_variable("bridge_sprite", 0, 0), Ok(7));
+    }
+
+    #[test]
+    fn eduke_session_drains_con_echo_output_for_the_host_console() {
+        let image = crate::con::compile_with_options(
+            b"var report_value 0\ndefine REPORT_QUOTE 100\ndefine REPORT_FORMAT 101\ndefinequote REPORT_QUOTE \"\"\ndefinequote REPORT_FORMAT \"ED2REF|session|%d\"\nappendevent EVENT_GAME\nset report_value 42\nqsprintf REPORT_QUOTE REPORT_FORMAT report_value\necho REPORT_QUOTE\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("initialize EDuke32 runtime state");
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 0, 32, 4)
+            .expect("run event and collect CON echo");
+
+        assert_eq!(session.take_eduke_console_output(), ["ED2REF|session|42"]);
+        assert!(session.take_eduke_console_output().is_empty());
+    }
+
+    #[test]
+    fn eduke_tiledata_access_reads_and_writes_bounded_metadata() {
+        let mut world = BuildWorld::new();
+        let script = ScriptImage::default();
+        let mut tile_meta = vec![TileZMeta::default(); 2];
+        tile_meta[1] = TileZMeta {
+            width: 64,
+            height: 48,
+            x_offset: -3,
+            y_offset: 5,
+            anim_frames: 7,
+            anim_speed: 4,
+            anim_type: 2,
+            game_flags: 0x0400_0044,
+        };
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.get_member(EdStructKind::TileData, 1, "xsize", None),
+            Ok(64)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::TileData, 1, "gameflags", None),
+            Ok(0x0400_0044)
+        );
+        access
+            .set_member(EdStructKind::TileData, 1, "yoffset", None, -8)
+            .unwrap();
+        access
+            .set_member(EdStructKind::TileData, 1, "gameflags", None, -1)
+            .unwrap();
+        assert_eq!(access.tile_meta[1].y_offset, -8);
+        assert_eq!(access.tile_meta[1].game_flags, u32::MAX);
+        assert!(matches!(
+            access.set_member(EdStructKind::TileData, 1, "animframes", None, 64),
+            Err(EdukeVmError::StructMemberValueOutOfRange { .. })
+        ));
+        assert!(matches!(
+            access.get_member(EdStructKind::TileData, 2, "xsize", None),
+            Err(EdukeVmError::InvalidStructId { .. })
+        ));
+    }
+
+    #[test]
+    fn eduke_actor_spriteext_members_execute_and_preserve_per_sprite_state() {
+        let image = crate::con::compile_with_options(
+            b"var old_mdflags 0\nvar old_blend 0\nvar old_alpha 0\nappendevent EVENT_GAME\ngetactor[3].mdflags old_mdflags\nsetactor[3].mdflags 48\ngetactor[3].blend old_blend\nsetactor[3].blend 3\ngetactor[3].alpha old_alpha\nsetactor[3].alpha 255\nsetactor[3].angoff -12\nsetactor[3].mdxoff -4096\nsetactor[3].mdyoff 512\nsetactor[3].mdzoff 1024\nsetactor[3].pitch 256\nsetactor[3].roll -512\nsetactor[3].xpanning 7\nsetactor[3].ypanning 11\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        session.actor_temps.resize_with(4, ActorConTemps::default);
+        session.actor_temps[3].sprite_ext.alpha = 12;
+        session.actor_temps[3].sprite_ext.mdflags = 16;
+        session.actor_temps[3].sprite_blend = 2;
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 3, 128, 8)
+            .expect("spriteext event executes");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("old_mdflags", 0, 3), Ok(16));
+        assert_eq!(vm.get_variable("old_blend", 0, 3), Ok(2));
+        assert_eq!(vm.get_variable("old_alpha", 0, 3), Ok(12));
+        let ext = &session.actor_temps[3].sprite_ext;
+        assert_eq!(ext.mdflags, 48);
+        assert_eq!(ext.alpha, 255);
+        assert_eq!(session.actor_temps[3].sprite_blend, 3);
+        assert_eq!(ext.angoff, -12);
+        assert_eq!(ext.mdxoff, -4096);
+        assert_eq!(ext.mdyoff, 512);
+        assert_eq!(ext.mdzoff, 1024);
+        assert_eq!(ext.pitch, 256);
+        assert_eq!(ext.roll, -512);
+        assert_eq!(ext.xpanning, 7);
+        assert_eq!(ext.ypanning, 11);
+        assert_eq!(session.actor_temps[2].sprite_ext, Default::default());
+    }
+
+    #[test]
+    fn eduke_actor_hittype_members_are_live_and_saved() {
+        let image = crate::con::compile_with_options(
+            b"var old_stayput 0\nvar old_tempang 0\nvar old_floor_offset 0\nvar old_water_offset 0\nappendevent EVENT_GAME\ngetactor[3].htactorstayput old_stayput\ngetactor[3].httempang old_tempang\ngetactor[3].htfloorzoffset old_floor_offset\ngetactor[3].htwaterzoffset old_water_offset\nsetactor[3].htactorstayput 12\nsetactor[3].httempang 256\nsetactor[3].htfloorzoffset 10\nsetactor[3].htwaterzoffset -12\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image.clone())
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        session.actor_temps.resize_with(4, ActorConTemps::default);
+        session.actor_temps[3].actorstayput = 7;
+        session.actor_temps[3].tempang = 64;
+        session.actor_temps[3].floor_z_offset = 3;
+        session.actor_temps[3].water_z_offset = -4;
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 3, 128, 8)
+            .expect("actor hittype event executes");
+
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("old_stayput", 0, 3), Ok(7));
+        assert_eq!(vm.get_variable("old_tempang", 0, 3), Ok(64));
+        assert_eq!(vm.get_variable("old_floor_offset", 0, 3), Ok(3));
+        assert_eq!(vm.get_variable("old_water_offset", 0, 3), Ok(-4));
+        assert_eq!(session.actor_temps[3].actorstayput, 12);
+        assert_eq!(session.actor_temps[3].tempang, 256);
+        assert_eq!(session.actor_temps[3].floor_z_offset, 10);
+        assert_eq!(session.actor_temps[3].water_z_offset, -12);
+
+        let save = session.save_fsave().expect("save actor extension fields");
+        let mut restored = DukeSession::new();
+        restored
+            .try_load_script(image)
+            .expect("reload EDuke32 script");
+        restored.world = Some(BuildWorld::new());
+        restored
+            .load_fsave(&save)
+            .expect("restore actor extension fields");
+        assert_eq!(restored.actor_temps[3].actorstayput, 12);
+        assert_eq!(restored.actor_temps[3].tempang, 256);
+        assert_eq!(restored.actor_temps[3].floor_z_offset, 10);
+        assert_eq!(restored.actor_temps[3].water_z_offset, -12);
+
+        for member in ["htfloorzoffset", "htwaterzoffset"] {
+            let mut sprite = SpriteT::default();
+            let mut temps = ActorConTemps::default();
+            assert!(matches!(
+                DukeSessionStructAccess::write_actor(
+                    &mut sprite,
+                    Some(&mut temps),
+                    None,
+                    member,
+                    None,
+                    128,
+                ),
+                Err(EdukeVmError::StructMemberValueOutOfRange { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn eduke_hitradius_dispatches_to_the_live_world_and_advances_game_rng() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\nhitradius 640 5 10 20 40\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        let (source, target) = {
+            let world = session.world.as_mut().unwrap();
+            world.numsectors = 1;
+            world.sectors.push(SectorT::default());
+            let source = world.lists.insertsprite(0, crate::stat::STAT_ACTOR);
+            let target = world.lists.insertsprite(0, crate::stat::STAT_DEFAULT);
+            world.sprites[source as usize].extra = 20;
+            world.sprites[source as usize].sectnum = 0;
+            world.sprites[source as usize].picnum = 9000;
+            world.sprites[source as usize].x = 0;
+            world.sprites[source as usize].y = 0;
+            world.sprites[source as usize].z = 0;
+            world.sprites[target as usize].extra = 100;
+            world.sprites[target as usize].sectnum = 0;
+            world.sprites[target as usize].picnum = 9001;
+            world.sprites[target as usize].cstat = 257;
+            world.sprites[target as usize].x = 100;
+            world.sprites[target as usize].y = 0;
+            world.sprites[target as usize].z = 0;
+            (source as usize, target as usize)
+        };
+        session.randomseed = 1;
+        session
+            .execute_eduke_event("EVENT_GAME", 0, source, 128, 8)
+            .expect("blast event applies through the live adapter");
+        assert_ne!(session.randomseed, 1);
+        assert!(session.actor_temps[target].hit_extra > 0);
+    }
+
+    #[test]
+    fn eduke_pkick_queues_player_action_and_skips_aplayer_sources() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\npkick\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        let source = session
+            .world
+            .as_mut()
+            .unwrap()
+            .lists
+            .insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        session.world.as_mut().unwrap().sprites[source].picnum = 9000;
+        session
+            .execute_eduke_event("EVENT_GAME", 0, source, 128, 8)
+            .expect("pkick event executes");
+        assert!(session.actor_temps[source].pending_quick_kick);
+
+        session.actor_temps[source].pending_quick_kick = false;
+        session.world.as_mut().unwrap().sprites[source].picnum = crate::spawn::APLAYER;
+        session
+            .execute_eduke_event("EVENT_GAME", 0, source, 128, 8)
+            .expect("player-body pkick event executes");
+        assert!(!session.actor_temps[source].pending_quick_kick);
+    }
+
+    #[test]
+    fn eduke_operate_queues_nearby_sector_operation() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_GAME\noperate\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("operate"), None);
+
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        let source = session
+            .world
+            .as_mut()
+            .unwrap()
+            .lists
+            .insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+        session.world.as_mut().unwrap().sprites[source].picnum = 9000;
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, source, 128, 8)
+            .expect("operate event executes");
+
+        assert!(session.actor_temps[source].pending_operate);
+    }
+
+    #[test]
+    fn eduke_actor_alpha_checks_the_documented_byte_range() {
+        let mut world = BuildWorld::new();
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.get_member(EdStructKind::Actor, 7, "alpha", None),
+            Ok(0)
+        );
+        access
+            .set_member(EdStructKind::Actor, 7, "alpha", None, 255)
+            .expect("maximum EDuke32 alpha is valid");
+        assert!(matches!(
+            access.set_member(EdStructKind::Actor, 7, "alpha", None, 256),
+            Err(EdukeVmError::StructMemberValueOutOfRange { .. })
+        ));
+        assert_eq!(
+            access.get_member(EdStructKind::Actor, 7, "alpha", None),
+            Ok(255)
+        );
+        assert_eq!(actor_temps[7].sprite_ext.alpha, 255);
+    }
+
+    #[test]
+    fn eduke_userdef_access_covers_brutal_fields_and_checks_array_bounds() {
+        let mut world = BuildWorld::new();
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 3;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 500, "vm_sprite", None),
+            Ok(0)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, -1, "player_skill", None),
+            Ok(3)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "drawweapon", None),
+            Ok(1)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "statusbarscale", None),
+            Ok(100)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "crosshairscale", None),
+            Ok(100)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "weaponscale", None),
+            Ok(100)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "pause_on", None),
+            Ok(0)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "respawn_monsters", None),
+            Ok(0)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "respawn_items", None),
+            Ok(0)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "respawn_inventory", None),
+            Ok(0)
+        );
+        access
+            .set_member(EdStructKind::UserDef, 0, "vm_sprite", None, 12)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "player_skill", None, 4)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "drawweapon", None, 2)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "statusbarscale", None, 85)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "crosshairscale", None, 120)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "weaponscale", None, 75)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "pause_on", None, 1)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "respawn_monsters", None, 1)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "respawn_items", None, 2)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "respawn_inventory", None, 3)
+            .unwrap();
+        access
+            .set_member(EdStructKind::UserDef, 0, "return", Some(2), -55)
+            .unwrap();
+        assert_eq!(access.current_actor(), Some(12));
+        assert_eq!(*access.skill, 4);
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "drawweapon", None),
+            Ok(2)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "statusbarscale", None),
+            Ok(85)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "crosshairscale", None),
+            Ok(120)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "weaponscale", None),
+            Ok(75)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "pause_on", None),
+            Ok(1)
+        );
+        assert_eq!(access.predefined_variable("RESPAWN_MONSTERS"), Some(1));
+        assert_eq!(access.predefined_variable("RESPAWN_ITEMS"), Some(2));
+        assert_eq!(access.predefined_variable("RESPAWN_INVENTORY"), Some(3));
+        assert!(access.set_predefined_variable("RESPAWN_ITEMS", 7));
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "respawn_items", None),
+            Ok(7)
+        );
+        assert!(!access.set_predefined_variable("unknown", 1));
+        assert_eq!(
+            access.get_member(EdStructKind::UserDef, 0, "return", Some(2)),
+            Ok(-55)
+        );
+        assert!(matches!(
+            access.get_member(EdStructKind::UserDef, 0, "return", Some(16)),
+            Err(EdukeVmError::IndexOutOfBounds { .. })
+        ));
+        assert!(matches!(
+            access.set_member(EdStructKind::UserDef, 0, "vm_sprite", None, -1),
+            Err(EdukeVmError::InvalidStructId { .. })
+        ));
+        assert!(matches!(
+            access.set_member(EdStructKind::UserDef, 0, "player_skill", None, 5),
+            Err(EdukeVmError::StructMemberValueOutOfRange { .. })
+        ));
+        assert_eq!(
+            access.get_member(EdStructKind::ThisProjectile, 9, "workslike", None),
+            Ok(0)
+        );
+        access
+            .set_member(EdStructKind::ThisProjectile, 9, "workslike", None, 0x102)
+            .unwrap();
+        access
+            .set_member(EdStructKind::ThisProjectile, 9, "bsound", None, 45)
+            .unwrap();
+        access
+            .set_member(EdStructKind::ThisProjectile, 9, "drop", None, -32)
+            .unwrap();
+        assert_eq!(
+            access.get_member(EdStructKind::ThisProjectile, 9, "workslike", None),
+            Ok(0x102)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::ThisProjectile, 9, "bsound", None),
+            Ok(45)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::ThisProjectile, 9, "drop", None),
+            Ok(-32)
+        );
+        assert!(matches!(
+            access.get_member(
+                EdStructKind::ThisProjectile,
+                MAXSPRITES as i32,
+                "drop",
+                None
+            ),
+            Err(EdukeVmError::InvalidStructId { .. })
+        ));
+    }
+
+    #[test]
+    fn eduke_actor_conditions_read_respawn_and_sound_owner_state() {
+        let mut world = BuildWorld::new();
+        world.sprites[7].picnum = 77;
+        let mut script = ScriptImage::new();
+        script.actortype[77] = 1;
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = vec![ActorConTemps::default(); 8];
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState {
+            respawn_monsters: 1,
+            ..DukeUserDefState::default()
+        };
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let active_sound_owners = [None, Some(7), Some(8)];
+        let no_actor_seven_sound = [None, Some(8), Some(8)];
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: None,
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: Some(&active_sound_owners),
+        };
+
+        assert_eq!(access.actor_has_active_sound(7), Ok(true));
+        access.active_sound_owners = Some(&no_actor_seven_sound);
+        assert_eq!(access.actor_has_active_sound(7), Ok(false));
+        assert_eq!(access.actor_has_active_sound(8), Ok(true));
+
+        assert_eq!(access.actor_respawn_enabled(7), Ok(true));
+        assert_eq!(access.actor_not_stayput(7), Ok(true));
+        access.actor_temps[7].actorstayput = 12;
+        assert_eq!(access.actor_not_stayput(7), Ok(false));
+        access.userdef.respawn_monsters = 0;
+        assert_eq!(access.actor_respawn_enabled(7), Ok(false));
+
+        access.world.sprites[7].picnum = 57;
+        access.userdef.respawn_inventory = 1;
+        assert_eq!(access.actor_respawn_enabled(7), Ok(true));
+        access.userdef.respawn_inventory = 0;
+        assert_eq!(access.actor_respawn_enabled(7), Ok(false));
+
+        access.world.sprites[7].picnum = 9000;
+        access.userdef.respawn_items = 1;
+        assert_eq!(access.actor_respawn_enabled(7), Ok(true));
+    }
+
+    #[test]
+    fn eduke_userdef_state_round_trips_through_fsave() {
+        let script = crate::con::compile_with_options(
+            b"",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(script.errors, 0);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(script)
+            .expect("EDuke32 script state");
+        session.world = Some(BuildWorld::new());
+        session.player.game_palette = 240;
+        session.userdef.vm_sprite = 17;
+        session.userdef.return_values[2] = 1234;
+        session.userdef.drawweapon = 2;
+        session.userdef.statusbarscale = 80;
+        session.userdef.crosshairscale = 125;
+        session.userdef.weaponscale = 90;
+        session.userdef.pause_on = 1;
+        session.userdef.respawn_monsters = 1;
+        session.userdef.respawn_items = 2;
+        session.userdef.respawn_inventory = 3;
+        session.skill = 4;
+        session.projectile_defs.insert(
+            9000,
+            BTreeMap::from([("vel".to_owned(), 720), ("workslike".to_owned(), 0x102)]),
+        );
+        let mut projectile_temps = ActorConTemps::default();
+        projectile_temps.projectile_workslike = 0x102;
+        projectile_temps.projectile_bsound = 45;
+        projectile_temps.projectile_drop = -32;
+        projectile_temps.projectile_hitradius = 256;
+        projectile_temps.projectile_velmult = 3;
+        projectile_temps.projectile_range = 120;
+        projectile_temps.projectile_spawns = 2_329;
+        projectile_temps.projectile_isound = 9;
+        projectile_temps.projectile_sound = 6;
+        projectile_temps.projectile_trail = 9_001;
+        projectile_temps.projectile_tnum = 3;
+        projectile_temps.projectile_txrepeat = 7;
+        projectile_temps.projectile_tyrepeat = 8;
+        projectile_temps.projectile_toffset = 2;
+        projectile_temps.projectile_sxrepeat = 4;
+        projectile_temps.projectile_syrepeat = 5;
+        projectile_temps.projectile_age = 42;
+        projectile_temps.sprite_ext.alpha = 42;
+        projectile_temps.sprite_ext.mdflags = 0x30;
+        projectile_temps.sprite_ext.mdzoff = -8192;
+        projectile_temps.sprite_blend = 2;
+        session.actor_temps.push(projectile_temps);
+
+        let bytes = session.save_fsave().expect("save EDuke32 userdef");
+        let mut restored = DukeSession::new();
+        restored
+            .try_load_script(session.script.clone().expect("loaded script"))
+            .expect("reload EDuke32 script");
+        restored
+            .load_fsave(&bytes)
+            .expect("restore EDuke32 userdef");
+
+        assert_eq!(restored.userdef.vm_sprite, 17);
+        assert_eq!(restored.player.game_palette, 240);
+        assert_eq!(restored.userdef.return_values[2], 1234);
+        assert_eq!(restored.userdef.drawweapon, 2);
+        assert_eq!(restored.userdef.statusbarscale, 80);
+        assert_eq!(restored.userdef.crosshairscale, 125);
+        assert_eq!(restored.userdef.weaponscale, 90);
+        assert_eq!(restored.userdef.pause_on, 1);
+        assert_eq!(restored.userdef.respawn_monsters, 1);
+        assert_eq!(restored.userdef.respawn_items, 2);
+        assert_eq!(restored.userdef.respawn_inventory, 3);
+        assert_eq!(restored.skill, 4);
+        assert_eq!(restored.projectile_defs[&9000]["vel"], 720,);
+        assert_eq!(restored.projectile_defs[&9000]["workslike"], 0x102,);
+        assert_eq!(restored.actor_temps[0].projectile_workslike, 0x102);
+        assert_eq!(restored.actor_temps[0].projectile_bsound, 45);
+        assert_eq!(restored.actor_temps[0].projectile_drop, -32);
+        assert_eq!(restored.actor_temps[0].projectile_hitradius, 256);
+        assert_eq!(restored.actor_temps[0].projectile_velmult, 3);
+        assert_eq!(restored.actor_temps[0].projectile_range, 120);
+        assert_eq!(restored.actor_temps[0].projectile_spawns, 2_329);
+        assert_eq!(restored.actor_temps[0].projectile_isound, 9);
+        assert_eq!(restored.actor_temps[0].projectile_sound, 6);
+        assert_eq!(restored.actor_temps[0].projectile_trail, 9_001);
+        assert_eq!(restored.actor_temps[0].projectile_tnum, 3);
+        assert_eq!(restored.actor_temps[0].projectile_txrepeat, 7);
+        assert_eq!(restored.actor_temps[0].projectile_tyrepeat, 8);
+        assert_eq!(restored.actor_temps[0].projectile_toffset, 2);
+        assert_eq!(restored.actor_temps[0].projectile_sxrepeat, 4);
+        assert_eq!(restored.actor_temps[0].projectile_syrepeat, 5);
+        assert_eq!(restored.actor_temps[0].projectile_age, 42);
+        assert_eq!(restored.actor_temps[0].sprite_ext.alpha, 42);
+        assert_eq!(restored.actor_temps[0].sprite_ext.mdflags, 0x30);
+        assert_eq!(restored.actor_temps[0].sprite_ext.mdzoff, -8192);
+        assert_eq!(restored.actor_temps[0].sprite_blend, 2);
+    }
+
+    #[test]
+    fn eduke_tspr_access_edits_only_the_transient_render_sprite() {
+        let mut world = BuildWorld::new();
+        let script = ScriptImage::default();
+        let mut tile_meta = Vec::new();
+        let mut randomseed = 0;
+        let mut player = Player::default();
+        let mut coop_players = Vec::new();
+        let mut actor_temps = Vec::new();
+        let mut picnum = Vec::new();
+        let mut inputs = [];
+        let mut userdef = DukeUserDefState::default();
+        let mut skill = 2;
+        let mut projectile_defs = BTreeMap::new();
+        let mut spawned_actor_ids = Vec::new();
+        let mut tspr = DukeTspr {
+            source_sprite: 3,
+            sprite: SpriteT {
+                x: 100,
+                y: 200,
+                z: 300,
+                ang: 256,
+                picnum: 500,
+                shade: -4,
+                xrepeat: 24,
+                ..SpriteT::default()
+            },
+            blend: 0,
+        };
+        let mut access = DukeSessionStructAccess {
+            world: &mut world,
+            script: &script,
+            tile_meta: &mut tile_meta,
+            randomseed: &mut randomseed,
+            player: &mut player,
+            coop_players: &mut coop_players,
+            actor_temps: &mut actor_temps,
+            picnum: &mut picnum,
+            inputs: &mut inputs,
+            userdef: &mut userdef,
+            skill: &mut skill,
+            tspr: Some(&mut tspr),
+            projectile_defs: &mut projectile_defs,
+            spawned_actor_ids: &mut spawned_actor_ids,
+            active_sound_owners: None,
+        };
+
+        assert_eq!(
+            access.get_member(EdStructKind::Tspr, 3, "tsprx", None),
+            Ok(100)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::Tspr, 3, "tsprang", None),
+            Ok(256)
+        );
+        assert_eq!(
+            access.get_member(EdStructKind::Tspr, 3, "tsprpicnum", None),
+            Ok(500)
+        );
+        access
+            .set_member(EdStructKind::Tspr, 3, "tsprx", None, -100)
+            .unwrap();
+        access
+            .set_member(EdStructKind::Tspr, 3, "tsprang", None, 1024)
+            .unwrap();
+        access
+            .set_member(EdStructKind::Tspr, 3, "tsprpicnum", None, 612)
+            .unwrap();
+        access
+            .set_member(EdStructKind::Tspr, 3, "tsprblend", None, 2)
+            .unwrap();
+        access
+            .set_member(EdStructKind::Tspr, 3, "tsprcstat", None, 32768)
+            .unwrap();
+        assert_eq!(access.tspr.as_deref().unwrap().sprite.x, -100);
+        assert_eq!(access.tspr.as_deref().unwrap().sprite.ang, 1024);
+        assert_eq!(access.tspr.as_deref().unwrap().sprite.picnum, 612);
+        assert_eq!(access.tspr.as_deref().unwrap().blend, 2);
+        assert_eq!(access.tspr.as_deref().unwrap().sprite.cstat, 0);
+        assert!(matches!(
+            access.get_member(EdStructKind::Tspr, 4, "tsprx", None),
+            Err(EdukeVmError::InvalidStructId { .. })
+        ));
+        assert!(matches!(
+            access.set_member(EdStructKind::Tspr, 3, "tsprang", None, i32::MAX),
+            Err(EdukeVmError::StructMemberValueOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn eduke_animate_sprites_hook_receives_the_current_tspr() {
+        let image = crate::con::compile_with_options(
+            b"var before_x 0\nappendevent EVENT_ANIMATESPRITES\ngettspr[THISACTOR].tsprx before_x\nsettspr[THISACTOR].tsprx 500\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={}", image.errors);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script state");
+        session.world = Some(BuildWorld::new());
+        let mut tspr = DukeTspr {
+            source_sprite: 3,
+            sprite: SpriteT {
+                x: 123,
+                ..SpriteT::default()
+            },
+            blend: 0,
+        };
+
+        let result = session
+            .execute_eduke_event_with_tspr("EVENT_ANIMATESPRITES", 0, 3, &mut tspr, 32, 4)
+            .expect("render event dispatch");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(tspr.sprite.x, 500);
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("before_x", 0, 3),
+            Ok(123)
+        );
+        assert_eq!(
+            session.world.as_ref().unwrap().sprites[3].x,
+            0,
+            "TSPR writes must not mutate the Build sprite"
+        );
+    }
+
+    #[test]
+    fn eduke_animate_sprites_render_path_gates_mdflags_and_keeps_host_writes_temporary() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_ANIMATESPRITES\nsetactor[THISACTOR].x 999\nsettspr[THISACTOR].tsprx 500\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={}", image.errors);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script state");
+        session.player.sprite_i = -1;
+
+        let mut world = BuildWorld::new();
+        let opted_in = world.lists.insertsprite(0, 1) as usize;
+        let ordinary = world.lists.insertsprite(0, 1) as usize;
+        world.sprites[opted_in] = SpriteT {
+            x: 123,
+            xrepeat: 32,
+            yrepeat: 32,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        world.sprites[ordinary] = SpriteT {
+            x: 234,
+            xrepeat: 32,
+            yrepeat: 32,
+            sectnum: 0,
+            ..SpriteT::default()
+        };
+        session.world = Some(world);
+        session.actor_temps.resize_with(2, ActorConTemps::default);
+        session.actor_temps[opted_in].sprite_ext.mdflags = 16;
+
+        let render_world = session
+            .render_world_with_eduke_events(0)
+            .expect("render event pass")
+            .expect("loaded world");
+
+        assert_eq!(render_world.sprites[opted_in].x, 500);
+        assert_eq!(render_world.sprites[ordinary].x, 234);
+        assert_eq!(session.world.as_ref().unwrap().sprites[opted_in].x, 123);
+        assert_eq!(session.world.as_ref().unwrap().sprites[ordinary].x, 234);
+    }
+
+    #[test]
+    fn eduke_projectile_struct_reads_defines_and_saves_runtime_overrides() {
+        let image = crate::con::compile_with_options(
+            b"define ROCKET 9000\ndefine SPEED 640\ndefine TRAIL 9001\ndefine SMALLSMOKE 2329\ndefine PIPEBOMB_BOUNCE 13\ndefineprojectile ROCKET PROJ_VEL SPEED\ndefineprojectile ROCKET PROJ_TRAIL TRAIL\nvar before_speed 0\nvar default_spawns 0\nvar default_bsound 0\nvar default_extra_rand 0\nvar default_tnum 0\nappendevent EVENT_GAME\ngetprojectile[ROCKET].vel before_speed\ngetprojectile[ROCKET].spawns default_spawns\ngetprojectile[ROCKET].bsound default_bsound\ngetprojectile[ROCKET].extra_rand default_extra_rand\ngetprojectile[ROCKET].tnum default_tnum\nsetprojectile[ROCKET].vel 720\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={}", image.errors);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script state");
+        session.world = Some(BuildWorld::new());
+
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 4, 32, 4)
+            .expect("projectile struct event");
+
+        assert_eq!(session.projectile_defs[&9000]["vel"], 720);
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("before_speed", 0, 4),
+            Ok(640)
+        );
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("default_spawns", 0, 4), Ok(2329));
+        assert_eq!(vm.get_variable("default_bsound", 0, 4), Ok(13));
+        assert_eq!(vm.get_variable("default_extra_rand", 0, 4), Ok(5));
+        assert_eq!(vm.get_variable("default_tnum", 0, 4), Ok(1));
+        let bytes = session.save_fsave().expect("save projectile override");
+        let mut restored = DukeSession::new();
+        restored
+            .try_load_script(session.script.clone().unwrap())
+            .expect("reload EDuke32 script");
+        restored
+            .load_fsave(&bytes)
+            .expect("restore projectile override");
+        assert_eq!(restored.projectile_defs[&9000]["vel"], 720);
+    }
+
+    #[test]
+    fn eduke_static_tile_flags_are_applied_when_art_or_con_loads() {
+        let source = b"define TILE_A 7\ndefine SFLAG_NOSHADE 4\nspriteflags TILE_A SFLAG_NOSHADE\n";
+        let mut image = crate::con::compile_with_options(
+            source,
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0);
+        image.actortype[7] = 2; // EDuke32 `useractor enemy` metadata.
+        let mut session = DukeSession::new();
+        session.set_tile_meta(vec![TileZMeta::default(); 8]);
+        session.load_script(image);
+        assert_eq!(session.tile_meta[7].game_flags, 36);
+    }
+
+    #[test]
+    fn eduke32_script_is_refused_by_network_content_policy() {
+        let mut session = DukeSession::new();
+        session.script = Some(ScriptImage {
+            dialect: ConDialect::EDuke32,
+            ..ScriptImage::default()
+        });
+        assert_eq!(
+            session.validate_network_content(),
+            Err("EDuke32 CON content is solo-only; network Duke rooms currently support Atomic CON content".into())
+        );
+        session.script = Some(ScriptImage::default());
+        assert_eq!(session.validate_network_content(), Ok(()));
+    }
+
+    #[test]
     fn tic_rate_is_30() {
         let mut s = DukeSession::new();
         assert_eq!(s.tic_rate(), 30);
@@ -53852,5 +62578,3 @@ mod tests {
         assert_eq!(s.tic, 1);
     }
 }
-
-

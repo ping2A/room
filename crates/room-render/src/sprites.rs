@@ -230,7 +230,11 @@ pub fn emit_sprite_quad(inst: SpriteInstance, view_forward: Vec3) -> [WallVertex
         d = spin(d);
     }
     let (u0, u1) = if inst.flip_u { (1.0, 0.0) } else { (0.0, 1.0) };
-    let (v_lo, v_hi) = if inst.fx.flip_v { (0.0, 1.0) } else { (1.0, 0.0) };
+    let (v_lo, v_hi) = if inst.fx.flip_v {
+        (0.0, 1.0)
+    } else {
+        (1.0, 0.0)
+    };
     // Additive (and subtractive) sprites carry a negative alpha (decoded by
     // the shader as premultiplied colour, alpha 0).
     let alpha = if inst.additive || inst.fx.subtract {

@@ -60,7 +60,11 @@ impl SoundEnvState {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = SAVE_MAGIC.to_vec();
-        out.extend_from_slice(&u32::try_from(self.zone_env.len()).unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(self.zone_env.len())
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
         for e in &self.zone_env {
             out.extend_from_slice(&e.to_le_bytes());
         }
@@ -87,7 +91,12 @@ impl SoundEnvState {
         }
         let mut o = 8;
         for e in &mut self.zone_env {
-            *e = u16::from_le_bytes(b.get(o..o + 2).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
+            *e = u16::from_le_bytes(
+                b.get(o..o + 2)
+                    .ok_or_else(bad)?
+                    .try_into()
+                    .map_err(|_| bad())?,
+            );
             o += 2;
         }
         let things = u32_at(o).ok_or_else(bad)?;
@@ -111,7 +120,12 @@ impl World {
         let (sector_zone, count) = flood_sound_zones(&self.map);
         let names = std::mem::take(&mut self.sound_env.names);
         let mut things = Vec::new();
-        for t in self.map.things.iter().filter(|t| t.type_id == SOUND_ENVIRONMENT_DOOMEDNUM) {
+        for t in self
+            .map
+            .things
+            .iter()
+            .filter(|t| t.type_id == SOUND_ENVIRONMENT_DOOMEDNUM)
+        {
             things.push(EnvThing {
                 tid: i32::from(t.tid),
                 sector: crate::physics::sector_at_xy(self, f64::from(t.x), f64::from(t.y)),
@@ -127,7 +141,13 @@ impl World {
             names,
         };
         // `PostBeginPlay`: every non-dormant thing activates, in map order.
-        let live: Vec<_> = self.sound_env.things.iter().filter(|t| !t.dormant).copied().collect();
+        let live: Vec<_> = self
+            .sound_env
+            .things
+            .iter()
+            .filter(|t| !t.dormant)
+            .copied()
+            .collect();
         for t in live {
             if let Some(s) = t.sector {
                 self.set_sector_environment(s, t.env);
@@ -198,7 +218,8 @@ impl World {
 /// REVERBS ID from the two thing arguments.
 #[must_use]
 pub fn env_id(id1: i32, id2: i32) -> u16 {
-    (u16::try_from(id1.clamp(0, 255)).unwrap_or(0) << 8) | u16::try_from(id2.clamp(0, 255)).unwrap_or(0)
+    (u16::try_from(id1.clamp(0, 255)).unwrap_or(0) << 8)
+        | u16::try_from(id2.clamp(0, 255)).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -271,16 +292,34 @@ mod tests {
         let s = crate::physics::sector_at_xy(&w, 64.0, 64.0).unwrap();
         assert_eq!(w.sound_env.sector_env(s), 0, "dormant at start");
         let args = [7, 0, 0, 0, 0];
-        crate::specials::execute_special(&mut w, crate::specials::num::THING_ACTIVATE, &args, None, None);
+        crate::specials::execute_special(
+            &mut w,
+            crate::specials::num::THING_ACTIVATE,
+            &args,
+            None,
+            None,
+        );
         assert_eq!(w.sound_env.sector_env(s), 0x0A00);
         w.sound_env.names.insert("cave".into(), 0x0800);
         w.set_sector_environment_name(s, "Cave");
         assert_eq!(w.sound_env.sector_env(s), 0x0800);
         // Deactivate only marks it dormant; activating again re-applies.
-        crate::specials::execute_special(&mut w, crate::specials::num::THING_DEACTIVATE, &args, None, None);
+        crate::specials::execute_special(
+            &mut w,
+            crate::specials::num::THING_DEACTIVATE,
+            &args,
+            None,
+            None,
+        );
         assert_eq!(w.sound_env.sector_env(s), 0x0800);
         assert!(w.sound_env.things[0].dormant);
-        crate::specials::execute_special(&mut w, crate::specials::num::THING_ACTIVATE, &args, None, None);
+        crate::specials::execute_special(
+            &mut w,
+            crate::specials::num::THING_ACTIVATE,
+            &args,
+            None,
+            None,
+        );
         assert_eq!(w.sound_env.sector_env(s), 0x0A00);
         // Zone state round-trips for savegames.
         let bytes = w.sound_env.to_bytes();

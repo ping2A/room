@@ -83,7 +83,10 @@ fn room_sector(map: &MapGeometry, x: f64, y: f64) -> usize {
 }
 
 fn shared_line(map: &MapGeometry) -> usize {
-    map.lines.iter().position(|l| l.back_sector.is_some()).unwrap()
+    map.lines
+        .iter()
+        .position(|l| l.back_sector.is_some())
+        .unwrap()
 }
 
 #[test]
@@ -149,4 +152,3 @@ fn uz6_side_alpha_and_blockrendering_match_golden() {
     }
     assert_eq!(out, std::fs::read_to_string(&path).unwrap());
 }
-

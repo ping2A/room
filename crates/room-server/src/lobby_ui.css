@@ -1063,3 +1063,19 @@ body {
   .name-field input { min-width: 0; width: 9rem; }
 }
 @media (prefers-reduced-motion: reduce) { #bg-fire { opacity: 0.35; } }
+
+/* Play solo › Generate a new map */
+.solo-gen {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line, #333);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.solo-gen > p { margin: 0; font-size: 0.8rem; }
+.solo-gen-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem 0.7rem; }
+.field .solo-seed { display: flex; gap: 0.4rem; text-transform: none; letter-spacing: 0; font-size: inherit; }
+.solo-seed input { flex: 1; min-width: 0; }
+@media (max-width: 520px) { .solo-gen-grid { grid-template-columns: 1fr; } }

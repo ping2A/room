@@ -37,7 +37,11 @@ class ConvProbe : EventHandler
 fn write_mod(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("zscript.zs"), MOD_ZSCRIPT).unwrap();
-    std::fs::write(dir.join("MAPINFO.txt"), "GameInfo\n{\n  AddEventHandlers = \"ConvProbe\"\n}\n").unwrap();
+    std::fs::write(
+        dir.join("MAPINFO.txt"),
+        "GameInfo\n{\n  AddEventHandlers = \"ConvProbe\"\n}\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -66,7 +70,10 @@ fn convert_verify_and_load_small_mod() {
     assert_eq!(report.sources, vec!["zscript.zs".to_owned()]);
     #[cfg(feature = "zvm-aot")]
     assert!(v.aot_calls > 0, "converted session ran no wasm: {v:?}");
-    eprintln!("verified {} tics, {} wasm calls ({})", v.tics, v.aot_calls, v.engine);
+    eprintln!(
+        "verified {} tics, {} wasm calls ({})",
+        v.tics, v.aot_calls, v.engine
+    );
 
     // The package loads without ZScript sources and says it was verified.
     let vfs = room_game::mount_embedded_engine(room_vfs::VfsBuilder::new())
@@ -80,9 +87,17 @@ fn convert_verify_and_load_small_mod() {
     let zs = room_game::load_zscript_from_vfs(&vfs);
     assert!(zs.ok, "{:?}", zs.notes);
     assert!(zs.notes[0].starts_with("converted mod"), "{:?}", zs.notes);
-    assert!(!zs.notes.iter().any(|n| n.contains("warning")), "{:?}", zs.notes);
+    assert!(
+        !zs.notes.iter().any(|n| n.contains("warning")),
+        "{:?}",
+        zs.notes
+    );
     let program = zs.program.unwrap();
-    assert!(program.func_by_name.contains_key("ConvProbe.WorldThingSpawned"));
+    assert!(
+        program
+            .func_by_name
+            .contains_key("ConvProbe.WorldThingSpawned")
+    );
 
     // With another ZScript mod on top, the module cannot be used.
     let other = tmp.join("other");
@@ -99,7 +114,11 @@ fn convert_verify_and_load_small_mod() {
         .build()
         .unwrap();
     let zs = room_game::load_zscript_from_vfs(&vfs);
-    assert!(!zs.ok && zs.notes[0].contains("convert the mod"), "{:?}", zs.notes);
+    assert!(
+        !zs.ok && zs.notes[0].contains("convert the mod"),
+        "{:?}",
+        zs.notes
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -149,7 +168,11 @@ fn converted_status_bar_draws_like_the_source() {
     let input = tmp.join("bar");
     std::fs::create_dir_all(&input).unwrap();
     std::fs::write(input.join("zscript.zs"), zs).unwrap();
-    std::fs::write(input.join("MAPINFO.txt"), "GameInfo\n{\n  StatusBarClass = \"MyBar\"\n}\n").unwrap();
+    std::fs::write(
+        input.join("MAPINFO.txt"),
+        "GameInfo\n{\n  StatusBarClass = \"MyBar\"\n}\n",
+    )
+    .unwrap();
     let output = tmp.join("bar-converted.pk3");
     let report = convert(&ConvertOptions {
         input: input.clone(),
@@ -191,6 +214,10 @@ fn converted_status_bar_draws_like_the_source() {
         assert!(bar.last_error.is_none(), "{:?}", bar.last_error);
         format!("{:?}", list.cmds)
     };
-    assert_eq!(draw(&input), draw(&output), "converted status bar draws differently");
+    assert_eq!(
+        draw(&input),
+        draw(&output),
+        "converted status bar draws differently"
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 }

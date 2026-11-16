@@ -15,8 +15,12 @@ pub use opl::{
 };
 pub use softfont::{DEFAULT_SAMPLE_RATE, SoftFont, SoftFontSequencer};
 
+use room_formats::DecodedSound;
 use room_formats::mus_to_midi;
 use thiserror::Error;
+
+const PCM_CURSOR_FRACTION_BITS: u32 = 32;
+const PCM_CURSOR_ONE: u64 = 1 << PCM_CURSOR_FRACTION_BITS;
 
 /// MIDI device selection (`snd_mididevice` subset).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,10 +51,21 @@ pub struct MusicTrack {
     pub looping: bool,
 }
 
+/// Decoded PCM track streamed by the music callback.
+#[derive(Clone, Debug)]
+struct PcmMusicTrack {
+    name: String,
+    sound: DecodedSound,
+    looping: bool,
+    cursor_q32: u64,
+}
+
 /// Music player state (device-agnostic).
 pub struct MusicPlayer {
     /// Currently playing track.
     pub current: Option<MusicTrack>,
+    /// Currently playing decoded PCM track, used for formats such as OGG.
+    pcm_current: Option<PcmMusicTrack>,
     /// Master music volume 0..=1.
     pub volume: f32,
     /// Paused with the game.
@@ -75,6 +90,7 @@ impl Default for MusicPlayer {
     fn default() -> Self {
         Self {
             current: None,
+            pcm_current: None,
             volume: 1.0,
             paused: false,
             order: 0,
@@ -144,6 +160,7 @@ impl MusicPlayer {
 
     /// Start from already-decoded MIDI.
     pub fn play_midi(&mut self, name: impl Into<String>, midi: Vec<u8>, looping: bool) {
+        self.pcm_current = None;
         self.current = Some(MusicTrack {
             name: name.into(),
             midi,
@@ -153,9 +170,63 @@ impl MusicPlayer {
         self.resync_sequencer();
     }
 
+    /// Start an already-decoded WAV/OGG/FLAC/MP3 music stream.
+    ///
+    /// PCM music works without a MIDI synth or SoundFont. Samples are
+    /// linearly resampled to the audio device rate by `render_interleaved`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported channel counts, invalid sample data,
+    /// or tracks too long for the fixed-point playback cursor.
+    pub fn play_pcm(
+        &mut self,
+        name: impl Into<String>,
+        sound: DecodedSound,
+        looping: bool,
+    ) -> Result<(), MusicError> {
+        let channels = usize::from(sound.channels);
+        if sound.rate == 0
+            || !(1..=2).contains(&channels)
+            || sound.samples.is_empty()
+            || sound.samples.len() % channels != 0
+            || sound.samples.iter().any(|sample| !sample.is_finite())
+        {
+            return Err(MusicError::Message("invalid PCM music track".into()));
+        }
+        let frames = sound.samples.len() / channels;
+        let frames = u64::try_from(frames)
+            .map_err(|_| MusicError::Message("PCM music track too long".into()))?;
+        if frames > u64::MAX / PCM_CURSOR_ONE {
+            return Err(MusicError::Message("PCM music track too long".into()));
+        }
+        self.current = None;
+        self.sequencer = None;
+        self.opl = None;
+        self.pcm_current = Some(PcmMusicTrack {
+            name: name.into(),
+            sound,
+            looping,
+            cursor_q32: 0,
+        });
+        self.paused = false;
+        self.order = 0;
+        Ok(())
+    }
+
+    /// Current logical track name, whether the source is MIDI or PCM.
+    #[must_use]
+    pub fn current_name(&self) -> Option<&str> {
+        self.current
+            .as_ref()
+            .map(|track| track.name.as_str())
+            .or_else(|| self.pcm_current.as_ref().map(|track| track.name.as_str()))
+    }
+
     /// Stop music.
     pub fn stop(&mut self) {
         self.current = None;
+        self.pcm_current = None;
         if let Some(seq) = &mut self.sequencer {
             seq.stop();
         }
@@ -171,7 +242,7 @@ impl MusicPlayer {
     /// True if a track is loaded and not paused.
     #[must_use]
     pub fn is_playing(&self) -> bool {
-        self.current.is_some() && !self.paused
+        (self.current.is_some() || self.pcm_current.is_some()) && !self.paused
     }
 
     /// Fill interleaved stereo PCM from the active synth (no-op if none).
@@ -181,6 +252,16 @@ impl MusicPlayer {
             return;
         }
         let vol = self.volume.clamp(0.0, 1.0);
+        if let Some(mut track) = self.pcm_current.take() {
+            render_pcm_track(&mut track, self.sample_rate.max(1), vol, out);
+            let frame_count = track.sound.samples.len() / usize::from(track.sound.channels);
+            let finished = !track.looping
+                && (track.cursor_q32 >> PCM_CURSOR_FRACTION_BITS) >= frame_count as u64;
+            if !finished {
+                self.pcm_current = Some(track);
+            }
+            return;
+        }
         match self.device {
             MidiDevice::SoftFont => {
                 if let Some(seq) = &mut self.sequencer {
@@ -239,6 +320,55 @@ impl MusicPlayer {
     }
 }
 
+fn render_pcm_track(track: &mut PcmMusicTrack, output_rate: u32, volume: f32, out: &mut [f32]) {
+    let channels = usize::from(track.sound.channels);
+    let frame_count = track.sound.samples.len() / channels;
+    if frame_count == 0 {
+        out.fill(0.0);
+        return;
+    }
+    let frame_count_u64 = u64::try_from(frame_count).unwrap_or(u64::MAX);
+    let end_q32 = frame_count_u64 * PCM_CURSOR_ONE;
+    let step_q32 = ((u64::from(track.sound.rate) << PCM_CURSOR_FRACTION_BITS)
+        / u64::from(output_rate.max(1)))
+    .max(1);
+    for frame_out in out.chunks_exact_mut(2) {
+        if track.cursor_q32 >= end_q32 {
+            if track.looping {
+                track.cursor_q32 %= end_q32;
+            } else {
+                frame_out.fill(0.0);
+                continue;
+            }
+        }
+        let source_frame =
+            usize::try_from(track.cursor_q32 >> PCM_CURSOR_FRACTION_BITS).unwrap_or(usize::MAX);
+        let next_source_frame = if source_frame + 1 < frame_count {
+            source_frame + 1
+        } else if track.looping {
+            0
+        } else {
+            source_frame
+        };
+        let fraction = (track.cursor_q32 & (PCM_CURSOR_ONE - 1)) as f32 / 4_294_967_296.0;
+        let sample = |frame: usize, channel: usize| {
+            let source_channel = if channels == 1 { 0 } else { channel };
+            track.sound.samples[frame * channels + source_channel]
+        };
+        for (channel, output_sample) in frame_out.iter_mut().enumerate() {
+            let first = sample(source_frame, channel);
+            let second = sample(next_source_frame, channel);
+            *output_sample = (first + (second - first) * fraction) * volume;
+        }
+        track.cursor_q32 = track.cursor_q32.saturating_add(step_q32);
+    }
+    let remainder = out.len() % 2;
+    if remainder != 0 {
+        let last = out.len() - remainder;
+        out[last] = 0.0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -272,5 +402,74 @@ mod tests {
         assert!(!p.is_playing());
         p.stop();
         assert!(p.current.is_none());
+    }
+
+    #[test]
+    fn pcm_music_resamples_mono_and_stops_at_end() {
+        let mut player = MusicPlayer::new();
+        player.set_sample_rate(4);
+        player
+            .play_pcm(
+                "level.ogg",
+                DecodedSound {
+                    rate: 2,
+                    channels: 1,
+                    samples: vec![0.0, 1.0],
+                },
+                false,
+            )
+            .unwrap();
+        let mut output = [9.0; 8];
+        player.render_interleaved(&mut output);
+        assert_eq!(output, [0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]);
+        assert!(!player.is_playing());
+        assert_eq!(player.current_name(), None);
+    }
+
+    #[test]
+    fn pcm_music_loops_and_pause_preserves_position() {
+        let mut player = MusicPlayer::new();
+        player.set_sample_rate(2);
+        player
+            .play_pcm(
+                "loop.wav",
+                DecodedSound {
+                    rate: 2,
+                    channels: 2,
+                    samples: vec![0.25, -0.25],
+                },
+                true,
+            )
+            .unwrap();
+        let mut output = [0.0; 4];
+        player.render_interleaved(&mut output);
+        assert_eq!(output, [0.25, -0.25, 0.25, -0.25]);
+        player.set_paused(true);
+        assert!(!player.is_playing());
+        player.render_interleaved(&mut output);
+        assert_eq!(output, [0.0; 4]);
+        player.set_paused(false);
+        assert_eq!(player.current_name(), Some("loop.wav"));
+        player.render_interleaved(&mut output);
+        assert_eq!(output, [0.25, -0.25, 0.25, -0.25]);
+    }
+
+    #[test]
+    fn pcm_music_rejects_invalid_channel_data() {
+        let mut player = MusicPlayer::new();
+        assert!(
+            player
+                .play_pcm(
+                    "bad.wav",
+                    DecodedSound {
+                        rate: 44_100,
+                        channels: 3,
+                        samples: vec![0.0; 3],
+                    },
+                    false,
+                )
+                .is_err()
+        );
+        assert!(!player.is_playing());
     }
 }

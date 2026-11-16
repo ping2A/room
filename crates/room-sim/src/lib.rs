@@ -30,8 +30,8 @@ pub use render_pose::{
 };
 pub mod fx_events;
 mod hitscan;
-mod inventory;
 pub mod invbar;
+mod inventory;
 mod predict;
 pub use predict::PredictedView;
 mod level;
@@ -70,7 +70,10 @@ mod world;
 pub mod zs_native_ops;
 pub mod zscript;
 
-pub use action::{ActionResult, call_action, call_action_args, call_zscript_action, gender_name, parse_gender, sound_source_token};
+pub use action::{
+    ActionResult, call_action, call_action_args, call_zscript_action, gender_name, parse_gender,
+    sound_source_token,
+};
 pub use action_known::{
     canonical_action_name, is_known_action, is_known_action_ci, known_action_names,
 };
@@ -134,9 +137,10 @@ pub use vanilla::{
 };
 pub use weapon_slots::{PlayerClassEntry, WeaponSlots, default_slot_weapons};
 pub use world::{
-    BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DamageTypeInfo, DEFAULT_CORPSE_QUEUE_SIZE, HudClipRect,
-    HudMessage, KillEvent, LastDamageInfo, MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageTo,
-    HudPspLayer, PlayerHud, ScoreRow, StatusBarItems, Quake, ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError,
-    SimParticleEvent, SimSoundAdjust, SimSoundEvent, Standing, World, psprite_scalelight,
+    BossAction, CameraTextureBind, DEFAULT_BODY_QUEUE_SIZE, DEFAULT_CORPSE_QUEUE_SIZE,
+    DamageTypeInfo, HudClipRect, HudMessage, HudPspLayer, KillEvent, LastDamageInfo,
+    MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageTo, PlayerHud, Quake, ScoreRow, ScreenFade,
+    SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError, SimParticleEvent, SimSoundAdjust,
+    SimSoundEvent, Standing, StatusBarItems, World, psprite_scalelight,
 };
 pub use zscript::{ZscriptRuntime, ZscriptSaveBlob};

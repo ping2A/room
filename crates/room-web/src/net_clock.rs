@@ -100,7 +100,10 @@ impl NetClock {
     /// ours arrived after the server's grace. Send further ahead.
     pub fn on_late_input(&mut self, now: f64) {
         self.late_inputs = self.late_inputs.saturating_add(1);
-        if self.last_late_bump.is_some_and(|t| now - t < BUMP_WINDOW_MS) {
+        if self
+            .last_late_bump
+            .is_some_and(|t| now - t < BUMP_WINDOW_MS)
+        {
             return;
         }
         self.last_late_bump = Some(now);
@@ -110,7 +113,10 @@ impl NetClock {
     /// The playout wanted a tic that had not arrived yet. Buffer more.
     pub fn on_stall(&mut self, now: f64) {
         self.stalls = self.stalls.saturating_add(1);
-        if self.last_stall_bump.is_some_and(|t| now - t < BUMP_WINDOW_MS) {
+        if self
+            .last_stall_bump
+            .is_some_and(|t| now - t < BUMP_WINDOW_MS)
+        {
             return;
         }
         self.last_stall_bump = Some(now);
@@ -137,7 +143,8 @@ impl NetClock {
     /// Margin (ms) added to the round trip when sending input.
     #[must_use]
     pub fn input_margin_ms(&self) -> f64 {
-        (MARGIN_MIN_MS + self.jitter_peak * 0.25 + self.late_bump).clamp(MARGIN_MIN_MS, MARGIN_MAX_MS)
+        (MARGIN_MIN_MS + self.jitter_peak * 0.25 + self.late_bump)
+            .clamp(MARGIN_MIN_MS, MARGIN_MAX_MS)
     }
 
     /// Playout buffer (ms) behind the newest expected frame.
@@ -165,7 +172,11 @@ impl NetClock {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 mod tests {
     use super::*;
 
@@ -202,7 +213,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
         /// One-way delay: base + exponential jitter + rare spikes.
@@ -302,7 +316,9 @@ mod tests {
             clock.decay(now);
             // Client: send input.
             let target = if new {
-                clock.input_horizon(now).map_or(received + 3, |h| h.floor() as u32 + 1)
+                clock
+                    .input_horizon(now)
+                    .map_or(received + 3, |h| h.floor() as u32 + 1)
             } else {
                 let lead = ((rtt + 15.0) / TIC_MS).ceil().clamp(1.0, 10.0) as u32;
                 received + lead
@@ -325,7 +341,11 @@ mod tests {
                 if next_tic <= want {
                     clock.on_stall(now);
                 }
-                let frac = if next_tic == want + 1 { pos - pos.floor() } else { 1.0 };
+                let frac = if next_tic == want + 1 {
+                    pos - pos.floor()
+                } else {
+                    1.0
+                };
                 disp = f64::from(next_tic) - 1.0 + frac;
             } else {
                 tic_accum = (tic_accum + dt).min(TIC_MS * 3.0);
@@ -378,8 +398,14 @@ mod tests {
             let new = simulate(true, base, jitter, 120.0, 7);
             eprintln!("link {base}±{jitter} ms\n  old {old:?}\n  new {new:?}");
             assert!(new.jerk < old.jerk, "world smoother: {new:?} vs {old:?}");
-            assert!(new.input_jerk < old.input_jerk, "input steadier: {new:?} vs {old:?}");
-            assert!(new.late <= old.late, "no more late commands: {new:?} vs {old:?}");
+            assert!(
+                new.input_jerk < old.input_jerk,
+                "input steadier: {new:?} vs {old:?}"
+            );
+            assert!(
+                new.late <= old.late,
+                "no more late commands: {new:?} vs {old:?}"
+            );
         }
     }
 }

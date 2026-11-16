@@ -1001,7 +1001,13 @@ pub fn append_particles_animated(
         let q = quantize_rgb(p.color);
         let near_white = q[0] > 240 && q[1] > 240 && q[2] > 240;
         let tex = if let Some(t) = &p.texture {
-            let clock = |tic: u32| if p.flags & SPF_LOCAL_ANIM != 0 { p.anim_age } else { tic };
+            let clock = |tic: u32| {
+                if p.flags & SPF_LOCAL_ANIM != 0 {
+                    p.anim_age
+                } else {
+                    tic
+                }
+            };
             anim.and_then(|(a, tic)| a.frame(t, clock(tic)))
                 .map_or_else(|| t.clone(), str::to_owned)
         } else if near_white {
@@ -1048,8 +1054,16 @@ pub fn append_particles_animated(
             let right = if right == Vec3::ZERO { Vec3::X } else { right };
             let up = right.cross(fwd).normalize_or_zero();
             // `SPF_STRETCHPIXELS`: Doom's 1.2 vertical pixel stretch.
-            let h = if p.flags & SPF_STRETCHPIXELS != 0 { p.size * 1.2 } else { p.size };
-            (p.size, h, crate::sprites::SpriteOrient::Facing { right, up })
+            let h = if p.flags & SPF_STRETCHPIXELS != 0 {
+                p.size * 1.2
+            } else {
+                p.size
+            };
+            (
+                p.size,
+                h,
+                crate::sprites::SpriteOrient::Facing { right, up },
+            )
         };
         #[allow(clippy::cast_possible_truncation)]
         let start = lists.sprites.len() as u32;
@@ -1224,11 +1238,18 @@ mod tests {
             spawn(Some("BAL1A0"), Some(6), SPF_ALLOWSHADERS),
         ]);
         assert!(store.particles[0].subtract);
-        assert_eq!(store.particles[0].color, [1.0, 0.0, 0.0], "colour is subtracted as is");
+        assert_eq!(
+            store.particles[0].color,
+            [1.0, 0.0, 0.0],
+            "colour is subtracted as is"
+        );
         let mut lists = SceneLists::default();
         append_particles_ex(&mut lists, &store, &camera(), false);
         let r = &lists.sprite_ranges;
-        assert_eq!(r[0].flags, MaterialRange::SUBTRACT | MaterialRange::NO_BRIGHTMAP);
+        assert_eq!(
+            r[0].flags,
+            MaterialRange::SUBTRACT | MaterialRange::NO_BRIGHTMAP
+        );
         // Subtractive vertices use the premultiplied (additive-flag) path.
         assert!(lists.sprites[..6].iter().all(|v| v._pad[0] < 0.0));
         // `SPF_ALLOWSHADERS` keeps the texture's brightmap.
@@ -1244,18 +1265,29 @@ mod tests {
         .unwrap();
         let anim = crate::TextureAnimator::new(&defs);
         let mut store = ParticleStore::default();
-        store.ingest_ex([spawn(Some("BAL1A0"), None, 0), spawn(Some("BAL1A0"), None, SPF_LOCAL_ANIM)]);
+        store.ingest_ex([
+            spawn(Some("BAL1A0"), None, 0),
+            spawn(Some("BAL1A0"), None, SPF_LOCAL_ANIM),
+        ]);
         let names = |store: &ParticleStore, tic: u32| {
             let mut lists = SceneLists::default();
             append_particles_animated(&mut lists, store, &camera(), false, Some((&anim, tic)));
-            lists.sprite_ranges.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+            lists
+                .sprite_ranges
+                .iter()
+                .map(|r| r.name.clone())
+                .collect::<Vec<_>>()
         };
         // Spawned at level tic 2: the level animation is on its second frame,
         // the local one on its first.
         assert_eq!(names(&store, 2), ["BAL1B0", "BAL1A0"]);
         store.tick_with_freeze(true);
         store.tick_with_freeze(true);
-        assert_eq!(names(&store, 4)[1], "BAL1A0", "frozen: the local clock holds");
+        assert_eq!(
+            names(&store, 4)[1],
+            "BAL1A0",
+            "frozen: the local clock holds"
+        );
         store.tick();
         store.tick();
         // Level tic 8: the level animation is back on frame 1; the local
@@ -1318,7 +1350,10 @@ mod tests {
         assert_eq!(particle_style(None, true), ParticleStyle::Additive);
         let mut store = ParticleStore::default();
         store.ingest_ex([spawn(None, Some(3), 0), spawn(None, Some(10), 0)]);
-        assert!((store.particles[0].alpha - 2.0 / 3.0).abs() < 1e-5, "SoulTrans");
+        assert!(
+            (store.particles[0].alpha - 2.0 / 3.0).abs() < 1e-5,
+            "SoulTrans"
+        );
         assert_eq!(store.particles[1].color, [0.0; 3], "Shadow is dark");
     }
 

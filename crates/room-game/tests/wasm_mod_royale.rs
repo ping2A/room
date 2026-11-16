@@ -13,8 +13,7 @@ use room_nodebuild::ensure_nodes;
 use room_sim::mod_hud::{WidgetKey, kind, layer};
 use room_sim::script_mods::ModSource;
 use room_sim::{
-    ActorId, Buttons, MatchOver, MessageTo, PlayerState, TicCmd, World,
-    give_inventory,
+    ActorId, Buttons, MatchOver, MessageTo, PlayerState, TicCmd, World, give_inventory,
 };
 use room_testkit::{MapBuilder, rect};
 use room_vfs::VfsBuilder;
@@ -220,7 +219,10 @@ fn players_are_placed_apart_with_no_drop_choice() {
     let mut msgs = Vec::new();
     let idle = [TicCmd::default(); 2];
     run(&mut game, 10 * 35 + 5, &idle, &mut msgs);
-    assert!(msgs.iter().any(|m| m == "DEPLOY"), "deploy right after pregame: {msgs:?}");
+    assert!(
+        msgs.iter().any(|m| m == "DEPLOY"),
+        "deploy right after pregame: {msgs:?}"
+    );
     assert!(!msgs.iter().any(|m| m.contains("DROP")), "{msgs:?}");
     let w = game.world().unwrap();
     assert!(
@@ -554,7 +556,9 @@ fn no_supply_drops_or_new_loot_during_the_match() {
     run(&mut game, 90 * 35, &idle, &mut msgs);
     let w = game.world().unwrap();
     assert!(
-        !msgs.iter().any(|m| m.to_ascii_lowercase().contains("supply")),
+        !msgs
+            .iter()
+            .any(|m| m.to_ascii_lowercase().contains("supply")),
         "{msgs:?}"
     );
     assert!(w.classes.find_name("SupplyCrate").is_none());
@@ -695,7 +699,10 @@ fn death_shows_stats_then_spectates_the_killer() {
     assert!(hud_text_has(w, 2, 64, "ELIMINATED"), "stats title");
     assert!(hud_text_has(w, 2, 61, "#3 OF 3"), "place");
     assert!(hud_text_has(w, 2, 61, "KILLED BY Player 1"), "killer");
-    assert!(hud_text_has(w, 2, 66, "KILLS") && hud_text_has(w, 2, 69, "0"), "own stats");
+    assert!(
+        hud_text_has(w, 2, 66, "KILLS") && hud_text_has(w, 2, 69, "0"),
+        "own stats"
+    );
     assert!(hud_text_has(w, 2, 65, "FIRE TO SKIP"));
     assert_eq!(spectate_seat(w, 2), None, "stats first, no spectating yet");
     run(&mut game, 5 * 35, &idle, &mut msgs);
@@ -732,7 +739,11 @@ fn fire_skips_the_stats_screen() {
     run(&mut game, 2, &idle, &mut msgs);
     run(&mut game, 2, &fire, &mut msgs);
     let w = game.world().unwrap();
-    assert_eq!(spectate_seat(w, 2), Some(0), "skipped straight to spectating");
+    assert_eq!(
+        spectate_seat(w, 2),
+        Some(0),
+        "skipped straight to spectating"
+    );
     assert!(royale_widget(w, 2, 64).is_none());
 }
 
@@ -840,14 +851,19 @@ fn full_bot_match(map: MapGeometry) -> u64 {
             .map(|g| items_of(w, g).len())
             .sum();
         assert!(guns >= 8, "guns placed: {guns}");
-        let pos: Vec<DVec3> = (0..8).map(|s| w.actors.get(body(w, s)).unwrap().pos).collect();
+        let pos: Vec<DVec3> = (0..8)
+            .map(|s| w.actors.get(body(w, s)).unwrap().pos)
+            .collect();
         let mut closest = f64::MAX;
         for a in 0..8 {
             for b in a + 1..8 {
                 closest = closest.min(flat(pos[a], pos[b]));
             }
         }
-        assert!(closest > 128.0, "players spread out (closest pair {closest})");
+        assert!(
+            closest > 128.0,
+            "players spread out (closest pair {closest})"
+        );
     }
     // Grace + every zone phase is under 8 minutes; give it 10.
     let mut tics = 0;
@@ -859,12 +875,16 @@ fn full_bot_match(map: MapGeometry) -> u64 {
     assert!(w.match_over.is_some(), "match ended within 10 minutes");
     let outs = msgs
         .iter()
-        .filter(|m| m.contains(" left") && (m.contains("fragged") || m.contains("zone") || m.contains("is out")))
+        .filter(|m| {
+            m.contains(" left")
+                && (m.contains("fragged") || m.contains("zone") || m.contains("is out"))
+        })
         .count();
     assert!(outs >= 6, "eliminations announced: {outs}");
     assert_eq!(w.match_standings.len(), 8, "standings for every seat");
     assert!(
-        msgs.iter().any(|m| m.contains("WINS THE BATTLE ROYALE") || m.contains("draw")),
+        msgs.iter()
+            .any(|m| m.contains("WINS THE BATTLE ROYALE") || m.contains("draw")),
         "result announced"
     );
     let errors: Vec<&String> = msgs
@@ -899,7 +919,11 @@ fn eight_bots_play_a_whole_match_on_royale01() {
 fn eight_bots_play_a_whole_match_on_an_iwad_map() {
     let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
     let name = std::env::var("ROYALE_PREVIEW_MAP").unwrap_or_else(|_| "MAP01".into());
-    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    let vfs = VfsBuilder::new()
+        .mount_path(&iwad)
+        .unwrap()
+        .build()
+        .unwrap();
     let mut map = load_map(&vfs, &name).unwrap();
     ensure_nodes(&mut map);
     let _ = full_bot_match(map);
@@ -953,7 +977,10 @@ fn render_overlay_preview() {
     let shot = |game: &Headless, name: &str, patches: &mut PatchCache| {
         let w = game.world().unwrap();
         let mut list = UiDrawList::new();
-        list.fill(Rect::new(0.0, 0.0, 320.0, 200.0), Rgba::new(0.22, 0.2, 0.18, 1.0));
+        list.fill(
+            Rect::new(0.0, 0.0, 320.0, 200.0),
+            Rgba::new(0.22, 0.2, 0.18, 1.0),
+        );
         let poses = player_map_poses(w);
         let ctx = ModHudMapCtx {
             map: Some(&w.map),
@@ -963,14 +990,25 @@ fn render_overlay_preview() {
             allmap: false,
             ticfrac_milli: 1000,
         };
-        draw_mod_hud(&w.mod_hud, 0, w.level.time as u32, 0.0, &mut list, Some(&ctx));
+        draw_mod_hud(
+            &w.mod_hud,
+            0,
+            w.level.time as u32,
+            0.0,
+            &mut list,
+            Some(&ctx),
+        );
         for c in &list.cmds {
             if let DrawCmd::Patch { name, .. } = c {
                 let _ = patches.ensure(&vfs, name);
             }
         }
         let (iw, ih) = (1280usize, 800usize);
-        let mut img = Img { w: iw, h: ih, px: vec![[0.0; 3]; iw * ih] };
+        let mut img = Img {
+            w: iw,
+            h: ih,
+            px: vec![[0.0; 3]; iw * ih],
+        };
         blit_draw_list_full(&list, iw as f32, ih as f32, None, Some(patches), &mut img);
         let mut bytes = Vec::with_capacity(iw * ih * 3);
         for p in &img.px {
@@ -1005,7 +1043,6 @@ fn render_overlay_preview() {
     shot(&game, "victory", &mut patches);
 }
 
-
 /// Share of bot tics spent in the run animation while barely moving
 /// (running on the spot), over 30 s of an 8-bot match.
 fn running_in_place_share(map: MapGeometry) -> f64 {
@@ -1019,7 +1056,9 @@ fn running_in_place_share(map: MapGeometry) -> f64 {
         run(&mut game, 1, &idle, &mut msgs);
         let w = game.world().unwrap();
         for s in 0..8 {
-            let Some(mo) = w.players[s].as_ref().and_then(|p| p.mo) else { continue };
+            let Some(mo) = w.players[s].as_ref().and_then(|p| p.mo) else {
+                continue;
+            };
             let Some(a) = w.actors.get(mo) else { continue };
             if a.health <= 0 {
                 last[s] = None;
@@ -1049,14 +1088,22 @@ fn bots_pick_up_guns_and_do_not_run_on_the_spot() {
         .filter(|&s| {
             ["Shotgun", "Chaingun", "RocketLauncher", "Chainsaw"]
                 .iter()
-                .any(|g| w.players[s].as_ref().and_then(|p| p.mo).is_some_and(|mo| {
-                    w.classes.find_name(g).is_some_and(|c| w.inventory.count(mo, c) > 0)
-                }))
+                .any(|g| {
+                    w.players[s].as_ref().and_then(|p| p.mo).is_some_and(|mo| {
+                        w.classes
+                            .find_name(g)
+                            .is_some_and(|c| w.inventory.count(mo, c) > 0)
+                    })
+                })
         })
         .count();
     assert!(armed >= 2, "bots fetch guns ({armed} armed)");
     let share = running_in_place_share(arena_with(true));
-    assert!(share < 0.10, "running on the spot {:.0}% of the time", share * 100.0);
+    assert!(
+        share < 0.10,
+        "running on the spot {:.0}% of the time",
+        share * 100.0
+    );
 }
 
 #[test]
@@ -1089,7 +1136,12 @@ fn nothing_spawns_in_a_closed_off_room() {
     for (x, y) in [(1000.0, 1000.0), (300.0, 1700.0), (1700.0, 300.0)] {
         b = b.thing(3004, x, y, 0);
     }
-    for (x, y) in [(2368.0, 64.0), (2432.0, 128.0), (2496.0, 192.0), (2368.0, 192.0)] {
+    for (x, y) in [
+        (2368.0, 64.0),
+        (2432.0, 128.0),
+        (2496.0, 192.0),
+        (2368.0, 192.0),
+    ] {
         b = b.thing(3004, x, y, 0).thing(2001, x + 16.0, y, 0);
     }
     let mut map = b.build_udmf("MAP01").unwrap();
@@ -1099,7 +1151,10 @@ fn nothing_spawns_in_a_closed_off_room() {
     let mut msgs = Vec::new();
     run(&mut game, 10 * 35 + 2, &idle, &mut msgs);
     let w = game.world().unwrap();
-    assert!(!room_sim::reach::point_in_main_area(w, 2432.0, 128.0), "closet is cut off");
+    assert!(
+        !room_sim::reach::point_in_main_area(w, 2432.0, 128.0),
+        "closet is cut off"
+    );
     assert!(room_sim::reach::point_in_main_area(w, 1000.0, 1000.0));
     let in_closet = |p: DVec3| p.x() > 2200.0;
     for g in LOOT {
@@ -1120,11 +1175,18 @@ fn nothing_spawns_in_a_closed_off_room() {
 fn bots_move_well_on_an_iwad_map() {
     let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
     let name = std::env::var("ROYALE_PREVIEW_MAP").unwrap_or_else(|_| "MAP01".into());
-    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    let vfs = VfsBuilder::new()
+        .mount_path(&iwad)
+        .unwrap()
+        .build()
+        .unwrap();
     let mut map = load_map(&vfs, &name).unwrap();
     ensure_nodes(&mut map);
     let share = running_in_place_share(map);
-    eprintln!("{name}: running on the spot {:.1}% of bot tics", share * 100.0);
+    eprintln!(
+        "{name}: running on the spot {:.1}% of bot tics",
+        share * 100.0
+    );
     assert!(share < 0.15);
 }
 
@@ -1135,10 +1197,16 @@ fn bots_move_well_on_an_iwad_map() {
 #[ignore = "needs ROYALE_PREVIEW_IWAD"]
 fn spawn_report_on_every_map() {
     let iwad = std::env::var("ROYALE_PREVIEW_IWAD").expect("ROYALE_PREVIEW_IWAD");
-    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().build().unwrap();
+    let vfs = VfsBuilder::new()
+        .mount_path(&iwad)
+        .unwrap()
+        .build()
+        .unwrap();
     for i in 1..=32 {
         let name = format!("MAP{i:02}");
-        let Ok(mut map) = load_map(&vfs, &name) else { continue };
+        let Ok(mut map) = load_map(&vfs, &name) else {
+            continue;
+        };
         ensure_nodes(&mut map);
         let mut game = start_timed(map, 8, true, 0, true, 0);
         let idle = [TicCmd::default(); 8];
@@ -1149,12 +1217,58 @@ fn spawn_report_on_every_map() {
         for s in 0..8 {
             let p = w.actors.get(body(w, s)).unwrap().pos;
             let sec = room_sim::sector_at_xy(w, p.x(), p.y()).unwrap_or(usize::MAX);
-            let sky = w.map.sectors.get(sec).is_some_and(|x| x.ceiling_pic.eq_ignore_ascii_case("F_SKY1"));
+            let sky = w
+                .map
+                .sectors
+                .get(sec)
+                .is_some_and(|x| x.ceiling_pic.eq_ignore_ascii_case("F_SKY1"));
             let main = room_sim::reach::point_in_main_area(w, p.x(), p.y());
-            line += &format!(" [{:.0},{:.0} s{sec}{}{}]", p.x(), p.y(), if sky { " SKY" } else { "" }, if main { "" } else { " OUT" });
+            line += &format!(
+                " [{:.0},{:.0} s{sec}{}{}]",
+                p.x(),
+                p.y(),
+                if sky { " SKY" } else { "" },
+                if main { "" } else { " OUT" }
+            );
         }
         assert!(!line.contains(" OUT"), "{line}");
         let area = room_sim::reach::main_area(w).iter().filter(|b| **b).count();
         eprintln!("{line}  area {area}/{}", w.map.sectors.len());
+    }
+}
+
+/// Battle Royale on maps from `room-mapgen`: every deathmatch start lies in
+/// the engine's main area, and 8 bots play a whole match to a winner.
+#[test]
+fn royale_on_generated_maps() {
+    use room_mapgen::{Biomes, Theme};
+    for (seed, theme, biomes) in [
+        (11, Theme::Tech, Biomes::Mixed),
+        (5, Theme::Hell, Biomes::Caves),
+        (21, Theme::Ruins, Biomes::Wilderness),
+    ] {
+        let opts = room_mapgen::Options {
+            seed,
+            players: 8,
+            theme,
+            biomes,
+            ..Default::default()
+        };
+        let g = room_mapgen::generate(&opts).unwrap();
+        let mut map = g.map.to_geometry().unwrap();
+        ensure_nodes(&mut map);
+        {
+            let game = start(map.clone(), 2, false);
+            let w = game.world().unwrap();
+            for t in g.map.things.iter().filter(|t| t.type_id == 11) {
+                assert!(
+                    room_sim::reach::point_in_main_area(w, f64::from(t.x), f64::from(t.y)),
+                    "seed {seed}: DM start ({}, {}) outside the main area",
+                    t.x,
+                    t.y
+                );
+            }
+        }
+        let _ = full_bot_match(map);
     }
 }

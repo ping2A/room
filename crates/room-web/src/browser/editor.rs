@@ -1434,12 +1434,17 @@ fn with_duke_preview<T>(
                 .map_err(|e| JsValue::from_str(&format!("Duke preview renderer: {e}")))?;
             preview.renderer = Some(renderer);
         }
-        if preview.world.as_ref().is_none_or(|(cached, _)| *cached != file) {
+        if preview
+            .world
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != file)
+        {
             let world = room_build_engine::world::BuildWorld::load_map_bytes(&bytes)
                 .map_err(|e| JsValue::from_str(&format!("Duke preview map: {e:?}")))?;
             preview.world = Some((file, world));
         }
-        let (Some(renderer), Some((_, world))) = (preview.renderer.as_ref(), preview.world.as_ref())
+        let (Some(renderer), Some((_, world))) =
+            (preview.renderer.as_ref(), preview.world.as_ref())
         else {
             return Err(JsValue::from_str("Duke preview unavailable"));
         };
@@ -1472,9 +1477,11 @@ pub fn room_editor_duke_preview(
     // Actors play their default CON action (rotations face the camera).
     let animated = DUKE_PREVIEW.with(|cell| {
         let preview = cell.borrow();
-        let (Some(con), Some((_, world)), Some(renderer)) =
-            (preview.con.as_ref(), preview.world.as_ref(), preview.renderer.as_ref())
-        else {
+        let (Some(con), Some((_, world)), Some(renderer)) = (
+            preview.con.as_ref(),
+            preview.world.as_ref(),
+            preview.renderer.as_ref(),
+        ) else {
             return None;
         };
         let mut world = world.clone();
@@ -1555,8 +1562,7 @@ pub fn room_editor_duke_pick(
                 y: sprite.y,
                 z: sprite.z,
                 sectnum: if index < live
-                    && world.lists.sprite_stat[index]
-                        < room_build_engine::world::MAXSTATUS as i16
+                    && world.lists.sprite_stat[index] < room_build_engine::world::MAXSTATUS as i16
                 {
                     sprite.sectnum
                 } else {
@@ -1682,7 +1688,9 @@ impl DukeConAnim {
                 "ai" if i + 1 < tokens.len() => {
                     let name = tokens[i + 1].to_owned();
                     if matches!(block, Block::None) {
-                        if let Some(action) = tokens.get(i + 2).filter(|a| out.actions.contains_key(**a)) {
+                        if let Some(action) =
+                            tokens.get(i + 2).filter(|a| out.actions.contains_key(**a))
+                        {
                             ais.insert(name, (*action).to_owned());
                             i += 3;
                             continue;
@@ -1722,16 +1730,24 @@ impl DukeConAnim {
                 }
                 "ends" => block = Block::None,
                 "enda" | "endevent" => block = Block::None,
-                "onevent" | "eventloadactor" if matches!(block, Block::None) => block = Block::Event,
+                "onevent" | "eventloadactor" if matches!(block, Block::None) => {
+                    block = Block::Event
+                }
                 "actor" | "useractor" if matches!(block, Block::None) => {
                     let name_at = if t == "useractor" { i + 2 } else { i + 1 };
-                    let Some(name) = tokens.get(name_at) else { break };
+                    let Some(name) = tokens.get(name_at) else {
+                        break;
+                    };
                     let pic = number(name).or_else(|| defines.get(*name).copied());
                     block = Block::Actor;
                     actors.push((pic.unwrap_or(-1), Vec::new(), Vec::new()));
                     // Header: NAME [strength [action [move [flags…]]]].
                     let header = tokens.get(name_at + 2).and_then(|a| {
-                        if out.actions.contains_key(*a) { Some((*a).to_owned()) } else { ais.get(*a).cloned() }
+                        if out.actions.contains_key(*a) {
+                            Some((*a).to_owned())
+                        } else {
+                            ais.get(*a).cloned()
+                        }
                     });
                     if let Some(action) = header
                         && let Some(pic) = pic
@@ -1771,7 +1787,9 @@ impl DukeConAnim {
                 }
             }
             if let Some(first) = unique.first() {
-                out.default_action.entry(pic).or_insert_with(|| first.clone());
+                out.default_action
+                    .entry(pic)
+                    .or_insert_with(|| first.clone());
             }
             out.actor_actions.entry(pic).or_default().extend(unique);
         }
@@ -1780,10 +1798,21 @@ impl DukeConAnim {
 
     /// Frame tile for `pic` running `action` at `tic`, seen from `view_ang`
     /// (`views` 5/7/8 rotations; mirrored rotations set `xflip`).
-    fn frame(&self, pic: i16, action: &str, tic: u32, sprite_ang: i16, eye_ang: i32) -> Option<(i16, bool)> {
+    fn frame(
+        &self,
+        pic: i16,
+        action: &str,
+        tic: u32,
+        sprite_ang: i16,
+        eye_ang: i32,
+    ) -> Option<(i16, bool)> {
         let [start, frames, views, inc, delay] = *self.actions.get(action)?;
         let period = (delay / 4 + 1).max(1) as u32;
-        let step = if frames > 1 { (tic / period) as i32 % frames } else { 0 };
+        let step = if frames > 1 {
+            (tic / period) as i32 % frames
+        } else {
+            0
+        };
         let rel = (i32::from(sprite_ang) + 3072 + 128 - eye_ang) & 2047;
         let (k, flip) = match views {
             5 => {
@@ -1803,7 +1832,10 @@ impl DukeConAnim {
             _ => (0, false),
         };
         let tile = i32::from(pic) + start + k + views * step * inc;
-        i16::try_from(tile).ok().filter(|&t| t > 0).map(|t| (t, flip))
+        i16::try_from(tile)
+            .ok()
+            .filter(|&t| t > 0)
+            .map(|t| (t, flip))
     }
 }
 
@@ -1817,7 +1849,11 @@ fn duke_con_text(ed: &Editor) -> String {
     };
     let mut text = String::new();
     for name in ["DEFS.CON", "USER.CON", "GAME.CON"] {
-        if let Some(file) = grp.names().find(|n| n.eq_ignore_ascii_case(name)).and_then(|n| grp.get(n)) {
+        if let Some(file) = grp
+            .names()
+            .find(|n| n.eq_ignore_ascii_case(name))
+            .and_then(|n| grp.get(n))
+        {
             text.push_str(&String::from_utf8_lossy(file));
             text.push('\n');
         }
@@ -1836,8 +1872,15 @@ pub fn room_editor_duke_animations(picnum: i32) -> Result<String, JsValue> {
         };
         let grp = room_build::Grp::parse(grp_bytes).map_err(|e| e.to_string())?;
         let mut tiles = room_build::TileSet::new();
-        for file in grp.names().filter(|n| n.starts_with("TILES") && n.ends_with(".ART")) {
-            let art = ed.duke_art_edits.get(file).map(Vec::as_slice).or_else(|| grp.get(file));
+        for file in grp
+            .names()
+            .filter(|n| n.starts_with("TILES") && n.ends_with(".ART"))
+        {
+            let art = ed
+                .duke_art_edits
+                .get(file)
+                .map(Vec::as_slice)
+                .or_else(|| grp.get(file));
             if let Some(art) = art {
                 let _ = tiles.add_art(art);
             }
@@ -2206,6 +2249,36 @@ pub fn room_editor_new_map(name: &str, format: &str) -> Result<String, JsValue> 
     let json = serde_json::to_string(&doc).map_err(err)?;
     room_editor_update_map(&json)?;
     Ok(json)
+}
+
+/// Generate a multiplayer map with `room-mapgen` (options as JSON, see
+/// `room_mapgen::Options`), open it as the current document and return
+/// `{"doc": …, "report": …}`. Textures and flats come from the loaded game.
+#[wasm_bindgen(js_name = roomEditorGenerateMap)]
+pub fn room_editor_generate_map(options_json: &str) -> Result<String, JsValue> {
+    let opts: room_mapgen::Options = serde_json::from_str(options_json).map_err(err)?;
+    let generated = with_editor(|ed| {
+        let textures: std::collections::HashSet<String> = ed
+            .materials
+            .texture_names()
+            .map(str::to_ascii_uppercase)
+            .collect();
+        let vfs = &ed.vfs;
+        let has = |kind: room_mapgen::Kind, name: &str| match kind {
+            room_mapgen::Kind::Texture => textures.contains(&name.to_ascii_uppercase()),
+            room_mapgen::Kind::Flat => vfs.find(name, Namespace::Flats).is_some(),
+        };
+        room_mapgen::generate_with(&opts, &has).map_err(|e| e.to_string())
+    })?;
+    let doc = generated.map;
+    with_editor(|ed| {
+        ed.blobs.insert(doc.name.clone(), (None, Vec::new()));
+        Ok(())
+    })?;
+    let json = serde_json::to_string(&doc).map_err(err)?;
+    room_editor_update_map(&json)?;
+    serde_json::to_string(&serde_json::json!({ "doc": doc, "report": generated.report }))
+        .map_err(err)
 }
 
 /// Push the edited document. Returns `"live"`, `"restart"` or `"rebuild"`.

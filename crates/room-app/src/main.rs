@@ -43,17 +43,17 @@ use room_render::{
     ModelActorPose, ModelCatalog, OffscreenTarget, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleStore,
     PostChain, PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient,
     TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes,
-    append_actor_models, append_decals, append_particles_animated, apply_glow_fullbright, build_scene,
-    build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line, mirror_clip_plane,
-    particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u,
-    soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
-    voxel_spin_degrees, voxel_view_angles,
+    append_actor_models, append_decals, append_particles_animated, apply_glow_fullbright,
+    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line,
+    mirror_clip_plane, particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen,
+    scroll_sky_u, soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta,
+    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
-    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_DONTDRAW, FLAG_DROPPED,
-    FLAG_FLOAT, FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable,
-    TicCmd, actor_light_level, check_sight, sprite_pose,
+    ActorId, Buttons, ClassRegistry, FLAG_CORPSE, FLAG_DONTDRAW, FLAG_DROPPED, FLAG_FLOAT,
+    FLAG_MISSILE, FLAG_NOGRAVITY, FLAG_SPAWNCEILING, RenderStyle, ShotKind, StateTable, TicCmd,
+    actor_light_level, check_sight, sprite_pose,
 };
 use room_testkit::{MapBuilder, combat_arena, rect};
 use room_ui::{
@@ -504,28 +504,61 @@ fn main() {
                     .into_iter()
                     .find_map(|name| std::fs::read(parent.join(name)).ok())
             });
-            let renderer = match room_duke::DukeSoftRenderer::from_grp_layers_with_tables(
-                &grp_layers,
-                tables_dat.as_deref(),
-            ) {
-                Ok(renderer) => renderer,
-                Err(e) => {
-                    eprintln!("room: Duke renderer: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let (mod_def_files, mod_tile_assets, mod_mhk_files, mod_music_assets) =
+                match args.con.as_ref() {
+                    Some(con) => match read_duke_mod_render_assets(
+                        con.parent().unwrap_or_else(|| std::path::Path::new(".")),
+                    ) {
+                        Ok(assets) => assets,
+                        Err(error) => {
+                            eprintln!("room: read Duke mod render assets: {error}");
+                            std::process::exit(1);
+                        }
+                    },
+                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                };
+            let mod_def_refs: Vec<(&str, &[u8])> = mod_def_files
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let mod_tile_refs: Vec<(&str, &[u8])> = mod_tile_assets
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let mod_mhk_refs: Vec<(&str, &[u8])> = mod_mhk_files
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let renderer =
+                match room_duke::DukeSoftRenderer::from_grp_layers_with_mod_assets_and_mhks(
+                    &grp_layers,
+                    tables_dat.as_deref(),
+                    &mod_def_refs,
+                    &mod_tile_refs,
+                    &mod_mhk_refs,
+                ) {
+                    Ok(renderer) => renderer,
+                    Err(e) => {
+                        eprintln!("room: Duke renderer: {e}");
+                        std::process::exit(1);
+                    }
+                };
             let map_file = std::path::Path::new(&args.map);
+            let mut standalone_map_bytes = None;
             let session_result = if map_file.is_file() {
                 match std::fs::read(map_file) {
-                    Ok(map_bytes) => room_duke::session_from_grp_map_bytes_with_con_and_includes(
-                        &grp_layers,
-                        &map_bytes,
-                        skill,
-                        con_override,
-                        con_includes
-                            .as_mut()
-                            .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
-                    ),
+                    Ok(map_bytes) => {
+                        standalone_map_bytes = Some(map_bytes.clone());
+                        room_duke::session_from_grp_map_bytes_with_con_and_includes(
+                            &grp_layers,
+                            &map_bytes,
+                            skill,
+                            con_override,
+                            con_includes.as_mut().map(|resolver| {
+                                resolver as &mut dyn room_duke::con::IncludeResolver
+                            }),
+                        )
+                    }
                     Err(error) => Err(format!("read user map {}: {error}", map_file.display())),
                 }
             } else {
@@ -546,15 +579,44 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            if net.is_some()
-                && let Err(error) = session.configure_multiplayer_mode(
+            let selected_map_name = if map_file.is_file() {
+                map_file
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or(&args.map)
+                    .to_owned()
+            } else {
+                let map_name = args.map.trim().to_ascii_uppercase();
+                let base = map_name.strip_suffix(".MAP").unwrap_or(&map_name);
+                format!("{base}.MAP")
+            };
+            let selected_map_bytes = standalone_map_bytes.or_else(|| {
+                let name = selected_map_name.to_ascii_uppercase();
+                room_build::grp::GrpStack::parse_layers(&grp_layers)
+                    .ok()?
+                    .get(&name)
+                    .map(<[u8]>::to_vec)
+            });
+            if let Some(map_bytes) = selected_map_bytes.as_deref() {
+                match renderer.load_map_hack_for_map(&selected_map_name, map_bytes) {
+                    Ok(Some(name)) => eprintln!("room: loaded Duke map hack {name}"),
+                    Ok(None) => {}
+                    Err(error) => eprintln!("room: Duke map hack skipped: {error}"),
+                }
+            }
+            if net.is_some() {
+                if let Err(error) = session.validate_network_content() {
+                    eprintln!("room: Duke network content: {error}");
+                    std::process::exit(1);
+                }
+                if let Err(error) = session.configure_multiplayer_mode(
                     usize::from(coop_players),
                     args.duke_game_mode,
                     args.duke_friendly_fire,
-                )
-            {
-                eprintln!("room: Duke multiplayer setup: {error}");
-                std::process::exit(1);
+                ) {
+                    eprintln!("room: Duke multiplayer setup: {error}");
+                    std::process::exit(1);
+                }
             }
             if net.is_some() {
                 let mode = match args.duke_game_mode {
@@ -579,7 +641,12 @@ fn main() {
                 session.player.extra = 100;
                 eprintln!("room: Duke give all → weapons + full ammo");
             }
-            let sound_bank = duke_sound_bank(&grp_layers, session.script.as_ref(), audio_rate);
+            let sound_bank = duke_sound_bank(
+                &grp_layers,
+                session.script.as_ref(),
+                audio_rate,
+                args.con.as_ref().and_then(|con| con.parent()),
+            );
             if !args.grp.is_empty() {
                 eprintln!("room: mounted {} Duke add-on GRP(s)", args.grp.len());
             }
@@ -588,6 +655,8 @@ fn main() {
                 args.map,
             );
             let campaign_content = Some(DukeCampaignContent {
+                def_music: read_duke_def_music(&grp_bytes, &mod_def_files),
+                mod_music_assets,
                 grp_layers: grp_bytes,
                 con_override: con_bytes,
                 con_directory: args.con.as_ref().map(|con| {
@@ -948,6 +1017,133 @@ fn main() {
 
 /// `showendoom`: print the IWAD/PWAD ENDOOM (ENDTEXT, ENDSTRF) quit screen
 /// to the terminal in ANSI colour after the window closes.
+fn read_duke_mod_render_assets(
+    root: &std::path::Path,
+) -> Result<
+    (
+        Vec<(String, Vec<u8>)>,
+        Vec<(String, Vec<u8>)>,
+        Vec<(String, Vec<u8>)>,
+        Vec<(String, Vec<u8>)>,
+    ),
+    String,
+> {
+    fn walk(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        defs: &mut Vec<(String, Vec<u8>)>,
+        images: &mut Vec<(String, Vec<u8>)>,
+        mhks: &mut Vec<(String, Vec<u8>)>,
+        music: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<(), String> {
+        let entries = std::fs::read_dir(current)
+            .map_err(|error| format!("{}: {error}", current.display()))?;
+        let mut entries = entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{}: {error}", current.display()))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            if kind.is_dir() {
+                walk(root, &path, defs, images, mhks, music)?;
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_ascii_lowercase);
+            let target = match extension.as_deref() {
+                Some("def") => Some(&mut *defs),
+                Some("png" | "bmp") => Some(&mut *images),
+                Some("mhk") => Some(&mut *mhks),
+                Some("ogg" | "wav" | "flac" | "mp3" | "mid" | "midi" | "mus") => Some(&mut *music),
+                _ => None,
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes =
+                std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            target.push((relative, bytes));
+        }
+        Ok(())
+    }
+
+    let mut defs = Vec::new();
+    let mut images = Vec::new();
+    let mut mhks = Vec::new();
+    let mut music = Vec::new();
+    walk(root, root, &mut defs, &mut images, &mut mhks, &mut music)?;
+    Ok((defs, images, mhks, music))
+}
+
+#[derive(Clone)]
+struct DukeDefMusicTrack {
+    source_def: String,
+    id: String,
+    file: String,
+}
+
+fn read_duke_def_music(
+    grp_layers: &[Vec<u8>],
+    loose_defs: &[(String, Vec<u8>)],
+) -> Vec<DukeDefMusicTrack> {
+    fn append_document(source_name: &str, bytes: &[u8], tracks: &mut Vec<DukeDefMusicTrack>) {
+        let Ok(contents) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        let Ok(document) = room_build::def::DefDocument::parse(contents) else {
+            eprintln!("room: skip invalid Duke DEF music source {source_name}");
+            return;
+        };
+        match document.music_tracks() {
+            Ok(def_tracks) => {
+                tracks.extend(def_tracks.into_iter().map(|track| DukeDefMusicTrack {
+                    source_def: source_name.to_owned(),
+                    id: track.id,
+                    file: track.file,
+                }))
+            }
+            Err(error) => eprintln!("room: skip Duke DEF music in {source_name}: {error}"),
+        }
+    }
+
+    let mut tracks = Vec::new();
+    if let Ok(grp) = room_build::grp::GrpStack::parse_layers(
+        &grp_layers.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    ) {
+        let mut seen = std::collections::BTreeSet::new();
+        let names: Vec<String> = grp
+            .names()
+            .filter(|name| name.to_ascii_uppercase().ends_with(".DEF"))
+            .filter_map(|name| {
+                let owned = name.to_owned();
+                seen.insert(owned.clone()).then_some(owned)
+            })
+            .collect();
+        for name in names {
+            if let Some(bytes) = grp.get(&name) {
+                append_document(&name, bytes, &mut tracks);
+            }
+        }
+    }
+    for (name, bytes) in loose_defs {
+        append_document(name, bytes, &mut tracks);
+    }
+    tracks
+}
+
 fn print_endoom(app: &ViewerApp) {
     let on = matches!(
         app.console.cvars.get("showendoom"),
@@ -1061,9 +1257,46 @@ struct DukeCampaignContent {
     con_override: Option<Vec<u8>>,
     con_directory: Option<PathBuf>,
     sample_rate: u32,
+    def_music: Vec<DukeDefMusicTrack>,
+    mod_music_assets: Vec<(String, Vec<u8>)>,
 }
 
 impl DukeCampaignContent {
+    fn map_bytes(&self, map: &str) -> Option<Vec<u8>> {
+        let name = map.trim().to_ascii_uppercase();
+        let base = name.strip_suffix(".MAP").unwrap_or(&name);
+        let name = format!("{base}.MAP");
+        let layers: Vec<&[u8]> = self.grp_layers.iter().map(Vec::as_slice).collect();
+        room_build::grp::GrpStack::parse_layers(&layers)
+            .ok()?
+            .get(&name)
+            .map(<[u8]>::to_vec)
+    }
+
+    fn music_asset<'a>(
+        &'a self,
+        grp: &room_build::grp::GrpStack<'a>,
+        track: &DukeDefMusicTrack,
+    ) -> Option<&'a [u8]> {
+        let file = normalize_duke_resource_path(&track.file);
+        let source = normalize_duke_resource_path(&track.source_def);
+        let mut candidates = vec![file.clone()];
+        if let Some((parent, _)) = source.rsplit_once('/') {
+            candidates.push(format!("{parent}/{file}"));
+        }
+        for candidate in &candidates {
+            if let Some((_, bytes)) = self
+                .mod_music_assets
+                .iter()
+                .find(|(name, _)| normalize_duke_resource_path(name) == *candidate)
+            {
+                return Some(bytes);
+            }
+        }
+        let basename = file.rsplit('/').next().unwrap_or(&file);
+        grp.get(&track.file).or_else(|| grp.get(basename))
+    }
+
     fn load_level_at_skill(
         &self,
         volume: u8,
@@ -1095,20 +1328,27 @@ impl DukeCampaignContent {
         sample_rate: u32,
     ) -> SampleBank {
         let layers: Vec<&[u8]> = self.grp_layers.iter().map(Vec::as_slice).collect();
-        duke_sound_bank(&layers, script, sample_rate)
+        duke_sound_bank(&layers, script, sample_rate, self.con_directory.as_deref())
     }
+}
+
+fn normalize_duke_resource_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase()
 }
 
 impl room_duke::con::IncludeResolver for DukeConIncludes {
     fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
-        let requested = std::path::Path::new(name);
+        let normalized = name.replace('\\', "/");
+        let requested = std::path::Path::new(&normalized);
         let candidates = if requested.is_absolute() {
             vec![requested.to_path_buf()]
         } else {
             vec![
                 self.directory.join(requested),
-                self.directory.join(name.to_ascii_uppercase()),
-                self.directory.join(name.to_ascii_lowercase()),
+                self.directory.join(normalized.to_ascii_uppercase()),
+                self.directory.join(normalized.to_ascii_lowercase()),
             ]
         };
         candidates
@@ -1117,11 +1357,13 @@ impl room_duke::con::IncludeResolver for DukeConIncludes {
     }
 }
 
-/// Decode native Duke CON `definesound` VOC assets into the shared mixer bank.
+/// Decode native Duke CON `definesound` assets into the shared mixer bank.
+/// GRP content wins; an external mod directory supplies loose WAV/OGG/VOC.
 fn duke_sound_bank(
     grp_layers: &[&[u8]],
     script: Option<&room_duke::con::ScriptImage>,
     sample_rate: u32,
+    resource_directory: Option<&std::path::Path>,
 ) -> SampleBank {
     let mut bank = SampleBank::new();
     let Ok(grp) = room_build::grp::GrpStack::parse_layers(grp_layers) else {
@@ -1132,10 +1374,20 @@ fn duke_sound_bank(
             let Some(definition) = definition else {
                 continue;
             };
-            let Some(bytes) = grp.get(&definition.file) else {
-                continue;
-            };
-            let Ok(decoded) = room_formats::decode_sound(bytes) else {
+            let decoded = grp
+                .get(&definition.file)
+                .and_then(|bytes| room_formats::decode_sound(bytes).ok())
+                .or_else(|| {
+                    let mut resolver = DukeConIncludes {
+                        directory: resource_directory?.to_path_buf(),
+                    };
+                    let bytes = room_duke::con::IncludeResolver::read_include(
+                        &mut resolver,
+                        &definition.file,
+                    )?;
+                    room_formats::decode_sound(&bytes).ok()
+                });
+            let Some(decoded) = decoded else {
                 continue;
             };
             insert_duke_sample(
@@ -1367,24 +1619,27 @@ fn install_duke_ui_art(
     let mut fon_palette = vec![[0u8, 0, 0]];
     fon_palette.extend_from_slice(&palette[..255]);
     let glyph = |pic: i16| {
-        renderer.tile_indices(pic).map(|(w, h, idx)| room_formats::FontGlyph {
-            width: w,
-            height: h,
-            indices: idx
-                .into_iter()
-                .map(|i| if i == room_build::art::TRANSPARENT { 0 } else { i + 1 })
-                .collect(),
-        })
+        renderer
+            .tile_indices(pic)
+            .map(|(w, h, idx)| room_formats::FontGlyph {
+                width: w,
+                height: h,
+                indices: idx
+                    .into_iter()
+                    .map(|i| {
+                        if i == room_build::art::TRANSPARENT {
+                            0
+                        } else {
+                            i + 1
+                        }
+                    })
+                    .collect(),
+            })
     };
     let make_font = |map: &dyn Fn(u8) -> Option<i16>, kerning: i16| {
         let glyphs: Vec<Option<room_formats::FontGlyph>> =
             (32u8..=126).map(|c| map(c).and_then(&glyph)).collect();
-        let height = glyphs
-            .iter()
-            .flatten()
-            .map(|g| g.height)
-            .max()
-            .unwrap_or(0);
+        let height = glyphs.iter().flatten().map(|g| g.height).max().unwrap_or(0);
         (height > 0).then(|| {
             room_ui::SoftFont::Fon2(room_formats::Fon2 {
                 font_height: height,
@@ -2573,11 +2828,16 @@ fn build_hw_post_runners(
             .and_then(|id| vfs.read(id).ok())
             .map(|b| String::from_utf8_lossy(&b).into_owned())
         else {
-            eprintln!("room: post shader {}: lump {} not found", def.name, def.shader);
+            eprintln!(
+                "room: post shader {}: lump {} not found",
+                def.name, def.shader
+            );
             continue;
         };
         match room_render::compile_post_glsl(def, &src) {
-            Ok(compiled) => out.push(room_render::HardwarePostRunner::new(device, format, &compiled)),
+            Ok(compiled) => out.push(room_render::HardwarePostRunner::new(
+                device, format, &compiled,
+            )),
             Err(e) => eprintln!("room: post shader {}: {e}", def.name),
         }
     }
@@ -2695,7 +2955,9 @@ fn start_play_session(
     Option<room_ui::ScriptStatusBar>,
     Option<room_ui::SbarInfoBar>,
 ) {
-    let mut sbar_class: Option<String> = std::env::var("ROOM_STATUSBAR").ok().filter(|v| !v.is_empty());
+    let mut sbar_class: Option<String> = std::env::var("ROOM_STATUSBAR")
+        .ok()
+        .filter(|v| !v.is_empty());
     let mut script_sbar = None;
     let mut sbarinfo_bar = None;
     let mut game = Headless::new(GameOptions {
@@ -2736,7 +2998,11 @@ fn start_play_session(
             if let Some(info) = defs.sbarinfo.clone().filter(|i| !i.statusbars.is_empty()) {
                 eprintln!(
                     "room: SBARINFO status bar ({})",
-                    info.statusbars.keys().cloned().collect::<Vec<_>>().join(", ")
+                    info.statusbars
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 sbarinfo_bar = Some(room_ui::SbarInfoBar::new(info, &defs.fonts));
             }
@@ -3221,11 +3487,18 @@ impl ApplicationHandler for ViewerApp {
                 if down && self.duke_menu.is_some() {
                     use room_duke::menu::MenuKey;
                     let key = match code {
-                        KeyCode::ArrowUp | KeyCode::PageUp | KeyCode::Numpad8 | KeyCode::KeyW => Some(MenuKey::Up),
-                        KeyCode::ArrowDown | KeyCode::PageDown | KeyCode::Numpad2 | KeyCode::KeyS => Some(MenuKey::Down),
+                        KeyCode::ArrowUp | KeyCode::PageUp | KeyCode::Numpad8 | KeyCode::KeyW => {
+                            Some(MenuKey::Up)
+                        }
+                        KeyCode::ArrowDown
+                        | KeyCode::PageDown
+                        | KeyCode::Numpad2
+                        | KeyCode::KeyS => Some(MenuKey::Down),
                         KeyCode::ArrowLeft | KeyCode::Numpad4 => Some(MenuKey::Left),
                         KeyCode::ArrowRight | KeyCode::Numpad6 => Some(MenuKey::Right),
-                        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Some(MenuKey::Enter),
+                        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
+                            Some(MenuKey::Enter)
+                        }
                         KeyCode::Escape => Some(MenuKey::Escape),
                         KeyCode::KeyY => Some(MenuKey::Yes),
                         KeyCode::KeyN => Some(MenuKey::No),
@@ -3237,7 +3510,10 @@ impl ApplicationHandler for ViewerApp {
                     return;
                 }
                 // `dobonus`: any key skips the count-up, then ends the screen.
-                if down && !repeat && let Some(panel) = self.duke_bonus_panel.as_mut() {
+                if down
+                    && !repeat
+                    && let Some(panel) = self.duke_bonus_panel.as_mut()
+                {
                     panel.screen.key();
                     let labels = panel.screen.take_sounds();
                     self.play_duke_bonus_sounds(&labels);
@@ -3304,10 +3580,11 @@ impl ApplicationHandler for ViewerApp {
                 if down && !repeat && !menu_open && self.play.is_some() {
                     if let Some(name) = keycode_keyconf_name(code) {
                         let now = self.start_instant.elapsed().as_millis() as u64;
-                        self.double_tap.threshold_ms = match self.console.cvars.get("m_doubleclicktime") {
-                            Some(room_console::CvarValue::Int(v)) => (*v).max(0) as u64,
-                            _ => room_input::double_tap::DEFAULT_DOUBLE_TAP_MS,
-                        };
+                        self.double_tap.threshold_ms =
+                            match self.console.cvars.get("m_doubleclicktime") {
+                                Some(room_console::CvarValue::Int(v)) => (*v).max(0) as u64,
+                                _ => room_input::double_tap::DEFAULT_DOUBLE_TAP_MS,
+                            };
                         if self.double_tap.press(name, now)
                             && let Some(cmd) = self.double_binds.get(name).map(str::to_owned)
                         {
@@ -4062,14 +4339,19 @@ impl ViewerApp {
             return;
         };
         let cvar_on = |name: &str| {
-            !matches!(self.console.cvars.get(name), Some(room_console::CvarValue::Bool(false)))
+            !matches!(
+                self.console.cvars.get(name),
+                Some(room_console::CvarValue::Bool(false))
+            )
         };
         let reverb_on = cvar_on("snd_reverb");
         let water = cvar_on("snd_waterreverb");
         let (paused, env, underwater) = match self.play.as_ref() {
             Some(game) if game.state == GameState::Level => {
                 // `PowerTimeFreezer` pauses world sound too (`S_PauseSound`).
-                let paused = game.world().is_some_and(|w| w.paused || w.level.frozen_power);
+                let paused = game
+                    .world()
+                    .is_some_and(|w| w.paused || w.level.frozen_power);
                 // `snd_reverb` off is UZDoom without an effect slot: no
                 // reverb and no water filter, but the pitch still drops.
                 let heard = game.listener_sound(self.local_seat, water && reverb_on);
@@ -4131,7 +4413,10 @@ impl ViewerApp {
             let up = hit(B::DPadUp);
             let down = hit(B::DPadDown);
             if up || down {
-                let sfx = self.menu.as_mut().and_then(|m| m.move_cursor(if up { -1 } else { 1 }));
+                let sfx = self
+                    .menu
+                    .as_mut()
+                    .and_then(|m| m.move_cursor(if up { -1 } else { 1 }));
                 if let Some(sfx) = sfx {
                     self.play_menu_sfx(sfx);
                 }
@@ -4166,7 +4451,12 @@ impl ViewerApp {
             }
         } else if hit(B::Back) && self.play.is_some() {
             self.automap = !self.automap;
-        } else if hit(B::South) && self.play.as_ref().is_some_and(|g| g.state != GameState::Level) {
+        } else if hit(B::South)
+            && self
+                .play
+                .as_ref()
+                .is_some_and(|g| g.state != GameState::Level)
+        {
             // Skip intermission / finale text like Enter.
             self.play_advance();
         }
@@ -4744,42 +5034,63 @@ impl ViewerApp {
         self.render_settings = render_settings_from_cvars(&self.console.cvars);
         let render_settings = self.render_settings.clone();
         let use_post = render_settings.needs_post();
-        let duke_frame = self
-            .duke_bonus_panel
-            .is_none()
-            .then(|| self.duke_session.as_ref())
-            .flatten()
-            .and_then(|session| {
-                let renderer = self.duke_renderer.as_ref()?;
-                let world = session.render_world()?;
+        let duke_frame = if self.duke_bonus_panel.is_none() {
+            let renderer = self.duke_renderer.as_ref();
+            let mouse_look = self.mouse_look;
+            let demo_playback = self.duke_demo_playback.is_none();
+            let atomic_demo_playback = self.duke_atomic_demo_playback.is_none();
+            let mouse_yaw_accum = self.mouse_yaw_accum;
+            let mouse_pitch_accum = self.mouse_pitch_accum;
+            let turn_residual = self.duke_turn_residual;
+            let horiz_residual = self.duke_horiz_residual;
+            let pitch_scale = self.duke_pitch_scale();
+            let tic_accum = self.tic_accum;
+            let dimensions = self
+                .config
+                .as_ref()
+                .map_or((640, 400), |c| (c.width.max(1), c.height.max(1)));
+            self.duke_session.as_mut().and_then(|session| {
+                let renderer = renderer?;
+                let world = match session.render_world_with_eduke_events(0) {
+                    Ok(Some(world)) => world,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        eprintln!("[Duke CON] EVENT_ANIMATESPRITES failed: {error}");
+                        session.render_world()?
+                    }
+                };
+                for error in session.take_eduke_runtime_errors() {
+                    eprintln!("[Duke CON] {error}");
+                }
                 renderer.set_overlay_quote(session.active_quote());
-                // Mouse look between 30 Hz tics: show the not-yet-sent mouse
+                let tic_duration = 1.0 / session.tic_rate() as f32;
+                // Mouse look between simulation tics: show the not-yet-sent mouse
                 // motion so the view follows the mouse at the display rate.
                 let mut view_player = session.player.clone();
-                if self.mouse_look
-                    && self.duke_demo_playback.is_none()
-                    && self.duke_atomic_demo_playback.is_none()
+                if mouse_look
+                    && demo_playback
+                    && atomic_demo_playback
                     && session.player.dead_flag == 0
                 {
-                    let pending_yaw = -(self.mouse_yaw_accum as f64) * MOUSE_DEG_PER_COUNT * 2048.0
+                    let pending_yaw = -(mouse_yaw_accum as f64) * MOUSE_DEG_PER_COUNT * 2048.0
                         / 360.0
-                        + self.duke_turn_residual;
+                        + turn_residual;
                     view_player.ang =
                         ((i32::from(view_player.ang) + pending_yaw.round() as i32) & 2047) as i16;
-                    let pending_horiz = self.mouse_pitch_accum as f64
+                    let pending_horiz = mouse_pitch_accum as f64
                         * MOUSE_DEG_PER_COUNT
-                        * self.duke_pitch_scale()
+                        * pitch_scale
                         * 160.0
                         * std::f64::consts::PI
                         / 180.0
-                        + self.duke_horiz_residual;
+                        + horiz_residual;
                     view_player.horiz = (f64::from(view_player.horiz) + pending_horiz.round())
                         .clamp(-99.0, 299.0) as i16;
                 }
                 // Chocolate `smoothratio`: draw the camera between the previous
                 // and current tic positions (skipped across teleports).
                 {
-                    let frac = f64::from((self.tic_accum / (1.0 / 30.0)).clamp(0.0, 1.0));
+                    let frac = f64::from((tic_accum / tic_duration).clamp(0.0, 1.0));
                     let p = &session.player;
                     let (dx, dy, dz) = (p.posx - p.oposx, p.posy - p.oposy, p.posz - p.oposz);
                     if p.remote_camera.is_none()
@@ -4787,7 +5098,8 @@ impl ViewerApp {
                         && dz.abs() < (64 << 8)
                         && (dx != 0 || dy != 0 || dz != 0)
                     {
-                        let lerp = |a: i32, d: i32| a - ((f64::from(d) * (1.0 - frac)).round() as i32);
+                        let lerp =
+                            |a: i32, d: i32| a - ((f64::from(d) * (1.0 - frac)).round() as i32);
                         view_player.posx = lerp(p.posx, dx);
                         view_player.posy = lerp(p.posy, dy);
                         view_player.posz = lerp(p.posz, dz);
@@ -4808,10 +5120,7 @@ impl ViewerApp {
                         }
                     }
                 }
-                let (width, height) = self
-                    .config
-                    .as_ref()
-                    .map_or((640, 400), |c| (c.width.max(1), c.height.max(1)));
+                let (width, height) = dimensions;
                 Some((
                     width,
                     height,
@@ -4822,13 +5131,18 @@ impl ViewerApp {
                         height,
                         session.tic,
                         session.earthquake_time,
-                        (self.tic_accum / (1.0 / 30.0) * 1000.0).clamp(0.0, 1000.0) as u32,
+                        (tic_accum / tic_duration * 1000.0).clamp(0.0, 1000.0) as u32,
                     ),
                 ))
-            });
-        if let (Some(gpu), Some(vfs), Some(frame_color)) =
-            (self.gpu.as_ref(), self.vfs.as_ref(), self.frame_color.as_ref())
-        {
+            })
+        } else {
+            None
+        };
+        if let (Some(gpu), Some(vfs), Some(frame_color)) = (
+            self.gpu.as_ref(),
+            self.vfs.as_ref(),
+            self.frame_color.as_ref(),
+        ) {
             let format = frame_color.0.format();
             if self.hw_post.as_ref().is_none_or(|(f, _)| *f != format) {
                 let runners = build_hw_post_runners(&gpu.device, format, &self.gldefs, vfs);
@@ -4960,7 +5274,13 @@ impl ViewerApp {
                                     format!("PRESS USE WHEN READY  {ready}/{of}")
                                 };
                                 let w = room_ui::measure_stcfn_string(&line, 1.0);
-                                room_ui::draw_stcfn_string(&mut ui, 160.0 - w / 2.0, 188.0, &line, 1.0);
+                                room_ui::draw_stcfn_string(
+                                    &mut ui,
+                                    160.0 - w / 2.0,
+                                    188.0,
+                                    &line,
+                                    1.0,
+                                );
                             }
                         }
                     }
@@ -5016,10 +5336,15 @@ impl ViewerApp {
                         let seat = usize::from(self.local_seat);
                         // `PowerScanner` reveals the map while it runs.
                         let allmap = self.play.as_ref().and_then(|g| g.world()).is_some_and(|w| {
-                            w.players.get(seat).and_then(|p| p.as_ref()).is_some_and(|p| {
-                                p.allmap
-                                    || p.mo.is_some_and(|mo| room_sim::powerups::reveals_map(w, mo))
-                            })
+                            w.players
+                                .get(seat)
+                                .and_then(|p| p.as_ref())
+                                .is_some_and(|p| {
+                                    p.allmap
+                                        || p.mo.is_some_and(|mo| {
+                                            room_sim::powerups::reveals_map(w, mo)
+                                        })
+                                })
                         });
                         let view = AutomapView {
                             center_x: f64::from(self.camera.eye.x),
@@ -5127,67 +5452,67 @@ impl ViewerApp {
                             self.hud.overlay_interpolate,
                         );
                         // Extra `A_Overlay` layers (UZDoom draws them by id around the gun).
-                        let draw_layers = |ui: &mut room_ui::UiDrawList,
-                                           pick: &dyn Fn(i32) -> bool| {
-                            for layer in self.hud.layers.iter().filter(|l| pick(l.id)) {
-                                let Some(soft_layer) = self.patches.get(&layer.patch) else {
-                                    continue;
-                                };
-                                let (lbx, lby) = overlay_bob(
-                                    self.weapon_bob_prev,
-                                    (self.hud.bob_x, self.hud.bob_y),
-                                    frac,
-                                    layer.interpolate,
-                                );
-                                let mut x = overlay_layer_bob(
-                                    lbx,
-                                    self.hud.bob_ofs_x,
-                                    layer.add_bob,
-                                    layer.add_weapon,
-                                ) + layer.ofs_x;
-                                if layer.mirror {
-                                    x = -x;
+                        let draw_layers =
+                            |ui: &mut room_ui::UiDrawList, pick: &dyn Fn(i32) -> bool| {
+                                for layer in self.hud.layers.iter().filter(|l| pick(l.id)) {
+                                    let Some(soft_layer) = self.patches.get(&layer.patch) else {
+                                        continue;
+                                    };
+                                    let (lbx, lby) = overlay_bob(
+                                        self.weapon_bob_prev,
+                                        (self.hud.bob_x, self.hud.bob_y),
+                                        frac,
+                                        layer.interpolate,
+                                    );
+                                    let mut x = overlay_layer_bob(
+                                        lbx,
+                                        self.hud.bob_ofs_x,
+                                        layer.add_bob,
+                                        layer.add_weapon,
+                                    ) + layer.ofs_x;
+                                    if layer.mirror {
+                                        x = -x;
+                                    }
+                                    let y = overlay_layer_bob(
+                                        lby,
+                                        self.hud.bob_ofs_y,
+                                        layer.add_bob,
+                                        layer.add_weapon,
+                                    ) + layer.ofs_y;
+                                    let first = ui.cmds.len();
+                                    draw_weapon_tinted(
+                                        ui,
+                                        &layer.patch,
+                                        self.hud.fullscreen,
+                                        Some(soft_layer),
+                                        x,
+                                        y,
+                                        self.hud.weapon_light,
+                                        layer.bright,
+                                        layer.fuzz,
+                                        layer.alpha,
+                                        layer.scale_x,
+                                        layer.scale_y,
+                                        layer.flip,
+                                        layer.pivot_x,
+                                        layer.pivot_y,
+                                        layer.angle,
+                                        layer.tint.0,
+                                        layer.tint.1,
+                                        layer.tint.2,
+                                        false,
+                                        layer.pivot_percent,
+                                    );
+                                    room_ui::set_patch_corners(
+                                        ui,
+                                        first,
+                                        layer.vertex,
+                                        layer.scale_x,
+                                        layer.scale_y,
+                                        layer.flip,
+                                    );
                                 }
-                                let y = overlay_layer_bob(
-                                    lby,
-                                    self.hud.bob_ofs_y,
-                                    layer.add_bob,
-                                    layer.add_weapon,
-                                ) + layer.ofs_y;
-                                let first = ui.cmds.len();
-                                draw_weapon_tinted(
-                                    ui,
-                                    &layer.patch,
-                                    self.hud.fullscreen,
-                                    Some(soft_layer),
-                                    x,
-                                    y,
-                                    self.hud.weapon_light,
-                                    layer.bright,
-                                    layer.fuzz,
-                                    layer.alpha,
-                                    layer.scale_x,
-                                    layer.scale_y,
-                                    layer.flip,
-                                    layer.pivot_x,
-                                    layer.pivot_y,
-                                    layer.angle,
-                                    layer.tint.0,
-                                    layer.tint.1,
-                                    layer.tint.2,
-                                    false,
-                                    layer.pivot_percent,
-                                );
-                                room_ui::set_patch_corners(
-                                    ui,
-                                    first,
-                                    layer.vertex,
-                                    layer.scale_x,
-                                    layer.scale_y,
-                                    layer.flip,
-                                );
-                            }
-                        };
+                            };
                         draw_layers(&mut ui, &|id| id < 1);
                         let gun_first = ui.cmds.len();
                         draw_weapon_tinted(
@@ -5296,7 +5621,8 @@ impl ViewerApp {
                         draw_crosshair(&mut ui, self.hud.crosshair);
                         // `PowerTargeter` reticle (TRGTA0 centre, B0 / C0 sides).
                         let targeter = self.play.as_ref().and_then(|g| g.world()).and_then(|w| {
-                            w.player_hud(usize::from(self.local_seat)).and_then(|h| h.targeter)
+                            w.player_hud(usize::from(self.local_seat))
+                                .and_then(|h| h.targeter)
                         });
                         if let (Some(t), Some(vfs)) = (targeter, self.vfs.as_ref()) {
                             let mut piece = |name: &str, x: f32, y: f32| {
@@ -5369,13 +5695,19 @@ impl ViewerApp {
                             && self.hud.fullscreen
                             && matches!(
                                 self.console.cvars.get("hud_althud"),
-                                Some(room_console::CvarValue::Bool(true) | room_console::CvarValue::Int(1..))
+                                Some(
+                                    room_console::CvarValue::Bool(true)
+                                        | room_console::CvarValue::Int(1..)
+                                )
                             )
                             && world.status_bar_items(seat).is_some();
                         if althud && self.script_sbar.is_none() && self.althud_bar.is_none() {
                             self.althud_bar = Some(match self.vfs.as_ref() {
-                                Some(vfs) => room_game::load_status_bar_program(vfs)
-                                    .and_then(|prog| room_ui::ScriptStatusBar::new(prog, "DoomStatusBar")),
+                                Some(vfs) => {
+                                    room_game::load_status_bar_program(vfs).and_then(|prog| {
+                                        room_ui::ScriptStatusBar::new(prog, "DoomStatusBar")
+                                    })
+                                }
                                 None => Err("no VFS".to_owned()),
                             });
                             if let Some(Err(e)) = &self.althud_bar {
@@ -5462,7 +5794,9 @@ impl ViewerApp {
                                     ),
                                     dims: &dims,
                                 };
-                                if let Some(out) = self.sbarinfo_bar.as_ref().and_then(|b| b.draw(&frame)) {
+                                if let Some(out) =
+                                    self.sbarinfo_bar.as_ref().and_then(|b| b.draw(&frame))
+                                {
                                     sbarinfo_out = Some((first, out));
                                 } else if !self.hud.fullscreen {
                                     // No bar for this mode in the lump: the stock bar.
@@ -5486,8 +5820,12 @@ impl ViewerApp {
                                 let cvars: Vec<(&str, i64)> = room_ui::HUD_CVARS
                                     .iter()
                                     .filter_map(|(name, _)| match self.console.cvars.get(name) {
-                                        Some(room_console::CvarValue::Int(v)) => Some((*name, i64::from(*v))),
-                                        Some(room_console::CvarValue::Bool(b)) => Some((*name, i64::from(*b))),
+                                        Some(room_console::CvarValue::Int(v)) => {
+                                            Some((*name, i64::from(*v)))
+                                        }
+                                        Some(room_console::CvarValue::Bool(b)) => {
+                                            Some((*name, i64::from(*b)))
+                                        }
                                         _ => None,
                                     })
                                     .collect();
@@ -6058,7 +6396,8 @@ impl ViewerApp {
                 && let Some(renderer) = self.duke_renderer.as_ref()
             {
                 let (w, h) = (fb_w.max(1.0) as u32, fb_h.max(1.0) as u32);
-                let rgba = renderer.render_menu(w, h, &state.menu, state.clock as i64, state.backdrop);
+                let rgba =
+                    renderer.render_menu(w, h, &state.menu, state.clock as i64, state.backdrop);
                 hud.blit_rgba(0.0, 0.0, w, h, rgba);
             }
             if let Some(panel) = &self.duke_bonus_panel
@@ -6087,15 +6426,31 @@ impl ViewerApp {
                     extra.is_some_and(|(_, r)| r) && (1..=8).contains(&self.hud.palette);
                 // Accessibility `r_reduce_flashing`: damage / pickup / powerup
                 // screen flashes drawn at a third of their strength.
-                let flash = if self.render_settings.reduce_flashing { 0.35 } else { 1.0 };
+                let flash = if self.render_settings.reduce_flashing {
+                    0.35
+                } else {
+                    1.0
+                };
                 if !use_post && !replaces_pain {
                     if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
-                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [tint.r, tint.g, tint.b, tint.a * flash]);
+                        hud.fill_rect(
+                            0.0,
+                            0.0,
+                            fb_w,
+                            fb_h,
+                            [tint.r, tint.g, tint.b, tint.a * flash],
+                        );
                     }
                 }
                 if let Some((rgba, _)) = extra {
                     if rgba[3] > 0.001 {
-                        hud.fill_rect(0.0, 0.0, fb_w, fb_h, [rgba[0], rgba[1], rgba[2], rgba[3] * flash]);
+                        hud.fill_rect(
+                            0.0,
+                            0.0,
+                            fb_w,
+                            fb_h,
+                            [rgba[0], rgba[1], rgba[2], rgba[3] * flash],
+                        );
                     }
                 }
                 let fade = world.screen_fade;
@@ -6239,7 +6594,11 @@ impl ViewerApp {
             let present_tex = if use_post && !ui_only {
                 let mut blend = [0.0_f32, 0.0, 0.0, 0.0];
                 if let Some(tint) = room_ui::screen_blend(self.hud.palette) {
-                    let flash = if render_settings.reduce_flashing { 0.35 } else { 1.0 };
+                    let flash = if render_settings.reduce_flashing {
+                        0.35
+                    } else {
+                        1.0
+                    };
                     blend = [tint.r, tint.g, tint.b, tint.a * flash];
                 }
                 if render_settings.damage_fx && self.hud.health > 0 && self.hud.health < 25 {
@@ -6495,7 +6854,11 @@ impl ViewerApp {
             }
             bits.buttons |= std::mem::take(&mut self.inv_cmd);
             if let Some((load, slot)) = self.net_save_cmd.take() {
-                bits.buttons |= if load { Buttons::NETLOAD } else { Buttons::NETSAVE };
+                bits.buttons |= if load {
+                    Buttons::NETLOAD
+                } else {
+                    Buttons::NETSAVE
+                };
                 bits.weapon_select = slot;
             }
             let cmd = TicCmd {
@@ -6616,7 +6979,10 @@ impl ViewerApp {
             );
             // Unreleased local input for `cl_predict` (netplay only).
             let pending_local: Vec<TicCmd> = if predict_on {
-                self.net.as_ref().map(netplay::NetPlay::pending_local_cmds).unwrap_or_default()
+                self.net
+                    .as_ref()
+                    .map(netplay::NetPlay::pending_local_cmds)
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -6687,7 +7053,9 @@ impl ViewerApp {
                 net_save_req = game.take_net_save_request();
                 if let Some(vfs) = self.vfs.as_ref() {
                     // Userinfo `gender` for `$playersound` (per local seat).
-                    if let Some(room_console::CvarValue::String(g)) = self.console.cvars.get("gender") {
+                    if let Some(room_console::CvarValue::String(g)) =
+                        self.console.cvars.get("gender")
+                    {
                         game.set_player_gender(self.local_seat, room_sim::parse_gender(g));
                     }
                     let events = game.drain_audio_for(vfs, self.local_seat);
@@ -7151,15 +7519,16 @@ impl ViewerApp {
                         let view_id = p.camera.or(p.mo);
                         // `cl_predict`: the confirmed pawn moved by the input
                         // still in flight (view only; the world is untouched).
-                        let predicted = world
-                            .predict_player_view(seat, &pending_local)
-                            .and_then(|pv| {
-                                let mut a = world.actors.get(p.mo?)?.clone();
-                                a.pos = pv.pos;
-                                a.angle = pv.angle;
-                                a.pitch = pv.pitch;
-                                Some((a, pv.view_z))
-                            });
+                        let predicted =
+                            world
+                                .predict_player_view(seat, &pending_local)
+                                .and_then(|pv| {
+                                    let mut a = world.actors.get(p.mo?)?.clone();
+                                    a.pos = pv.pos;
+                                    a.angle = pv.angle;
+                                    a.pitch = pv.pitch;
+                                    Some((a, pv.view_z))
+                                });
                         if let Some(vid) = view_id {
                             let confirmed = world.actors.get(vid);
                             let a = predicted.as_ref().map(|(a, _)| a).or(confirmed);
@@ -7693,7 +8062,7 @@ impl ViewerApp {
         }
     }
 
-    /// Drive the native Build playsim from desktop input at Duke's 30 Hz.
+    /// Drive the native Build playsim at EDuke32's selected timer rate.
     fn tick_duke(&mut self, dt: f32) {
         if let Some(state) = self.duke_menu.as_mut() {
             state.clock += dt * 120.0;
@@ -7702,17 +8071,30 @@ impl ViewerApp {
         if self.menu.is_some() || self.duke_help_page != 0 {
             return;
         }
-        const TICS_PER_SECOND: f32 = 30.0;
-        const TIC: f32 = 1.0 / TICS_PER_SECOND;
         self.tic_accum += dt;
-        while self.tic_accum >= TIC {
-            self.tic_accum -= TIC;
+        loop {
+            let tic_duration = self
+                .duke_session
+                .as_ref()
+                .map_or(1.0 / room_duke::DUKE_TIC_RATE as f32, |session| {
+                    1.0 / session.tic_rate() as f32
+                });
+            if self.tic_accum < tic_duration {
+                break;
+            }
+            self.tic_accum -= tic_duration;
             if self.duke_bonus_panel.is_some() {
                 // Chocolate `totalclock` runs at 120 Hz: four clocks per tic.
-                let (transition, labels) = self.duke_bonus_panel.as_mut().map_or((None, Vec::new()), |panel| {
-                    panel.screen.tick(4);
-                    (panel.screen.done().then_some(panel.transition), panel.screen.take_sounds())
-                });
+                let (transition, labels) =
+                    self.duke_bonus_panel
+                        .as_mut()
+                        .map_or((None, Vec::new()), |panel| {
+                            panel.screen.tick(4);
+                            (
+                                panel.screen.done().then_some(panel.transition),
+                                panel.screen.take_sounds(),
+                            )
+                        });
                 self.play_duke_bonus_sounds(&labels);
                 if let Some(transition) = transition {
                     self.duke_bonus_panel = None;
@@ -7773,7 +8155,8 @@ impl ViewerApp {
             // both stay exact.
             let yaw_units = -(sample.mouse_yaw as f64) * MOUSE_DEG_PER_COUNT * 2048.0 / 360.0
                 + self.duke_turn_residual;
-            let turn = (f64::from(key_turn) + (yaw_units / 2.0).trunc()).clamp(-127.0, 127.0) as i16;
+            let turn =
+                (f64::from(key_turn) + (yaw_units / 2.0).trunc()).clamp(-127.0, 127.0) as i16;
             self.duke_turn_residual =
                 (yaw_units - f64::from(turn - key_turn) * 2.0).clamp(-2048.0, 2048.0);
             let turn = turn as i8;
@@ -7783,8 +8166,8 @@ impl ViewerApp {
             let pitch_deg = sample.mouse_pitch as f64
                 * room_input::MOUSE_DEG_PER_COUNT
                 * self.duke_pitch_scale();
-            let horiz_units = pitch_deg * 160.0 * std::f64::consts::PI / 180.0
-                + self.duke_horiz_residual;
+            let horiz_units =
+                pitch_deg * 160.0 * std::f64::consts::PI / 180.0 + self.duke_horiz_residual;
             // `horiz += horz >> 1`: send even values so both directions move
             // by the same amount, keep the remainder for the next tic.
             let half = horiz_units.trunc().clamp(-63.0, 63.0);
@@ -7856,13 +8239,15 @@ impl ViewerApp {
                 // `duke_hitdebug 1`: echo what each player bullet hit.
                 room_duke::shoot::set_hit_debug(!matches!(
                     self.console.cvars.get("duke_hitdebug"),
-                    Some(room_console::CvarValue::Int(0)) | Some(room_console::CvarValue::Bool(false))
+                    Some(room_console::CvarValue::Int(0))
+                        | Some(room_console::CvarValue::Bool(false))
                 ));
                 // `duke_statusbar 0` switches to Atomic's full-screen mini HUD.
                 if let Some(renderer) = self.duke_renderer.as_ref() {
                     renderer.set_full_status_bar(!matches!(
                         self.console.cvars.get("duke_statusbar"),
-                        Some(room_console::CvarValue::Int(0)) | Some(room_console::CvarValue::Bool(false))
+                        Some(room_console::CvarValue::Int(0))
+                            | Some(room_console::CvarValue::Bool(false))
                     ));
                 }
                 if self.duke_demo_playback.is_none() && self.duke_atomic_demo_playback.is_none() {
@@ -8072,6 +8457,18 @@ impl ViewerApp {
                 if let Some(world) = next.world.as_mut() {
                     room_duke::sync_player_sprite(&next.player, world.sprites.as_mut());
                 }
+                let map_name = format!("E{}L{}", volume + 1, level + 1);
+                if let (Some(renderer), Some(map_bytes)) =
+                    (self.duke_renderer.as_ref(), content.map_bytes(&map_name))
+                {
+                    match renderer.load_map_hack_for_map(&map_name, &map_bytes) {
+                        Ok(Some(name)) => self.messages.push(format!("Duke map hack: {name}"), 70),
+                        Ok(None) => {}
+                        Err(error) => self
+                            .messages
+                            .push(format!("Duke map hack skipped: {error}"), 70),
+                    }
+                }
                 self.duke_start_state = next.save_fsave().ok();
                 self.duke_sound_bank =
                     content.sound_bank(next.script.as_ref(), content.sample_rate);
@@ -8095,7 +8492,11 @@ impl ViewerApp {
 
     /// Play `dobonus` cues (CON labels) as centred global sounds.
     fn play_duke_bonus_sounds(&mut self, labels: &[&'static str]) {
-        let Some(script) = self.duke_session.as_ref().and_then(|session| session.script.as_ref()) else {
+        let Some(script) = self
+            .duke_session
+            .as_ref()
+            .and_then(|session| session.script.as_ref())
+        else {
             return;
         };
         let events: Vec<room_duke::DukeSoundEvent> = labels
@@ -8665,17 +9066,21 @@ impl ViewerApp {
             let (sprite, frame) = a
                 .state
                 .and_then(|st| world.states.get(st))
-                .map_or((String::new(), 'A'), |st| (st.sprite.clone(), char::from(b'A' + st.frame.min(25))));
+                .map_or((String::new(), 'A'), |st| {
+                    (st.sprite.clone(), char::from(b'A' + st.frame.min(25)))
+                });
             let m = &a.ext.model;
-            let req = |anim: &(String, f64, i32, i32, i32, i32, i32), start: u32| room_render::AnimRequest {
-                name: anim.0.clone(),
-                framerate: anim.1,
-                start_frame: anim.2,
-                loop_frame: anim.3,
-                end_frame: anim.4,
-                interpolate_tics: anim.5,
-                flags: anim.6,
-                start_tic: f64::from(start),
+            let req = |anim: &(String, f64, i32, i32, i32, i32, i32), start: u32| {
+                room_render::AnimRequest {
+                    name: anim.0.clone(),
+                    framerate: anim.1,
+                    start_frame: anim.2,
+                    loop_frame: anim.3,
+                    end_frame: anim.4,
+                    interpolate_tics: anim.5,
+                    flags: anim.6,
+                    start_tic: f64::from(start),
+                }
             };
             #[allow(clippy::cast_possible_truncation)]
             out.push(ModelActorPose {
@@ -8685,13 +9090,21 @@ impl ViewerApp {
                 angle_deg: a.angle.degrees() as f32,
                 sprite,
                 frame,
-                tic: f64::from(world.level.maptime) + f64::from((self.tic_accum * 35.0).clamp(0.0, 1.0)),
-                animation: m.animation.as_ref().map(|anim| req(anim, m.animation_start)),
+                tic: f64::from(world.level.maptime)
+                    + f64::from((self.tic_accum * 35.0).clamp(0.0, 1.0)),
+                animation: m
+                    .animation
+                    .as_ref()
+                    .map(|anim| req(anim, m.animation_start)),
                 prev_animation: m
                     .prev_animation
                     .as_ref()
                     .map(|(anim, start, switch)| (req(anim, *start), f64::from(*switch))),
-                bones: m.bones.iter().map(|b| (b.index, b.name.clone(), bone_override(b))).collect(),
+                bones: m
+                    .bones
+                    .iter()
+                    .map(|b| (b.index, b.name.clone(), bone_override(b)))
+                    .collect(),
                 animation_file: m.animation_file.as_ref().map(|(_, path, file)| {
                     if path.is_empty() {
                         file.clone()
@@ -9098,7 +9511,9 @@ impl ViewerApp {
             let Some(a) = world.actors.get(id) else {
                 continue;
             };
-            if a.extra_flags.get_name("INTERPOLATESCALE") || a.extra_flags.get_name("INTERPOLATEALPHA") {
+            if a.extra_flags.get_name("INTERPOLATESCALE")
+                || a.extra_flags.get_name("INTERPOLATEALPHA")
+            {
                 #[allow(clippy::cast_possible_truncation)]
                 extra.insert(id, (a.scale_x as f32, a.scale_y as f32, a.alpha as f32));
             }
@@ -9214,12 +9629,16 @@ impl ViewerApp {
                     blend_subtract,
                     // `R_ShouldDrawSpriteShadow` (`r_actorspriteshadow` mode),
                     // with the floor the shadow snaps to.
-                    room_sim::casts_sprite_shadow(world, id, self.render_settings.actor_sprite_shadow)
-                        .then(|| {
-                            room_sim::floor_at_xy(world, a.pos.x(), a.pos.y())
-                                .unwrap_or(a.pos.z())
-                                .min(a.pos.z())
-                        }),
+                    room_sim::casts_sprite_shadow(
+                        world,
+                        id,
+                        self.render_settings.actor_sprite_shadow,
+                    )
+                    .then(|| {
+                        room_sim::floor_at_xy(world, a.pos.x(), a.pos.y())
+                            .unwrap_or(a.pos.z())
+                            .min(a.pos.z())
+                    }),
                 ))
             })
             .collect();
@@ -9342,14 +9761,23 @@ impl ViewerApp {
             } else {
                 SpriteOrient::Billboard
             };
-            if view.isometric && self.camera.ortho.is_some() && matches!(orient, SpriteOrient::Billboard) {
+            if view.isometric
+                && self.camera.ortho.is_some()
+                && matches!(orient, SpriteOrient::Billboard)
+            {
                 // `+ISOMETRICSPRITES` under an orthographic camera: stretch,
                 // tilt toward the camera about the sprite's foot, and step
                 // back `radius·√2` along the view so stacked actors overlap.
-                let fwd = Vec3::new(self.camera.forward.x, self.camera.forward.y, 0.0).normalize_or_zero();
-                let pitch = (-self.camera.forward.z).clamp(-1.0, 1.0).asin().to_degrees();
-                let yaw_deg = f64::from(self.camera.forward.y.atan2(self.camera.forward.x)).to_degrees();
-                let (scale_iso, theta) = room_sim::isometric_sprite(radius, w, h, yaw_deg, f64::from(pitch));
+                let fwd = Vec3::new(self.camera.forward.x, self.camera.forward.y, 0.0)
+                    .normalize_or_zero();
+                let pitch = (-self.camera.forward.z)
+                    .clamp(-1.0, 1.0)
+                    .asin()
+                    .to_degrees();
+                let yaw_deg =
+                    f64::from(self.camera.forward.y.atan2(self.camera.forward.x)).to_degrees();
+                let (scale_iso, theta) =
+                    room_sim::isometric_sprite(radius, w, h, yaw_deg, f64::from(pitch));
                 h *= scale_iso;
                 #[allow(clippy::cast_possible_truncation)]
                 let t = (theta as f32).to_radians();
@@ -9391,7 +9819,8 @@ impl ViewerApp {
                 fx: room_render::SpriteFx {
                     flip_v: view.flip_y,
                     // UZDoom rolls about the actor's origin unless `+ROLLCENTER`.
-                    roll_pivot: (!view.roll_center).then(|| Vec3::new(x as f32, y as f32, z as f32)),
+                    roll_pivot: (!view.roll_center)
+                        .then(|| Vec3::new(x as f32, y as f32, z as f32)),
                     no_dynlight: view.no_dynlight,
                     subtract: blend_subtract,
                 },
@@ -9412,13 +9841,15 @@ impl ViewerApp {
                 } * alpha;
                 if shadow_alpha > 0.0 {
                     #[allow(clippy::cast_possible_truncation)]
-                    let (bottom, height) = (
-                        (floor + (z_bottom - z) * 0.15) as f32,
-                        (h * 0.15) as f32,
-                    );
+                    let (bottom, height) =
+                        ((floor + (z_bottom - z) * 0.15) as f32, (h * 0.15) as f32);
                     // Always behind its sprite (UZDoom: `depth += EQUAL_EPSILON`).
-                    let away = Vec3::new(x as f32 - self.camera.eye.x, y as f32 - self.camera.eye.y, 0.0)
-                        .normalize_or_zero();
+                    let away = Vec3::new(
+                        x as f32 - self.camera.eye.x,
+                        y as f32 - self.camera.eye.y,
+                        0.0,
+                    )
+                    .normalize_or_zero();
                     out.push(SpriteInstance {
                         pos: Vec3::new(x as f32, y as f32, bottom) + away,
                         width: w as f32,
@@ -10607,7 +11038,8 @@ impl ViewerApp {
                     map,
                     keep_inventory,
                 } => {
-                    let target = map.or_else(|| self.play.as_ref().and_then(|g| g.console_next_map()));
+                    let target =
+                        map.or_else(|| self.play.as_ref().and_then(|g| g.console_next_map()));
                     match target {
                         Some(name) => self.console_change_map_ex(&name, keep_inventory),
                         None => self.messages.push("changemap: no next map", 70),
@@ -10623,7 +11055,9 @@ impl ViewerApp {
                 HostCommand::ChangeEpisode(n) => {
                     match self.play.as_ref().and_then(|g| g.episode_start_map(n)) {
                         Some(name) => self.console_change_map(&name),
-                        None => self.messages.push(format!("changeepisode: no episode {n}"), 70),
+                        None => self
+                            .messages
+                            .push(format!("changeepisode: no episode {n}"), 70),
                     }
                 }
                 HostCommand::Save(slot) => self.save_play_save(slot.as_deref()),
@@ -11823,6 +12257,15 @@ impl ViewerApp {
         };
         session.campaign =
             room_duke::DukeCampaignProgress::new(playback.volume(), playback.level());
+        let map_name = format!("E{}L{}", playback.volume() + 1, playback.level() + 1);
+        if let (Some(renderer), Some(map_bytes)) =
+            (self.duke_renderer.as_ref(), content.map_bytes(&map_name))
+        {
+            if let Err(error) = renderer.load_map_hack_for_map(&map_name, &map_bytes) {
+                self.messages
+                    .push(format!("Duke map hack skipped: {error}"), 70);
+            }
+        }
         self.duke_sound_bank = content.sound_bank(session.script.as_ref(), content.sample_rate);
         self.duke_demo_map = (playback.volume(), playback.level());
         self.duke_music_selection =
@@ -11880,26 +12323,14 @@ impl ViewerApp {
         let Some(content) = self.duke_campaign_content.as_ref() else {
             return;
         };
-        let Some(script) = self
-            .duke_session
-            .as_ref()
-            .and_then(|session| session.script.as_ref())
-        else {
+        let Some(session) = self.duke_session.as_ref() else {
             return;
         };
-        let Some(name) = script
-            .music_tracks
-            .get(self.duke_music_selection)
-            .filter(|name| !name.is_empty())
-        else {
+        let Some(script) = session.script.as_ref() else {
             return;
         };
         let layers: Vec<&[u8]> = content.grp_layers.iter().map(Vec::as_slice).collect();
         let Ok(grp) = room_build::grp::GrpStack::parse_layers(&layers) else {
-            return;
-        };
-        let Some(midi) = grp.get(name) else {
-            eprintln!("room: Duke music {name} missing from GRP layers");
             return;
         };
         let Some(audio) = self.audio.as_ref() else {
@@ -11909,6 +12340,64 @@ impl ViewerApp {
             return;
         };
         shared.mixer.music_gain = duke_audio_volume(&self.console.cvars, "duke_music_volume");
+        if let Some(map_id) = session
+            .campaign
+            .map(|position| format!("E{}L{}", position.volume + 1, position.level + 1))
+            && let Some(track) = content
+                .def_music
+                .iter()
+                .rev()
+                .find(|track| track.id.eq_ignore_ascii_case(&map_id))
+            && let Some(bytes) = content.music_asset(&grp, track)
+        {
+            let extension = track
+                .file
+                .rsplit_once('.')
+                .map(|(_, extension)| extension.to_ascii_lowercase());
+            let started = match extension.as_deref() {
+                Some("mid" | "midi") => {
+                    shared
+                        .music
+                        .play_midi(track.file.clone(), bytes.to_vec(), true);
+                    true
+                }
+                Some("mus") => match shared.music.play_mus(track.file.clone(), bytes, true) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("room: decode Duke DEF music {}: {error}", track.file);
+                        false
+                    }
+                },
+                _ => match room_formats::decode_sound(bytes) {
+                    Ok(sound) => match shared.music.play_pcm(track.file.clone(), sound, true) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            eprintln!("room: start Duke DEF music {}: {error}", track.file);
+                            false
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("room: decode Duke DEF music {}: {error}", track.file);
+                        false
+                    }
+                },
+            };
+            if started {
+                self.messages.push(format!("Music {}", track.file), 35);
+                return;
+            }
+        }
+        let Some(name) = script
+            .music_tracks
+            .get(self.duke_music_selection)
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let Some(midi) = grp.get(name) else {
+            eprintln!("room: Duke music {name} missing from GRP layers");
+            return;
+        };
         shared.music.play_midi(name, midi.to_vec(), true);
     }
 

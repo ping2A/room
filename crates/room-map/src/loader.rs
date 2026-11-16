@@ -271,7 +271,12 @@ pub fn list_maps(vfs: &Vfs) -> Vec<String> {
 fn map_sort_key(name: &str) -> (u8, u32, u32, String) {
     let u = name.to_ascii_uppercase();
     let b = u.as_bytes();
-    if b.len() == 4 && b[0] == b'E' && b[2] == b'M' && b[1].is_ascii_digit() && b[3].is_ascii_digit() {
+    if b.len() == 4
+        && b[0] == b'E'
+        && b[2] == b'M'
+        && b[1].is_ascii_digit()
+        && b[3].is_ascii_digit()
+    {
         return (0, u32::from(b[1] - b'0'), u32::from(b[3] - b'0'), u);
     }
     if let Some(n) = u.strip_prefix("MAP").and_then(|d| d.parse::<u32>().ok()) {

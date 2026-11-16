@@ -117,7 +117,10 @@ pub fn uzdoom_stdlib_sources() -> Vec<(String, String)> {
         std::path::PathBuf::from("wadsrc/uzdoom"),
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom"),
     ];
-    let Some(root) = candidates.into_iter().find(|p| p.join("zscript.txt").is_file()) else {
+    let Some(root) = candidates
+        .into_iter()
+        .find(|p| p.join("zscript.txt").is_file())
+    else {
         return Vec::new();
     };
     let Ok(entry) = std::fs::read_to_string(root.join("zscript.txt")) else {
@@ -198,7 +201,10 @@ pub fn load_status_bar_program(vfs: &Vfs) -> Result<CompiledProgram, String> {
 pub fn status_bar_mod_sources(vfs: &Vfs) -> Vec<(String, String)> {
     let mut engine = std::collections::BTreeSet::new();
     for (_, info) in vfs.iter() {
-        if vfs.container(info.container).is_some_and(|c| c.name == "room.pk3") {
+        if vfs
+            .container(info.container)
+            .is_some_and(|c| c.name == "room.pk3")
+        {
             engine.insert(info.full_path.to_ascii_lowercase());
         }
     }
@@ -566,7 +572,11 @@ mod source_tests {
         let (sources, notes) = zscript_sources_from_vfs(&vfs);
         let paths: Vec<_> = sources.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths, ["zscript.zc", "zscript/keep.zc"]); // zip paths are lower-cased
-        assert!(sources[0].1.contains("// replaced by a WASM mod: #include \"zscript/BD_WCS.zc\""));
+        assert!(
+            sources[0]
+                .1
+                .contains("// replaced by a WASM mod: #include \"zscript/BD_WCS.zc\"")
+        );
         assert!(sources[0].1.contains("\n#include \"zscript/Keep.zc\""));
         assert!(notes.iter().any(|n| n.contains("replaces_zscript")));
         assert!(load_zscript_from_vfs(&vfs).ok);

@@ -64,7 +64,9 @@ pub fn animatesprites(
                 sprite.picnum = s.picnum + k as i16;
                 continue;
             }
-            p if (SCRAP6..=SCRAP6 + 7).contains(&p) || [SCRAP1, 2404, 2408, 2412, SCRAP5].contains(&p) => {
+            p if (SCRAP6..=SCRAP6 + 7).contains(&p)
+                || [SCRAP1, 2404, 2408, 2412, SCRAP5].contains(&p) =>
+            {
                 let hit_pic = t.map_or(-1, |t| t.hit_picnum);
                 if !(hit_pic == BLIMP && p == SCRAP1 && s.yvel >= 0) {
                     sprite.picnum = p.wrapping_add(t0 as i16);
@@ -80,7 +82,9 @@ pub fn animatesprites(
         if script.actorscrptr.get(pic).copied().unwrap_or(0) <= 0 {
             continue;
         }
-        let Ok(ptr) = usize::try_from(t4) else { continue };
+        let Ok(ptr) = usize::try_from(t4) else {
+            continue;
+        };
         if ptr == 0 || ptr + 2 >= script.script.len() {
             continue;
         }

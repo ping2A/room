@@ -148,9 +148,18 @@ impl SbarInfoBar {
             // `VirtualToRealCoords(320, 200, keepaspect)`: the full height,
             // 4:3 wide (16:9 at most), centred.
             let ratio = (w / h).min(16.0 / 9.0);
-            let sx = if ratio > 1.334 { w / (320.0 * ratio * 0.75) } else { w / 320.0 };
+            let sx = if ratio > 1.334 {
+                w / (320.0 * ratio * 0.75)
+            } else {
+                w / 320.0
+            };
             let sy = h / 200.0;
-            (320.0, 200.0, (((w - 320.0 * sx) * 0.5).round(), 0.0), (320.0 * sx, 200.0 * sy))
+            (
+                320.0,
+                200.0,
+                (((w - 320.0 * sx) * 0.5).round(), 0.0),
+                (320.0 * sx, 200.0 * sy),
+            )
         } else {
             // `ST_X` / `ST_Y`: the bar's box at the bottom, centred.
             (
@@ -186,7 +195,10 @@ fn collect_patches(cmds: &[SbarCmd], out: &mut Vec<String>) {
         match c {
             SbarCmd::DrawMugShot { args } => {
                 if let Some(p) = args.first().filter(|a| coord(a).is_none()) {
-                    out.push(format!("@face:{}", p.trim_matches('"').to_ascii_uppercase()));
+                    out.push(format!(
+                        "@face:{}",
+                        p.trim_matches('"').to_ascii_uppercase()
+                    ));
                 }
             }
             SbarCmd::DrawImage { image, .. } => out.push(image.clone()),
@@ -285,14 +297,16 @@ impl Ctx<'_, '_> {
 
     fn max_amount(&self, class: &str) -> i32 {
         let class = class.trim_matches('"');
-        self.item(class).map(|(_, m)| m).or_else(|| {
-            self.snap()
-                .max_amounts
-                .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(class))
-                .map(|(_, m)| *m)
-        })
-        .unwrap_or(0)
+        self.item(class)
+            .map(|(_, m)| m)
+            .or_else(|| {
+                self.snap()
+                    .max_amounts
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(class))
+                    .map(|(_, m)| *m)
+            })
+            .unwrap_or(0)
     }
 
     fn icon(&self, class: &str) -> Option<String> {
@@ -350,14 +364,19 @@ impl Ctx<'_, '_> {
                 SbarCmd::Block { kind, args, body } => {
                     let kind = kind.to_ascii_lowercase();
                     let else_body = match cmds.get(i + 1) {
-                        Some(SbarCmd::Block {
-                            kind: k, body, ..
-                        }) if k.eq_ignore_ascii_case("else") => Some(body),
+                        Some(SbarCmd::Block { kind: k, body, .. })
+                            if k.eq_ignore_ascii_case("else") =>
+                        {
+                            Some(body)
+                        }
                         _ => None,
                     };
                     match kind.as_str() {
                         "alpha" => {
-                            let a = args.first().and_then(|a| a.parse::<f32>().ok()).unwrap_or(1.0);
+                            let a = args
+                                .first()
+                                .and_then(|a| a.parse::<f32>().ok())
+                                .unwrap_or(1.0);
                             self.run(body, alpha * a);
                         }
                         "drawselectedinventory" => self.selected_inventory(args, Some(body), alpha),
@@ -434,9 +453,10 @@ impl Ctx<'_, '_> {
             "ininventory" => self.in_inventory(args),
             "weaponammo" => self.weapon_ammo(args),
             "aspectratio" => args.first().is_some_and(|r| self.aspect_is(r)),
-            "playerclass" => args
-                .iter()
-                .any(|a| a.trim_matches('"').eq_ignore_ascii_case(self.f.player_class)),
+            "playerclass" => args.iter().any(|a| {
+                a.trim_matches('"')
+                    .eq_ignore_ascii_case(self.f.player_class)
+            }),
             "armortype" => {
                 // `armortype name, amount`: not tracked by name; any armor.
                 let min = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
@@ -492,8 +512,12 @@ impl Ctx<'_, '_> {
     fn weapon_ammo(&self, args: &[String]) -> bool {
         let s = self.snap();
         let uses = |a: &str| {
-            s.ammo1.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(a))
-                || s.ammo2.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(a))
+            s.ammo1
+                .as_deref()
+                .is_some_and(|x| x.eq_ignore_ascii_case(a))
+                || s.ammo2
+                    .as_deref()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(a))
         };
         let names: Vec<&String> = args.iter().filter(|a| *a != "||" && *a != "&&").collect();
         if args.iter().any(|a| a == "&&") {
@@ -537,7 +561,10 @@ impl Ctx<'_, '_> {
         };
         let words = flag_words(&toks[next..]);
         let anchor = anchor_of(&words);
-        let nums: Vec<i32> = toks[next..].iter().filter_map(|t| t.trim().parse().ok()).collect();
+        let nums: Vec<i32> = toks[next..]
+            .iter()
+            .filter_map(|t| t.trim().parse().ok())
+            .collect();
         let boxsize = (nums.len() >= 2).then(|| (nums[0], nums[1]));
         let Some(lump) = self.resolve_image(image) else {
             return;
@@ -558,7 +585,9 @@ impl Ctx<'_, '_> {
             "playericon" => Some(s.face.clone()),
             "ammoicon1" => s.ammo1.as_deref().and_then(|a| self.icon(a)),
             "ammoicon2" => s.ammo2.as_deref().and_then(|a| self.icon(a)),
-            "armoricon" => (self.armor() > 0).then(|| self.icon("BasicArmor")).flatten(),
+            "armoricon" => (self.armor() > 0)
+                .then(|| self.icon("BasicArmor"))
+                .flatten(),
             "weaponicon" => s.ready_weapon.as_deref().and_then(|w| self.icon(w)),
             "nullimage" | "" => None,
             _ => {
@@ -596,8 +625,16 @@ impl Ctx<'_, '_> {
         let (w, h) = match boxsize {
             #[allow(clippy::cast_precision_loss)]
             Some((bw, bh)) if bw > 0 || bh > 0 => {
-                let s1 = if bw > 0 && (bw as f32) < d.w { bw as f32 / d.w } else { 1.0 };
-                let s2 = if bh > 0 && (bh as f32) < d.h { bh as f32 / d.h } else { 1.0 };
+                let s1 = if bw > 0 && (bw as f32) < d.w {
+                    bw as f32 / d.w
+                } else {
+                    1.0
+                };
+                let s2 = if bh > 0 && (bh as f32) < d.h {
+                    bh as f32 / d.h
+                } else {
+                    1.0
+                };
                 let s = s1.min(s2);
                 (d.w * s, d.h * s)
             }
@@ -613,7 +650,14 @@ impl Ctx<'_, '_> {
         if let Some(r) = clip {
             self.out.push(DrawCmd::Clip { rect: Some(r) });
         }
-        self.out.push(patch(lump, Vec2::new(px, py), (w, h), (d.w, d.h), alpha, None));
+        self.out.push(patch(
+            lump,
+            Vec2::new(px, py),
+            (w, h),
+            (d.w, d.h),
+            alpha,
+            None,
+        ));
         if clip.is_some() {
             self.out.push(DrawCmd::Clip { rect: None });
         }
@@ -633,7 +677,10 @@ impl Ctx<'_, '_> {
         let alt_images: Vec<&String> = args[1..=images_n].iter().collect();
         let main_image = &args[1 + images_n];
         let rest = &args[2 + images_n..];
-        let words: Vec<&str> = lower.split(|c: char| c.is_whitespace() || c == '&').filter(|w| !w.is_empty()).collect();
+        let words: Vec<&str> = lower
+            .split(|c: char| c.is_whitespace() || c == '&')
+            .filter(|w| !w.is_empty())
+            .collect();
         let s = self.snap();
         // drawAlt: 0 main, 1 first ("off"), 2 second, 3 third.
         let draw_alt = match words.first().copied() {
@@ -665,8 +712,12 @@ impl Ctx<'_, '_> {
                 let parts: Vec<&str> = cond.split("&&").collect();
                 let ok = |p: &str| {
                     let toks: Vec<&str> = p.split_whitespace().collect();
-                    let Some(name) = toks.first() else { return false };
-                    let Some((amount, _)) = self.item(name) else { return false };
+                    let Some(name) = toks.first() else {
+                        return false;
+                    };
+                    let Some((amount, _)) = self.item(name) else {
+                        return false;
+                    };
                     match (toks.get(1), toks.get(2).and_then(|n| n.parse::<i32>().ok())) {
                         (Some(&"=="), Some(v)) => amount == v,
                         (Some(&"<"), Some(v)) => amount < v,
@@ -706,7 +757,11 @@ impl Ctx<'_, '_> {
         let f = font.trim_matches('"').to_ascii_lowercase();
         if let Some(def) = self.bar.fonts.get(&f) {
             let key = ch.to_string();
-            if let Some(l) = def.chars.get(&key).or_else(|| def.chars.get(&key.to_ascii_uppercase())) {
+            if let Some(l) = def
+                .chars
+                .get(&key)
+                .or_else(|| def.chars.get(&key.to_ascii_uppercase()))
+            {
                 return Some(l.clone());
             }
             if let Some(t) = &def.template {
@@ -754,7 +809,11 @@ impl Ctx<'_, '_> {
 
     /// Monospace cell width (`monospacefonts true, "0"`).
     fn mono_cell(&self, font: &str) -> Option<f32> {
-        let ch = self.bar.info.monospace_char.filter(|_| self.bar.info.monospace_fonts)?;
+        let ch = self
+            .bar
+            .info
+            .monospace_char
+            .filter(|_| self.bar.info.monospace_fonts)?;
         let w = self.char_width(font, ch);
         (w > 0.0).then_some(w)
     }
@@ -856,13 +915,28 @@ impl Ctx<'_, '_> {
     }
 
     /// `CommandDrawNumber`.
-    fn draw_number(&mut self, digits: &str, font: &str, color: &str, value: &str, rest: &[String], alpha: f32) {
+    fn draw_number(
+        &mut self,
+        digits: &str,
+        font: &str,
+        color: &str,
+        value: &str,
+        rest: &[String],
+        alpha: f32,
+    ) {
         let Some((x, y, next)) = coords(rest) else {
             return;
         };
-        let spacing = rest.get(next).and_then(|t| t.trim().parse::<i32>().ok()).unwrap_or(0);
+        let spacing = rest
+            .get(next)
+            .and_then(|t| t.trim().parse::<i32>().ok())
+            .unwrap_or(0);
         let words = flag_words(&rest[..next.saturating_sub(2)]);
-        let has = |w: &str| words.iter().any(|x| x == w || x.starts_with(&format!("{w}(")));
+        let has = |w: &str| {
+            words
+                .iter()
+                .any(|x| x == w || x.starts_with(&format!("{w}(")))
+        };
         let length: i32 = digits.trim().parse().unwrap_or(3);
         let Some(mut num) = self.number_value(value) else {
             return;
@@ -875,8 +949,16 @@ impl Ctx<'_, '_> {
         }
         let fill = has("fillzeros");
         if !has("dontcap") {
-            let maxval = if length <= 9 { 10i64.pow(length.max(1) as u32) - 1 } else { i64::from(i32::MAX) };
-            let minval = if fill && length > 1 && length <= 9 { -(10i64.pow((length - 1) as u32) - 1) } else { -maxval };
+            let maxval = if length <= 9 {
+                10i64.pow(length.max(1) as u32) - 1
+            } else {
+                i64::from(i32::MAX)
+            };
+            let minval = if fill && length > 1 && length <= 9 {
+                -(10i64.pow((length - 1) as u32) - 1)
+            } else {
+                -maxval
+            };
             #[allow(clippy::cast_possible_truncation)]
             {
                 num = i64::from(num).clamp(minval, maxval) as i32;
@@ -898,7 +980,15 @@ impl Ctx<'_, '_> {
         let v = value.trim();
         let lower = v.to_ascii_lowercase();
         let (head, arg) = match lower.split_once(|c: char| c == ' ' || c == '(') {
-            Some((h, _)) => (h.to_owned(), Some(v[h.len()..].trim().trim_matches(['(', ')', '"', ' ']).to_owned())),
+            Some((h, _)) => (
+                h.to_owned(),
+                Some(
+                    v[h.len()..]
+                        .trim()
+                        .trim_matches(['(', ')', '"', ' '])
+                        .to_owned(),
+                ),
+            ),
             None => (lower.clone(), None),
         };
         let s = self.snap();
@@ -911,12 +1001,17 @@ impl Ctx<'_, '_> {
             ("ammo2capacity", None) => self.max_amount(s.ammo2.as_deref()?),
             ("ammo", Some(a)) => self.amount(&a),
             ("ammocapacity", Some(a)) => self.max_amount(&a),
-            ("poweruptime", Some(g)) => self.power(&g).map_or(0, |(t, _)| if t < 0 { 0 } else { t / 35 + 1 }),
+            ("poweruptime", Some(g)) => self
+                .power(&g)
+                .map_or(0, |(t, _)| if t < 0 { 0 } else { t / 35 + 1 }),
             ("frags", None) => s.frags,
             ("keys", None) => s.keys.count_ones() as i32,
             ("selectedinventory", None) => s.inv_sel.as_deref().map_or(0, |c| self.amount(c)),
-            ("kills" | "monsters" | "items" | "totalitems" | "secrets" | "totalsecrets" | "score"
-                | "armorclass" | "savepercent" | "airtime" | "accuracy" | "stamina", None) => 0,
+            (
+                "kills" | "monsters" | "items" | "totalitems" | "secrets" | "totalsecrets"
+                | "score" | "armorclass" | "savepercent" | "airtime" | "accuracy" | "stamina",
+                None,
+            ) => 0,
             (_, None) => v.parse().unwrap_or_else(|_| self.amount(v)),
             (_, Some(_)) => self.amount(v),
         })
@@ -937,17 +1032,32 @@ impl Ctx<'_, '_> {
             "ammo2tag" => s.ammo2.clone().unwrap_or_default(),
             "inventorytag" => s.inv_sel.clone().unwrap_or_default(),
             "playerclass" => self.f.player_class.to_owned(),
-            "levelname" | "levellump" | "skillname" | "playername" | "time" | "logtext" => String::new(),
+            "levelname" | "levellump" | "skillname" | "playername" | "time" | "logtext" => {
+                String::new()
+            }
             _ => raw.to_owned(),
         };
         let Some((x, y, next)) = coords(&args[3..]) else {
             return;
         };
         let next = next + 3;
-        let spacing = args.get(next).and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        let spacing = args
+            .get(next)
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0);
         let words = flag_words(&args[(next + 1).min(args.len())..]);
         let align = alignment_of(&words).unwrap_or(Align::Right);
-        self.text(font, color, &text, x, y, spacing, align, shadow_of(&words), alpha);
+        self.text(
+            font,
+            color,
+            &text,
+            x,
+            y,
+            spacing,
+            align,
+            shadow_of(&words),
+            alpha,
+        );
     }
 
     // --- bars, mugshot, inventory, keys ---------------------------------
@@ -967,13 +1077,20 @@ impl Ctx<'_, '_> {
         let words = flag_words(&args[3..next - 2]);
         let horizontal = words.iter().any(|w| w == "horizontal");
         let mut reverse = words.iter().any(|w| w == "reverse");
-        let border: f32 = args.get(next).and_then(|t| t.trim().parse().ok()).unwrap_or(0.0);
+        let border: f32 = args
+            .get(next)
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0.0);
         if border != 0.0 {
             reverse = !reverse;
         }
         let (value, max) = self.bar_value(&spec);
         #[allow(clippy::cast_precision_loss)]
-        let mut frac = if max > 0 { (value as f32 / max as f32).clamp(0.0, 1.0) } else { 0.0 };
+        let mut frac = if max > 0 {
+            (value as f32 / max as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let Some(fd) = self.dims(&fg) else {
             return;
         };
@@ -988,7 +1105,8 @@ impl Ctx<'_, '_> {
         // Clip `[left, top, right, bottom]` off the image.
         let size = if horizontal { fd.w } else { fd.h } - border * 2.0;
         let cut = size - size * frac;
-        let idx = usize::from(!horizontal) | (usize::from(if horizontal { !reverse } else { reverse }) << 1);
+        let idx = usize::from(!horizontal)
+            | (usize::from(if horizontal { !reverse } else { reverse }) << 1);
         let mut clip = [0.0f32; 4];
         clip[idx] = cut;
         if border != 0.0 {
@@ -1014,21 +1132,39 @@ impl Ctx<'_, '_> {
     fn bar_value(&self, spec: &str) -> (i32, i32) {
         let lower = spec.to_ascii_lowercase();
         let (head, arg) = match lower.split_once(|c: char| c == ' ' || c == '(') {
-            Some((h, _)) => (h.to_owned(), Some(spec[h.len()..].trim().trim_matches(['(', ')', '"', ' ']).to_owned())),
+            Some((h, _)) => (
+                h.to_owned(),
+                Some(
+                    spec[h.len()..]
+                        .trim()
+                        .trim_matches(['(', ')', '"', ' '])
+                        .to_owned(),
+                ),
+            ),
             None => (lower.clone(), None),
         };
         let s = self.snap();
         match (head.as_str(), arg) {
             ("health", a) => {
-                let max = a.filter(|a| !a.is_empty()).map_or(100, |a| a.parse().unwrap_or_else(|_| self.amount(&a)));
+                let max = a
+                    .filter(|a| !a.is_empty())
+                    .map_or(100, |a| a.parse().unwrap_or_else(|_| self.amount(&a)));
                 (s.health.max(0), max)
             }
             ("armor", a) => {
-                let max = a.filter(|a| !a.is_empty()).map_or(100, |a| a.parse().unwrap_or_else(|_| self.amount(&a)));
+                let max = a
+                    .filter(|a| !a.is_empty())
+                    .map_or(100, |a| a.parse().unwrap_or_else(|_| self.amount(&a)));
                 (self.armor(), max)
             }
-            ("ammo1", _) => s.ammo1.as_deref().map_or((0, 1), |a| (self.amount(a), self.max_amount(a))),
-            ("ammo2", _) => s.ammo2.as_deref().map_or((0, 1), |a| (self.amount(a), self.max_amount(a))),
+            ("ammo1", _) => s
+                .ammo1
+                .as_deref()
+                .map_or((0, 1), |a| (self.amount(a), self.max_amount(a))),
+            ("ammo2", _) => s
+                .ammo2
+                .as_deref()
+                .map_or((0, 1), |a| (self.amount(a), self.max_amount(a))),
             ("ammo", Some(a)) => (self.amount(&a), self.max_amount(&a)),
             ("poweruptime", Some(g)) => self.power(&g).map_or((0, 1), |(t, m)| (t + 1, m + 1)),
             ("frags", _) => (s.frags, 0),
@@ -1055,7 +1191,11 @@ impl Ctx<'_, '_> {
         let lump = match prefix {
             Some(p) if face.len() > 3 && !p.eq_ignore_ascii_case("STF") => {
                 let custom = format!("{p}{}", &face[3..]);
-                if self.dims(&custom).is_some() { custom } else { face.clone() }
+                if self.dims(&custom).is_some() {
+                    custom
+                } else {
+                    face.clone()
+                }
             }
             _ => face.clone(),
         };
@@ -1063,7 +1203,12 @@ impl Ctx<'_, '_> {
     }
 
     /// `drawselectedinventory [flags,] font, x, y [, cx, cy [, color]] [{ alternate }]`.
-    fn selected_inventory(&mut self, args: &[String], alternate: Option<&Vec<SbarCmd>>, alpha: f32) {
+    fn selected_inventory(
+        &mut self,
+        args: &[String],
+        alternate: Option<&Vec<SbarCmd>>,
+        alpha: f32,
+    ) {
         let words = flag_words(args);
         let sel = self.snap().inv_sel.clone();
         let Some(sel) = sel else {
@@ -1096,7 +1241,17 @@ impl Ctx<'_, '_> {
                 .cloned()
                 .unwrap_or_else(|| "untranslated".into());
             let shadow = shadow_of(&words);
-            self.text(&font, &color, &amount.to_string(), nums[2], nums[3], 0, Align::Right, shadow, alpha);
+            self.text(
+                &font,
+                &color,
+                &amount.to_string(),
+                nums[2],
+                nums[3],
+                0,
+                Align::Right,
+                shadow,
+                alpha,
+            );
         }
     }
 
@@ -1105,7 +1260,10 @@ impl Ctx<'_, '_> {
         let words = flag_words(args);
         let vertical = words.iter().any(|w| w == "vertical");
         let reverse = words.iter().any(|w| w == "reverse");
-        let size: usize = args.first().and_then(|a| a.trim().parse().ok()).unwrap_or(1);
+        let size: usize = args
+            .first()
+            .and_then(|a| a.trim().parse().ok())
+            .unwrap_or(1);
         // Tokens after the direction / flags: spacing, x, y, offset, ….
         let tail: Vec<&String> = args
             .iter()
@@ -1116,7 +1274,10 @@ impl Ctx<'_, '_> {
             })
             .collect();
         let spacing = tail.first().and_then(|a| a.trim().parse::<f32>().ok());
-        let (Some(x), Some(y)) = (tail.get(1).and_then(|a| coord(a)), tail.get(2).and_then(|a| coord(a))) else {
+        let (Some(x), Some(y)) = (
+            tail.get(1).and_then(|a| coord(a)),
+            tail.get(2).and_then(|a| coord(a)),
+        ) else {
             return;
         };
         let offset: usize = tail.get(3).and_then(|a| a.trim().parse().ok()).unwrap_or(0);
@@ -1149,7 +1310,12 @@ impl Ctx<'_, '_> {
 fn is_selinv_flag(a: &str) -> bool {
     matches!(
         a.trim().to_ascii_lowercase().as_str(),
-        "alternateonempty" | "artiflash" | "alwaysshowcounter" | "center" | "centerbottom" | "drawshadow"
+        "alternateonempty"
+            | "artiflash"
+            | "alwaysshowcounter"
+            | "center"
+            | "centerbottom"
+            | "drawshadow"
     ) || a.to_ascii_lowercase().starts_with("drawshadow(")
 }
 
@@ -1212,12 +1378,23 @@ fn format_template(t: &str, code: i64) -> String {
     }
 }
 
-fn patch(name: &str, pos: Vec2, size: (f32, f32), native: (f32, f32), alpha: f32, recolor: Option<[[f32; 3]; 2]>) -> DrawCmd {
+fn patch(
+    name: &str,
+    pos: Vec2,
+    size: (f32, f32),
+    native: (f32, f32),
+    alpha: f32,
+    recolor: Option<[[f32; 3]; 2]>,
+) -> DrawCmd {
     let scaled = (size.0 - native.0).abs() > 0.01 || (size.1 - native.1).abs() > 0.01;
     DrawCmd::Patch {
         name: name.to_owned(),
         pos,
-        size: if scaled { Vec2::new(size.0, size.1) } else { Vec2::new(0.0, 0.0) },
+        size: if scaled {
+            Vec2::new(size.0, size.1)
+        } else {
+            Vec2::new(0.0, 0.0)
+        },
         apply_offsets: false,
         inverse: false,
         light: 1.0,
@@ -1242,7 +1419,14 @@ mod tests {
     use room_defs::parse_sbarinfo;
 
     fn dims(name: &str) -> Option<PatchDims> {
-        let d = |w: f32, h: f32| Some(PatchDims { w, h, left: 0.0, top: 0.0 });
+        let d = |w: f32, h: f32| {
+            Some(PatchDims {
+                w,
+                h,
+                left: 0.0,
+                top: 0.0,
+            })
+        };
         match name {
             n if n.starts_with("STTNUM") || n == "STTMINUS" || n == "STTPRCNT" => d(14.0, 16.0),
             n if n.starts_with("STYSNUM") => d(4.0, 6.0),
@@ -1285,7 +1469,11 @@ mod tests {
             .collect()
     }
 
-    fn frame<'a>(s: &'a SbarSnapshot, d: &'a dyn Fn(&str) -> Option<PatchDims>, fullscreen: bool) -> SbarInfoFrame<'a> {
+    fn frame<'a>(
+        s: &'a SbarSnapshot,
+        d: &'a dyn Fn(&str) -> Option<PatchDims>,
+        fullscreen: bool,
+    ) -> SbarInfoFrame<'a> {
         SbarInfoFrame {
             snap: s,
             fullscreen,
@@ -1345,8 +1533,14 @@ statusbar fullscreen, fullscreenoffsets, forcescaled
         let out = bar.draw(&frame(&s, &dims, false)).unwrap();
         // `forcescaled` at 1280×720: 3.0 wide, 3.6 tall, 160 px margins.
         assert_eq!(out.origin, (160.0, 0.0));
-        assert!((out.size.0 - 960.0).abs() < 0.01 && out.size.1 == 720.0, "{:?}", out.size);
-        assert!(out.list.cmds.iter().any(|c| matches!(c, DrawCmd::Patch { name, pos, .. } if name == "STMAG" && pos.x == -49.0)));
+        assert!(
+            (out.size.0 - 960.0).abs() < 0.01 && out.size.1 == 720.0,
+            "{:?}",
+            out.size
+        );
+        assert!(out.list.cmds.iter().any(
+            |c| matches!(c, DrawCmd::Patch { name, pos, .. } if name == "STMAG" && pos.x == -49.0)
+        ));
         let big = digits(&out, "STTNUM");
         // Magazine 23 centred on x=-25: two 14-wide cells from -39.
         assert_eq!(&big[..2], &[('2', -39, 171), ('3', -25, 171)]);
@@ -1362,12 +1556,22 @@ statusbar fullscreen, fullscreenoffsets, forcescaled
         let mut s2 = snap();
         s2.ammo2 = None;
         let out = bar.draw(&frame(&s2, &dims, false)).unwrap();
-        assert!(!out.list.cmds.iter().any(|c| matches!(c, DrawCmd::Patch { name, .. } if name == "STMAG")));
+        assert!(
+            !out.list
+                .cmds
+                .iter()
+                .any(|c| matches!(c, DrawCmd::Patch { name, .. } if name == "STMAG"))
+        );
         // `NoReloading` hides the magazine panel too.
         let mut s3 = snap();
         s3.inventory.push(("NoReloading".into(), 1, 1));
         let out = bar.draw(&frame(&s3, &dims, false)).unwrap();
-        assert!(!out.list.cmds.iter().any(|c| matches!(c, DrawCmd::Patch { name, .. } if name == "STMAG")));
+        assert!(
+            !out.list
+                .cmds
+                .iter()
+                .any(|c| matches!(c, DrawCmd::Patch { name, .. } if name == "STMAG"))
+        );
     }
 
     #[test]
@@ -1419,7 +1623,11 @@ statusbar normal
         let s = snap();
         let out = bar.draw(&frame(&s, &dims, false)).unwrap();
         let big = digits(&out, "STTNUM");
-        assert_eq!(big.iter().map(|d| d.0).collect::<String>(), "87", "else branch draws health, not frags");
+        assert_eq!(
+            big.iter().map(|d| d.0).collect::<String>(),
+            "87",
+            "else branch draws health, not frags"
+        );
         let alpha = out.list.cmds.iter().find_map(|c| match c {
             DrawCmd::Patch { name, alpha, .. } if name == "STBAR" => Some(*alpha),
             _ => None,

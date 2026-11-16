@@ -312,8 +312,7 @@ pub struct KillEvent {
 pub const MAX_KILL_EVENTS: usize = 64;
 
 /// Actors mirrored into script objects for one ZScript call.
-pub(crate) type ZscriptSynced =
-    Vec<(ActorId, room_zvm::ObjHandle, crate::zscript::ActorFieldSnap)>;
+pub(crate) type ZscriptSynced = Vec<(ActorId, room_zvm::ObjHandle, crate::zscript::ActorFieldSnap)>;
 
 /// Playsim world (GZDoom `FLevelLocals` + thinkers subset).
 pub struct World {
@@ -3043,7 +3042,13 @@ impl World {
                     .iter()
                     .find(|t| t.type_id == THING_PLAYER1_START && ok(t))
             })
-            .or_else(|| self.map.things.iter().filter(|t| is_player_start(t.type_id)).find(ok))
+            .or_else(|| {
+                self.map
+                    .things
+                    .iter()
+                    .filter(|t| is_player_start(t.type_id))
+                    .find(ok)
+            })
             .or_else(|| {
                 self.map
                     .things
@@ -3799,8 +3804,8 @@ impl World {
         let a = self.actors.get(id)?;
         let class = self.classes.get(a.class)?.name.clone();
         let floor = crate::physics::floor_at_xy(self, a.pos.x(), a.pos.y()).unwrap_or(a.pos.z());
-        let ceiling =
-            crate::physics::ceiling_at_xy(self, a.pos.x(), a.pos.y()).unwrap_or(a.pos.z() + a.height);
+        let ceiling = crate::physics::ceiling_at_xy(self, a.pos.x(), a.pos.y())
+            .unwrap_or(a.pos.z() + a.height);
         let ptr = |p: Option<ActorId>| {
             let p = p?;
             let other = self.actors.get(p)?;
@@ -3939,8 +3944,7 @@ impl World {
         before: &crate::zscript::ActorFieldSnap,
     ) {
         let before = before.clone();
-        {
-        }
+        {}
         let after = self.zscript.read_actor_fields(h, &before);
         if after == before {
             return;
@@ -3954,7 +3958,9 @@ impl World {
             .ptrs
             .iter()
             .zip(&before.ptrs)
-            .filter(|((_, a), (_, b))| a.as_ref().map(|x| (x.0, x.1)) != b.as_ref().map(|x| (x.0, x.1)))
+            .filter(|((_, a), (_, b))| {
+                a.as_ref().map(|x| (x.0, x.1)) != b.as_ref().map(|x| (x.0, x.1))
+            })
             .map(|((name, p), _)| (*name, resolve(self, p)))
             .collect();
         let Some(a) = self.actors.get_mut(id) else {
@@ -5991,11 +5997,15 @@ impl World {
         let Some(actor) = actor else {
             return;
         };
-        let seat = self
-            .player_seat_of(actor)
-            .map(usize::from)
-            .or_else(|| self.taken_player.filter(|(_, mo)| *mo == actor).map(|(s, _)| s));
-        if let Some(cell) = seat.and_then(|s| self.player_stats.get_mut(s)).and_then(|r| r.get_mut(stat)) {
+        let seat = self.player_seat_of(actor).map(usize::from).or_else(|| {
+            self.taken_player
+                .filter(|(_, mo)| *mo == actor)
+                .map(|(s, _)| s)
+        });
+        if let Some(cell) = seat
+            .and_then(|s| self.player_stats.get_mut(s))
+            .and_then(|r| r.get_mut(stat))
+        {
             *cell = cell.saturating_add(1);
         }
     }
@@ -6098,18 +6108,25 @@ impl World {
             let Some(c) = self.classes.get(item.class) else {
                 continue;
             };
-            out.inventory.push((c.name.clone(), item.amount, item.max_amount));
+            out.inventory
+                .push((c.name.clone(), item.amount, item.max_amount));
             icon_of(&mut out, &c.name, &self.inventory_icon_lump(item.class));
         }
         if player.armor > 0 {
-            out.inventory.push(("BasicArmor".to_owned(), player.armor, 200));
+            out.inventory
+                .push(("BasicArmor".to_owned(), player.armor, 200));
             let icon = player
                 .armor_type
                 .and_then(|id| self.classes.get(id))
                 .map(|c| c.inventory_icon.clone())
                 .filter(|i| !i.is_empty())
                 .unwrap_or_else(|| {
-                    if player.armor_class >= 2 { "ARM2A0" } else { "ARM1A0" }.to_owned()
+                    if player.armor_class >= 2 {
+                        "ARM2A0"
+                    } else {
+                        "ARM1A0"
+                    }
+                    .to_owned()
                 });
             icon_of(&mut out, "BasicArmor", &icon);
         }
@@ -6141,7 +6158,11 @@ impl World {
                 for ammo in a1.iter().chain(a2.iter()) {
                     if let Some(acid) = self.classes.find_name(ammo) {
                         icon_of(&mut out, ammo, &self.inventory_icon_lump(acid));
-                        if !out.max_amounts.iter().any(|(n, _)| n.eq_ignore_ascii_case(ammo)) {
+                        if !out
+                            .max_amounts
+                            .iter()
+                            .any(|(n, _)| n.eq_ignore_ascii_case(ammo))
+                        {
                             let max = self.classes.get(acid).map_or(0, |c| c.inventory_max_amount);
                             out.max_amounts.push((ammo.clone(), max));
                         }
@@ -6489,7 +6510,9 @@ impl World {
             .collect();
         Some(PlayerHud {
             layers,
-            targeter: player.mo.and_then(|mo| crate::powerups::targeter_hud(self, mo)),
+            targeter: player
+                .mo
+                .and_then(|mo| crate::powerups::targeter_hud(self, mo)),
             player_class,
             armor_type,
             health: actor.health,
@@ -6575,7 +6598,9 @@ impl World {
                 .map(|c| (self.inventory_icon_lump(c), self.inventory.count(mo, c)))
                 .collect(),
             inv_sel: player.inv_sel.and_then(|sel| {
-                crate::invbar::invbar_items(self, mo).iter().position(|&c| c == sel)
+                crate::invbar::invbar_items(self, mo)
+                    .iter()
+                    .position(|&c| c == sel)
             }),
             inv_bar_open: player.inventory_tics > 0,
             overlay_vertex: player.overlay2_vertex.map(|(x, y)| (x as f32, y as f32)),
@@ -9303,12 +9328,20 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         let mo = w.players[0].as_ref().unwrap().mo.unwrap();
         let zombie = classes.find_name("ZombieMan").unwrap();
         let z = w
-            .spawn_at(zombie, DVec3::new(160.0, 160.0, 0.0), Angle::from_degrees(0.0))
+            .spawn_at(
+                zombie,
+                DVec3::new(160.0, 160.0, 0.0),
+                Angle::from_degrees(0.0),
+            )
             .unwrap();
         let _ = crate::damage::damage_mobj(&mut w, z, Some(mo), Some(mo), 1000);
         // A kill from a monster's own hand counts for nobody.
         let z2 = w
-            .spawn_at(zombie, DVec3::new(200.0, 200.0, 0.0), Angle::from_degrees(0.0))
+            .spawn_at(
+                zombie,
+                DVec3::new(200.0, 200.0, 0.0),
+                Angle::from_degrees(0.0),
+            )
             .unwrap();
         let _ = crate::damage::damage_mobj(&mut w, z2, None, None, 1000);
         assert_eq!(w.player_stats[0][0], 1);
@@ -9347,9 +9380,21 @@ actor Clip : Actor 2007 { Inventory.Amount 10 Inventory.MaxAmount 200 States { S
         }
         w.tick();
         let items = w.status_bar_items(0).unwrap();
-        let clip_row = items.inventory.iter().find(|(c, _, _)| c.eq_ignore_ascii_case("Clip"));
-        assert!(clip_row.is_some_and(|(_, n, _)| *n >= 10), "{:?}", items.inventory);
-        assert!(items.inventory.iter().any(|(c, n, _)| c == "BasicArmor" && *n == 50));
+        let clip_row = items
+            .inventory
+            .iter()
+            .find(|(c, _, _)| c.eq_ignore_ascii_case("Clip"));
+        assert!(
+            clip_row.is_some_and(|(_, n, _)| *n >= 10),
+            "{:?}",
+            items.inventory
+        );
+        assert!(
+            items
+                .inventory
+                .iter()
+                .any(|(c, n, _)| c == "BasicArmor" && *n == 50)
+        );
         assert!(items.icons.iter().any(|(c, _)| c == "BasicArmor"));
         if let Some(weapon) = &items.ready_weapon {
             assert!(items.ammo1.is_some(), "{weapon} has an ammo type");
@@ -9834,7 +9879,10 @@ impl World {
             self.sky_mist_yscale = v.clamp(0.002, 544.0);
         }
         if let Some(v) = extras.get("useskymist") {
-            self.use_sky_mist = !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off");
+            self.use_sky_mist = !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            );
         }
         if let Some(v) = num("thickfogdistance") {
             self.thick_fog_distance = v;
@@ -9868,7 +9916,11 @@ impl World {
 
     /// Thick fog for the renderer: `(distance, multiplier)` when active.
     pub fn thick_fog(&self) -> Option<(f32, f32)> {
-        (self.thick_fog_distance > 0.0 && self.thick_fog_multiplier > 0.0)
-            .then(|| (self.thick_fog_distance as f32, self.thick_fog_multiplier as f32))
+        (self.thick_fog_distance > 0.0 && self.thick_fog_multiplier > 0.0).then(|| {
+            (
+                self.thick_fog_distance as f32,
+                self.thick_fog_multiplier as f32,
+            )
+        })
     }
 }

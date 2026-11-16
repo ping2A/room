@@ -165,7 +165,10 @@ pub fn encode_tic_frame(msg: &TicFrameMsg) -> Vec<u8> {
 pub fn tic_frame_len(bytes: &[u8], wide: bool) -> Result<usize, ProtoError> {
     let (head, mask) = if wide {
         let m = bytes.get(4..12).ok_or(ProtoError::BadPacket)?;
-        (12, u64::from_le_bytes(m.try_into().map_err(|_| ProtoError::BadPacket)?))
+        (
+            12,
+            u64::from_le_bytes(m.try_into().map_err(|_| ProtoError::BadPacket)?),
+        )
     } else {
         (5, u64::from(*bytes.get(4).ok_or(ProtoError::BadPacket)?))
     };
@@ -315,6 +318,9 @@ mod tests {
         let back = parse_tic_frame_wide(&enc).unwrap();
         assert_eq!(back, all);
         assert_eq!(back.cmds[63].forward_move, 63);
-        assert!(parse_tic_frame(&enc).is_err(), "v2 parser refuses a v3 body");
+        assert!(
+            parse_tic_frame(&enc).is_err(),
+            "v2 parser refuses a v3 body"
+        );
     }
 }

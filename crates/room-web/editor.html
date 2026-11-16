@@ -22,6 +22,7 @@
       </label>
       <select id="map-select" title="Map" disabled><option value="">Choose map…</option></select>
       <button id="btn-new-map" class="btn" title="New map">New map</button>
+      <button id="btn-generate" class="btn go" title="Generate a multiplayer map: rooms, corridors, stairs, arenas, teleporters, balanced weapons (Ctrl+G)">🎲 Generate…</button>
       <button id="btn-export" class="btn primary" title="Download edited maps and resources (Ctrl+S)">Export WAD</button>
       <button id="btn-export-pk3" class="btn" title="Download the opened PK3 (or a new one) with every change: edited files, lumps, maps as maps/*.wad">Export PK3</button>
     </div>
@@ -156,6 +157,61 @@
     </div>
     <div id="picker-grid"></div>
   </div>
+
+  <aside id="gen-panel" hidden aria-labelledby="gen-title">
+    <div class="gen-head">
+      <strong id="gen-title">Generate a map</strong>
+      <button id="gen-close" type="button" class="btn icon" title="Close (Esc)">✕</button>
+    </div>
+    <form id="gen-form" class="gen-body">
+      <p class="muted gen-intro">A deathmatch / co-op layout built from a seed. The same seed and settings always give the same map; edit it by hand afterwards like any map.</p>
+      <label>Map name <input id="gen-name" value="MAP01" maxlength="8" spellcheck="false" autocomplete="off" /></label>
+      <label>Seed
+        <span class="gen-row"><input id="gen-seed" type="number" min="0" step="1" value="1" /><button id="gen-dice" type="button" class="btn icon" title="Random seed">🎲</button></span>
+      </label>
+      <label>Players <span class="gen-row"><input id="gen-players" type="range" min="2" max="32" value="8" /><output id="gen-players-out">8</output></span></label>
+      <label>Size
+        <select id="gen-size"><option value="small">Small — tight and fast</option><option value="medium" selected>Medium — fits the players</option><option value="large">Large — room to roam</option><option value="huge">Huge — sprawling</option></select>
+      </label>
+      <label>Theme
+        <select id="gen-theme">
+          <option value="tech">Tech base</option><option value="base">Brown industrial</option><option value="hell">Hell keep</option>
+          <option value="castle">Stone castle</option><option value="ruins">Ruins under the sky</option><option value="mixed">Mixed districts</option>
+        </select>
+      </label>
+      <label>Biomes
+        <select id="gen-biomes">
+          <option value="mixed" selected>Mixed — a bit of everything by district</option>
+          <option value="indoor">Built interiors</option>
+          <option value="caves">Caverns — rock, streams, canyons outside</option>
+          <option value="wilderness">Wilderness — canyons, swamps, caves</option>
+          <option value="urban">Urban — plazas, keeps with moats</option>
+        </select>
+      </label>
+      <label>Height changes
+        <select id="gen-vert"><option value="0">Flat</option><option value="1" selected>Rolling — stairs and daises</option><option value="2">Dramatic — big climbs, two-tier daises</option></select>
+      </label>
+      <label>Cover
+        <select id="gen-cover"><option value="0">Open</option><option value="1" selected>Normal</option><option value="2">Dense — crates everywhere</option></select>
+      </label>
+      <label>Outdoor rooms
+        <select id="gen-outdoor"><option value="0">None</option><option value="1" selected>Some</option><option value="2">Many</option></select>
+      </label>
+      <label>Monsters
+        <select id="gen-monsters"><option value="0" selected>None — deathmatch</option><option value="1">A few</option><option value="2">Normal — solo / co-op</option><option value="3">Hordes</option></select>
+      </label>
+      <fieldset class="gen-checks">
+        <label><input id="gen-tele" type="checkbox" checked /> Teleporters</label>
+        <label><input id="gen-liquids" type="checkbox" checked /> Pools (nukage, lava, water)</label>
+        <label><input id="gen-power" type="checkbox" checked /> Power-ups (BFG at 8+ players)</label>
+      </fieldset>
+      <div class="gen-actions">
+        <button id="gen-go" type="submit" class="btn primary">Generate</button>
+        <button id="gen-reroll" type="button" class="btn" title="New random seed, same settings">Try another seed</button>
+      </div>
+      <div id="gen-report" class="gen-report" aria-live="polite"></div>
+    </form>
+  </aside>
 
   <div id="toast" hidden></div>
 

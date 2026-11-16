@@ -1,5 +1,6 @@
 //! CLI tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png.
 
+mod duke_check;
 mod mod_check;
 mod parity;
 
@@ -221,6 +222,28 @@ enum DukeCmd {
         #[arg(default_value = "testdata/duke-trace-manifest.toml")]
         path: PathBuf,
     },
+    /// Inventory EDuke32 CON / DEF compatibility gaps (`docs/25` ED0)
+    ModCheck {
+        /// Directory containing `eduke.con`, CON includes, and DEF resources
+        directory: PathBuf,
+        /// Compiler dialect (EDuke32 compiler and VM coverage is partial)
+        #[arg(long, default_value = "eduke32", value_parser = ["atomic", "eduke32"])]
+        dialect: String,
+        /// Write the Markdown report to this path instead of stdout
+        #[arg(long)]
+        md: Option<PathBuf>,
+    },
+    /// Run a self-contained EDuke32 CON event and print its `echo` output
+    ConReference {
+        /// Single-file CON fixture (must not depend on external includes)
+        file: PathBuf,
+        /// Registered event to execute
+        #[arg(long, default_value = "EVENT_INIT")]
+        event: String,
+        /// Optional EDuke32 log; lines containing `ED2REF|` are compared
+        #[arg(long)]
+        reference: Option<PathBuf>,
+    },
     /// Extract `DEMO1`–`DEMO3.DMO` from a `DUKE3D.GRP` (for out-of-tree reference playback)
     ExtractDemos {
         /// Path to `DUKE3D.GRP`
@@ -342,6 +365,51 @@ enum MapCmd {
         /// Rebuild nodes before dump (no effect on SVG lines)
         #[arg(long)]
         rebuild_nodes: bool,
+    },
+    /// Generate multiplayer maps (`room-mapgen`) into a PWAD
+    Generate {
+        /// Output WAD path
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Seed (each extra map uses the next seed)
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Maps to write: MAP01, MAP02, …
+        #[arg(long, default_value_t = 1)]
+        count: u8,
+        /// First map number
+        #[arg(long, default_value_t = 1)]
+        first: u8,
+        /// Players the maps are built for (2–32)
+        #[arg(long, default_value_t = 8)]
+        players: u8,
+        /// small | medium | large | huge
+        #[arg(long, default_value = "medium")]
+        size: String,
+        /// tech | base | hell | castle | ruins | mixed
+        #[arg(long, default_value = "tech")]
+        theme: String,
+        /// mixed | indoor | caves | wilderness | urban
+        #[arg(long, default_value = "mixed")]
+        biomes: String,
+        /// Height changes: 0 flat, 1 rolling, 2 dramatic
+        #[arg(long, default_value_t = 1)]
+        verticality: u8,
+        /// Cover: 0 open, 1 normal, 2 dense
+        #[arg(long, default_value_t = 1)]
+        cover: u8,
+        /// Rooms under the sky: 0 none, 1 some, 2 many
+        #[arg(long, default_value_t = 1)]
+        outdoor: u8,
+        /// No teleporter pairs
+        #[arg(long)]
+        no_teleporters: bool,
+        /// No nukage / lava / water
+        #[arg(long)]
+        no_liquids: bool,
+        /// No megasphere / soulsphere / BFG
+        #[arg(long)]
+        no_power_items: bool,
     },
     /// Rebuild classic game nodes with the sector-fan builder
     Nodebuild {
@@ -660,6 +728,43 @@ fn run() -> Result<()> {
             DukeCmd::TraceCheckManifest { path } => {
                 duke_trace_check_manifest(&path)?;
             }
+            DukeCmd::ModCheck {
+                directory,
+                dialect,
+                md,
+            } => {
+                let dialect = match dialect.as_str() {
+                    "atomic" => room_duke::ConDialect::Atomic,
+                    "eduke32" => room_duke::ConDialect::EDuke32,
+                    _ => bail!("unsupported CON dialect: {dialect}"),
+                };
+                let markdown = duke_check::run_mod_check(&directory, dialect)?;
+                if let Some(path) = md {
+                    std::fs::write(&path, markdown)
+                        .with_context(|| format!("write {}", path.display()))?;
+                    println!("wrote {}", path.display());
+                } else {
+                    print!("{markdown}");
+                }
+            }
+            DukeCmd::ConReference {
+                file,
+                event,
+                reference,
+            } => {
+                let actual = duke_check::run_con_reference(&file, &event)?;
+                if let Some(reference) = reference {
+                    let source = std::fs::read_to_string(&reference)
+                        .with_context(|| format!("read {}", reference.display()))?;
+                    duke_check::verify_con_reference(&actual, &source)
+                        .with_context(|| format!("compare with {}", reference.display()))?;
+                    println!("ok: {} EDuke32 echo values match", actual.len());
+                } else {
+                    for line in actual {
+                        println!("{line}");
+                    }
+                }
+            }
             DukeCmd::ExtractDemos { grp, out } => {
                 duke_extract_demos(&grp, &out)?;
             }
@@ -799,6 +904,78 @@ fn run() -> Result<()> {
                 std::fs::write(&output, svg.as_bytes())
                     .with_context(|| format!("write {}", output.display()))?;
                 println!("wrote {} ({} bytes)", output.display(), svg.len());
+            }
+            MapCmd::Generate {
+                output,
+                seed,
+                count,
+                first,
+                players,
+                size,
+                theme,
+                biomes,
+                verticality,
+                cover,
+                outdoor,
+                no_teleporters,
+                no_liquids,
+                no_power_items,
+            } => {
+                let size: room_mapgen::Size = serde_json::from_str(&format!("\"{size}\""))
+                    .with_context(|| format!("size {size}: small, medium, large or huge"))?;
+                let theme: room_mapgen::Theme = serde_json::from_str(&format!("\"{theme}\""))
+                    .with_context(|| {
+                        format!("theme {theme}: tech, base, hell, castle, ruins or mixed")
+                    })?;
+                let biomes: room_mapgen::Biomes = serde_json::from_str(&format!("\"{biomes}\""))
+                    .with_context(|| {
+                        format!("biomes {biomes}: mixed, indoor, caves, wilderness or urban")
+                    })?;
+                let mut wad = room_vfs::WadWriter::pwad();
+                for i in 0..count.max(1) {
+                    let n = u32::from(first) + u32::from(i);
+                    let opts = room_mapgen::Options {
+                        seed: seed.wrapping_add(u64::from(i)),
+                        name: format!("MAP{n:02}"),
+                        players,
+                        size,
+                        theme,
+                        biomes,
+                        verticality,
+                        cover,
+                        outdoor,
+                        teleporters: !no_teleporters,
+                        liquids: !no_liquids,
+                        power_items: !no_power_items,
+                        monsters: 0,
+                        progress: 0,
+                    };
+                    let g = room_mapgen::generate(&opts)
+                        .map_err(|e| anyhow::anyhow!("{}: {e}", opts.name))?;
+                    let r = &g.report;
+                    println!(
+                        "{}: seed {} — {} rooms, {} corridors ({} loops), {} teleporter pairs, {} DM starts, {} weapons, {} sectors, {} lines",
+                        opts.name,
+                        r.seed,
+                        r.rooms,
+                        r.corridors,
+                        r.loops,
+                        r.teleporters,
+                        r.dm_starts,
+                        r.weapons,
+                        r.sectors,
+                        r.lines
+                    );
+                    // No NODES: Room and GZDoom build them on load.
+                    let lumps = g.map.to_lumps().map_err(|e| anyhow::anyhow!("{e}"))?;
+                    for (name, data) in lumps {
+                        wad.add(&name, data);
+                    }
+                }
+                let bytes = wad.finish().map_err(|e| anyhow::anyhow!("{e}"))?;
+                std::fs::write(&output, bytes)
+                    .with_context(|| format!("write {}", output.display()))?;
+                println!("wrote {}", output.display());
             }
             MapCmd::Nodebuild { path, map } => {
                 let vfs = mount_one(&path)?;
@@ -1521,7 +1698,8 @@ fn zscript_wasm(
                 .join(" + ")
         };
         let cov = room_zvm_wasm::report::coverage(&label, &program, &art);
-        std::fs::write(&path, cov.markdown()).with_context(|| format!("write {}", path.display()))?;
+        std::fs::write(&path, cov.markdown())
+            .with_context(|| format!("write {}", path.display()))?;
         println!(
             "report: {} natives ({} missing), {}/{} functions compiled → {}",
             cov.natives.len(),

@@ -111,7 +111,11 @@ fn crop_rgba(
     h: u32,
     clip: [f32; 4],
 ) -> Option<(f32, f32, u32, u32, Vec<u8>)> {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     let to_px = |v: f32, lim: u32| (v.round().max(0.0) as u32).min(lim);
     let left = to_px(clip[0] - x0, w);
     let top = to_px(clip[1] - y0, h);
@@ -590,7 +594,8 @@ mod tests {
         let offs = [(0.0, 0.0), (0.0, 0.0), (4.0, 0.0), (0.0, 0.0)];
         let (dst, dw, dh, ox, oy) = warp_rgba(&src, 2, 2, offs, 0.0, 0.5, 0.5);
         assert_eq!((dw, dh, ox, oy), (6, 2, 0.0, 0.0));
-        let px = |x: usize, y: usize| &dst[(y * dw as usize + x) * 4..(y * dw as usize + x) * 4 + 4];
+        let px =
+            |x: usize, y: usize| &dst[(y * dw as usize + x) * 4..(y * dw as usize + x) * 4 + 4];
         assert_eq!(px(0, 0), &[255, 0, 0, 255]);
         // The top row now reaches past x = 3 in green; the slanted right
         // edge leaves the far corner and the bottom right empty.

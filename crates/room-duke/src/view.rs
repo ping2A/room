@@ -13,6 +13,7 @@ use room_build_engine::view::BuildView;
 use room_build_engine::world::BuildWorld;
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use crate::player::Player;
 
@@ -55,6 +56,8 @@ fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> V
 pub struct DukeSoftRenderer {
     palette: Palette,
     base_palettes: Option<room_build::lookup::BasePalettes>,
+    /// Full-screen palette variants generated from LOOKUP.DAT remap tables.
+    game_palette_tables: BTreeMap<u8, [u8; 768]>,
     /// Atomic `BRITABLE`, indexed by brightness (0..15) and six-bit channel.
     brightness_table: [[u8; 64]; 16],
     /// Atomic's default `ud.brightness` is 16, i.e. BRITABLE row 4.
@@ -74,6 +77,9 @@ pub struct DukeSoftRenderer {
     /// (health, armor, weapon ammo list, inventory, keys); `false` the
     /// full-screen mini HUD.
     full_status_bar: Cell<bool>,
+    map_hack_defs: Vec<(String, Vec<u8>)>,
+    map_hack_files: Vec<(String, Vec<u8>)>,
+    map_hack_sprite_angles: RefCell<BTreeMap<usize, i16>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +132,21 @@ impl DukeSoftRenderer {
         let base_palettes = lookups
             .as_ref()
             .and_then(|lookups| lookups.base_palettes.clone());
+        let game_palette_tables = lookups.as_ref().map_or_else(BTreeMap::new, |lookups| {
+            lookups
+                .iter()
+                .map(|(palette_id, lookup)| {
+                    let mut rgb = [0; 768];
+                    for (index, &source_index) in lookup.iter().enumerate() {
+                        let source = usize::from(source_index) * 3;
+                        let destination = index * 3;
+                        rgb[destination..destination + 3]
+                            .copy_from_slice(&palette.rgb[source..source + 3]);
+                    }
+                    (palette_id, rgb)
+                })
+                .collect()
+        });
         let brightness_table = tables_dat
             .or_else(|| grp.get("TABLES.DAT"))
             .and_then(room_build_engine::helpers::britable_from_tables_dat)
@@ -215,6 +236,7 @@ impl DukeSoftRenderer {
         Ok(Self {
             palette,
             base_palettes,
+            game_palette_tables,
             brightness_table,
             brightness: Cell::new(4),
             tiles: RefCell::new(tiles),
@@ -225,7 +247,167 @@ impl DukeSoftRenderer {
             laser_hand_tile,
             overlay_quote: RefCell::new(None),
             full_status_bar: Cell::new(true),
+            map_hack_defs: Vec::new(),
+            map_hack_files: Vec::new(),
+            map_hack_sprite_angles: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    /// Load a base GRP plus loose DEF and image assets supplied by a host.
+    /// This keeps filesystem access outside `room-duke` while allowing web and
+    /// desktop hosts to pass the files they have already mounted from a mod.
+    pub fn from_grp_layers_with_mod_assets(
+        grp_layers: &[&[u8]],
+        tables_dat: Option<&[u8]>,
+        def_files: &[(&str, &[u8])],
+        tile_assets: &[(&str, &[u8])],
+    ) -> Result<Self, String> {
+        Self::from_grp_layers_with_mod_assets_and_mhks(
+            grp_layers,
+            tables_dat,
+            def_files,
+            tile_assets,
+            &[],
+        )
+    }
+
+    /// Load mod assets and `.mhk` files for map-specific render adjustments.
+    pub fn from_grp_layers_with_mod_assets_and_mhks(
+        grp_layers: &[&[u8]],
+        tables_dat: Option<&[u8]>,
+        def_files: &[(&str, &[u8])],
+        tile_assets: &[(&str, &[u8])],
+        mhk_files: &[(&str, &[u8])],
+    ) -> Result<Self, String> {
+        let renderer = Self::from_grp_layers_with_tables(grp_layers, tables_dat)?;
+        let grp = GrpStack::parse_layers(grp_layers).map_err(|error| format!("GRP: {error}"))?;
+        let mut all_defs: Vec<(&str, &[u8])> = grp
+            .names()
+            .filter(|name| name.to_ascii_lowercase().ends_with(".def"))
+            .filter_map(|name| grp.get(name).map(|bytes| (name, bytes)))
+            .collect();
+        all_defs.extend_from_slice(def_files);
+        let mut all_assets: Vec<(&str, &[u8])> = grp
+            .names()
+            .filter_map(|name| grp.get(name).map(|bytes| (name, bytes)))
+            .collect();
+        all_assets.extend_from_slice(tile_assets);
+        renderer.load_def_tile_assets(&all_defs, &all_assets)?;
+        let mut all_mhks: Vec<(&str, &[u8])> = grp
+            .names()
+            .filter(|name| name.to_ascii_lowercase().ends_with(".mhk"))
+            .filter_map(|name| grp.get(name).map(|bytes| (name, bytes)))
+            .collect();
+        all_mhks.extend_from_slice(mhk_files);
+        let mut renderer = renderer;
+        renderer.map_hack_defs = all_defs
+            .iter()
+            .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+            .collect();
+        renderer.map_hack_files = all_mhks
+            .iter()
+            .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+            .collect();
+        Ok(renderer)
+    }
+
+    /// Match and load a map-specific MHK by its DEF map filename and MD4.
+    /// Returns the selected MHK resource name, if the mod provides one.
+    pub fn load_map_hack_for_map(
+        &self,
+        map_file: &str,
+        map_bytes: &[u8],
+    ) -> Result<Option<String>, String> {
+        let def_refs = self
+            .map_hack_defs
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let mhk_refs = self
+            .map_hack_files
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let selected =
+            room_build::map_hack::select_map_hack(&def_refs, &mhk_refs, map_file, map_bytes)
+                .map_err(|error| error.to_string())?;
+        let Some((name, document)) = selected else {
+            self.map_hack_sprite_angles.borrow_mut().clear();
+            return Ok(None);
+        };
+        let offsets = document
+            .sprite_angle_offsets()
+            .map_err(|error| error.to_string())?;
+        *self.map_hack_sprite_angles.borrow_mut() = offsets;
+        Ok(Some(name))
+    }
+
+    fn load_def_tile_assets(
+        &self,
+        def_files: &[(&str, &[u8])],
+        tile_assets: &[(&str, &[u8])],
+    ) -> Result<(), String> {
+        enum TileAction {
+            Import(room_build::def::ImportedTile),
+            Operation(room_build::def::TileOperation),
+        }
+        let mut actions = Vec::new();
+        for (name, bytes) in def_files {
+            let source = String::from_utf8_lossy(bytes);
+            let document = room_build::def::DefDocument::parse(&source)
+                .map_err(|error| format!("{name}: {error}"))?;
+            let imported = document
+                .import_high_res_tiles(tile_assets, &self.palette)
+                .map_err(|error| format!("{name}: {error}"))?;
+            actions.extend(imported.into_iter().map(TileAction::Import));
+            let operations = document
+                .tile_operations()
+                .map_err(|error| format!("{name}: {error}"))?;
+            actions.extend(operations.into_iter().map(TileAction::Operation));
+        }
+        let mut soft_tiles = self.tiles.borrow_mut();
+        for action in actions {
+            match action {
+                TileAction::Import(tile) => soft_tiles.insert_with_offset(
+                    tile.tile,
+                    tile.width,
+                    tile.height,
+                    tile.pixels,
+                    tile.x_offset,
+                    tile.y_offset,
+                ),
+                TileAction::Operation(room_build::def::TileOperation::Copy {
+                    destination,
+                    source,
+                }) => {
+                    if !soft_tiles.copy_tile(source, destination) {
+                        return Err(format!("DEF copytile source tile {source} is not loaded"));
+                    }
+                }
+                TileAction::Operation(room_build::def::TileOperation::Dummy {
+                    tile,
+                    width,
+                    height,
+                }) => soft_tiles.insert_dummy(tile, width, height),
+                TileAction::Operation(room_build::def::TileOperation::DummyRange {
+                    start,
+                    end,
+                    width,
+                    height,
+                }) => {
+                    for tile in start..=end {
+                        soft_tiles.insert_dummy(tile, width, height);
+                    }
+                }
+                TileAction::Operation(room_build::def::TileOperation::AnimationRange {
+                    start,
+                    end,
+                    speed,
+                    animation,
+                }) => soft_tiles.set_animation_range(start, end, speed, animation),
+            }
+        }
+        Ok(())
     }
 
     /// Set Atomic `curbrightness` (0..15). The native F11 control uses rows
@@ -251,6 +433,27 @@ impl DukeSoftRenderer {
         world: &BuildWorld,
         player: &Player,
     ) -> Option<&'a [u8; 768]> {
+        if player.game_palette != 0 {
+            let palette_id = u8::try_from(player.game_palette).ok();
+            if let Some(palettes) = self.base_palettes.as_ref() {
+                match palette_id {
+                    Some(1) => return Some(&palettes.water),
+                    Some(2) => return Some(&palettes.slime),
+                    Some(3) => return Some(&palettes.drealms),
+                    Some(4) => return Some(&palettes.title),
+                    Some(5) => return Some(&palettes.ending),
+                    _ => {}
+                }
+            }
+            if let Some(palette_id) = palette_id
+                && let Some(palette) = self.game_palette_tables.get(&palette_id)
+            {
+                return Some(palette);
+            }
+            // Unknown or unavailable explicit palettes fall back to the base
+            // PALETTE.DAT instead of reapplying the sector water/heat effect.
+            return None;
+        }
         let palettes = self.base_palettes.as_ref()?;
         if player.heat_on {
             return Some(&palettes.slime);
@@ -651,12 +854,14 @@ impl DukeSoftRenderer {
             player.view_horizon(),
             view_sector,
         );
-        render_fp_textured_at(
+        let map_hack_angles = self.map_hack_sprite_angles.borrow();
+        room_build_engine::soft::render_fp_textured_at_with_sprite_angle_offsets(
             render_world,
             &view,
             &mut frame,
             &self.tiles.borrow(),
             tic.wrapping_mul(4),
+            (!map_hack_angles.is_empty()).then_some(&map_hack_angles),
         );
         // Chocolate's `displayweapon` returns as soon as `animatetip` draws
         // the TIP tile, so the weapon is hidden for the complete tip pose.
@@ -682,8 +887,7 @@ impl DukeSoftRenderer {
         } else {
             player.rotscrnang
         };
-        let mut palette_pixels =
-            rotate_palette_frame(&frame.pixels, width, height, screen_roll);
+        let mut palette_pixels = rotate_palette_frame(&frame.pixels, width, height, screen_roll);
         // The status HUD is screen space: it never rolls with the view.
         if player.remote_camera.is_none() {
             let mut hud = SoftFrame {
@@ -741,7 +945,13 @@ impl DukeSoftRenderer {
     ) -> Vec<u8> {
         let mut frame = SoftFrame::new(width, height);
         let view: BuildView = world.build_view(x, y, z, ang, horiz, sector);
-        render_fp_textured_at(world, &view, &mut frame, &self.tiles.borrow(), tic.wrapping_mul(4));
+        render_fp_textured_at(
+            world,
+            &view,
+            &mut frame,
+            &self.tiles.borrow(),
+            tic.wrapping_mul(4),
+        );
         let mut rgba = Vec::with_capacity(frame.pixels.len() * 4);
         for index in frame.pixels {
             let i = usize::from(index) * 3;
@@ -846,7 +1056,14 @@ impl DukeSoftRenderer {
     /// Render one frame of the native Duke menu over the game (`in_game`)
     /// or over the MENUSCREEN backdrop at the title.
     #[must_use]
-    pub fn render_menu(&self, width: u32, height: u32, menu: &crate::menu::DukeMenu, clock: i64, backdrop: bool) -> Vec<u8> {
+    pub fn render_menu(
+        &self,
+        width: u32,
+        height: u32,
+        menu: &crate::menu::DukeMenu,
+        clock: i64,
+        backdrop: bool,
+    ) -> Vec<u8> {
         let draw = |page: &mut crate::ui_page::UiPage<'_>| {
             if backdrop {
                 page.clear(0);
@@ -864,7 +1081,12 @@ impl DukeSoftRenderer {
 
     /// Render one frame of the single-player bonus screen as RGBA8.
     #[must_use]
-    pub fn render_bonus_screen(&self, width: u32, height: u32, bonus: &crate::bonus::BonusScreen) -> Vec<u8> {
+    pub fn render_bonus_screen(
+        &self,
+        width: u32,
+        height: u32,
+        bonus: &crate::bonus::BonusScreen,
+    ) -> Vec<u8> {
         self.render_ui_page(width, height, |page| bonus.draw(page))
     }
 
@@ -894,7 +1116,11 @@ impl DukeSoftRenderer {
         let mut out = Vec::with_capacity(usize::from(w) * usize::from(h));
         for y in 0..u32::from(h) {
             for x in 0..u32::from(w) {
-                out.push(tiles.sample(picnum, x, y).unwrap_or(room_build::art::TRANSPARENT));
+                out.push(
+                    tiles
+                        .sample(picnum, x, y)
+                        .unwrap_or(room_build::art::TRANSPARENT),
+                );
             }
         }
         Some((w as u16, h as u16, out))
@@ -1029,7 +1255,14 @@ impl DukeSoftRenderer {
             const CROSSHAIR: i16 = 2523;
             if let Some((tw, th)) = tiles.dimensions(CROSSHAIR) {
                 let cx = 160 - (i32::from(player.look_ang) >> 1);
-                blit(frame, CROSSHAIR, cx - i32::from(tw) / 2, 100 - i32::from(th) / 2, 0, 0);
+                blit(
+                    frame,
+                    CROSSHAIR,
+                    cx - i32::from(tw) / 2,
+                    100 - i32::from(th) / 2,
+                    0,
+                    0,
+                );
             }
         }
         // `digitalnumber`: centred on x, glyph advance = width + 1.
@@ -1061,7 +1294,14 @@ impl DukeSoftRenderer {
                     x += 5;
                     continue;
                 }
-                blit(frame, MINIFONT + i16::from(c) - i16::from(b'!'), x, y, 0, pal);
+                blit(
+                    frame,
+                    MINIFONT + i16::from(c) - i16::from(b'!'),
+                    x,
+                    y,
+                    0,
+                    pal,
+                );
                 x += 4;
             }
         };
@@ -1096,9 +1336,18 @@ impl DukeSoftRenderer {
             };
             for (k, c) in digits.bytes().enumerate() {
                 let pic = THREEBYFIVE + i16::from(c - b'0');
-                let (w, h) = tiles.dimensions(pic).map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
+                let (w, h) = tiles
+                    .dimensions(pic)
+                    .map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
                 let (ox, oy) = tiles.sprite_offset(pic);
-                blit(frame, pic, start + 4 * k as i32 - (w >> 1) - i32::from(ox), y - (h >> 1) - i32::from(oy), 0, 0);
+                blit(
+                    frame,
+                    pic,
+                    start + 4 * k as i32 - (w >> 1) - i32::from(ox),
+                    y - (h >> 1) - i32::from(oy),
+                    0,
+                    0,
+                );
             }
         };
         let inv_on = |icon: u8| -> Option<bool> {
@@ -1113,7 +1362,9 @@ impl DukeSoftRenderer {
             // Chocolate `coolgaugetext` full status bar (`screen_size` 8).
             const BOTTOMSTATUSBAR: i16 = 2462;
             const ACCESS_ICON: i16 = 2471;
-            let bar_h = tiles.dimensions(BOTTOMSTATUSBAR).map_or(34, |(_, h)| i32::from(h));
+            let bar_h = tiles
+                .dimensions(BOTTOMSTATUSBAR)
+                .map_or(34, |(_, h)| i32::from(h));
             blit(frame, BOTTOMSTATUSBAR, 0, 200 - bar_h, 0, 0);
             if player.got_access & 4 != 0 {
                 blit(frame, ACCESS_ICON, 275, 182, 0, 23);
@@ -1136,7 +1387,9 @@ impl DukeSoftRenderer {
             // glyph centre plus its picanm offset, not its top-left corner.
             let tbf = |frame: &mut SoftFrame, d: u8, x: i32, y: i32, ha: i32, pal: u8| {
                 let pic = THREEBYFIVE + i16::from(d);
-                let (w, h) = tiles.dimensions(pic).map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
+                let (w, h) = tiles
+                    .dimensions(pic)
+                    .map_or((0, 0), |(w, h)| (i32::from(w), i32::from(h)));
                 let (ox, oy) = tiles.sprite_offset(pic);
                 blit(
                     frame,
@@ -1154,7 +1407,14 @@ impl DukeSoftRenderer {
                     tbf(frame, c - b'0', x0 + 4 * k as i32, y, ha, 0);
                 }
             };
-            let weaponnum = |frame: &mut SoftFrame, ind: i32, x: i32, y: i32, n1: i32, n2: i32, ha: i32, wide: bool| {
+            let weaponnum = |frame: &mut SoftFrame,
+                             ind: i32,
+                             x: i32,
+                             y: i32,
+                             n1: i32,
+                             n2: i32,
+                             ha: i32,
+                             wide: bool| {
                 tbf(frame, (ind + 1) as u8, x - 7, y, ha - 10, 7);
                 if wide {
                     tbf(frame, 10, x - 4, y, ha, 0);
@@ -1175,14 +1435,42 @@ impl DukeSoftRenderer {
             let am = |w: usize| i32::from(player.ammo.get(w).copied().unwrap_or(0));
             let mx = |w: i16| i32::from(crate::weapons::max_ammo_amount(w));
             let (x, y) = (96, 182);
-            weaponnum(frame, 1, x, y, am(1), mx(1), 12 - 20 * i32::from(cw == 1), true);
+            weaponnum(
+                frame,
+                1,
+                x,
+                y,
+                am(1),
+                mx(1),
+                12 - 20 * i32::from(cw == 1),
+                true,
+            );
             weaponnum(frame, 2, x, y + 6, am(2), mx(2), shade(2, 18), true);
             weaponnum(frame, 3, x, y + 12, am(3), mx(3), shade(3, 18), true);
             weaponnum(frame, 4, x + 39, y, am(4), mx(4), shade(4, 19), false);
             let bomb_dim = if am(5) == 0 { 9 } else { 0 };
-            weaponnum(frame, 5, x + 39, y + 6, am(5), mx(5), shade(5, 19).max(12 - 19 * i32::from(cw == 5 || cw == 10)) + bomb_dim * i32::from(player.gotweapon[5]), false);
+            weaponnum(
+                frame,
+                5,
+                x + 39,
+                y + 6,
+                am(5),
+                mx(5),
+                shade(5, 19).max(12 - 19 * i32::from(cw == 5 || cw == 10))
+                    + bomb_dim * i32::from(player.gotweapon[5]),
+                false,
+            );
             if cw == 11 {
-                weaponnum(frame, 6, x + 39, y + 12, am(11), mx(11), shade(11, 18), false);
+                weaponnum(
+                    frame,
+                    6,
+                    x + 39,
+                    y + 12,
+                    am(11),
+                    mx(11),
+                    shade(11, 18),
+                    false,
+                );
             } else {
                 weaponnum(frame, 6, x + 39, y + 12, am(6), mx(6), shade(6, 18), false);
             }
@@ -1193,7 +1481,11 @@ impl DukeSoftRenderer {
             digital(frame, 32, 200 - 17, i32::from(player.last_extra.max(0)));
             digital(frame, 64, 200 - 17, i32::from(player.shield_amount.max(0)));
             if cw != 0 {
-                let w = if cw == HANDREMOTE_WEAPON { HANDBOMB_WEAPON } else { cw.clamp(0, 11) as usize };
+                let w = if cw == HANDREMOTE_WEAPON {
+                    HANDBOMB_WEAPON
+                } else {
+                    cw.clamp(0, 11) as usize
+                };
                 digital(frame, 230 - 22, 200 - 17, i32::from(player.ammo[w]));
             }
             if player.inventory_icon != 0 {
@@ -1212,52 +1504,56 @@ impl DukeSoftRenderer {
                 invennum(frame, 284 - 30, 200 - 6, inv_amount(player.inventory_icon));
             }
         } else {
-        if player.inventory_icon != 0 {
-            blit(frame, INVENTORYBOX, 69, 200 - 30, 0, 21);
-        }
-        blit(frame, HEALTHBOX, 5, 200 - 28, 0, 21);
-        digital(frame, 20, 200 - 17, i32::from(player.last_extra.max(0)));
-        blit(frame, AMMOBOX, 37, 200 - 28, 0, 21);
-        let weapon = if player.curr_weapon == HANDREMOTE_WEAPON {
-            HANDBOMB_WEAPON
-        } else {
-            player.curr_weapon.clamp(0, 11) as usize
-        };
-        digital(frame, 53, 200 - 17, i32::from(player.ammo[weapon]));
-        if player.inventory_icon != 0 {
-            let o = 158;
-            let icon = match player.inventory_icon {
-                1 => Some(2460), // FIRSTAID_ICON
-                2 => Some(2469), // STEROIDS_ICON
-                3 => Some(2470), // HOLODUKE_ICON
-                4 => Some(2467), // JETPACK_ICON
-                5 => Some(2461), // HEAT_ICON
-                6 => Some(2468), // AIRTANK_ICON
-                7 => Some(2463), // BOOT_ICON
-                _ => None,
-            };
-            if let Some(icon) = icon {
-                blit(frame, icon, 231 - o, 200 - 21, 0, 0);
+            if player.inventory_icon != 0 {
+                blit(frame, INVENTORYBOX, 69, 200 - 30, 0, 21);
             }
-            let amount = match player.inventory_icon {
-                1 => i32::from(player.firstaid_amount),
-                2 => (i32::from(player.steroids_amount) + 3) >> 2,
-                3 => (i32::from(player.holoduke_amount) + 15) / 24,
-                4 => (i32::from(player.jetpack_amount) + 15) >> 4,
-                5 => i32::from(player.heat_amount) / 12,
-                6 => (i32::from(player.scuba_amount) + 63) >> 6,
-                7 => i32::from(player.boot_amount) >> 1,
-                _ => 0,
+            blit(frame, HEALTHBOX, 5, 200 - 28, 0, 21);
+            digital(frame, 20, 200 - 17, i32::from(player.last_extra.max(0)));
+            blit(frame, AMMOBOX, 37, 200 - 28, 0, 21);
+            let weapon = if player.curr_weapon == HANDREMOTE_WEAPON {
+                HANDBOMB_WEAPON
+            } else {
+                player.curr_weapon.clamp(0, 11) as usize
             };
-            invennum(frame, 284 - 30 - o, 200 - 6, amount);
-            minitext(frame, 292 - 30 - o, 190, "%", 6);
-        }
+            digital(frame, 53, 200 - 17, i32::from(player.ammo[weapon]));
+            if player.inventory_icon != 0 {
+                let o = 158;
+                let icon = match player.inventory_icon {
+                    1 => Some(2460), // FIRSTAID_ICON
+                    2 => Some(2469), // STEROIDS_ICON
+                    3 => Some(2470), // HOLODUKE_ICON
+                    4 => Some(2467), // JETPACK_ICON
+                    5 => Some(2461), // HEAT_ICON
+                    6 => Some(2468), // AIRTANK_ICON
+                    7 => Some(2463), // BOOT_ICON
+                    _ => None,
+                };
+                if let Some(icon) = icon {
+                    blit(frame, icon, 231 - o, 200 - 21, 0, 0);
+                }
+                let amount = match player.inventory_icon {
+                    1 => i32::from(player.firstaid_amount),
+                    2 => (i32::from(player.steroids_amount) + 3) >> 2,
+                    3 => (i32::from(player.holoduke_amount) + 15) / 24,
+                    4 => (i32::from(player.jetpack_amount) + 15) >> 4,
+                    5 => i32::from(player.heat_amount) / 12,
+                    6 => (i32::from(player.scuba_amount) + 63) >> 6,
+                    7 => i32::from(player.boot_amount) >> 1,
+                    _ => 0,
+                };
+                invennum(frame, 284 - 30 - o, 200 - 6, amount);
+                minitext(frame, 292 - 30 - o, 190, "%", 6);
+            }
         }
         // Chocolate `operatefta` → `gametext(160, 0, quote)`: STARTALPHANUM
         // glyphs, centred, digits on an 8 px pitch, spaces 5 px.
         if let Some(quote) = self.overlay_quote.borrow().as_deref() {
             const STARTALPHANUM: i16 = 2822;
-            let glyph = |c: u8| (b'!'..=b'~').contains(&c).then(|| STARTALPHANUM + i16::from(c - b'!'));
+            let glyph = |c: u8| {
+                (b'!'..=b'~')
+                    .contains(&c)
+                    .then(|| STARTALPHANUM + i16::from(c - b'!'))
+            };
             let advance = |c: u8| -> i32 {
                 if c == b' ' {
                     5
@@ -1294,9 +1590,17 @@ impl DukeSoftRenderer {
         let env = crate::weapon_view::WeaponViewEnv {
             body_shade: body.shade,
             body_pal: body.pal,
-            body_xrepeat: if player.sprite_i < 0 { 42 } else { body.xrepeat },
+            body_xrepeat: if player.sprite_i < 0 {
+                42
+            } else {
+                body.xrepeat
+            },
             body_xvel: player.body_xvel,
-            body_extra: if player.sprite_i < 0 { player.extra } else { body.extra },
+            body_extra: if player.sprite_i < 0 {
+                player.extra
+            } else {
+                body.extra
+            },
             floorpal,
             rand: u32::from(player.kickback_pic as u16).wrapping_mul(2_654_435_761),
         };
@@ -1315,7 +1619,11 @@ impl DukeSoftRenderer {
             let (tw_i, th_i) = (i32::from(tw), i32::from(th));
             let xoff = i32::from(ox) + (tw_i >> 1);
             let yoff = i32::from(oy) + (th_i >> 1);
-            let left = if d.flip { d.x - (tw_i - xoff) } else { d.x - xoff };
+            let left = if d.flip {
+                d.x - (tw_i - xoff)
+            } else {
+                d.x - xoff
+            };
             let top = d.y + y_shift - yoff;
             let x0 = (f64::from(left) * sx).round() as i32;
             let y0 = (f64::from(top) * sy).round() as i32;
@@ -1423,5 +1731,150 @@ impl DukeSoftRenderer {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn mod_def_image_replaces_art_tile_in_renderer() {
+        let grp = mini_grp();
+        let def = b"tilefromtexture 9000 { file \"resources\\\\tile.bmp\" xoff 3 yoff -2 }\n\
+            texture 9005 { pal 0 { file \"resources/texture.bmp\" alphacut 0.32 } }\n\
+            copytile 9001 { tile 9000 }\n\
+            dummytile 9002 1 1\n\
+            dummytilerange 9003 9004 1 1";
+        let bmp = bmp_2x1();
+        let texture_bmp = bmp_2x1();
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[("resources.def", def.as_slice())],
+            &[
+                ("resources/tile.bmp", bmp.as_slice()),
+                ("resources/texture.bmp", texture_bmp.as_slice()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(renderer.tile_dimensions(9000), (2, 1));
+        assert_eq!(renderer.tile_dimensions(9001), (2, 1));
+        assert_eq!(renderer.tile_dimensions(9002), (1, 1));
+        assert_eq!(renderer.tile_dimensions(9004), (1, 1));
+        assert_eq!(renderer.tile_dimensions(9005), (2, 1));
+    }
+
+    #[test]
+    fn map_mhk_is_selected_by_map_name_and_hash() {
+        let grp = mini_grp();
+        let def = br#"mapinfo {
+            maptitle "Fixture map"
+            mapfile E1L1.MAP
+            mapmd4 a448017aaf21d8525fc10ae87aa6729d
+            mhkfile resources/maphacks/e1l1.mhk
+        }"#;
+        let mhk = b"sprite 2 angoff -256\nsprite 4 pitch 2\n";
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets_and_mhks(
+            &[&grp],
+            None,
+            &[("maps.def", def.as_slice())],
+            &[],
+            &[("mods/resources/maphacks/E1L1.MHK", mhk.as_slice())],
+        )
+        .unwrap();
+
+        assert_eq!(
+            renderer
+                .load_map_hack_for_map("maps/e1l1.map", b"abc")
+                .unwrap()
+                .as_deref(),
+            Some("mods/resources/maphacks/E1L1.MHK")
+        );
+        assert_eq!(
+            renderer.map_hack_sprite_angles.borrow().get(&2),
+            Some(&1792)
+        );
+        assert_eq!(
+            renderer
+                .load_map_hack_for_map("E1L1.MAP", b"different map bytes")
+                .unwrap(),
+            None
+        );
+        assert!(renderer.map_hack_sprite_angles.borrow().is_empty());
+    }
+
+    #[test]
+    fn explicit_game_palette_uses_matching_lookup_table() {
+        let grp = mini_grp_with_lookup(Some(240));
+        let renderer = DukeSoftRenderer::from_grp(&grp).unwrap();
+        let mut player = Player::default();
+        player.game_palette = 240;
+
+        let selected = renderer
+            .screen_palette_for_player(&BuildWorld::new(), &player)
+            .expect("lookup palette is present");
+        assert_eq!(&selected[..3], &renderer.palette.rgb[255 * 3..255 * 3 + 3]);
+    }
+
+    fn mini_grp() -> Vec<u8> {
+        mini_grp_with_lookup(None)
+    }
+
+    fn mini_grp_with_lookup(game_palette: Option<u8>) -> Vec<u8> {
+        let mut palette = vec![0; 768];
+        if game_palette.is_some() {
+            palette[..3].copy_from_slice(&[1, 2, 3]);
+            palette[255 * 3..255 * 3 + 3].copy_from_slice(&[8, 9, 10]);
+        }
+        palette.extend_from_slice(&1u16.to_le_bytes());
+        palette.extend(0..=255);
+        let mut art = Vec::new();
+        for value in [1u32, 1, 1, 1] {
+            art.extend_from_slice(&value.to_le_bytes());
+        }
+        art.extend_from_slice(&1i16.to_le_bytes());
+        art.extend_from_slice(&1i16.to_le_bytes());
+        art.extend_from_slice(&0u32.to_le_bytes());
+        art.push(0);
+        let mut files = vec![("PALETTE.DAT", palette), ("TILES000.ART", art)];
+        if let Some(palette_id) = game_palette {
+            let mut lookup = vec![1, palette_id];
+            lookup.extend((0..=255_u8).rev());
+            files.push(("LOOKUP.DAT", lookup));
+        }
+        let mut grp = b"KenSilverman".to_vec();
+        grp.extend_from_slice(&(files.len() as u32).to_le_bytes());
+        for (name, bytes) in &files {
+            let mut entry_name = [0; 12];
+            entry_name[..name.len()].copy_from_slice(name.as_bytes());
+            grp.extend_from_slice(&entry_name);
+            grp.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        }
+        for (_, bytes) in &files {
+            grp.extend_from_slice(bytes);
+        }
+        grp
+    }
+
+    fn bmp_2x1() -> Vec<u8> {
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&62u32.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&2i32.to_le_bytes());
+        bmp.extend_from_slice(&(-1i32).to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&24u16.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&8u32.to_le_bytes());
+        bmp.extend_from_slice(&[0; 16]);
+        bmp.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        bmp
     }
 }

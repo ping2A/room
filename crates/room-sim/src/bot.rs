@@ -73,7 +73,9 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
     let melee_only = player
         .ready_weapon
         .and_then(|w| world.classes.get(w))
-        .is_none_or(|c| c.name.eq_ignore_ascii_case("Fist") || c.name.eq_ignore_ascii_case("Chainsaw"));
+        .is_none_or(|c| {
+            c.name.eq_ignore_ascii_case("Fist") || c.name.eq_ignore_ascii_case("Chainsaw")
+        });
     let (px, py) = (a.pos.x(), a.pos.y());
     let angle_deg = a.angle.degrees();
 
@@ -184,13 +186,10 @@ fn bot_goal_xy(
     enemy_seen: Option<ActorId>,
 ) -> Option<(f64, f64)> {
     let (px, py) = (a.pos.x(), a.pos.y());
-    let zone = world.mod_zones.get(0).map(|z| {
-        (
-            f64::from(z.cx),
-            f64::from(z.cy),
-            f64::from(z.r).max(32.0),
-        )
-    });
+    let zone = world
+        .mod_zones
+        .get(0)
+        .map(|z| (f64::from(z.cx), f64::from(z.cy), f64::from(z.r).max(32.0)));
     if let Some((cx, cy, r)) = zone {
         let (dx, dy) = (px - cx, py - cy);
         if dx * dx + dy * dy > (r * 0.82) * (r * 0.82) {
@@ -223,7 +222,10 @@ fn bot_goal_xy(
         return Some((cx + dmath::cos(t) * roam, cy + dmath::sin(t) * roam));
     }
     let t = f64::from(world.level.maptime % 350) * 0.02 + seat as f64;
-    Some((px + dmath::cos(t) * 256.0, py + dmath::sin(t * 1.31) * 256.0))
+    Some((
+        px + dmath::cos(t) * 256.0,
+        py + dmath::sin(t * 1.31) * 256.0,
+    ))
 }
 
 /// Nearest weapon pickup lying on the map (visible ones count double close).

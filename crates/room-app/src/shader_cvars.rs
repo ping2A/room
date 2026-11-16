@@ -248,7 +248,10 @@ pub fn graphics_menu(cvars: &CvarStore) -> ListMenu {
             "gl_texture_filter_anisotropic",
             1,
             16,
-            format!("{}X", int_val(cvars, "gl_texture_filter_anisotropic").max(1)),
+            format!(
+                "{}X",
+                int_val(cvars, "gl_texture_filter_anisotropic").max(1)
+            ),
         ),
         tog(cvars, "HEAT HAZE", "r_heathaze"),
         tog(cvars, "PARALLAX", "r_parallax"),

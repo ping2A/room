@@ -99,7 +99,15 @@ pub fn moveexplosions(
                 actor_temps.resize_with(iu + 1, ActorConTemps::default);
             }
             let mut sp = s;
-            crate::spawn::makeitfall(&mut sp, sectors, walls, &[], &[], crate::player::DUKE_GC, false);
+            crate::spawn::makeitfall(
+                &mut sp,
+                sectors,
+                walls,
+                &[],
+                &[],
+                crate::player::DUKE_GC,
+                false,
+            );
             if sp.zvel > 4096 {
                 sp.zvel = 4096;
             }
@@ -528,7 +536,11 @@ fn step_jibs6(
             actor_temps[iu].g_t[1] += 1;
         } else if sectors[sect as usize].lotag != 2 {
             actor_temps[iu].g_t[1] = 0;
-            let wrap = if matches!(sprites[iu].picnum, DUKELEG | DUKETORSO | DUKEGUN) { 6 } else { 2 };
+            let wrap = if matches!(sprites[iu].picnum, DUKELEG | DUKETORSO | DUKEGUN) {
+                6
+            } else {
+                2
+            };
             if actor_temps[iu].g_t[0] > wrap {
                 actor_temps[iu].g_t[0] = 0;
             } else {

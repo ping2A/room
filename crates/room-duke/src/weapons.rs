@@ -191,7 +191,11 @@ pub fn addammo(p: &mut Player, weapon: i16, amount: i16) {
     if w >= p.ammo.len() {
         return;
     }
-    let max = max_ammo_amount(weapon);
+    let max = p
+        .max_ammo_amount
+        .get(w)
+        .copied()
+        .unwrap_or_else(|| max_ammo_amount(weapon));
     p.ammo[w] = p.ammo[w].saturating_add(amount).min(max);
 }
 
@@ -227,7 +231,7 @@ pub fn con_weapon_op(p: &mut Player, is_addweapon: bool, weapon: i16, ammo: i16)
         let had = p.gotweapon[w];
         if !had {
             addweapon(p, weapon);
-        } else if p.ammo[w] >= max_ammo_amount(weapon) {
+        } else if p.ammo[w] >= p.max_ammo_amount[w] {
             return false;
         }
         addammo(p, weapon, ammo);
@@ -235,7 +239,7 @@ pub fn con_weapon_op(p: &mut Player, is_addweapon: bool, weapon: i16, ammo: i16)
             addweapon(p, weapon);
         }
     } else {
-        if p.ammo[w] >= max_ammo_amount(weapon) {
+        if p.ammo[w] >= p.max_ammo_amount[w] {
             return false;
         }
         addammo(p, weapon, ammo);

@@ -961,6 +961,7 @@
       q.set("local", "1");
       q.set("iwad", opts.game === "duke3d" ? "solo-local.grp" : "solo-local.wad");
     }
+    if (opts.game !== "duke3d" && opts.gen) q.set("gen", JSON.stringify(opts.gen));
     if (opts.game !== "duke3d" && opts.mod) q.set("mod", opts.mod);
     if (opts.game !== "duke3d" && opts.packs && opts.packs.length) q.set("pack", opts.packs.join(","));
     // The play page turns voxels on when the URL says nothing, so an
@@ -1020,6 +1021,7 @@
     const bundled = await loadBundledPresets();
     let selectedGameFile = null;
     let selectedPreset = null;
+    let soloMaps = [];
     const data = await openModal({
       title: "Play solo",
       confirmLabel: "Start",
@@ -1034,7 +1036,21 @@
         '<label class="field"><span>WAD / GRP</span><input id="solo-game-file" type="file" accept=".wad,.grp,application/octet-stream" required/></label>' +
         '<label class="field" id="solo-addons-field"><span>Additional Doom WAD / PK3 mods</span><input id="solo-addons" type="file" accept=".wad,.pk3,.pk7,.zip,.pke,.ipk3,.ipk7,application/octet-stream" multiple/></label>' +
         "</div>" +
+        '<label class="field" id="solo-level-field"><span>Level</span><select name="level" id="solo-level">' +
+        '<option value="game">A map from the game</option><option value="gen">🎲 Generate a new map</option></select></label>' +
+        '<div id="solo-gen" class="solo-gen" hidden>' +
+        '<p class="muted">A new level built from a seed: rooms, corridors, stairs, caves, swamps, keeps… with monsters, weapons and an exit switch. Same seed, same map.</p>' +
+        '<div class="solo-gen-grid">' +
+        '<label class="field"><span>Theme</span><select name="gen_theme"><option value="mixed">Mixed districts</option><option value="tech">Tech base</option><option value="base">Brown industrial</option><option value="hell">Hell keep</option><option value="castle">Stone castle</option><option value="ruins">Ruins under the sky</option></select></label>' +
+        '<label class="field"><span>Places</span><select name="gen_biomes"><option value="mixed">A bit of everything</option><option value="indoor">Built interiors</option><option value="caves">Caverns</option><option value="wilderness">Wilderness</option><option value="urban">Plazas and keeps</option></select></label>' +
+        '<label class="field"><span>Size</span><select name="gen_size"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option><option value="huge">Huge</option></select></label>' +
+        '<label class="field"><span>Monsters</span><select name="gen_monsters"><option value="1">A few</option><option value="2" selected>Normal</option><option value="3">Hordes</option></select></label>' +
+        '<label class="field"><span>Length</span><select name="gen_maps"><option value="1">One map</option><option value="3" selected>3-map episode</option><option value="5">5-map episode</option></select></label>' +
+        '<label class="field"><span>Seed</span><span class="solo-seed"><input name="gen_seed" id="solo-gen-seed" type="number" min="0" step="1"/><button type="button" id="solo-gen-dice" class="btn ghost" title="Random seed">🎲</button></span></label>' +
+        "</div></div>" +
+        '<div id="solo-map-field">' +
         '<label class="field"><span>Map <small id="solo-map-count" class="muted">Choose a game file to list maps</small></span><select name="map" id="solo-map" required disabled><option value="">Choose a game file first</option></select></label>' +
+        "</div>" +
         '<label class="field"><span>How challenging should this run be?</span><select name="skill" id="solo-skill"></select></label>' +
         '<div id="solo-mod-picker">' + picker.html + "</div>" +
         '<p class="muted">Doom maps are detected from the selected WAD; Duke uses the GRP’s Build map names. Gameplay mods and Voxel are Doom only.</p>',
@@ -1047,6 +1063,26 @@
         const map = body.querySelector("#solo-map");
         const count = body.querySelector("#solo-map-count");
         const skill = body.querySelector("#solo-skill");
+        const level = body.querySelector("#solo-level");
+        const levelField = body.querySelector("#solo-level-field");
+        const genBox = body.querySelector("#solo-gen");
+        const mapField = body.querySelector("#solo-map-field");
+        const seedInput = body.querySelector("#solo-gen-seed");
+        const newSeed = () => { seedInput.value = String(Math.floor(Math.random() * 1e9)); };
+        newSeed();
+        body.querySelector("#solo-gen-dice").addEventListener("click", newSeed);
+        const updateLevel = () => {
+          const duke = game.value === "duke3d" && !selectedPreset;
+          levelField.hidden = duke;
+          if (duke) level.value = "game";
+          const gen = level.value === "gen";
+          genBox.hidden = !gen;
+          mapField.hidden = gen;
+          map.required = !gen;
+        };
+        level.addEventListener("change", updateLevel);
+        game.addEventListener("change", updateLevel);
+        updateLevel();
         let scanGeneration = 0;
         // The game's own skill names (menu order). Duke has four menu skills,
         // `ud.player_skill` 1–4; Room passes skill-1, so they are values 2–5.
@@ -1090,6 +1126,7 @@
           if (!initial) throw new Error("No maps were found in the selected game files");
           map.value = initial;
           map.disabled = false;
+          soloMaps = available;
           count.textContent = `${available.length} maps ready · ${sourceLabel}`;
           return available;
         };
@@ -1194,11 +1231,33 @@
             updateGame();
           }
         };
-        source.addEventListener("change", updateSource);
+        source.addEventListener("change", () => {
+          updateSource();
+          updateLevel();
+        });
         updateSource();
+        updateLevel();
       },
     });
     if (!data) return;
+    // Generated level: name it like the game's own maps (MAP01 or E1M1).
+    let gen = null;
+    if (data.level === "gen" && (selectedPreset || data.game !== "duke3d")) {
+      const doom2 = soloMaps.some((m) => /^MAP\d+$/i.test(m)) || !soloMaps.length;
+      const first = doom2 ? "MAP01" : soloMaps.find((m) => /^E\dM1$/i.test(m)) || "E1M1";
+      gen = {
+        seed: Math.max(0, Math.floor(Number(data.gen_seed) || 0)),
+        name: first,
+        players: 4,
+        size: data.gen_size || "medium",
+        theme: data.gen_theme || "mixed",
+        biomes: data.gen_biomes || "mixed",
+        monsters: Number(data.gen_monsters) || 2,
+        maps: Number(data.gen_maps) || 1,
+        verticality: 1,
+      };
+      data.map = first;
+    }
     if (selectedPreset) {
       if (!data.map) {
         flash("Choose a map before starting", "error");
@@ -1213,6 +1272,7 @@
           mod: data.mod,
           packs: data.voxel ? ["voxel"] : [],
           bundled: selectedPreset,
+          gen,
         })
       );
       return;
@@ -1242,6 +1302,7 @@
         skill: Number(data.skill) || 3,
         mod: doom ? data.mod : "",
         packs: doom && data.voxel ? ["voxel"] : [],
+        gen: doom ? gen : null,
       })
     );
   }

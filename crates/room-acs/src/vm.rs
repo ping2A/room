@@ -963,7 +963,12 @@ pub trait AcsHost {
     /// resolved by the VM (`strings[i]` for `args[i]`). The host cannot
     /// resolve them itself: the ACS state is out of the world while scripts
     /// run. Defaults to [`Self::script_call`].
-    fn script_call_resolved(&mut self, args: &[i32], strings: &[Option<String>], activator: u64) -> i32 {
+    fn script_call_resolved(
+        &mut self,
+        args: &[i32],
+        strings: &[Option<String>],
+        activator: u64,
+    ) -> i32 {
         let _ = strings;
         self.script_call(args, activator)
     }
@@ -5324,7 +5329,12 @@ mod tests {
     }
 
     impl AcsHost for TestHost {
-        fn script_call_resolved(&mut self, _args: &[i32], strings: &[Option<String>], _activator: u64) -> i32 {
+        fn script_call_resolved(
+            &mut self,
+            _args: &[i32],
+            strings: &[Option<String>],
+            _activator: u64,
+        ) -> i32 {
             self.script_calls.push(strings.to_vec());
             1
         }
@@ -6509,7 +6519,11 @@ mod tests {
         assert_eq!(start_script(&mut state, &mut host, 1, &[0; 3], false), 1);
         assert_eq!(
             host.script_calls,
-            vec![vec![Some("ZandroCompat".into()), Some("GetGender".into()), None]]
+            vec![vec![
+                Some("ZandroCompat".into()),
+                Some("GetGender".into()),
+                None
+            ]]
         );
     }
 

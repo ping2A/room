@@ -267,7 +267,9 @@ fn classify_map_sprites_stats(
 
         // DUKECAR / HELECOPT (E1L1 intro shuttle): Chocolate `spawn()`
         // falls through to the BLIMP case → cstat 257, clipdist 128, STAT_ACTOR.
-        if sprites[i].picnum == crate::actors::DUKECAR || sprites[i].picnum == crate::actors::HELECOPT {
+        if sprites[i].picnum == crate::actors::DUKECAR
+            || sprites[i].picnum == crate::actors::HELECOPT
+        {
             picnum_out[i] = sprites[i].picnum;
             sprites[i].cstat = 257;
             sprites[i].extra = 1;
@@ -369,12 +371,19 @@ pub(crate) fn init_touchplates(
 ) {
     for (index, sprite) in sprites.iter().enumerate() {
         if sprite.picnum != TOUCHPLATE
-            || lists.sprite_stat.get(index).copied().unwrap_or(room_build_engine::world::MAXSTATUS as i16)
+            || lists
+                .sprite_stat
+                .get(index)
+                .copied()
+                .unwrap_or(room_build_engine::world::MAXSTATUS as i16)
                 == room_build_engine::world::MAXSTATUS as i16
         {
             continue;
         }
-        let Some(sector) = usize::try_from(sprite.sectnum).ok().and_then(|s| sectors.get_mut(s)) else {
+        let Some(sector) = usize::try_from(sprite.sectnum)
+            .ok()
+            .and_then(|s| sectors.get_mut(s))
+        else {
             continue;
         };
         if temps.len() <= index {
@@ -417,11 +426,62 @@ pub(crate) fn init_faller_sprites(
 pub(crate) fn is_solid_prop_tile(pic: i16) -> bool {
     matches!(
         pic,
-        981 | 342 | 343 | 516 | 517 | 602 | 607 | 595 | 556 | 557 | 680 | 954 | 955 | 956 | 957
-            | 1012 | 1013 | 1025 | 1014 | 1157..=1166 | 971 | 972 | 973 | 975 | 1352 | 1355
-            | 1354 | 4943 | 678 | 669 | 407 | 911 | 939 | 979 | 1358 | 1359 | 685 | 686 | 689
-            | 694 | 695 | 697 | 4444 | 768 | 769 | 774 | 779 | 792 | 716 | 765 | 619 | 616
-            | 618 | 996 | 994 | 995
+        981 | 342
+            | 343
+            | 516
+            | 517
+            | 602
+            | 607
+            | 595
+            | 556
+            | 557
+            | 680
+            | 954
+            | 955
+            | 956
+            | 957
+            | 1012
+            | 1013
+            | 1025
+            | 1014
+            | 1157
+            ..=1166
+                | 971
+                | 972
+                | 973
+                | 975
+                | 1352
+                | 1355
+                | 1354
+                | 4943
+                | 678
+                | 669
+                | 407
+                | 911
+                | 939
+                | 979
+                | 1358
+                | 1359
+                | 685
+                | 686
+                | 689
+                | 694
+                | 695
+                | 697
+                | 4444
+                | 768
+                | 769
+                | 774
+                | 779
+                | 792
+                | 716
+                | 765
+                | 619
+                | 616
+                | 618
+                | 996
+                | 994
+                | 995
     )
 }
 
@@ -1161,13 +1221,16 @@ pub fn con_fall(
         s.zvel = zvel.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     } else {
         s.z = rest;
-        // Water lotag==1 non-OCTA gets +24<<8; OCTA/COMMANDER/DRONE skip.
+        // Water lotag==1 actors use a 24-unit default floor offset. EDuke32's
+        // `htwaterzoffset` replaces that default, so setting 24 removes the
+        // extra offset while leaving the Atomic default unchanged.
         if sec.lotag == 1 {
             const OCTABRAIN: i16 = 1820;
             const COMMANDER: i16 = 1920;
             const DRONE: i16 = 1880;
             if !matches!(s.picnum, OCTABRAIN | COMMANDER | DRONE) {
-                s.z += 24 << 8;
+                s.z =
+                    s.z.wrapping_add((24_i32 - i32::from(temps.water_z_offset)).wrapping_shl(8));
             }
         } else {
             s.zvel = 0;
@@ -1484,5 +1547,37 @@ mod load_roll_tests {
         assert!((7..=14).contains(&sprites[1].xrepeat));
         // `spawn(-1, i)` header: every map sprite owns itself.
         assert!(sprites.iter().enumerate().all(|(i, s)| s.owner == i as i16));
+    }
+
+    #[test]
+    fn con_fall_applies_eduke_water_floor_offset() {
+        let floorz = 100 << 8;
+        let rest = floorz - FOURSLEIGHT;
+        let placement = |water_z_offset: i8, picnum: i16| {
+            let mut sprite = SpriteT {
+                picnum,
+                sectnum: 0,
+                z: rest,
+                ..SpriteT::default()
+            };
+            let sectors = [SectorT {
+                lotag: 1,
+                floorz,
+                ..SectorT::default()
+            }];
+            let mut temps = ActorConTemps {
+                cgg: 1,
+                hit_floorz: floorz,
+                water_z_offset,
+                ..ActorConTemps::default()
+            };
+            let peers = [sprite];
+            con_fall(&mut sprite, &sectors, &[], &peers, &[], 0, &mut temps);
+            sprite.z
+        };
+
+        assert_eq!(placement(0, 100), rest + (24 << 8));
+        assert_eq!(placement(24, 100), rest);
+        assert_eq!(placement(0, 1820), rest);
     }
 }

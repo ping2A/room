@@ -6,10 +6,98 @@
 //! firing) and only steer the heading/pitch directly, like a player with a
 //! mouse. Each prints a per-tic event log and writes PPM frames.
 use room_build_engine::world::MAXSTATUS;
-use room_duke::{DukeInput, DukeSession, DukeSoftRenderer};
+use room_duke::{ConDialect, DukeInput, DukeSession, DukeSoftRenderer, IncludeResolver};
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 const FIRE: u32 = 1 << 2;
+
+/// Filesystem CON includes for running a local EDuke32 mod in this example.
+struct ConDirectory {
+    by_path: BTreeMap<String, Vec<u8>>,
+    by_basename: BTreeMap<String, String>,
+}
+
+impl ConDirectory {
+    fn load(root: &Path) -> std::io::Result<Self> {
+        fn collect(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+            let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(std::fs::DirEntry::path);
+            for entry in entries {
+                let path = entry.path();
+                let ty = entry.file_type()?;
+                if ty.is_dir() {
+                    collect(&path, paths)?;
+                } else if ty.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("con"))
+                {
+                    paths.push(path);
+                }
+            }
+            Ok(())
+        }
+
+        fn include_key(path: &Path) -> String {
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .to_ascii_lowercase()
+        }
+
+        let root = root.canonicalize()?;
+        let mut paths = Vec::new();
+        collect(&root, &mut paths)?;
+        paths.sort();
+        let mut by_path = BTreeMap::new();
+        let mut by_basename = BTreeMap::new();
+        for path in paths {
+            let relative = path.strip_prefix(&root).unwrap_or(&path);
+            let key = include_key(relative);
+            let bytes = fs::read(&path)?;
+            let basename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            by_basename.entry(basename).or_insert_with(|| key.clone());
+            by_path.insert(key, bytes);
+        }
+        Ok(Self {
+            by_path,
+            by_basename,
+        })
+    }
+
+    fn root_con(&self) -> Option<Vec<u8>> {
+        self.by_path
+            .get("eduke.con")
+            .or_else(|| self.by_path.get("game.con"))
+            .cloned()
+    }
+}
+
+impl IncludeResolver for ConDirectory {
+    fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
+        let key = name
+            .trim()
+            .trim_matches('"')
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .to_ascii_lowercase();
+        self.by_path
+            .get(&key)
+            .or_else(|| {
+                let basename = key.rsplit('/').next().unwrap_or(&key);
+                self.by_basename
+                    .get(basename)
+                    .and_then(|path| self.by_path.get(path))
+            })
+            .cloned()
+    }
+}
 
 struct Run {
     s: DukeSession,
@@ -57,9 +145,13 @@ impl Run {
 
     fn shot(&self, name: &str) {
         let (w, h) = (640, 400);
-        let px = self
-            .r
-            .render_rgba_at(&self.s.render_world().unwrap(), &self.s.player, w, h, self.tic as u32);
+        let px = self.r.render_rgba_at(
+            &self.s.render_world().unwrap(),
+            &self.s.player,
+            w,
+            h,
+            self.tic as u32,
+        );
         let mut f = format!("P6\n{w} {h}\n255\n").into_bytes();
         for c in px.chunks(4) {
             f.extend_from_slice(&c[..3]);
@@ -89,7 +181,21 @@ impl Run {
 fn load(map: &str, out: &Path) -> Run {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/duke");
     let grp = std::fs::read(root.join("duke3d.grp")).unwrap();
-    let s = room_duke::session_from_grp_map(&grp, &format!("{map}.MAP"), 2).unwrap();
+    let s = if let Some(mod_root) = std::env::var_os("ROOM_DUKE_MOD") {
+        let mut includes = ConDirectory::load(Path::new(&mod_root)).unwrap();
+        let eduke_con = includes.root_con().expect("mod has eduke.con or GAME.CON");
+        room_duke::session_from_grp_layers_with_con_and_includes_dialect(
+            &[&grp],
+            &format!("{map}.MAP"),
+            2,
+            Some(&eduke_con),
+            Some(&mut includes),
+            ConDialect::EDuke32,
+        )
+        .unwrap()
+    } else {
+        room_duke::session_from_grp_map(&grp, &format!("{map}.MAP"), 2).unwrap()
+    };
     let r = DukeSoftRenderer::from_grp(&grp).unwrap();
     std::fs::create_dir_all(out).unwrap();
     Run {
@@ -369,6 +475,7 @@ fn kill_all(map: &str, out: &Path) {
             let sp = run.sprite(i);
             (st == 1 || st == 2)
                 && sp.xrepeat > 0
+                && sp.extra > 0
                 && room_duke::badguy::badguy_pic(sp.picnum, &actortype)
         })
         .collect();
@@ -391,52 +498,79 @@ fn kill_all(map: &str, out: &Path) {
         }
         let sp = run.sprite(t);
         let w = run.s.world.as_ref().unwrap();
-        // Find a free spot 700 units away with a clear line of sight.
+        let (target_ceilingz, target_floorz) = usize::try_from(sp.sectnum)
+            .ok()
+            .and_then(|sector| w.sectors.get(sector))
+            .map_or((-1, -1), |sector| (sector.ceilingz, sector.floorz));
+        let aim_z_offset = [-(24 << 8), 0, 24 << 8]
+            .into_iter()
+            .find(|offset| {
+                let z = sp.z.saturating_add(*offset);
+                z >= target_ceilingz && z <= target_floorz
+            })
+            .unwrap_or(-(24 << 8));
+        // Search at several radii and 11.25-degree increments so narrow map
+        // geometry does not make a live target appear unreachable.
         let mut placed = false;
-        for k in 0..16 {
-            let a = (i32::from(sp.ang) + k * 128) & 2047;
-            let (sin, cos) = room_build_engine::helpers::sincos_q14(a);
-            let x = sp.x + ((700 * cos) >> 14);
-            let y = sp.y + ((700 * sin) >> 14);
-            let mut sect = sp.sectnum;
-            room_build_engine::geom::updatesector(x, y, &mut sect, &w.sector_walls(), &w.wall_xy());
-            if sect < 0 {
-                continue;
+        'radii: for radius in [700, 1400, 2100, 2800] {
+            for k in 0..32 {
+                let a = (i32::from(sp.ang) + k * 64) & 2047;
+                let (sin, cos) = room_build_engine::helpers::sincos_q14(a);
+                let x = sp.x + ((radius * cos) >> 14);
+                let y = sp.y + ((radius * sin) >> 14);
+                let mut sect = sp.sectnum;
+                room_build_engine::geom::updatesector(
+                    x,
+                    y,
+                    &mut sect,
+                    &w.sector_walls(),
+                    &w.wall_xy(),
+                );
+                if sect < 0 {
+                    continue;
+                }
+                let fz = w.sectors[sect as usize].floorz;
+                let eye = fz - (40 << 8);
+                if !room_build_engine::geom::cansee(
+                    x,
+                    y,
+                    eye,
+                    sect,
+                    sp.x,
+                    sp.y,
+                    sp.z.saturating_add(aim_z_offset),
+                    sp.sectnum,
+                    &w.sector_z(),
+                    &w.wall_xy(),
+                ) {
+                    continue;
+                }
+                let p = &mut run.s.player;
+                p.posx = x;
+                p.posy = y;
+                p.posz = eye;
+                p.oposx = x;
+                p.oposy = y;
+                p.oposz = eye;
+                p.cursectnum = sect;
+                p.extra = 100;
+                p.curr_weapon = 1;
+                p.ammo[1] = 200;
+                placed = true;
+                break 'radii;
             }
-            let fz = w.sectors[sect as usize].floorz;
-            let eye = fz - (40 << 8);
-            if !room_build_engine::geom::cansee(
-                x,
-                y,
-                eye,
-                sect,
-                sp.x,
-                sp.y,
-                sp.z - (24 << 8),
-                sp.sectnum,
-                &w.sector_z(),
-                &w.wall_xy(),
-            ) {
-                continue;
-            }
-            let p = &mut run.s.player;
-            p.posx = x;
-            p.posy = y;
-            p.posz = eye;
-            p.oposx = x;
-            p.oposy = y;
-            p.oposz = eye;
-            p.cursectnum = sect;
-            p.extra = 100;
-            p.curr_weapon = 1;
-            p.ammo[1] = 200;
-            placed = true;
-            break;
         }
         if !placed {
             println!(
-                "#{t} pic {} stat {}: no clear spot",
-                sp.picnum, run.s.lists.sprite_stat[t]
+                "#{t} pic {} stat {} at ({}, {}, {}) sect {} zrange ({}, {}): no clear spot",
+                sp.picnum,
+                run.s.lists.sprite_stat[t],
+                sp.x,
+                sp.y,
+                sp.z,
+                sp.sectnum,
+                target_ceilingz,
+                target_floorz,
             );
             continue;
         }
@@ -470,7 +604,7 @@ fn kill_all(map: &str, out: &Path) {
                 break;
             }
             let cur = run.sprite(t);
-            run.aim(cur.x, cur.y, cur.z - (24 << 8));
+            run.aim(cur.x, cur.y, cur.z.saturating_add(aim_z_offset));
             run.s.player.extra = 100;
             let wt = std::env::var("ROOM_WATCHT")
                 .ok()
@@ -512,9 +646,15 @@ fn kill_all(map: &str, out: &Path) {
             untouched.push(t);
         }
         println!(
-            "#{t} pic {} stat {} extra {start_extra} -> {now} dead {dead} | {first_hit}",
+            "#{t} pic {} stat {} at ({}, {}, {}) sect {} zrange ({}, {}) extra {start_extra} -> {now} dead {dead} | {first_hit}",
             sp.picnum,
-            run.s.lists.sprite_stat.get(t).copied().unwrap_or(-1)
+            run.s.lists.sprite_stat.get(t).copied().unwrap_or(-1),
+            sp.x,
+            sp.y,
+            sp.z,
+            sp.sectnum,
+            target_ceilingz,
+            target_floorz
         );
     }
     println!(
@@ -1081,7 +1221,13 @@ fn recon(out: &Path) {
     {
         let w = run.s.world.as_ref().unwrap();
         let mut sect = 239;
-        room_build_engine::geom::updatesector(5600, 26800, &mut sect, &w.sector_walls(), &w.wall_xy());
+        room_build_engine::geom::updatesector(
+            5600,
+            26800,
+            &mut sect,
+            &w.sector_walls(),
+            &w.wall_xy(),
+        );
         let fz = w.sectors[sect.max(0) as usize].floorz;
         run.s.player.posx = 5600;
         run.s.player.posy = 26800;
@@ -1109,17 +1255,43 @@ fn recon(out: &Path) {
         }
         run.step(DukeInput::default());
         let w = run.s.world.as_ref().unwrap();
-        lasers += w.sprites.iter().enumerate().filter(|(i, sp)| sp.picnum == 1625 && run.s.lists.sprite_stat[*i] == 4 && sp.owner >= 0 && w.sprites[sp.owner as usize].picnum == 1960).count();
+        lasers += w
+            .sprites
+            .iter()
+            .enumerate()
+            .filter(|(i, sp)| {
+                sp.picnum == 1625
+                    && run.s.lists.sprite_stat[*i] == 4
+                    && sp.owner >= 0
+                    && w.sprites[sp.owner as usize].picnum == 1960
+            })
+            .count();
         if k % 60 == 0 {
             let info: Vec<String> = [152usize, 371, 516]
                 .iter()
                 .map(|&i| {
                     let sp = &w.sprites[i];
                     let t = run.s.actor_temps.get(i).map(|t| t.g_t).unwrap_or_default();
-                    format!("#{i} stat{} ({},{},{}) t0={} t2={} xv={} own={} d={}", run.s.lists.sprite_stat[i], sp.x, sp.y, sp.z, t[0], t[2], sp.xvel, sp.owner, room_duke::fta::findplayer_dist(sp, std::slice::from_ref(&run.s.player)).1)
+                    format!(
+                        "#{i} stat{} ({},{},{}) t0={} t2={} xv={} own={} d={}",
+                        run.s.lists.sprite_stat[i],
+                        sp.x,
+                        sp.y,
+                        sp.z,
+                        t[0],
+                        t[2],
+                        sp.xvel,
+                        sp.owner,
+                        room_duke::fta::findplayer_dist(sp, std::slice::from_ref(&run.s.player)).1
+                    )
                 })
                 .collect();
-            println!("tic {} hp {} laser-tics {lasers} | {}", run.tic, run.s.player.extra, info.join(" | "));
+            println!(
+                "tic {} hp {} laser-tics {lasers} | {}",
+                run.tic,
+                run.s.player.extra,
+                info.join(" | ")
+            );
         }
     }
     run.shot("recon_end");
@@ -1155,14 +1327,24 @@ fn bathroom(out: &Path) {
     // Walk toward the mirror: the reflected Duke should animate.
     let _ = place(&mut run, 28032, 39400, 1536, 310);
     for k in 0..24 {
-        run.step(DukeInput { fvel: -40, ..DukeInput::default() });
+        run.step(DukeInput {
+            fvel: -40,
+            ..DukeInput::default()
+        });
         run.s.player.body_xvel = if k < 12 { 50 } else { 120 };
         if k == 22 {
             run.s.player.ang = 1536 + 384;
         }
         let rw = run.s.render_world().unwrap();
         let me = run.s.player.sprite_i as usize;
-        println!("walk tic {} pic {} cstat {} body_xvel {} y {}", run.tic, rw.sprites[me].picnum, rw.sprites[me].cstat & 4, run.s.player.body_xvel, run.s.player.posy);
+        println!(
+            "walk tic {} pic {} cstat {} body_xvel {} y {}",
+            run.tic,
+            rw.sprites[me].picnum,
+            rw.sprites[me].cstat & 4,
+            run.s.player.body_xvel,
+            run.s.player.posy
+        );
         if k == 14 {
             run.shot("bath_3_walk_a");
         }
@@ -1238,7 +1420,10 @@ fn cinema(out: &Path) {
     };
     let sw = run.sprite(340);
     let sect = place(&mut run, sw.x, sw.y - 300, 512, 11);
-    println!("booth sector {sect}, switch pic {} at ({}, {}, {})", sw.picnum, sw.x, sw.y, sw.z);
+    println!(
+        "booth sector {sect}, switch pic {} at ({}, {}, {})",
+        sw.picnum, sw.x, sw.y, sw.z
+    );
     run.step(DukeInput::default());
     run.shot("cine_0_booth");
     let curtains = [1usize, 2, 21, 22, 147, 148];
@@ -1247,7 +1432,13 @@ fn cinema(out: &Path) {
         let w = run.s.world.as_ref().unwrap();
         let lit: Vec<(u8, i8, i8)> = lights
             .iter()
-            .map(|&i| (w.sectors[i].floorpal, w.sectors[i].floorshade, w.sectors[i].ceilingshade))
+            .map(|&i| {
+                (
+                    w.sectors[i].floorpal,
+                    w.sectors[i].floorshade,
+                    w.sectors[i].ceilingshade,
+                )
+            })
             .collect();
         let se: Vec<(usize, i32, i32, i32, i32)> = [345usize, 347, 432, 454]
             .iter()

@@ -444,11 +444,9 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
         GameFn::PointCeilingZ => {
             ret_f64(crate::physics::ceiling_at_xy(world, af(a, 0), af(a, 1)).unwrap_or(0.0))
         }
-        GameFn::PointReachable => bool_v(crate::reach::point_in_main_area(
-            world,
-            af(a, 0),
-            af(a, 1),
-        )),
+        GameFn::PointReachable => {
+            bool_v(crate::reach::point_in_main_area(world, af(a, 0), af(a, 1)))
+        }
         GameFn::ActorSpawn => {
             let cls = class_of(world, ai(a, 0))?;
             let pos = DVec3::new(af(a, 1), af(a, 2), af(a, 3));
@@ -1473,7 +1471,8 @@ pub fn dispatch_modify_damage(
         flags,
         dtype_len: 0,
     };
-    let mut bytes = [0u8; room_script_abi::ModifyDamageV1::SIZE + room_script_abi::ModifyDamageV1::MAX_DTYPE];
+    let mut bytes =
+        [0u8; room_script_abi::ModifyDamageV1::SIZE + room_script_abi::ModifyDamageV1::MAX_DTYPE];
     let n = payload.write_le(dtype.as_bytes(), &mut bytes);
     let outer = BORROWED_WORLD.get();
     BORROWED_WORLD.with(|c| c.set(world as *mut World));
@@ -1481,7 +1480,9 @@ pub fn dispatch_modify_damage(
     world.script_mod_index = module_index as u16;
     m.busy = true;
     let result = (|| {
-        m.instance.write_memory(m.scratch as usize, &bytes[..n]).ok()?;
+        m.instance
+            .write_memory(m.scratch as usize, &bytes[..n])
+            .ok()?;
         let mut budget = Budget::from_config(&m.cfg);
         m.instance
             .dispatch(callback_id, m.scratch, n as i32, &mut budget)
@@ -2424,13 +2425,23 @@ mod tests {
             options: Default::default(),
         };
         let lumps: (LumpFindFn, LumpBytesFn) = (
-            Arc::new(|name: &[u8], _ns| if name.eq_ignore_ascii_case(b"PLAYPAL") { 0 } else { -1 }),
+            Arc::new(|name: &[u8], _ns| {
+                if name.eq_ignore_ascii_case(b"PLAYPAL") {
+                    0
+                } else {
+                    -1
+                }
+            }),
             Arc::new(|i| (i == 0).then(|| b"\x01\x02\x03\xc8".to_vec())),
         );
         let mut rt = ModRuntime::new_with_lumps(&[src], Arc::clone(&classes), Some(lumps)).unwrap();
         let (classes, states) = rt.merge_classes(&classes, &states).unwrap();
-        let token = classes.find_name("Damage_Control").expect("port registers its token");
-        let mut world = World::from_map_with_classes(map_with_imp(), Arc::new(classes), Arc::new(states)).unwrap();
+        let token = classes
+            .find_name("Damage_Control")
+            .expect("port registers its token");
+        let mut world =
+            World::from_map_with_classes(map_with_imp(), Arc::new(classes), Arc::new(states))
+                .unwrap();
         // Room plays skills 1-5; Brutal Doom's branch needs 6.
         world.skill = 6;
         let mut slot = Some(world);
@@ -2454,10 +2465,18 @@ mod tests {
         let w = slot.as_mut().unwrap();
         let hp = w.actors.get(player).unwrap().health;
         crate::damage::damage_mobj(w, player, Some(imp), Some(imp), 3);
-        assert_eq!(w.actors.get(player).unwrap().health, hp - 21, "monster hits x7");
+        assert_eq!(
+            w.actors.get(player).unwrap().health,
+            hp - 21,
+            "monster hits x7"
+        );
         let hp = w.actors.get(imp).unwrap().health;
         crate::damage::damage_mobj(w, imp, Some(player), Some(player), 2);
-        assert_eq!(w.actors.get(imp).unwrap().health, hp - 14, "player hits x7 too");
+        assert_eq!(
+            w.actors.get(imp).unwrap().health,
+            hp - 14,
+            "player hits x7 too"
+        );
 
         let mut host = crate::acs::WorldAcsHost { world: w };
         // `ScriptCall(class, func, strings…, ints…)` as the ACS VM hands it
@@ -2471,18 +2490,45 @@ mod tests {
             let v = host.script_call_resolved(&args, &strings, 0);
             (v, host.take_script_call_string())
         };
-        let lump = call(&mut host, &["ZandroCompat", "LumpOpen", "PLAYPAL"], &[-2, 0]).0;
+        let lump = call(
+            &mut host,
+            &["ZandroCompat", "LumpOpen", "PLAYPAL"],
+            &[-2, 0],
+        )
+        .0;
         assert_eq!(lump, 0);
-        assert_eq!(call(&mut host, &["ZandroCompat", "LumpGetInfoInt"], &[lump, 0]).0, 4);
         assert_eq!(
-            call(&mut host, &["ZandroCompat", "LumpGetInfoStr"], &[lump, 1]).1.as_deref(),
+            call(&mut host, &["ZandroCompat", "LumpGetInfoInt"], &[lump, 0]).0,
+            4
+        );
+        assert_eq!(
+            call(&mut host, &["ZandroCompat", "LumpGetInfoStr"], &[lump, 1])
+                .1
+                .as_deref(),
             Some("PLAYPAL")
         );
-        assert_eq!(call(&mut host, &["ZandroCompat", "LumpRead"], &[lump, 3, 1]).0, 200);
-        assert_eq!(call(&mut host, &["ZandroCompat", "LumpOpen", "COLORMAP"], &[-2, 0]).0, -1);
+        assert_eq!(
+            call(&mut host, &["ZandroCompat", "LumpRead"], &[lump, 3, 1]).0,
+            200
+        );
+        assert_eq!(
+            call(
+                &mut host,
+                &["ZandroCompat", "LumpOpen", "COLORMAP"],
+                &[-2, 0]
+            )
+            .0,
+            -1
+        );
         call(&mut host, &["ZandroCompat", "SetPlayerTID"], &[0, 77]);
-        assert_eq!(call(&mut host, &["ZandroCompat", "GetPlayerTID"], &[0]).0, 77);
-        assert_eq!(call(&mut host, &["zandrocompat", "playeringame"], &[0]).0, 1);
+        assert_eq!(
+            call(&mut host, &["ZandroCompat", "GetPlayerTID"], &[0]).0,
+            77
+        );
+        assert_eq!(
+            call(&mut host, &["zandrocompat", "playeringame"], &[0]).0,
+            1
+        );
         call(&mut host, &["ZandroCompat", "GetGender"], &[0]);
         unbind_active_runtime();
         let w = slot.as_ref().unwrap();

@@ -532,7 +532,11 @@ pub(crate) fn damage_mobj_with_flags(
                         // MAPINFO `damagetype { Factor = … [ReplaceFactor] }`.
                         let d = world.damage_types.get(&key)?;
                         let f = d.factor?;
-                        Some(if d.replace_factor { f } else { f * a.damage_factor })
+                        Some(if d.replace_factor {
+                            f
+                        } else {
+                            f * a.damage_factor
+                        })
                     })
                     .unwrap_or(a.damage_factor)
             } else {
@@ -1680,7 +1684,8 @@ actor PlayerPawn : Actor 0
         assert_eq!(w.respawn_spot(1).map(|t| t.x), Some(192));
         assert_eq!(w.respawn_spot(0).map(|t| t.x), Some(64));
         // `norespawn` everywhere: no clean spot, so the P1 start is the last resort.
-        std::sync::Arc::make_mut(&mut w.map).udmf_user.sector_ext = vec![room_map::udmf::ext::SECTOR_NORESPAWN; w.map.sectors.len()];
+        std::sync::Arc::make_mut(&mut w.map).udmf_user.sector_ext =
+            vec![room_map::udmf::ext::SECTOR_NORESPAWN; w.map.sectors.len()];
         assert_eq!(w.respawn_spot(1).map(|t| t.x), Some(64));
         let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
         let _ = damage_mobj(&mut w, mo, None, None, 999);
@@ -3304,11 +3309,17 @@ actor FireBall : Actor
         let mut w = World::from_map_with_classes(map, classes.clone(), states).unwrap();
         w.damage_types.insert(
             "poison".into(),
-            crate::world::DamageTypeInfo { no_armor: true, ..Default::default() },
+            crate::world::DamageTypeInfo {
+                no_armor: true,
+                ..Default::default()
+            },
         );
         w.damage_types.insert(
             "fire".into(),
-            crate::world::DamageTypeInfo { factor: Some(0.5), ..Default::default() },
+            crate::world::DamageTypeInfo {
+                factor: Some(0.5),
+                ..Default::default()
+            },
         );
         let mo = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
         if let Some(p) = w.players[0].as_mut() {
@@ -3316,13 +3327,25 @@ actor FireBall : Actor
             p.armor_class = 2;
         }
         let dart = w
-            .spawn_at(classes.find_name("PoisonDart").unwrap(), DVec3::new(64.0, 64.0, 0.0), Default::default())
+            .spawn_at(
+                classes.find_name("PoisonDart").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
             .unwrap();
         damage_mobj(&mut w, mo, Some(dart), None, 20);
-        assert_eq!(w.actors.get(mo).unwrap().health, 80, "NoArmor: all 20 to health");
+        assert_eq!(
+            w.actors.get(mo).unwrap().health,
+            80,
+            "NoArmor: all 20 to health"
+        );
         assert_eq!(w.players[0].as_ref().unwrap().armor, 200);
         let fire = w
-            .spawn_at(classes.find_name("FireBall").unwrap(), DVec3::new(64.0, 64.0, 0.0), Default::default())
+            .spawn_at(
+                classes.find_name("FireBall").unwrap(),
+                DVec3::new(64.0, 64.0, 0.0),
+                Default::default(),
+            )
             .unwrap();
         damage_mobj(&mut w, mo, Some(fire), None, 40);
         // Factor 0.5 → 20, blue armor takes 10.

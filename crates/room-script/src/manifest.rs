@@ -190,7 +190,11 @@ fn parse_str_list(raw: &str) -> Vec<String> {
         .split(',')
         .map(|s| {
             // TOML `\\` is one backslash; paths use `/`.
-            s.trim().trim_matches('"').trim().replace("\\\\", "\\").replace('\\', "/")
+            s.trim()
+                .trim_matches('"')
+                .trim()
+                .replace("\\\\", "\\")
+                .replace('\\', "/")
         })
         .filter(|s| !s.is_empty())
         .collect()
@@ -447,7 +451,10 @@ file = "M.wasm"
     fn parses_replaced_zscript_and_roundtrips() {
         let text = "[mod]\nid = \"x\"\nreplaces_zscript = [\"zscript/BD_WCS.zc\", \"zscript\\\\DamageHandler.zc\"]\n\n[[module]]\nfile = \"BDZSCRPT\"\n";
         let m = Manifest::parse(text).unwrap();
-        assert_eq!(m.replaces_zscript, ["zscript/BD_WCS.zc", "zscript/DamageHandler.zc"]);
+        assert_eq!(
+            m.replaces_zscript,
+            ["zscript/BD_WCS.zc", "zscript/DamageHandler.zc"]
+        );
         assert_eq!(Manifest::parse(&m.to_toml()).unwrap(), m);
         let one = Manifest::parse("[mod]\nreplaces_zscript = \"a.zs\"\n").unwrap();
         assert_eq!(one.replaces_zscript, ["a.zs"]);

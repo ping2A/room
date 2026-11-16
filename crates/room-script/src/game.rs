@@ -366,7 +366,10 @@ mod tests {
         assert_eq!(GameFn::ActorDestroy.result(), None);
         assert_eq!(GameFn::ALL.len(), 76);
         assert_eq!(GameFn::ALL[68], GameFn::ActorHitInfo);
-        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::ActorSetSoundClass);
+        assert_eq!(
+            GameFn::ALL[GameFn::ALL.len() - 1],
+            GameFn::ActorSetSoundClass
+        );
         assert_eq!(
             GameFn::HudWidgetSet.params(),
             &[ValKind::I32, ValKind::I32, ValKind::I32, ValKind::I32]

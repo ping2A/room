@@ -123,8 +123,8 @@ pub use offscreen::{
 pub use particle_pass::ParticleInstancedPass;
 pub use particles::{
     MAX_PARTICLES, PARTICLE_TEX, PARTICLE_TEX_ADD, ParticleGpuInstance, ParticleInstance,
-    ParticleStore, ParticleStyle, append_particles, append_particles_animated, append_particles_ex, pack_particle_instances,
-    particle_tint_tex_name, soft_disc_rgba,
+    ParticleStore, ParticleStyle, append_particles, append_particles_animated, append_particles_ex,
+    pack_particle_instances, particle_tint_tex_name, soft_disc_rgba,
 };
 pub use pass::UnlitPass;
 pub use pbr::{MetalRough, fresnel_schlick, ggx_d, pbr_specular, specular_f0};
@@ -147,8 +147,8 @@ pub use skinning::{
 };
 pub use sky::{CubemapFaces, cubemap_sky, cylinder_sky, scroll_sky_u};
 pub use sprites::{
-    SpriteFx, SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation, sprite_lump_candidates,
-    sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
+    SpriteFx, SpriteInstance, SpriteOrient, emit_sprite_quad, mirror_rotation,
+    sprite_lump_candidates, sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit,
 };
 pub use ssao::{
     SsaoPass, SsaoUniforms, depth_only_view, ssao_bilateral_weight, ssao_edge_occlusion,

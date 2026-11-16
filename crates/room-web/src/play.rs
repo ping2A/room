@@ -921,7 +921,10 @@ impl PlaySession {
         set("inputMarginMs", wasm_bindgen::JsValue::from(margin));
         set("playoutBufferMs", wasm_bindgen::JsValue::from(buffer));
         set("lateInputs", wasm_bindgen::JsValue::from(f64::from(late)));
-        set("playoutStalls", wasm_bindgen::JsValue::from(f64::from(stalls)));
+        set(
+            "playoutStalls",
+            wasm_bindgen::JsValue::from(f64::from(stalls)),
+        );
         set("rx", wasm_bindgen::JsValue::from(f64::from(rx)));
         set("tx", wasm_bindgen::JsValue::from(f64::from(tx)));
         set(
@@ -2669,7 +2672,9 @@ impl PlaySession {
         }
         let visible = self.map.game_nodes.as_ref().map(|nodes| {
             let mut seen = vec![false; nodes.subsectors.len()];
-            for ss in room_render::walk_bsp(&self.map, f64::from(eye.x), f64::from(eye.y)).subsectors {
+            for ss in
+                room_render::walk_bsp(&self.map, f64::from(eye.x), f64::from(eye.y)).subsectors
+            {
                 if let Some(slot) = seen.get_mut(ss as usize) {
                     *slot = true;
                 }
@@ -3566,7 +3571,6 @@ fn particle_spawn(e: room_sim::SimParticleEvent) -> room_render::particles::Part
     }
 }
 
-
 /// Doom `R_PointInSubsector` over classic game nodes (root is the last node).
 fn point_in_subsector(nodes: &room_map::GameNodes, x: f64, y: f64) -> Option<usize> {
     const NF_SUBSECTOR: u32 = 0x8000_0000;
@@ -3579,7 +3583,8 @@ fn point_in_subsector(nodes: &room_map::GameNodes, x: f64, y: f64) -> Option<usi
             return Some((index & !NF_SUBSECTOR) as usize);
         }
         let node = nodes.nodes.get(index as usize)?;
-        let cross = f64::from(node.dx) * (y - f64::from(node.y)) - f64::from(node.dy) * (x - f64::from(node.x));
+        let cross = f64::from(node.dx) * (y - f64::from(node.y))
+            - f64::from(node.dy) * (x - f64::from(node.x));
         index = node.children[usize::from(cross >= 0.0)];
     }
     None

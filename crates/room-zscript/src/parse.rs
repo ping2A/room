@@ -354,8 +354,10 @@ impl Parser {
                     }
                     self.expect_punct(")");
                     let mut text = text.into_iter();
-                    flags.deprecated =
-                        Some((text.next().unwrap_or_default(), text.next().unwrap_or_default()));
+                    flags.deprecated = Some((
+                        text.next().unwrap_or_default(),
+                        text.next().unwrap_or_default(),
+                    ));
                 }
                 continue;
             }
@@ -1732,7 +1734,10 @@ impl Parser {
         }
         let span = self.bump().span;
         if !version_at_least(self.version.as_deref().unwrap_or("2.3"), 4, 15, 1) {
-            self.error(span, "unsafe effects require ZScript version 4.15.1 or above");
+            self.error(
+                span,
+                "unsafe effects require ZScript version 4.15.1 or above",
+            );
         }
         if self.eat_punct("(") {
             let ok = self.eat_kw("const")

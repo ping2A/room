@@ -109,6 +109,29 @@ impl SoundRegistry {
 }
 
 /// Parse an SNDINFO lump.
+/// Nothing but blanks or a comment left on the current line (SNDINFO is
+/// line-based: a directive never continues on the next line).
+fn at_line_end(sc: &Scanner<'_>) -> bool {
+    let rest = sc.remaining().trim_start_matches([' ', '\t', '\r']);
+    rest.is_empty() || rest.starts_with('\n') || rest.starts_with("//") || rest.starts_with(';')
+}
+
+/// Words left on the current line (consumed).
+fn rest_of_line(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
+    let mut out = Vec::new();
+    while !at_line_end(sc) {
+        match sc.next_token()? {
+            Tok::Eof => break,
+            Tok::Ident(s) => out.push(s.to_owned()),
+            Tok::String(s) => out.push(s.into_owned()),
+            Tok::Int(n) => out.push(n.to_string()),
+            Tok::Float(f) => out.push(f.to_string()),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
     let mut sc = Scanner::from_str(
         text,
@@ -158,12 +181,8 @@ pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
                     "$limit" => {
                         let name = read_word(&mut sc)?;
                         let n = sc.must_get_number()?;
-                        // optional distance — ignore if present
-                        let peek = sc.next_token()?;
-                        match peek {
-                            Tok::Int(_) | Tok::Float(_) => {}
-                            other => sc.unget(other),
-                        }
+                        // Optional distance (ignored), on the same line only.
+                        rest_of_line(&mut sc)?;
                         reg.limits.insert(name.to_ascii_lowercase(), n);
                     }
                     "$volume" => {
@@ -177,30 +196,13 @@ pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
                         reg.map_music.insert(mapnum, music);
                     }
                     "$rolloff" => {
+                        // `$rolloff name [type] min max` (GZDoom: an optional
+                        // linear / log / custom word, then two numbers). Read
+                        // to the end of the line: taking a fixed count of
+                        // tokens swallowed the next definition's name and
+                        // shifted every following pair (Brutal Doom).
                         let name = read_word(&mut sc)?;
-                        let mut args = Vec::new();
-                        loop {
-                            match sc.next_token()? {
-                                Tok::Ident(s) if s.starts_with('$') => {
-                                    sc.unget(Tok::Ident(s));
-                                    break;
-                                }
-                                Tok::Ident(s) => args.push(s.to_owned()),
-                                Tok::String(s) => args.push(s.into_owned()),
-                                Tok::Int(n) => args.push(n.to_string()),
-                                Tok::Float(f) => args.push(f.to_string()),
-                                Tok::Eof => break,
-                                other => {
-                                    sc.unget(other);
-                                    break;
-                                }
-                            }
-                            // Stop at end of "line" heuristically: if next is a new logical assign
-                            // we can't know without newline tracking; take one type + optional numbers.
-                            if args.len() >= 3 {
-                                break;
-                            }
-                        }
+                        let args = rest_of_line(&mut sc)?;
                         reg.rolloffs
                             .insert(name.to_ascii_lowercase(), args.join(" "));
                     }
@@ -233,14 +235,9 @@ pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
                     other => {
                         reg.warnings
                             .push(format!("SNDINFO: unsupported command {other}"));
-                        // skip rest of “line”: consume tokens until something that looks like a new command/assign
-                        // Best effort: consume one more word if present.
-                        let next = sc.next_token()?;
-                        match next {
-                            Tok::Ident(s) if s.starts_with('$') => sc.unget(Tok::Ident(s)),
-                            Tok::Eof => break,
-                            _ => {}
-                        }
+                        // `$singular`, `$pitchset`, `$attenuation`, … take a
+                        // varying number of arguments: skip the whole line.
+                        rest_of_line(&mut sc)?;
                     }
                 }
             }
@@ -329,6 +326,45 @@ weapons/pistol DSPISTOL
             r.rolloffs
                 .get("weapons/pistol")
                 .is_some_and(|s| s.contains("custom"))
+        );
+    }
+
+    /// Brutal Doom's `SNDINFO.BD`: two-number `$rolloff` lines followed by
+    /// a definition, `$limit` with a distance, multi-argument directives.
+    #[test]
+    fn line_based_directives_keep_the_next_definition() {
+        let text = "Rifle/Fire\t\t\tDSRIFLE\n$rolloff Rifle/Fire 200 2200\n$limit Rifle/Fire 5\n\n\
+                    Rifle/Fire2\t\t\tDSRIFL2\n$limit Rifle/Fire2 5\n$rolloff Rifle/Fire2 500 2200\n\n\
+                    Weapon/Empty DRYFIRE\nRifle/Select CLIPIN\n\
+                    FARRIF FARRIF\n$limit FARRIF 80 512\n$rolloff  FARRIF 3000 6000\n\
+                    $pitchset Rifle/Select 0.9 1.1\n$attenuation Rifle/Select 1.5\n$singular Weapon/Empty\n\
+                    $rolloff Plasma/Fire log 1.5 // comment\nPlasma/Fire PLSM9\n";
+        let reg = parse_sndinfo(text).unwrap();
+        for (logical, lump) in [
+            ("rifle/fire", "DSRIFLE"),
+            ("rifle/fire2", "DSRIFL2"),
+            ("weapon/empty", "DRYFIRE"),
+            ("rifle/select", "CLIPIN"),
+            ("farrif", "FARRIF"),
+            ("plasma/fire", "PLSM9"),
+        ] {
+            assert_eq!(reg.resolve_lump(logical, 0), Some(lump), "{logical}");
+        }
+        // No directive word or number became a sound.
+        assert!(
+            reg.sounds
+                .keys()
+                .all(|k| !k.starts_with('$') && k.parse::<f64>().is_err())
+        );
+        assert!(!reg.sounds.contains_key("dsrifl2"));
+        assert_eq!(reg.limits.get("farrif"), Some(&80));
+        assert_eq!(
+            reg.rolloffs.get("farrif").map(String::as_str),
+            Some("3000 6000")
+        );
+        assert_eq!(
+            reg.rolloffs.get("plasma/fire").map(String::as_str),
+            Some("log 1.5")
         );
     }
 }
