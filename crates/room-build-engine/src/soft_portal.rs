@@ -19,7 +19,7 @@
 /// Atomic `MIRROR` tile.
 const MIRROR_TILE: i16 = 560;
 
-use super::{SoftFrame, SoftTiles};
+use super::{SoftFrame, SoftTiles, TranslucentPixel};
 use crate::geom::{SectorZ, WallXY, getzsofslope};
 use crate::soft::STAT_PARALLAX;
 use crate::view::BuildView;
@@ -60,6 +60,9 @@ struct MaskedCol {
     t_q16: i64,
 }
 
+/// Prevent malformed portal maps from accumulating an unbounded fragment list.
+const MAX_TRANSLUCENT_WALL_PIXELS: usize = 2_000_000;
+
 struct Ctx<'a> {
     world: &'a BuildWorld,
     view: &'a BuildView,
@@ -83,6 +86,7 @@ struct Ctx<'a> {
     sector_z: Vec<SectorZ>,
     wall_xy: Vec<WallXY>,
     masked: Vec<MaskedCol>,
+    translucent: Vec<TranslucentPixel>,
     visits: u32,
     /// Sectors drawn at least once, first-visit order.
     drawn: Vec<i16>,
@@ -97,11 +101,11 @@ pub(super) fn render(
     frame: &mut SoftFrame,
     tiles: &SoftTiles,
     clock_120hz: u32,
-) -> (Vec<i32>, Vec<i16>) {
+) -> (Vec<i32>, Vec<i16>, Vec<TranslucentPixel>) {
     let w = frame.width as i32;
     let h = frame.height as i32;
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
-    let horiz_off = crate::soft::horiz_pixel_offset(view.horiz, i64::from((h / 2).max(1)));
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
+    let horiz_off = crate::soft::horiz_pixel_offset_q16(view.horiz_q16, i64::from((h / 2).max(1)));
     let mut ctx = Ctx {
         world,
         view,
@@ -123,12 +127,13 @@ pub(super) fn render(
         sector_z: world.sector_z(),
         wall_xy: world.wall_xy(),
         masked: Vec::new(),
+        translucent: Vec::new(),
         visits: 0,
         drawn: Vec::new(),
         drawn_mark: vec![false; usize::try_from(world.numsectors).unwrap_or(0)],
     };
     if w <= 0 || h <= 0 || view.sect < 0 || view.sect >= world.numsectors {
-        return (ctx.zbuf, Vec::new());
+        return (ctx.zbuf, Vec::new(), Vec::new());
     }
     ctx.draw_sector(view.sect, 0, w, 0);
     if std::env::var_os("ROOM_PORTAL_DEBUG").is_some() {
@@ -138,7 +143,18 @@ pub(super) fn render(
         );
     }
     ctx.draw_masked();
-    (ctx.zbuf, ctx.drawn)
+    (ctx.zbuf, ctx.drawn, ctx.translucent)
+}
+
+/// Add deferred wall layers to the shared pixel compositor. Sprite fragments
+/// submitted afterward are sorted with these by the same camera depth.
+pub(super) fn enqueue_translucent(frame: &mut SoftFrame, pixels: Vec<TranslucentPixel>) {
+    for pixel in pixels {
+        let _ = frame.defer_translucent_pixel(TranslucentPixel {
+            blend_table: 0,
+            ..pixel
+        });
+    }
 }
 
 impl Ctx<'_> {
@@ -557,7 +573,7 @@ impl Ctx<'_> {
             let column = tiles.sky_column(
                 picnum,
                 pal,
-                self.view.ang,
+                self.view.ang_q16,
                 col,
                 self.w,
                 self.h,
@@ -570,7 +586,7 @@ impl Ctx<'_> {
                     .sample_skybox_at(
                         picnum,
                         pal,
-                        self.view.ang,
+                        self.view.ang_q16,
                         col,
                         self.w,
                         y,
@@ -777,8 +793,28 @@ impl Ctx<'_> {
                 }
                 _ => flat,
             };
-            self.zbuf[idx] = depth_i;
-            self.frame.put(col, y, pix);
+            if wall.cstat & 128 != 0 {
+                self.defer_translucent(idx, depth_i, pix, wall.cstat & 512 != 0);
+            } else {
+                self.zbuf[idx] = depth_i;
+                self.frame.put(col, y, pix);
+            }
+        }
+    }
+
+    fn defer_translucent(&mut self, index: usize, depth: i32, foreground: u8, reverse: bool) {
+        let frame_pixels = (self.w.max(0) as usize).saturating_mul(self.h.max(0) as usize);
+        let limit = frame_pixels
+            .saturating_mul(8)
+            .min(MAX_TRANSLUCENT_WALL_PIXELS);
+        if self.translucent.len() < limit {
+            self.translucent.push(TranslucentPixel {
+                index,
+                depth,
+                foreground,
+                reverse,
+                blend_table: 0,
+            });
         }
     }
 
@@ -833,17 +869,61 @@ impl Ctx<'_> {
                         self.tiles.remap_palette(wall.pal, p)
                     },
                 );
-                let out = self.tiles.composite_layer(
-                    self.frame.pixels[idx],
-                    p,
-                    wall.cstat & 128 != 0,
-                    wall.cstat & 512 != 0,
-                );
-                if wall.cstat & 128 == 0 {
+                if wall.cstat & 128 != 0 {
+                    self.defer_translucent(idx, m.depth, p, wall.cstat & 512 != 0);
+                } else {
                     self.zbuf[idx] = m.depth;
+                    self.frame.put(m.col, y, p);
                 }
-                self.frame.put(m.col, y, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deferred_translucent_walls_blend_back_to_front_and_respect_opaque_depth() {
+        let mut tiles = SoftTiles::new();
+        let mut blend = vec![0; 65_536];
+        blend[usize::from(10_u8) * 256 + usize::from(20_u8)] = 31;
+        blend[usize::from(31_u8) * 256 + usize::from(30_u8)] = 41;
+        blend[usize::from(10_u8) * 256 + usize::from(40_u8)] = 51;
+        tiles.set_translucency_table(Some(blend));
+        let mut frame = SoftFrame::new(1, 1);
+        frame.pixels[0] = 10;
+
+        frame.begin_deferred_translucency();
+        enqueue_translucent(
+            &mut frame,
+            vec![
+                TranslucentPixel {
+                    index: 0,
+                    depth: 100,
+                    foreground: 30,
+                    reverse: false,
+                    blend_table: 0,
+                },
+                TranslucentPixel {
+                    index: 0,
+                    depth: 150,
+                    foreground: 20,
+                    reverse: false,
+                    blend_table: 0,
+                },
+                TranslucentPixel {
+                    index: 0,
+                    depth: 250,
+                    foreground: 40,
+                    reverse: false,
+                    blend_table: 0,
+                },
+            ],
+        );
+        frame.finish_deferred_translucency(&tiles, &[200]);
+
+        assert_eq!(frame.pixels, [41]);
     }
 }

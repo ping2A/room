@@ -159,6 +159,26 @@ pub fn session_from_grp_map_bytes_with_con_and_includes(
     con_override: Option<&[u8]>,
     additional_includes: Option<&mut dyn IncludeResolver>,
 ) -> Result<DukeSession, String> {
+    session_from_grp_map_bytes_with_con_and_includes_dialect(
+        grp_layers,
+        map_bytes,
+        skill,
+        con_override,
+        additional_includes,
+        ConDialect::Atomic,
+    )
+}
+
+/// Load a standalone map with a root CON override, extra include resolver and
+/// an explicit CON dialect.
+pub fn session_from_grp_map_bytes_with_con_and_includes_dialect(
+    grp_layers: &[&[u8]],
+    map_bytes: &[u8],
+    skill: u8,
+    con_override: Option<&[u8]>,
+    additional_includes: Option<&mut dyn IncludeResolver>,
+    dialect: ConDialect,
+) -> Result<DukeSession, String> {
     if skill > 4 {
         return Err(format!("skill {skill} is outside the Duke range 0..=4"));
     }
@@ -169,7 +189,7 @@ pub fn session_from_grp_map_bytes_with_con_and_includes(
         skill,
         con_override,
         additional_includes,
-        ConDialect::Atomic,
+        dialect,
     )
 }
 
@@ -487,6 +507,24 @@ mod tests {
             7,
             "EVENT_GAME should execute after the EDuke32 VM is attached to the live map"
         );
+
+        let stack = GrpStack::parse_layers(&[&grp]).unwrap();
+        let map = stack.get("E1L1.MAP").unwrap().to_vec();
+        let mut includes = crate::con::NullIncludes;
+        let map_session = session_from_grp_map_bytes_with_con_and_includes_dialect(
+            &[&grp],
+            &map,
+            2,
+            Some(source),
+            Some(&mut includes),
+            ConDialect::EDuke32,
+        )
+        .expect("load standalone Build map with EDuke32 dialect");
+        assert_eq!(
+            map_session.script.as_ref().map(|script| script.dialect),
+            Some(ConDialect::EDuke32)
+        );
+        assert!(map_session.eduke_vm_state.is_some());
     }
 
     /// E1L1 as a player would play it: walk to the rooftop fan vent, throw

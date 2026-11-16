@@ -1018,6 +1018,7 @@
       // Built-in content served by this server (play page fetches + caches it).
       q.set("iwad", opts.bundled.iwad.url);
       if (opts.bundled.addons.length) q.set("addon", opts.bundled.addons.map((a) => a.url).join(","));
+      if (opts.bundled.duke_mod?.url) q.set("duke_mod", opts.bundled.duke_mod.url);
     } else {
       q.set("local", "1");
       q.set("iwad", opts.game === "duke3d" ? "solo-local.grp" : "solo-local.wad");
@@ -1133,7 +1134,7 @@
         newSeed();
         body.querySelector("#solo-gen-dice").addEventListener("click", newSeed);
         const updateLevel = () => {
-          const duke = game.value === "duke3d" && !selectedPreset;
+          const duke = game.value === "duke3d";
           levelField.hidden = duke;
           if (duke) level.value = "game";
           const gen = level.value === "gen";
@@ -1278,7 +1279,7 @@
           own.hidden = !!selectedPreset;
           file.required = !selectedPreset;
           if (selectedPreset) {
-            game.value = "doom";
+            game.value = selectedPreset.game || "doom";
             updateGame();
             const mb = (selectedPreset.bytes / 1048576).toFixed(0);
             note.textContent = `${selectedPreset.note} Served by this Room server (${mb} MB, downloaded once and cached in this browser).`;
@@ -1327,11 +1328,11 @@
       if (!(await ensurePlayBase())) return;
       goPlay(
         soloUrl({
-          game: "doom",
+          game: selectedPreset.game || "doom",
           map: data.map.trim().toUpperCase(),
           skill: Number(data.skill) || 3,
-          mod: data.mod,
-          packs: data.voxel ? ["voxel"] : [],
+          mod: selectedPreset.game === "duke3d" ? "" : data.mod,
+          packs: selectedPreset.game === "duke3d" ? [] : data.voxel ? ["voxel"] : [],
           bundled: selectedPreset,
           gen,
         })

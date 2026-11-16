@@ -11,7 +11,13 @@ pub struct BuildView {
     pub posy: i32,
     pub posz: i32,
     pub ang: i16,
+    /// EDuke32 high-precision Build angle in 16.16 units.
+    pub ang_q16: i32,
     pub horiz: i16,
+    /// EDuke32 high-precision horizon in 16.16 units. Atomic views store
+    /// `horiz << 16`; the software renderer uses this for projection so
+    /// sub-integer CON camera adjustments are not discarded at the view edge.
+    pub horiz_q16: i32,
     pub sect: i16,
     /// Sectors reachable through portals from `sect` (BFS order).
     pub visible_sectors: Vec<i16>,
@@ -26,6 +32,55 @@ impl BuildWorld {
         posz: i32,
         ang: i16,
         horiz: i16,
+        sect: i16,
+    ) -> BuildView {
+        self.build_view_with_camera_q16(
+            posx,
+            posy,
+            posz,
+            ang,
+            i32::from(ang).wrapping_shl(16),
+            horiz,
+            i32::from(horiz).wrapping_shl(16),
+            sect,
+        )
+    }
+
+    /// Build a view with EDuke32's 16.16 horizon while retaining the classic
+    /// integer horizon for code paths that still expose Atomic precision.
+    pub fn build_view_with_q16(
+        &self,
+        posx: i32,
+        posy: i32,
+        posz: i32,
+        ang: i16,
+        horiz: i16,
+        horiz_q16: i32,
+        sect: i16,
+    ) -> BuildView {
+        self.build_view_with_camera_q16(
+            posx,
+            posy,
+            posz,
+            ang,
+            i32::from(ang).wrapping_shl(16),
+            horiz,
+            horiz_q16,
+            sect,
+        )
+    }
+
+    /// Build a view with EDuke32's 16.16 camera angle and horizon while
+    /// retaining the classic integer fields for Atomic-facing APIs.
+    pub fn build_view_with_camera_q16(
+        &self,
+        posx: i32,
+        posy: i32,
+        posz: i32,
+        ang: i16,
+        ang_q16: i32,
+        horiz: i16,
+        horiz_q16: i32,
         mut sect: i16,
     ) -> BuildView {
         let walls = self.wall_xy();
@@ -39,7 +94,9 @@ impl BuildWorld {
             posy,
             posz,
             ang,
+            ang_q16,
             horiz,
+            horiz_q16,
             sect,
             visible_sectors: visible,
         }
@@ -86,7 +143,7 @@ fn portal_flood(world: &BuildWorld, start: i16, view_x: i32, view_y: i32) -> Vec
             let within_portal_angle = (cross as u32).wrapping_add(262_144) < 524_288;
             let wall_dx = i128::from(next.x) - i128::from(w.x);
             let wall_dy = i128::from(next.y) - i128::from(w.y);
-            let cross_magnitude = (i128::from(cross) * i128::from(cross)) >> 5;
+            let cross_magnitude = i128::from(cross).abs();
             let within_portal_width = cross_magnitude <= wall_dx * wall_dx + wall_dy * wall_dy;
             if ns >= 0
                 && w.cstat & 32 == 0

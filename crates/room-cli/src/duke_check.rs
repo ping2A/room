@@ -157,9 +157,16 @@ struct Report {
     event_occurrences: usize,
     def_files: usize,
     def_lines: usize,
+    def_includes: usize,
+    def_include_errors: Vec<String>,
     def_high_res_tiles: usize,
     def_tile_images_decoded: usize,
     def_tile_image_errors: Vec<String>,
+    def_voxel_assignments: usize,
+    def_voxel_models_decoded: usize,
+    def_voxel_decode_errors: Vec<String>,
+    def_voxel_resource_errors: Vec<String>,
+    def_tints: usize,
     def_parse_errors: Vec<String>,
     def_brace_errors: Vec<String>,
     map_hack_entries: usize,
@@ -267,6 +274,14 @@ impl Report {
             self.def_files, self.def_lines
         ));
         out.push_str(&format!(
+            "- include directives: {}; unresolved paths: {}\n",
+            self.def_includes,
+            self.def_include_errors.len()
+        ));
+        for issue in self.def_include_errors.iter().take(20) {
+            out.push_str(&format!("  - {issue}\n"));
+        }
+        out.push_str(&format!(
             "- parsed high-resolution tile replacements: {}\n",
             self.def_high_res_tiles
         ));
@@ -276,6 +291,20 @@ impl Report {
             self.def_tile_image_errors.len()
         ));
         for issue in self.def_tile_image_errors.iter().take(20) {
+            out.push_str(&format!("  - {issue}\n"));
+        }
+        out.push_str(&format!(
+            "- voxel assignments: {}; KVX models decoded: {}; unresolved resources: {}; invalid models: {}; palette tints: {}\n",
+            self.def_voxel_assignments,
+            self.def_voxel_models_decoded,
+            self.def_voxel_resource_errors.len(),
+            self.def_voxel_decode_errors.len(),
+            self.def_tints
+        ));
+        for issue in self.def_voxel_resource_errors.iter().take(20) {
+            out.push_str(&format!("  - {issue}\n"));
+        }
+        for issue in self.def_voxel_decode_errors.iter().take(20) {
             out.push_str(&format!("  - {issue}\n"));
         }
         out.push_str(&format!(
@@ -470,6 +499,7 @@ pub fn run_mod_check(root: &Path, dialect: ConDialect) -> Result<String> {
     report.includes_missing = tree.missing_includes.len();
     report.missing_include_names = tree.missing_includes.iter().cloned().collect();
 
+    let mut decoded_voxel_resources = BTreeSet::new();
     for path in &tree.def_files {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let source = String::from_utf8_lossy(&bytes);
@@ -513,6 +543,81 @@ pub fn run_mod_check(root: &Path, dialect: ConDialect) -> Result<String> {
             report
                 .def_parse_errors
                 .push(format!("{}: {error}", path.display()));
+        }
+        if let Ok(document) = DefDocument::parse(&source) {
+            let location = |line: usize| {
+                let relative = path.strip_prefix(&tree.root).unwrap_or(path);
+                format!("{}:{line}", relative.display())
+            };
+            match document.includes() {
+                Ok(includes) => {
+                    report.def_includes += includes.len();
+                    for include in includes {
+                        if resolve_def_include(&tree, path, &include.file).is_none() {
+                            report.def_include_errors.push(format!(
+                                "{}: missing include `{}`",
+                                location(include.line),
+                                include.file
+                            ));
+                        }
+                    }
+                }
+                Err(error) => report
+                    .def_parse_errors
+                    .push(format!("{}: {error}", path.display())),
+            }
+            match document.voxels() {
+                Ok(voxels) => {
+                    report.def_voxel_assignments += voxels.len();
+                    for voxel in voxels {
+                        let relative = voxel.file.replace('\\', "/");
+                        let Some(asset_path) = resolve_def_asset(&tree.root, path, &relative)
+                        else {
+                            report.def_voxel_resource_errors.push(format!(
+                                "{}: missing or unsafe KVX `{}`",
+                                location(voxel.line),
+                                relative
+                            ));
+                            continue;
+                        };
+                        let key = normalize_include(
+                            &asset_path
+                                .strip_prefix(&tree.root)
+                                .unwrap_or(&asset_path)
+                                .to_string_lossy(),
+                        );
+                        if !decoded_voxel_resources.insert(key) {
+                            continue;
+                        }
+                        match fs::read(&asset_path) {
+                            Ok(data) => match room_build::kvx::KvxDocument::parse(&data) {
+                                Ok(_) => report.def_voxel_models_decoded += 1,
+                                Err(error) => report.def_voxel_decode_errors.push(format!(
+                                    "{}:{} (`{}`): {error}",
+                                    asset_path.display(),
+                                    voxel.line,
+                                    relative
+                                )),
+                            },
+                            Err(error) => report.def_voxel_resource_errors.push(format!(
+                                "{}:{} (`{}`): {error}",
+                                asset_path.display(),
+                                voxel.line,
+                                relative
+                            )),
+                        }
+                    }
+                }
+                Err(error) => report
+                    .def_parse_errors
+                    .push(format!("{}: {error}", path.display())),
+            }
+            match document.tints() {
+                Ok(tints) => report.def_tints += tints.len(),
+                Err(error) => report
+                    .def_parse_errors
+                    .push(format!("{}: {error}", path.display())),
+            }
         }
         let lines = clean_lines(&source);
         let mut brace_depth = 0i32;
@@ -681,6 +786,51 @@ fn normalize_include(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn resolve_def_include(tree: &SourceTree, source: &Path, include: &str) -> Option<PathBuf> {
+    let normalized = normalize_include(include);
+    if normalized.is_empty() || normalized.split('/').any(|part| part == "..") {
+        return None;
+    }
+    let source_relative = source.strip_prefix(&tree.root).ok()?;
+    let source_directory = source_relative.parent().unwrap_or_else(|| Path::new(""));
+    let mut candidates = BTreeSet::from([normalized.clone()]);
+    candidates.insert(normalize_include(
+        &source_directory.join(&normalized).to_string_lossy(),
+    ));
+    if !normalized.starts_with("resources/") {
+        candidates.insert(format!("resources/{normalized}"));
+    }
+    tree.def_files.iter().find_map(|path| {
+        let relative = path.strip_prefix(&tree.root).ok()?;
+        let key = normalize_include(&relative.to_string_lossy());
+        candidates.contains(&key).then(|| path.clone())
+    })
+}
+
+fn resolve_def_asset(root: &Path, source: &Path, asset: &str) -> Option<PathBuf> {
+    let normalized = asset.replace('\\', "/");
+    if normalized.starts_with('/')
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
+        || normalized.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    let relative = Path::new(&normalized);
+    let source_parent = source.parent().unwrap_or(root);
+    let mut candidates = vec![root.join(relative), source_parent.join(relative)];
+    if !normalized.to_ascii_lowercase().starts_with("resources/") {
+        candidates.push(root.join("resources").join(relative));
+    }
+    let canonical_root = root.canonicalize().ok()?;
+    candidates.into_iter().find_map(|candidate| {
+        let canonical = candidate.canonicalize().ok()?;
+        (canonical.starts_with(&canonical_root) && canonical.is_file()).then_some(canonical)
+    })
+}
+
 fn clean_lines(source: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut in_block = false;
@@ -832,6 +982,36 @@ mod tests {
     }
 
     #[test]
+    fn def_includes_resolve_root_and_resources_paths_without_traversal() {
+        let root = PathBuf::from("/tmp/duke-def-test");
+        let main = root.join("duke3d.def");
+        let nested = root.join("resources/voxels/vacation/props.def");
+        let tree = SourceTree {
+            root: root.clone(),
+            con_files: Vec::new(),
+            def_files: vec![main.clone(), nested.clone()],
+            mhk_files: Vec::new(),
+            con_by_path: BTreeMap::new(),
+            con_by_basename: BTreeMap::new(),
+            resolved_includes: BTreeSet::new(),
+            missing_includes: BTreeSet::new(),
+        };
+        assert_eq!(
+            resolve_def_include(&tree, &main, "resources/voxels/vacation/props.def"),
+            Some(nested.clone())
+        );
+        assert_eq!(
+            resolve_def_include(
+                &tree,
+                &root.join("resources/voxels/vacation.def"),
+                "voxels/vacation/props.def"
+            ),
+            Some(nested)
+        );
+        assert!(resolve_def_include(&tree, &main, "../../outside.def").is_none());
+    }
+
+    #[test]
     fn ed2_reference_fixture_echoes_repeatable_vm_values() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let fixture = root.join("testdata/ed2-vm-reference.con");
@@ -880,16 +1060,22 @@ mod tests {
         assert!(report.contains("DEF statement heads"));
         assert!(report.contains("Brutal Duke CON files/lines: 48/34100"));
         assert!(report.contains("include names resolved/unresolved: 49/0"));
+        assert!(report.contains("include directives: 22; unresolved paths: 0"));
+        assert!(
+            report.contains(
+                "voxel assignments: 527; KVX models decoded: 451; unresolved resources: 0; invalid models: 0; palette tints: 6"
+            )
+        );
+        assert!(report.contains("DEF parser errors: 0"));
         assert!(report.contains("remaining compile errors: 0"));
         assert!(report.contains(
             "EDuke32 metadata parsed: 1696 vars / 22 arrays / 703 states / 125 event hooks / 273 projectile properties / 68 damage-event tiles"
         ));
         assert!(report.contains(
-            "EDuke32 executable-core instructions: 25648 (176 explicit no-op instructions"
+            "EDuke32 executable-core instructions: 25649 (138 explicit no-op instructions"
         ));
-        assert!(report.contains("- `resetplayer`: 4"));
         assert!(
-            report.contains("EDuke32 declaration storage: initialized (1697 variables, 22 arrays)")
+            report.contains("EDuke32 declaration storage: initialized (2001 variables, 22 arrays)")
         );
         assert!(report.contains("event blocks: 126"));
         assert!(report.contains("Referenced event names: 36 distinct / 126 occurrences"));

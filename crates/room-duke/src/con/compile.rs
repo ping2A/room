@@ -1408,6 +1408,11 @@ fn parse_eduke_vm_command(
             | "spawnvar"
             | "espawn"
             | "espawnvar"
+            | "qspawn"
+            | "qspawnvar"
+            | "eqspawn"
+            | "eqspawnvar"
+            | "insertspriteq"
             | "shoot"
             | "shootvar"
             | "eshoot"
@@ -1452,6 +1457,7 @@ fn parse_eduke_vm_command(
             | "minitext"
             | "gametext"
             | "gametextz"
+            | "screentext"
             | "digitalnumber"
             | "digitalnumberz"
             | "freezerhurtowner"
@@ -2329,6 +2335,7 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
             "minitext" => 5,
             "gametext" => 11,
             "gametextz" => 12,
+            "screentext" => 20,
             "digitalnumber" => 11,
             "digitalnumberz" => 12,
             "hitradius" => 5,
@@ -2343,8 +2350,9 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
                     3
                 }
             }
-            "state" | "prependstate" | "spawn" | "spawnvar" | "espawn" | "espawnvar" | "return"
-            | "exit" | "nullop" | "abs" | "ifrnd" | "addphealth" => 1,
+            "state" | "prependstate" | "spawn" | "spawnvar" | "espawn" | "espawnvar" | "qspawn"
+            | "qspawnvar" | "eqspawn" | "eqspawnvar" | "insertspriteq" | "return" | "exit"
+            | "nullop" | "abs" | "ifrnd" | "addphealth" => 1,
             "" | "}" | "else" => 0,
             _ => {
                 if command.starts_with("if") && keyword_index(&command).is_some() {
@@ -2613,6 +2621,17 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                         .collect(),
                 ))
         }
+        "screentext" if operands.len() == 20 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::ScreenText(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
         "digitalnumber" if operands.len() == 11 => {
             cx.img
                 .eduke_program
@@ -2635,8 +2654,8 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                         .collect(),
                 ))
         }
-        "guniqhudid" | "rotatesprite" | "minitext" | "gametext" | "gametextz" | "digitalnumber"
-        | "digitalnumberz" => eduke_bad_arity(cx),
+        "guniqhudid" | "rotatesprite" | "minitext" | "gametext" | "gametextz" | "screentext"
+        | "digitalnumber" | "digitalnumberz" => eduke_bad_arity(cx),
         "sound" | "soundvar" | "soundonce" | "globalsound" | "globalsoundvar"
             if operands.len() == 1 =>
         {
@@ -3125,7 +3144,18 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     z: eduke_operand(cx.img, &operands[3]),
                 });
         }
-        "spawn" | "spawnvar" | "espawn" | "espawnvar" if !operands.is_empty() => {
+        "insertspriteq" if operands.is_empty() => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::InsertSpriteQueue {
+                    sprite: EdOperand::CurrentActor,
+                })
+        }
+        "spawn" | "spawnvar" | "espawn" | "espawnvar" | "qspawn" | "qspawnvar" | "eqspawn"
+        | "eqspawnvar"
+            if !operands.is_empty() =>
+        {
             let variable_form = command.ends_with("var");
             let tile = if variable_form {
                 EdOperand::Variable(operands[0].clone())
@@ -3138,7 +3168,8 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                 .push(EdInstruction::SpawnActor {
                     parent: EdOperand::CurrentActor,
                     tile,
-                    return_sprite: command.starts_with("e"),
+                    return_sprite: command.starts_with('e'),
+                    queue_sprite: command.starts_with('q') || command.starts_with("eq"),
                 });
         }
         "shoot" | "shootvar" | "eshoot" | "eshootvar" | "zshoot" | "zshootvar" | "ezshoot"
@@ -3977,6 +4008,7 @@ fn eduke_inline_command_token(token: &str) -> bool {
                 | "minitext"
                 | "gametext"
                 | "gametextz"
+                | "screentext"
                 | "digitalnumber"
                 | "digitalnumberz"
                 | "soundvar"
@@ -3984,6 +4016,11 @@ fn eduke_inline_command_token(token: &str) -> bool {
                 | "espawn"
                 | "spawnvar"
                 | "espawnvar"
+                | "qspawn"
+                | "qspawnvar"
+                | "eqspawn"
+                | "eqspawnvar"
+                | "insertspriteq"
                 | "changespritestat"
                 | "changespritesect"
                 | "setactorvar"
@@ -4083,6 +4120,11 @@ fn eduke_statement_head(token: &str) -> bool {
                 | "spawnvar"
                 | "espawn"
                 | "espawnvar"
+                | "qspawn"
+                | "qspawnvar"
+                | "eqspawn"
+                | "eqspawnvar"
+                | "insertspriteq"
                 | "shoot"
                 | "shootvar"
                 | "eshoot"
@@ -4113,6 +4155,7 @@ fn eduke_statement_head(token: &str) -> bool {
                 | "minitext"
                 | "gametext"
                 | "gametextz"
+                | "screentext"
                 | "digitalnumber"
                 | "digitalnumberz"
                 | "freezerhurtowner"

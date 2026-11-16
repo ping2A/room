@@ -74,6 +74,7 @@ pub(crate) struct CActorCtx<'a> {
     pub global_random: i32,
     pub single_player: bool,
     pub actor_toggle: u8,
+    pub decal_queue: &'a mut crate::decal_queue::DukeDecalQueue,
 }
 
 impl CActorCtx<'_> {
@@ -162,6 +163,7 @@ impl CActorCtx<'_> {
             self.randomseed,
             parent as i16,
             pn,
+            Some(self.decal_queue),
         )
     }
 

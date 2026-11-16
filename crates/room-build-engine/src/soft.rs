@@ -4,7 +4,70 @@
 use crate::types::SpriteT;
 use crate::view::BuildView;
 use crate::world::BuildWorld;
+use room_build::kvx::KvxDocument;
+use std::sync::Arc;
+
+fn sky_look_q16(angle_q16: i32, col: i32, width: i32) -> i64 {
+    let column_angle = (i64::from(col - width / 2) * 512 / i64::from(width)) << 16;
+    (i64::from(angle_q16) + column_angle).rem_euclid(2048_i64 << 16)
+}
 use std::collections::BTreeMap;
+
+/// A DEF voxel model assigned to an ART tile, ready for the software Build
+/// sprite pass.
+#[derive(Clone, Debug)]
+pub struct DefVoxelTile {
+    /// Parsed KVX model shared by every tile in the declaration's range.
+    pub model: Arc<KvxDocument>,
+    /// Zero-based model slot used by direct `(cstat & 48) == 48` sprites.
+    pub model_index: i16,
+    /// DEF model scale (positive, with one meaning native size).
+    pub scale: f32,
+    /// Whether the sprite's Build angle rotates the voxel model.
+    pub rotate: bool,
+    /// Slab voxel counts for each mip, cached once when the DEF model loads.
+    pub mip_sample_counts: Arc<[usize]>,
+    /// KVX embedded-palette indices mapped into Build's base palette.
+    pub palette_map: Arc<[u8; 256]>,
+}
+
+/// Map a KVX model's 6-bit embedded RGB palette to the nearest Build palette
+/// indices. This is done once while loading the DEF resources, not per frame.
+#[must_use]
+pub fn kvx_palette_map(model: &KvxDocument, build_palette: &[u8; 768]) -> [u8; 256] {
+    let mut mapped = [0u8; 256];
+    for (index, output) in mapped.iter_mut().enumerate() {
+        let source = index * 3;
+        let color = [
+            expand_kvx_channel(model.palette[source]),
+            expand_kvx_channel(model.palette[source + 1]),
+            expand_kvx_channel(model.palette[source + 2]),
+        ];
+        let mut best_distance = u32::MAX;
+        let mut best_index = 0u8;
+        // Index 255 is Build's transparent color and is not a valid opaque
+        // destination for a voxel palette entry.
+        for candidate in 0..255usize {
+            let target = candidate * 3;
+            let distance = (0..3).fold(0u32, |sum, channel| {
+                let delta =
+                    u32::from(color[channel]).abs_diff(u32::from(build_palette[target + channel]));
+                sum.saturating_add(delta.saturating_mul(delta))
+            });
+            if distance < best_distance {
+                best_distance = distance;
+                best_index = candidate as u8;
+            }
+        }
+        *output = best_index;
+    }
+    mapped
+}
+
+fn expand_kvx_channel(channel: u8) -> u8 {
+    let channel = channel & 63;
+    (channel << 2) | (channel >> 4)
+}
 
 /// Owned ART tiles for soft textured draw (column-major pixels).
 #[derive(Clone, Debug, Default)]
@@ -421,7 +484,7 @@ impl SoftTiles {
         &self,
         base: i16,
         palette: u8,
-        angle: i16,
+        angle_q16: i32,
         col: i32,
         width: i32,
         height: i32,
@@ -431,11 +494,12 @@ impl SoftTiles {
         if width <= 0 || height <= 0 {
             return None;
         }
-        let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
+        let look_q16 = sky_look_q16(angle_q16, col, width);
+        let look = (look_q16 >> 16) as i32;
         let slot = (look >> 8) as usize;
         let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
         let tile = self.resolve_for_palette(base.saturating_add(offset), palette, clock_120hz)?;
-        let u = i64::from(look & 255) * tile.w as i64 / 256;
+        let u = look_q16.rem_euclid(256_i64 << 16) * i64::try_from(tile.w).ok()? / (256_i64 << 16);
         let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
         let half = i64::from(height / 2);
         let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
@@ -449,7 +513,7 @@ impl SoftTiles {
         &self,
         base: i16,
         palette: u8,
-        angle: i16,
+        angle_q16: i32,
         col: i32,
         width: i32,
         y: i32,
@@ -465,8 +529,7 @@ impl SoftTiles {
                 .flatten()
         })?;
 
-        let look = i32::from(angle).rem_euclid(2048);
-        let (sin, cos) = crate::helpers::approx_sincos_q14(look);
+        let (sin, cos) = crate::helpers::sincos_q14_16(angle_q16);
         let focal_x = i64::from((width / 2).max(1));
         let focal_y = i64::from((height / 2).max(1));
         let dx = i64::from(col - width / 2);
@@ -523,7 +586,7 @@ impl SoftTiles {
     fn sample_sky_parascan(
         &self,
         base: i16,
-        angle: i16,
+        angle_q16: i32,
         col: i32,
         width: i32,
         height: i32,
@@ -536,11 +599,13 @@ impl SoftTiles {
         if width <= 0 || height <= 0 {
             return None;
         }
-        let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
+        let look_q16 = sky_look_q16(angle_q16, col, width);
+        let look = (look_q16 >> 16) as i32;
         let slot = (look >> 8) as usize;
         let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
         let pic = base.saturating_add(offset);
-        let u = ((look & 255) * i32::from(tile_width) / 256) as u32;
+        let u =
+            (look_q16.rem_euclid(256_i64 << 16) * i64::from(tile_width) / (256_i64 << 16)) as u32;
         let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
         let half = i64::from(height / 2);
         let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
@@ -557,7 +622,7 @@ impl SoftTiles {
         &self,
         base: i16,
         palette: u8,
-        angle: i16,
+        angle_q16: i32,
         col: i32,
         width: i32,
         y: i32,
@@ -569,12 +634,14 @@ impl SoftTiles {
         }
         // The bootstrap projection has a 90-degree horizontal field of view.
         // Build's 2048-unit circle is divided into eight 256-unit sky slots.
-        let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
+        let look_q16 = sky_look_q16(angle_q16, col, width);
+        let look = (look_q16 >> 16) as i32;
         let slot = (look >> 8) as usize;
         let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
         let pic = base.saturating_add(offset);
         let (tile_width, tile_height) = self.dimensions_for_palette(pic, palette)?;
-        let u = ((look & 255) * i32::from(tile_width) / 256) as u32;
+        let u =
+            (look_q16.rem_euclid(256_i64 << 16) * i64::from(tile_width) / (256_i64 << 16)) as u32;
         let v = if band > 0 {
             (y * i32::from(tile_height) / band.max(1)).clamp(0, i32::from(tile_height) - 1) as u32
         } else {
@@ -612,15 +679,107 @@ pub struct SoftFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    deferred_translucency: Option<Vec<TranslucentPixel>>,
 }
+
+/// One indexed-color fragment held until all opaque geometry and sprites have
+/// populated the shared depth buffer.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TranslucentPixel {
+    pub(super) index: usize,
+    pub(super) depth: i32,
+    pub(super) foreground: u8,
+    pub(super) reverse: bool,
+    pub(super) blend_table: u8,
+}
+
+const MAX_DEFERRED_TRANSLUCENT_PIXELS: usize = 2_000_000;
 
 impl SoftFrame {
     pub fn new(width: u32, height: u32) -> Self {
+        Self::with_pixels(width, height, vec![0; (width * height) as usize])
+    }
+
+    /// Construct a framebuffer from an existing palette-index buffer.
+    ///
+    /// The caller supplies exactly `width * height` pixels, in row-major
+    /// order, matching the public framebuffer fields.
+    pub fn with_pixels(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         Self {
             width,
             height,
-            pixels: vec![0; (width * height) as usize],
+            pixels,
+            deferred_translucency: None,
         }
+    }
+
+    pub(super) fn begin_deferred_translucency(&mut self) {
+        self.deferred_translucency = Some(Vec::new());
+    }
+
+    pub(super) fn defer_translucent_pixel(&mut self, pixel: TranslucentPixel) -> bool {
+        let Some(pixels) = self.deferred_translucency.as_mut() else {
+            return false;
+        };
+        let limit = self
+            .pixels
+            .len()
+            .saturating_mul(8)
+            .min(MAX_DEFERRED_TRANSLUCENT_PIXELS);
+        if pixels.len() < limit {
+            pixels.push(pixel);
+        }
+        true
+    }
+
+    pub(super) fn finish_deferred_translucency(&mut self, tiles: &SoftTiles, zbuf: &[i32]) {
+        let Some(mut pixels) = self.deferred_translucency.take() else {
+            return;
+        };
+        // Stable ordering retains wall/sprite submission order at equal depth.
+        pixels.sort_by_key(|pixel| std::cmp::Reverse(pixel.depth));
+        for pixel in pixels {
+            if pixel.index >= zbuf.len() || pixel.depth >= zbuf[pixel.index] {
+                continue;
+            }
+            let color = tiles.composite_layer_with_table(
+                self.pixels[pixel.index],
+                pixel.foreground,
+                true,
+                pixel.reverse,
+                pixel.blend_table,
+            );
+            self.pixels[pixel.index] = color;
+        }
+    }
+
+    fn draw_sprite_pixel(
+        &mut self,
+        tiles: Option<&SoftTiles>,
+        index: usize,
+        depth: i32,
+        foreground: u8,
+        cstat: u16,
+        blend_table: u8,
+    ) {
+        const TRANSLUCENT: u16 = 2;
+        const REVERSE_TRANSLUCENT: u16 = 512;
+        let is_translucent = cstat & TRANSLUCENT != 0;
+        if is_translucent
+            && self.defer_translucent_pixel(TranslucentPixel {
+                index,
+                depth,
+                foreground,
+                reverse: cstat & REVERSE_TRANSLUCENT != 0,
+                blend_table,
+            })
+        {
+            return;
+        }
+        let color = tiles.map_or(foreground, |tiles| {
+            tiles.composite_sprite(self.pixels[index], foreground, cstat, blend_table)
+        });
+        self.pixels[index] = color;
     }
 
     fn put(&mut self, x: i32, y: i32, c: u8) {
@@ -707,6 +866,28 @@ pub fn render_fp_textured_at_with_sprite_angle_offsets(
     clock_120hz: u32,
     angle_offsets: Option<&BTreeMap<usize, i16>>,
 ) {
+    render_fp_textured_at_with_def_voxels(
+        world,
+        view,
+        frame,
+        tiles,
+        clock_120hz,
+        angle_offsets,
+        None,
+    );
+}
+
+/// Textured Build draw with DEF voxel replacements and render-only MHK angles.
+/// The voxel map is presentation data and cannot mutate the Build world.
+pub fn render_fp_textured_at_with_def_voxels(
+    world: &BuildWorld,
+    view: &BuildView,
+    frame: &mut SoftFrame,
+    tiles: &SoftTiles,
+    clock_120hz: u32,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
+    voxel_tiles: Option<&BTreeMap<i16, DefVoxelTile>>,
+) {
     let (zbuf, drawn) = render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
         world,
         view,
@@ -714,6 +895,7 @@ pub fn render_fp_textured_at_with_sprite_angle_offsets(
         tiles,
         clock_120hz,
         angle_offsets,
+        voxel_tiles,
     );
     // Mirrors are searched among the sectors the portal pass reached, not
     // the (camera-only) `visible_sectors` of the incoming view.
@@ -728,6 +910,7 @@ pub fn render_fp_textured_at_with_sprite_angle_offsets(
         clock_120hz,
         560,
         angle_offsets,
+        voxel_tiles,
     );
 }
 
@@ -738,12 +921,16 @@ fn render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
     tiles: &SoftTiles,
     clock_120hz: u32,
     angle_offsets: Option<&BTreeMap<usize, i16>>,
+    voxel_tiles: Option<&BTreeMap<i16, DefVoxelTile>>,
 ) -> (Vec<i32>, Vec<i16>) {
-    let (mut zbuf, drawn) = portal::render(world, view, frame, tiles, clock_120hz);
+    let (mut zbuf, drawn, translucent_walls) =
+        portal::render(world, view, frame, tiles, clock_120hz);
+    frame.begin_deferred_translucency();
+    portal::enqueue_translucent(frame, translucent_walls);
     // Sprites are drawn for every sector the portal pass actually reached.
     let mut sprite_view = view.clone();
     sprite_view.visible_sectors = drawn;
-    render_fp_sprites_at_with_angle_offsets(
+    render_fp_sprites_at_with_angle_offsets_and_voxels(
         world,
         &sprite_view,
         frame,
@@ -751,7 +938,9 @@ fn render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
         &mut zbuf,
         clock_120hz,
         angle_offsets,
+        voxel_tiles,
     );
+    frame.finish_deferred_translucency(tiles, &zbuf);
     (zbuf, sprite_view.visible_sectors)
 }
 
@@ -769,6 +958,7 @@ fn render_fp_mirror_at(
     clock_120hz: u32,
     mirror_tile: i16,
     angle_offsets: Option<&BTreeMap<usize, i16>>,
+    voxel_tiles: Option<&BTreeMap<i16, DefVoxelTile>>,
 ) {
     let mut nearest: Option<(i64, usize, i16)> = None;
     for &sector_index in &view.visible_sectors {
@@ -877,13 +1067,17 @@ fn render_fp_mirror_at(
         endpoint.x.wrapping_sub(wall.x),
         endpoint.y.wrapping_sub(wall.y),
     );
-    let reflected_angle = (wall_angle * 2 - i32::from(view.ang)).rem_euclid(2048) as i16;
-    let reflected_view = world.build_view(
+    let reflected_ang_q16 = (i64::from(wall_angle * 2).wrapping_shl(16) - i64::from(view.ang_q16))
+        .rem_euclid(2048_i64 << 16) as i32;
+    let reflected_angle = (reflected_ang_q16 >> 16) as i16;
+    let reflected_view = world.build_view_with_camera_q16(
         reflected.0,
         reflected.1,
         view.posz,
         reflected_angle,
+        reflected_ang_q16,
         view.horiz,
+        view.horiz_q16,
         wall.nextsector,
     );
     let mut reflected_frame = SoftFrame::new(frame.width, frame.height);
@@ -896,6 +1090,7 @@ fn render_fp_mirror_at(
         tiles,
         clock_120hz,
         angle_offsets,
+        voxel_tiles,
     );
 
     let Some(points) = project_mirror_quad(
@@ -982,7 +1177,7 @@ fn project_mirror_quad(
     top_z: i32,
     bottom_z: i32,
 ) -> Option<[(i32, i32, i32); 4]> {
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
     // Clip the mirror segment against the near plane: standing close to a
     // mirror puts one end beside/behind the camera, and the whole mirror used
     // to be rejected (leaving the bare MIRROR placeholder tile on screen).
@@ -1018,7 +1213,7 @@ fn project_mirror_quad(
         let cy = height as i64 / 2;
         let fx = cx.max(1);
         let fy = cy.max(1);
-        let horizon = -horiz_pixel_offset(view.horiz, fy);
+        let horizon = -horiz_pixel_offset_q16(view.horiz_q16, fy);
         Some((
             i32::try_from(cx + fx * i64::from(rx) / i64::from(rz)).ok()?,
             i32::try_from(cy - fy * i64::from(ry) / i64::from(rz) - i64::from(horizon)).ok()?,
@@ -1112,6 +1307,17 @@ pub fn horiz_pixel_offset(horiz: i16, focal_y: i64) -> i32 {
     ((i64::from(horiz) - 100) * focal_y / 128) as i32
 }
 
+/// EDuke32 16.16 horizon → integer framebuffer pixel shift. The camera
+/// retains sub-integer horizon values through projection and quantizes only at
+/// the final pixel offset, which avoids losing small CON adjustments before
+/// scaling them by the viewport height.
+#[must_use]
+pub fn horiz_pixel_offset_q16(horiz_q16: i32, focal_y: i64) -> i32 {
+    let offset =
+        (i128::from(horiz_q16) - (100_i128 << 16)) * i128::from(focal_y) / (128_i128 << 16);
+    offset.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
+}
+
 /// Not pixel-exact Build: one sector, flat horizon, optional tile sample.
 /// Parallax ceiling (`ceilingstat & 1`) draws a sky strip keyed by `ang`.
 pub fn fill_fp_flats_sky(
@@ -1138,7 +1344,7 @@ pub fn fill_fp_flats_sky_at(
     }
     let cy = h / 2;
     // Build horiz ~100 at eye level; shift horizon with look.
-    let horizon = (cy + horiz_pixel_offset(view.horiz, i64::from(cy.max(1)))).clamp(0, h);
+    let horizon = (cy + horiz_pixel_offset_q16(view.horiz_q16, i64::from(cy.max(1)))).clamp(0, h);
 
     let sec = if view.sect >= 0 && view.sect < world.numsectors {
         &world.sectors[view.sect as usize]
@@ -1151,7 +1357,7 @@ pub fn fill_fp_flats_sky_at(
     let sky_parallax = (sec.ceilingstat & STAT_PARALLAX) != 0;
     let floor_parallax = (sec.floorstat & STAT_PARALLAX) != 0;
 
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
     let focal_x = (w / 2).max(1);
     let focal_y = (h / 2).max(1);
     let slope_sectors = world.sector_z();
@@ -1188,12 +1394,12 @@ pub fn fill_fp_flats_sky_at(
             let pix = if parallax {
                 tiles
                     .and_then(|ts| {
-                        ts.sample_skybox_at(picnum, pal, view.ang, col, w, y, h, horizon)
+                        ts.sample_skybox_at(picnum, pal, view.ang_q16, col, w, y, h, horizon)
                             .or_else(|| {
                                 ts.sample_sky_at(
                                     picnum,
                                     pal,
-                                    view.ang,
+                                    view.ang_q16,
                                     col,
                                     w,
                                     if above_horizon { y } else { y - horizon },
@@ -1430,14 +1636,15 @@ fn render_fp_walls_at(
     tiles: Option<&SoftTiles>,
     clock_120hz: u32,
 ) -> Vec<i32> {
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
     let w = frame.width as i32;
     let h = frame.height as i32;
     let cx = w / 2;
     let cy = h / 2;
     let focal_x = (w / 2).max(1);
     let focal_y = (h / 2).max(1);
-    let horiz_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
+    let horiz_off =
+        -horiz_pixel_offset_q16(view.horiz_q16, i64::from((frame.height as i32 / 2).max(1)));
     // A column-only depth buffer hides every sector behind the first portal
     // surface. Keep depth per pixel so upper/lower portal bands occlude while
     // the opening remains available for the next visible sector.
@@ -1641,14 +1848,39 @@ pub fn render_fp_sprites_at_with_angle_offsets(
     clock_120hz: u32,
     angle_offsets: Option<&BTreeMap<usize, i16>>,
 ) {
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    render_fp_sprites_at_with_angle_offsets_and_voxels(
+        world,
+        view,
+        frame,
+        tiles,
+        zbuf,
+        clock_120hz,
+        angle_offsets,
+        None,
+    );
+}
+
+/// Face, wall-aligned, floor-aligned, and DEF voxel sprites. Voxel assets are
+/// render-only inputs, like ART tiles and the angle override table.
+pub fn render_fp_sprites_at_with_angle_offsets_and_voxels(
+    world: &BuildWorld,
+    view: &BuildView,
+    frame: &mut SoftFrame,
+    tiles: Option<&SoftTiles>,
+    zbuf: &mut [i32],
+    clock_120hz: u32,
+    angle_offsets: Option<&BTreeMap<usize, i16>>,
+    voxel_tiles: Option<&BTreeMap<i16, DefVoxelTile>>,
+) {
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
     let w = frame.width as i32;
     let h = frame.height as i32;
     let cx = w / 2;
     let cy = h / 2;
     let focal_x = (w / 2).max(1);
     let focal_y = (h / 2).max(1);
-    let horiz_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
+    let horiz_off =
+        -horiz_pixel_offset_q16(view.horiz_q16, i64::from((frame.height as i32 / 2).max(1)));
 
     // Build renders opaque sprites before its translucent pass. Translucent
     // sprites then blend far-to-near against the completed opaque scene, and
@@ -1682,6 +1914,18 @@ pub fn render_fp_sprites_at_with_angle_offsets(
         (true, true) => right.1.cmp(&left.1).then_with(|| left.2.cmp(&right.2)),
     });
 
+    let mut voxel_budget = MAX_SOFT_VOXEL_SAMPLES;
+    let direct_voxel_models = (voxel_tiles.is_some()
+        && sprite_order
+            .iter()
+            .any(|(_, _, index)| world.sprites[*index].cstat & 48 == 48))
+    .then(|| {
+        let mut models = BTreeMap::new();
+        for voxel in voxel_tiles.into_iter().flat_map(|tiles| tiles.values()) {
+            models.entry(voxel.model_index).or_insert(voxel);
+        }
+        models
+    });
     for (_, _, i) in sprite_order {
         let original = &world.sprites[i];
         let mut sprite_copy;
@@ -1703,7 +1947,15 @@ pub fn render_fp_sprites_at_with_angle_offsets(
         if sp.xrepeat == 0 || sp.yrepeat == 0 {
             continue;
         }
-        if let Some(ts) = tiles
+        let voxel = if sp.cstat & 48 == 48 {
+            direct_voxel_models
+                .as_ref()
+                .and_then(|models| models.get(&sp.picnum).copied())
+        } else {
+            voxel_tiles.and_then(|voxel_tiles| voxel_tiles.get(&sp.picnum))
+        };
+        if voxel.is_none()
+            && let Some(ts) = tiles
             && ts
                 .dimensions_for_palette(sp.picnum, sp.pal)
                 .is_none_or(|(tw, th)| tw == 0 || th == 0)
@@ -1715,6 +1967,21 @@ pub fn render_fp_sprites_at_with_angle_offsets(
             .get(&i)
             .and_then(|value| u8::try_from(*value).ok())
             .unwrap_or(0);
+        if let Some(voxel) = voxel
+            && render_def_voxel_sprite(
+                world,
+                view,
+                frame,
+                tiles,
+                zbuf,
+                sp,
+                voxel,
+                blend_table,
+                &mut voxel_budget,
+            )
+        {
+            continue;
+        }
         if sp.cstat & CSTAT_WALL_ALIGN != 0 {
             render_wall_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz, blend_table);
             continue;
@@ -1800,19 +2067,416 @@ pub fn render_fp_sprites_at_with_angle_offsets(
                     }
                     None => flat,
                 };
-                frame.put(
-                    col,
-                    y,
-                    tiles.map_or(pix, |ts| {
-                        ts.composite_sprite(frame.pixels[depth_index], pix, sp.cstat, blend_table)
-                    }),
-                );
+                frame.draw_sprite_pixel(tiles, depth_index, z, pix, sp.cstat, blend_table);
                 if sp.cstat & CSTAT_TRANSLUCENT == 0 {
                     zbuf[depth_index] = z;
                 }
             }
         }
     }
+}
+
+const MAX_SOFT_VOXEL_SAMPLES: usize = 250_000;
+const MAX_SOFT_VOXEL_OCCUPANCY_CELLS: usize = 4_194_304;
+
+/// Draw one KVX model as exposed, depth-tested cube faces. The sample and
+/// occupancy limits bound the work for unusually dense user models; `false`
+/// asks the caller to retain the ART sprite fallback in that case.
+#[allow(clippy::too_many_arguments)]
+fn render_def_voxel_sprite(
+    world: &BuildWorld,
+    view: &BuildView,
+    frame: &mut SoftFrame,
+    tiles: Option<&SoftTiles>,
+    zbuf: &mut [i32],
+    sprite: &SpriteT,
+    voxel: &DefVoxelTile,
+    blend_table: u8,
+    sample_budget: &mut usize,
+) -> bool {
+    let Some(base_mip) = voxel.model.mipmaps.first() else {
+        return false;
+    };
+    if !voxel.scale.is_finite() || voxel.scale <= 0.0 {
+        return false;
+    }
+    let base_dimensions = base_mip.dimensions;
+    let frame_width_i32 = i32::try_from(frame.width).unwrap_or(i32::MAX);
+    let frame_height_i32 = i32::try_from(frame.height).unwrap_or(i32::MAX);
+    let focal_x = f64::from((frame_width_i32 / 2).max(1));
+    let focal_y = f64::from((frame_height_i32 / 2).max(1));
+    let center_depth = cam_project(
+        view,
+        crate::helpers::sincos_q14_16(view.ang_q16).0,
+        crate::helpers::sincos_q14_16(view.ang_q16).1,
+        sprite.x,
+        sprite.y,
+        sprite.z,
+    )
+    .map_or(16, |(_, _, depth)| depth.max(16));
+    let base_scale_xy = f64::from(voxel.scale) * f64::from(sprite.xrepeat) / 64.0 * 16.0;
+    let base_scale_z = f64::from(voxel.scale) * f64::from(sprite.yrepeat) / 64.0 * 256.0;
+    let projected_voxel = (focal_x * base_scale_xy / center_depth as f64)
+        .max(focal_y * base_scale_z / (16.0 * center_depth as f64))
+        .max(0.001);
+    let target_mip_factor = (1.0 / projected_voxel).max(1.0);
+    let mut selected_mip_index = 0usize;
+    let mut selected_mip = base_mip;
+    let mut selected_factor = 1.0f64;
+    for (index, mip) in voxel.model.mipmaps.iter().enumerate().skip(1) {
+        let factor = (0..3)
+            .map(|axis| f64::from(base_dimensions[axis]) / f64::from(mip.dimensions[axis].max(1)))
+            .fold(1.0f64, f64::max);
+        if factor > target_mip_factor || factor < selected_factor {
+            break;
+        }
+        selected_mip_index = index;
+        selected_mip = mip;
+        selected_factor = factor;
+    }
+    let mip_sample_count = voxel
+        .mip_sample_counts
+        .get(selected_mip_index)
+        .copied()
+        .unwrap_or_else(|| selected_mip.surface_voxel_count());
+    if mip_sample_count > *sample_budget {
+        return false;
+    }
+    let mip = selected_mip;
+    let [size_x, size_y, size_z] = mip.dimensions.map(usize::from);
+    if size_x == 0 || size_y == 0 || size_z == 0 {
+        return false;
+    }
+    let Some(occupancy_len) = size_x
+        .checked_mul(size_y)
+        .and_then(|value| value.checked_mul(size_z))
+        .filter(|&value| value <= MAX_SOFT_VOXEL_OCCUPANCY_CELLS)
+    else {
+        return false;
+    };
+    let mut occupancy = vec![0u16; occupancy_len];
+    let voxel_index = |x: usize, y: usize, z: usize| (x * size_y + y) * size_z + z;
+    for (column_index, column) in mip.columns.iter().enumerate() {
+        let voxel_x = column_index / size_y;
+        let voxel_y = column_index % size_y;
+        for slab in column {
+            for (z_offset, &color) in slab.colors.iter().enumerate() {
+                let voxel_z = usize::from(slab.z_top) + z_offset;
+                if voxel_x < size_x && voxel_y < size_y && voxel_z < size_z {
+                    occupancy[voxel_index(voxel_x, voxel_y, voxel_z)] = u16::from(color) + 1;
+                }
+            }
+        }
+    }
+
+    let angle = if voxel.rotate { sprite.ang } else { 0 };
+    let (sin, cos) = crate::helpers::sincos_q14(i32::from(angle));
+    let (view_sin, view_cos) = crate::helpers::sincos_q14_16(view.ang_q16);
+    let tile_scale_x = base_scale_xy * f64::from(base_dimensions[0]) / f64::from(mip.dimensions[0]);
+    let tile_scale_y = base_scale_xy * f64::from(base_dimensions[1]) / f64::from(mip.dimensions[1]);
+    let tile_scale_z = base_scale_z * f64::from(base_dimensions[2]) / f64::from(mip.dimensions[2]);
+    if tile_scale_x <= 0.0 || tile_scale_y <= 0.0 || tile_scale_z <= 0.0 {
+        return false;
+    }
+    let pivot = mip.pivot.map(|value| f64::from(value) / 256.0);
+    let palette_map = tiles.and_then(|tiles| tiles.pal_table(sprite.pal));
+    let shade_row = tiles.and_then(|tiles| {
+        let center_depth = cam_project(view, view_sin, view_cos, sprite.x, sprite.y, sprite.z)
+            .map_or(0, |(_, _, depth)| depth);
+        tiles.shade_row(sprite_fog_shade(
+            Some(world),
+            sprite.shade,
+            center_depth,
+            sprite.sectnum,
+        ))
+    });
+    let sprite_sin = f64::from(sin) / 16384.0;
+    let sprite_cos = f64::from(cos) / 16384.0;
+    let camera_dx = f64::from(view.posx) - f64::from(sprite.x);
+    let camera_dy = f64::from(view.posy) - f64::from(sprite.y);
+    let camera_local = [
+        (camera_dx * sprite_cos + camera_dy * sprite_sin) / tile_scale_x + pivot[0],
+        (-camera_dx * sprite_sin + camera_dy * sprite_cos) / tile_scale_y + pivot[1],
+        (f64::from(sprite.z) - f64::from(view.posz)) / tile_scale_z + pivot[2],
+    ];
+    let center_x = f64::from(frame_width_i32 / 2);
+    let center_y = f64::from(frame_height_i32 / 2);
+    let horizon_offset = f64::from(-horiz_pixel_offset_q16(
+        view.horiz_q16,
+        i64::from((frame_height_i32 / 2).max(1)),
+    ));
+    let mut sprite_depth = vec![i32::MAX; zbuf.len()];
+    let mut sprite_pixels = vec![0u8; zbuf.len()];
+    let mut touched_pixels = Vec::new();
+
+    for (column_index, column) in mip.columns.iter().enumerate() {
+        let voxel_x = column_index / size_y;
+        let voxel_y = column_index % size_y;
+        for slab in column {
+            for (z_offset, &color) in slab.colors.iter().enumerate() {
+                let voxel_z = usize::from(slab.z_top) + z_offset;
+                if voxel_x >= size_x || voxel_y >= size_y || voxel_z >= size_z {
+                    continue;
+                }
+                let voxel_coord = [voxel_x, voxel_y, voxel_z];
+                let origin = [voxel_x as f64, voxel_y as f64, voxel_z as f64];
+                let color = voxel.palette_map[usize::from(color)];
+                let mut pixel = palette_map.map_or(color, |table| table[usize::from(color)]);
+                if let Some(row) = shade_row {
+                    pixel = row[usize::from(pixel)];
+                }
+
+                for (axis, sign) in [(0usize, -1i32), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
+                    let center = origin[axis] + 0.5;
+                    if f64::from(sign) * (camera_local[axis] - center) <= 0.0 {
+                        continue;
+                    }
+                    let neighbor_coord = if sign < 0 {
+                        if voxel_coord[axis] == 0 {
+                            None
+                        } else {
+                            Some(voxel_coord[axis] - 1)
+                        }
+                    } else {
+                        let coordinate = voxel_coord[axis] + 1;
+                        (coordinate < [size_x, size_y, size_z][axis]).then_some(coordinate)
+                    };
+                    let neighbor_solid = neighbor_coord.is_some_and(|coordinate| {
+                        let mut neighbor = voxel_coord;
+                        neighbor[axis] = coordinate;
+                        occupancy[voxel_index(neighbor[0], neighbor[1], neighbor[2])] != 0
+                    });
+                    if neighbor_solid {
+                        continue;
+                    }
+                    let corners = voxel_face_corners(origin, axis, sign);
+                    let projected = corners.map(|point| {
+                        project_voxel_point(
+                            view,
+                            sprite,
+                            point,
+                            pivot,
+                            tile_scale_x,
+                            tile_scale_y,
+                            tile_scale_z,
+                            sin,
+                            cos,
+                            view_sin,
+                            view_cos,
+                            focal_x,
+                            focal_y,
+                            center_x,
+                            center_y,
+                            horizon_offset,
+                        )
+                    });
+                    let [Some(p0), Some(p1), Some(p2), Some(p3)] = projected else {
+                        continue;
+                    };
+                    raster_voxel_triangle(
+                        frame,
+                        [p0, p1, p2],
+                        pixel,
+                        &mut sprite_depth,
+                        &mut sprite_pixels,
+                        &mut touched_pixels,
+                    );
+                    raster_voxel_triangle(
+                        frame,
+                        [p0, p2, p3],
+                        pixel,
+                        &mut sprite_depth,
+                        &mut sprite_pixels,
+                        &mut touched_pixels,
+                    );
+                }
+            }
+        }
+    }
+    for depth_index in touched_pixels {
+        let depth = sprite_depth[depth_index];
+        if depth >= zbuf[depth_index] {
+            sprite_depth[depth_index] = i32::MAX;
+            continue;
+        }
+        let pixel = sprite_pixels[depth_index];
+        frame.draw_sprite_pixel(tiles, depth_index, depth, pixel, sprite.cstat, blend_table);
+        if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
+            zbuf[depth_index] = depth;
+        }
+        sprite_depth[depth_index] = i32::MAX;
+    }
+    *sample_budget = sample_budget.saturating_sub(mip_sample_count);
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_voxel_point(
+    view: &BuildView,
+    sprite: &SpriteT,
+    point: [f64; 3],
+    pivot: [f64; 3],
+    tile_scale_x: f64,
+    tile_scale_y: f64,
+    tile_scale_z: f64,
+    sprite_sin: i32,
+    sprite_cos: i32,
+    view_sin: i32,
+    view_cos: i32,
+    focal_x: f64,
+    focal_y: f64,
+    center_x: f64,
+    center_y: f64,
+    horizon_offset: f64,
+) -> Option<ProjectedVoxelPoint> {
+    let local_x = (point[0] - pivot[0]) * tile_scale_x;
+    let local_y = (point[1] - pivot[1]) * tile_scale_y;
+    let local_up = (point[2] - pivot[2]) * tile_scale_z;
+    let world_x = f64::from(sprite.x)
+        + (local_x * f64::from(sprite_cos) - local_y * f64::from(sprite_sin)) / 16384.0;
+    let world_y = f64::from(sprite.y)
+        + (local_x * f64::from(sprite_sin) + local_y * f64::from(sprite_cos)) / 16384.0;
+    let world_z = f64::from(sprite.z) - local_up;
+    let world_x = finite_i32(world_x)?;
+    let world_y = finite_i32(world_y)?;
+    let world_z = finite_i32(world_z)?;
+    let (rx, ry, depth) = cam_project(view, view_sin, view_cos, world_x, world_y, world_z)?;
+    if depth <= 16 {
+        return None;
+    }
+    let depth_f = depth as f64;
+    let screen_x = center_x + focal_x * rx as f64 / depth_f;
+    let screen_y = center_y - focal_y * ry as f64 / depth_f - horizon_offset;
+    if !screen_x.is_finite() || !screen_y.is_finite() {
+        return None;
+    }
+    Some(ProjectedVoxelPoint {
+        x: screen_x,
+        y: screen_y,
+        depth: depth_f,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ProjectedVoxelPoint {
+    x: f64,
+    y: f64,
+    depth: f64,
+}
+
+fn voxel_face_corners(origin: [f64; 3], axis: usize, sign: i32) -> [[f64; 3]; 4] {
+    let mut low = origin;
+    let mut high = origin.map(|value| value + 1.0);
+    let face = if sign > 0 { high[axis] } else { low[axis] };
+    low[axis] = face;
+    high[axis] = face;
+    let (u_axis, v_axis) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let mut corners = [low; 4];
+    corners[1][u_axis] = high[u_axis];
+    corners[2][u_axis] = high[u_axis];
+    corners[2][v_axis] = high[v_axis];
+    corners[3][v_axis] = high[v_axis];
+    corners
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn raster_voxel_triangle(
+    frame: &mut SoftFrame,
+    points: [ProjectedVoxelPoint; 3],
+    color: u8,
+    sprite_depth: &mut [i32],
+    sprite_pixels: &mut [u8],
+    touched_pixels: &mut Vec<usize>,
+) {
+    let area = voxel_edge(points[0], points[1], points[2].x, points[2].y);
+    if !area.is_finite() || area.abs() < 1.0e-9 {
+        return;
+    }
+    let width = frame.width as i32;
+    let height = frame.height as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let left = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0)
+        .min(f64::from(width)) as i32;
+    let right = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil()
+        .max(0.0)
+        .min(f64::from(width)) as i32;
+    let top = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0)
+        .min(f64::from(height)) as i32;
+    let bottom = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil()
+        .max(0.0)
+        .min(f64::from(height)) as i32;
+    for y in top..bottom {
+        for x in left..right {
+            let sample_x = f64::from(x) + 0.5;
+            let sample_y = f64::from(y) + 0.5;
+            let weights = [
+                voxel_edge(points[1], points[2], sample_x, sample_y) / area,
+                voxel_edge(points[2], points[0], sample_x, sample_y) / area,
+                voxel_edge(points[0], points[1], sample_x, sample_y) / area,
+            ];
+            if weights.iter().any(|weight| *weight < -1.0e-9) {
+                continue;
+            }
+            let reciprocal_depth = weights
+                .iter()
+                .zip(points)
+                .map(|(weight, point)| weight / point.depth)
+                .sum::<f64>();
+            if reciprocal_depth <= 0.0 || !reciprocal_depth.is_finite() {
+                continue;
+            }
+            let Some(depth) = finite_i32((1.0 / reciprocal_depth).round()) else {
+                continue;
+            };
+            let depth_index = y as usize * frame.width as usize + x as usize;
+            let Some(current_depth) = sprite_depth.get_mut(depth_index) else {
+                continue;
+            };
+            if depth >= *current_depth {
+                continue;
+            }
+            if *current_depth == i32::MAX {
+                touched_pixels.push(depth_index);
+            }
+            *current_depth = depth;
+            if let Some(pixel) = sprite_pixels.get_mut(depth_index) {
+                *pixel = color;
+            }
+        }
+    }
+}
+
+fn voxel_edge(a: ProjectedVoxelPoint, b: ProjectedVoxelPoint, x: f64, y: f64) -> f64 {
+    (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x)
+}
+
+fn finite_i32(value: f64) -> Option<i32> {
+    (value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX))
+        .then(|| value.round() as i32)
 }
 
 /// Draw a horizontal Build sprite as two textured, depth-tested triangles.
@@ -1846,12 +2510,13 @@ fn render_floor_aligned_sprite(
     let half_width = i32::from(tile_width) * i32::from(sprite.xrepeat) / 8;
     let half_height = i32::from(tile_height) * i32::from(sprite.yrepeat) / 8;
     let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(sprite.ang));
-    let (sin_view, cos_view) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin_view, cos_view) = crate::helpers::sincos_q14_16(view.ang_q16);
     let center_x = frame.width as i32 / 2;
     let center_y = frame.height as i32 / 2;
     let focal_x = (frame.width as i32 / 2).max(1);
     let focal_y = (frame.height as i32 / 2).max(1);
-    let horizon_off = -horiz_pixel_offset(view.horiz, i64::from((frame.height as i32 / 2).max(1)));
+    let horizon_off =
+        -horiz_pixel_offset_q16(view.horiz_q16, i64::from((frame.height as i32 / 2).max(1)));
     let (tile_xoff, tile_yoff) = tiles.sprite_offset(sprite.picnum);
     let mut xoff = i32::from(tile_xoff) + i32::from(sprite.xoffset);
     let mut yoff = i32::from(tile_yoff) + i32::from(sprite.yoffset);
@@ -2014,11 +2679,7 @@ fn draw_sprite_triangle(
             if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
                 zbuf[index] = depth;
             }
-            frame.put(
-                x,
-                y,
-                tiles.composite_sprite(frame.pixels[index], pixel, sprite.cstat, blend_table),
-            );
+            frame.draw_sprite_pixel(Some(tiles), index, depth, pixel, sprite.cstat, blend_table);
         }
     }
 }
@@ -2092,13 +2753,13 @@ fn render_wall_aligned_sprite(
             sprite.z.wrapping_sub(z_shift),
         )
     };
-    let (sin_view, cos_view) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin_view, cos_view) = crate::helpers::sincos_q14_16(view.ang_q16);
     let focal_x = f64::from((frame.width as i32 / 2).max(1));
     let focal_y = f64::from((frame.height as i32 / 2).max(1));
     let center_x = f64::from(frame.width as i32 / 2);
     let center_y = f64::from(frame.height as i32 / 2);
-    let horizon_off = f64::from(-horiz_pixel_offset(
-        view.horiz,
+    let horizon_off = f64::from(-horiz_pixel_offset_q16(
+        view.horiz_q16,
         i64::from((frame.height as i32 / 2).max(1)),
     ));
     // Camera space (same basis as `cam_project`), without its behind-camera
@@ -2200,11 +2861,7 @@ fn render_wall_aligned_sprite(
             if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
                 zbuf[index] = depth;
             }
-            frame.put(
-                col,
-                y,
-                tiles.composite_sprite(frame.pixels[index], pix, sprite.cstat, blend_table),
-            );
+            frame.draw_sprite_pixel(Some(tiles), index, depth, pix, sprite.cstat, blend_table);
         }
     }
     let _ = &mut reverse_u;
@@ -2224,7 +2881,7 @@ fn wall_color(picnum: i16, shade: i8) -> u8 {
 ///
 /// Bootstrap only (no textures/flats/sky, no occlusion). Uses Q14 sin/cos.
 pub fn render_fp_wire(world: &BuildWorld, view: &BuildView, frame: &mut SoftFrame) {
-    let (sin, cos) = crate::helpers::approx_sincos_q14(i32::from(view.ang));
+    let (sin, cos) = crate::helpers::sincos_q14_16(view.ang_q16);
     let w = frame.width as i32;
     let h = frame.height as i32;
     let cx = w / 2;
@@ -2357,6 +3014,25 @@ mod tests {
     use super::*;
     use crate::BuildWorld;
     use crate::types::{SectorT, SpriteT, WallT};
+
+    #[test]
+    fn kvx_palette_maps_embedded_six_bit_rgb_to_build_indices() {
+        let mut model_palette = [0u8; 768];
+        model_palette[2 * 3..2 * 3 + 3].copy_from_slice(&[63, 0, 0]);
+        model_palette[3 * 3..3 * 3 + 3].copy_from_slice(&[0, 63, 0]);
+        let model = KvxDocument {
+            mipmaps: Vec::new(),
+            palette: model_palette,
+        };
+        let mut build_palette = [0u8; 768];
+        build_palette[7 * 3..7 * 3 + 3].copy_from_slice(&[255, 0, 0]);
+        build_palette[11 * 3..11 * 3 + 3].copy_from_slice(&[0, 255, 0]);
+
+        let mapped = kvx_palette_map(&model, &build_palette);
+
+        assert_eq!(mapped[2], 7);
+        assert_eq!(mapped[3], 11);
+    }
 
     #[test]
     fn mirror_render_world_applies_per_view_sprite_and_blend_edits() {
@@ -2582,8 +3258,14 @@ mod tests {
         tiles.insert(100, 1, 1, vec![11]);
         tiles.insert(102, 1, 1, vec![22]);
         tiles.set_sky_offsets(100, [0, 2, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(tiles.sample_sky_at(100, 0, 128, 0, 1, 0, 1, 0), Some(11));
-        assert_eq!(tiles.sample_sky_at(100, 0, 384, 0, 1, 0, 1, 0), Some(22));
+        assert_eq!(
+            tiles.sample_sky_at(100, 0, 128 << 16, 0, 1, 0, 1, 0),
+            Some(11)
+        );
+        assert_eq!(
+            tiles.sample_sky_at(100, 0, 384 << 16, 0, 1, 0, 1, 0),
+            Some(22)
+        );
     }
 
     #[test]
@@ -2610,7 +3292,7 @@ mod tests {
             palette: 0,
             faces: [face(10), face(20), face(30), face(40), face(50), face(60)],
         });
-        let center = |angle| tiles.sample_skybox_at(42, 0, angle, 1, 2, 1, 4, 1);
+        let center = |angle| tiles.sample_skybox_at(42, 0, angle << 16, 1, 2, 1, 4, 1);
 
         assert_eq!(center(0), Some(10)); // front
         assert_eq!(center(512), Some(20)); // right
@@ -2632,6 +3314,36 @@ mod tests {
         assert_eq!(tiles.composite_sprite(10, 20, 2, 201), 42);
         assert_eq!(tiles.composite_sprite(10, 20, 2, 0), 3);
         assert_eq!(tiles.composite_sprite(10, 20, 0, 201), 20);
+    }
+
+    #[test]
+    fn translucent_sprite_and_wall_layers_share_depth_order() {
+        let mut tiles = SoftTiles::new();
+        let mut base = vec![0; 65_536];
+        base[usize::from(10_u8) * 256 + usize::from(20_u8)] = 31;
+        base[usize::from(30_u8) * 256 + usize::from(20_u8)] = 99;
+        tiles.set_translucency_table(Some(base));
+        let mut custom = vec![0; 65_536];
+        custom[usize::from(31_u8) * 256 + usize::from(30_u8)] = 41;
+        tiles.insert_blend_table(201, custom);
+
+        let mut frame = SoftFrame::new(1, 1);
+        frame.pixels[0] = 10;
+        frame.begin_deferred_translucency();
+        portal::enqueue_translucent(
+            &mut frame,
+            vec![TranslucentPixel {
+                index: 0,
+                depth: 150,
+                foreground: 20,
+                reverse: false,
+                blend_table: 0,
+            }],
+        );
+        frame.draw_sprite_pixel(Some(&tiles), 0, 100, 30, CSTAT_TRANSLUCENT, 201);
+        frame.finish_deferred_translucency(&tiles, &[200]);
+
+        assert_eq!(frame.pixels, [41]);
     }
 
     #[test]
@@ -2751,7 +3463,9 @@ mod tests {
             posy: 0,
             posz: 0,
             ang: 0,
+            ang_q16: 0,
             horiz: 100,
+            horiz_q16: 100 << 16,
             sect: 0,
             visible_sectors: vec![0],
         };
@@ -2808,7 +3522,9 @@ mod tests {
             posy: 200,
             posz: -1024,
             ang: 0,
+            ang_q16: 0,
             horiz: 100,
+            horiz_q16: 100 << 16,
             sect: 0,
             visible_sectors: vec![0],
         };
@@ -3003,6 +3719,265 @@ mod tests {
     }
 
     #[test]
+    fn fp_textured_draw_resolves_direct_and_def_mapped_voxel_sprites() {
+        let sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            floorz: 0,
+            ceilingz: -(64 << 8),
+            ..SectorT::default()
+        }];
+        let walls = vec![
+            WallT {
+                x: 0,
+                y: 0,
+                point2: 1,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 2000,
+                y: 0,
+                point2: 2,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 2000,
+                y: 2000,
+                point2: 3,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 0,
+                y: 2000,
+                point2: 0,
+                nextsector: -1,
+                ..WallT::default()
+            },
+        ];
+        let sprites = vec![SpriteT {
+            x: 1000,
+            y: 1400,
+            z: -(32 << 8),
+            picnum: 7,
+            cstat: CSTAT_WALL_ALIGN | CSTAT_FLOOR_ALIGN,
+            sectnum: 0,
+            statnum: 0,
+            xrepeat: 64,
+            yrepeat: 64,
+            ..SpriteT::default()
+        }];
+        let mut world =
+            BuildWorld::load_arrays(sectors, walls, &sprites, [1000, 400, -(32 << 8)], 512, 0, 1)
+                .unwrap();
+        let view = world.build_view(1000, 400, -(32 << 8), 512, 100, 0);
+        let mut frame = SoftFrame::new(128, 96);
+        let model = Arc::new(KvxDocument {
+            mipmaps: vec![room_build::kvx::KvxMipLevel {
+                dimensions: [2, 1, 1],
+                pivot: [0, 0, 0],
+                columns: vec![
+                    vec![room_build::kvx::KvxSlab {
+                        z_top: 0,
+                        visibility: 0x3f,
+                        colors: vec![203],
+                    }],
+                    vec![room_build::kvx::KvxSlab {
+                        z_top: 0,
+                        visibility: 0x3f,
+                        colors: vec![204],
+                    }],
+                ],
+            }],
+            palette: [0; 768],
+        });
+        let voxel_tiles = BTreeMap::from([(
+            99,
+            DefVoxelTile {
+                model,
+                model_index: 7,
+                scale: 1.0,
+                rotate: true,
+                mip_sample_counts: Arc::from([2usize]),
+                palette_map: Arc::new(std::array::from_fn(|index| index as u8)),
+            },
+        )]);
+
+        render_fp_textured_at_with_def_voxels(
+            &world,
+            &view,
+            &mut frame,
+            &SoftTiles::new(),
+            0,
+            None,
+            Some(&voxel_tiles),
+        );
+
+        assert!(
+            frame.pixels.contains(&203),
+            "the mapped KVX color should replace the aligned ART sprite"
+        );
+        assert!(
+            frame.pixels.contains(&204),
+            "adjacent KVX surface voxels should keep their own palette colors"
+        );
+
+        world.sprites[0].picnum = 99;
+        world.sprites[0].cstat = 0;
+        frame = SoftFrame::new(128, 96);
+        render_fp_textured_at_with_def_voxels(
+            &world,
+            &view,
+            &mut frame,
+            &SoftTiles::new(),
+            0,
+            None,
+            Some(&voxel_tiles),
+        );
+        assert!(
+            frame.pixels.contains(&203) && frame.pixels.contains(&204),
+            "the DEF ART tile mapping should continue to render after direct IDs are added"
+        );
+
+        let distant_model = Arc::new(KvxDocument {
+            mipmaps: vec![
+                room_build::kvx::KvxMipLevel {
+                    dimensions: [2, 1, 1],
+                    pivot: [0, 0, 0],
+                    columns: vec![
+                        vec![room_build::kvx::KvxSlab {
+                            z_top: 0,
+                            visibility: 0x3f,
+                            colors: vec![203],
+                        }],
+                        vec![room_build::kvx::KvxSlab {
+                            z_top: 0,
+                            visibility: 0x3f,
+                            colors: vec![204],
+                        }],
+                    ],
+                },
+                room_build::kvx::KvxMipLevel {
+                    dimensions: [1, 1, 1],
+                    pivot: [0, 0, 0],
+                    columns: vec![vec![room_build::kvx::KvxSlab {
+                        z_top: 0,
+                        visibility: 0x3f,
+                        colors: vec![205],
+                    }]],
+                },
+            ],
+            palette: [0; 768],
+        });
+        let distant_voxel = DefVoxelTile {
+            model: distant_model,
+            model_index: 0,
+            scale: 1.0,
+            rotate: false,
+            mip_sample_counts: Arc::from([2usize, 1]),
+            palette_map: Arc::new(std::array::from_fn(|index| index as u8)),
+        };
+        let mut distant_view = view.clone();
+        distant_view.posy = -8_600;
+        let mut distant_frame = SoftFrame::new(128, 96);
+        let mut distant_depth = vec![i32::MAX; 128 * 96];
+        let mut distant_budget = MAX_SOFT_VOXEL_SAMPLES;
+        assert!(render_def_voxel_sprite(
+            &world,
+            &distant_view,
+            &mut distant_frame,
+            None,
+            &mut distant_depth,
+            &world.sprites[0],
+            &distant_voxel,
+            0,
+            &mut distant_budget,
+        ));
+        assert_eq!(distant_budget, MAX_SOFT_VOXEL_SAMPLES - 1);
+
+        let mut occluded_frame = SoftFrame::new(128, 96);
+        let mut opaque_depth = vec![1; 128 * 96];
+        let mut sample_budget = MAX_SOFT_VOXEL_SAMPLES;
+        assert!(render_def_voxel_sprite(
+            &world,
+            &view,
+            &mut occluded_frame,
+            None,
+            &mut opaque_depth,
+            &world.sprites[0],
+            &voxel_tiles[&99],
+            0,
+            &mut sample_budget,
+        ));
+        assert!(occluded_frame.pixels.iter().all(|&pixel| pixel == 0));
+    }
+
+    #[test]
+    fn oversized_def_voxel_falls_back_without_unbounded_raster_work() {
+        let sprite = SpriteT {
+            x: 0,
+            y: 1000,
+            z: 0,
+            picnum: 99,
+            cstat: 0,
+            sectnum: 0,
+            statnum: 0,
+            xrepeat: 64,
+            yrepeat: 64,
+            ..SpriteT::default()
+        };
+        let model = Arc::new(KvxDocument {
+            mipmaps: vec![room_build::kvx::KvxMipLevel {
+                dimensions: [1, 1, 1],
+                pivot: [0, 0, 0],
+                columns: vec![vec![room_build::kvx::KvxSlab {
+                    z_top: 0,
+                    visibility: 0x3f,
+                    colors: vec![3],
+                }]],
+            }],
+            palette: [0; 768],
+        });
+        let voxel = DefVoxelTile {
+            model,
+            model_index: 0,
+            scale: 1.0,
+            rotate: false,
+            mip_sample_counts: Arc::from([MAX_SOFT_VOXEL_SAMPLES + 1]),
+            palette_map: Arc::new(std::array::from_fn(|index| index as u8)),
+        };
+        let world = BuildWorld::default();
+        let view = BuildView {
+            posx: 0,
+            posy: 0,
+            posz: 0,
+            ang: 0,
+            ang_q16: 0,
+            horiz: 100,
+            horiz_q16: 100 << 16,
+            sect: 0,
+            visible_sectors: vec![0],
+        };
+        let mut frame = SoftFrame::new(16, 16);
+        let mut zbuf = vec![i32::MAX; 16 * 16];
+        let mut sample_budget = MAX_SOFT_VOXEL_SAMPLES;
+        assert!(!render_def_voxel_sprite(
+            &world,
+            &view,
+            &mut frame,
+            None,
+            &mut zbuf,
+            &sprite,
+            &voxel,
+            0,
+            &mut sample_budget,
+        ));
+        assert!(frame.pixels.iter().all(|&pixel| pixel == 0));
+    }
+
+    #[test]
     fn fp_textured_portal_renders_height_differences_and_keeps_opening() {
         let sectors = vec![
             SectorT {
@@ -3047,6 +4022,7 @@ mod tests {
                 point2: 3,
                 nextsector: 1,
                 picnum: 5,
+                cstat: 128,
                 ..WallT::default()
             },
             WallT {
@@ -3063,6 +4039,7 @@ mod tests {
                 point2: 5,
                 nextsector: 0,
                 picnum: 5,
+                cstat: 128,
                 ..WallT::default()
             },
             WallT {
@@ -3095,19 +4072,23 @@ mod tests {
         // Build heading 512 looks +Y, through the portal wall at y = 1000.
         let view = world.build_view(500, 500, -4096, 512, 100, 0);
         let mut frame = SoftFrame::new(128, 96);
-        render_fp_textured(&world, &view, &mut frame, &SoftTiles::new());
         let portal_wall = wall_color(5, 0);
         let far_wall = wall_color(31, 0);
+        let mut tiles = SoftTiles::new();
+        let mut blend = vec![0; 65_536];
+        blend[usize::from(portal_wall)] = 77;
+        tiles.set_translucency_table(Some(blend));
+        render_fp_textured(&world, &view, &mut frame, &tiles);
         assert_eq!(
             frame.pixels[30 * 128 + 64],
-            portal_wall,
-            "upper portal band"
+            77,
+            "upper translucent portal band blends with the cleared scene"
         );
         assert_eq!(frame.pixels[50 * 128 + 64], far_wall, "visible opening");
         assert_eq!(
             frame.pixels[66 * 128 + 64],
-            portal_wall,
-            "lower portal band"
+            77,
+            "lower translucent portal band blends with the cleared scene"
         );
     }
 

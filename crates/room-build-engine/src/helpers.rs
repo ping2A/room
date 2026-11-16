@@ -231,6 +231,25 @@ pub fn approx_sincos_q14(ang: i32) -> (i32, i32) {
     (s as i32, c as i32)
 }
 
+/// Q14 sine/cosine for a 16.16 Build angle. Adjacent integer table entries are
+/// interpolated with integer arithmetic so EDuke32 camera yaw keeps its
+/// fractional part without introducing renderer platform differences.
+#[must_use]
+pub fn sincos_q14_16(ang_q16: i32) -> (i32, i32) {
+    let wrapped = ang_q16.rem_euclid(2048_i32 << 16);
+    let base = wrapped >> 16;
+    let fraction = i64::from(wrapped & 0xFFFF);
+    if fraction == 0 {
+        return sincos_q14(base);
+    }
+    let (sin0, cos0) = sincos_q14(base);
+    let (sin1, cos1) = sincos_q14(base + 1);
+    let inverse = 65_536 - fraction;
+    let interpolate =
+        |a: i32, b: i32| ((i64::from(a) * inverse + i64::from(b) * fraction) >> 16) as i32;
+    (interpolate(sin0, sin1), interpolate(cos0, cos1))
+}
+
 static SINTABLE: std::sync::OnceLock<[i16; 2048]> = std::sync::OnceLock::new();
 
 fn approx_sin_cos(ang: usize) -> (i64, i64) {

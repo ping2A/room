@@ -5,7 +5,8 @@ use super::{ConDialect, EdArrayDefinition, EdVariableDefinition, ScriptImage};
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::{divscale, krand_step, mulscale};
 use room_build_engine::world::{
-    HudGameTextDraw, HudNumberDraw, HudSpriteDraw, HudTextDraw, MAXSECTORS, MAXSPRITES, MAXWALLS,
+    HudGameTextDraw, HudNumberDraw, HudScreenTextDraw, HudSpriteDraw, HudTextDraw, MAXSECTORS,
+    MAXSPRITES, MAXWALLS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -22,6 +23,206 @@ const EDUKE_MAX_QUOTE_BYTES: usize = 4096;
 const EDUKE_INITIAL_GAME_RANDOM_SEED: i32 = 1996;
 /// Bound recursive `EVENT_EGS` / `EVENT_SPAWN` dispatch from runtime spawns.
 const EDUKE_SPAWN_EVENT_DEPTH_LIMIT: usize = 32;
+
+/// EDuke32's built-in per-player weapon-property gamevars. The values are the
+/// Atomic defaults published in the EDukeWiki pre-defined gamevars table.
+/// Symbolic tile/sound defaults are resolved against the loaded CON symbols;
+/// a missing symbol is left at zero so a small standalone script still loads.
+const EDUKE_WEAPON_VARIABLES: &[(&str, [&str; 12])] = &[
+    (
+        "WORKSLIKE",
+        ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+    ),
+    (
+        "CLIP",
+        ["0", "12", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+    ),
+    (
+        "RELOAD",
+        [
+            "0", "27", "13", "0", "0", "30", "0", "0", "16", "0", "10", "0",
+        ],
+    ),
+    (
+        "FIREDELAY",
+        ["7", "2", "4", "3", "4", "6", "10", "3", "3", "3", "2", "3"],
+    ),
+    (
+        "TOTALTIME",
+        [
+            "14", "5", "30", "12", "20", "19", "12", "6", "16", "5", "10", "5",
+        ],
+    ),
+    (
+        "HOLDDELAY",
+        ["0", "0", "0", "3", "0", "12", "0", "5", "7", "0", "0", "0"],
+    ),
+    (
+        "FLAGS",
+        [
+            "292", "32768", "1024", "73812", "0", "512", "2", "72", "3072", "65536", "384", "2",
+        ],
+    ),
+    (
+        "SHOOTS",
+        [
+            "KNEE",
+            "SHOTSPARK1",
+            "SHOTGUN",
+            "CHAINGUN",
+            "RPG",
+            "HEAVYHBOMB",
+            "SHRINKER",
+            "RPG",
+            "HANDHOLDINGLASER",
+            "FREEZEBLAST",
+            "0",
+            "GROWSPARK",
+        ],
+    ),
+    (
+        "SPAWNTIME",
+        ["0", "2", "24", "1", "0", "0", "0", "0", "0", "0", "0", "0"],
+    ),
+    (
+        "SPAWN",
+        [
+            "0",
+            "SHELL",
+            "SHOTGUNSHELL",
+            "SHELL",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+        ],
+    ),
+    (
+        "SHOTSPERBURST",
+        ["0", "0", "7", "0", "0", "0", "0", "2", "0", "0", "0", "0"],
+    ),
+    (
+        "INITIALSOUND",
+        [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "SHRINKER_FIRE",
+            "CAT_FIRE",
+            "0",
+            "CAT_FIRE",
+            "0",
+            "0",
+        ],
+    ),
+    (
+        "FIRESOUND",
+        [
+            "0",
+            "PISTOL_FIRE",
+            "SHOTGUN_FIRE",
+            "CHAINGUN_FIRE",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "CAT_FIRE",
+            "0",
+            "EXPANDERSHOOT",
+        ],
+    ),
+    (
+        "SOUND2TIME",
+        ["0", "0", "15", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+    ),
+    (
+        "SOUND2SOUND",
+        [
+            "0",
+            "0",
+            "SHOTGUN_COCK",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+        ],
+    ),
+    (
+        "RELOADSOUND1",
+        [
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+            "EJECT_CLIP",
+        ],
+    ),
+    (
+        "RELOADSOUND2",
+        [
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+            "INSERT_CLIP",
+        ],
+    ),
+    (
+        "SELECTSOUND",
+        [
+            "0",
+            "INSERT_CLIP",
+            "SHOTGUN_COCK",
+            "SELECT_WEAPON",
+            "SELECT_WEAPON",
+            "0",
+            "SELECT_WEAPON",
+            "SELECT_WEAPON",
+            "0",
+            "SELECT_WEAPON",
+            "0",
+            "SELECT_WEAPON",
+        ],
+    ),
+    (
+        "FLASHCOLOR",
+        [
+            "0", "24575", "24575", "24575", "24575", "0", "8454016", "24575", "0", "16744576", "0",
+            "24575",
+        ],
+    ),
+];
+/// Room caps script-addressable custom weapon-property slots at this count.
+/// The first 12 follow EDuke32's documented Atomic weapon table; the extra
+/// slots accommodate mods such as Brutal Duke that use `WEAPON12_*`.
+const EDUKE_MAX_CON_WEAPONS: usize = 16;
 
 /// Upper bound for total script-owned values allocated from an untrusted CON image.
 const MAX_EDUKE_VALUE_CELLS: usize = 16 * 1024 * 1024;
@@ -317,6 +518,8 @@ pub enum EdInstruction {
     },
     /// Capture one quote rendered with EDuke32's large game font.
     GameText(Vec<EdOperand>),
+    /// Capture one quote rendered with EDuke32's configurable screen text.
+    ScreenText(Vec<EdOperand>),
     /// Capture one EDuke32 `digitalnumber` or `digitalnumberz` command.
     DigitalNumber(Vec<EdOperand>),
     /// End the current event handler while allowing later appended handlers.
@@ -826,6 +1029,13 @@ pub enum EdInstruction {
         tile: EdOperand,
         /// Write the spawned sprite index (or -1 on failure) to `RETURN`.
         return_sprite: bool,
+        /// Insert the successfully spawned sprite into the decal FIFO.
+        queue_sprite: bool,
+    },
+    /// Insert an existing actor into the decal deletion FIFO.
+    InsertSpriteQueue {
+        /// Sprite id selected by `insertspriteq`.
+        sprite: EdOperand,
     },
     /// Fire a projectile from the current actor through the live world host.
     ShootActor {
@@ -972,6 +1182,11 @@ pub trait EdukeStructAccess {
 
     /// Append one render-only `gametext` request.
     fn draw_hud_gametext(&mut self, _draw: HudGameTextDraw) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Append one render-only `screentext` request.
+    fn draw_hud_screentext(&mut self, _draw: HudScreenTextDraw) -> Result<(), EdukeVmError> {
         Ok(())
     }
 
@@ -1492,6 +1707,11 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Insert a sprite into EDuke32's bounded decal deletion queue.
+    fn insert_sprite_queue(&mut self, _sprite: i32) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
     /// Fire a projectile from an actor. Hosts may initialize tile-defined
     /// projectile properties in addition to the optional explicit z velocity.
     fn shoot_actor(
@@ -1875,6 +2095,40 @@ impl EdukeVmState {
                 &mut allocated,
             )?;
         }
+        for (property, defaults) in EDUKE_WEAPON_VARIABLES {
+            for (weapon, initial_value) in defaults.iter().enumerate() {
+                let name = format!("WEAPON{weapon}_{property}");
+                if state.variable_ids.contains_key(&name) {
+                    continue;
+                }
+                let mut definition = EdVariableDefinition {
+                    name: name.clone(),
+                    initial_value: (*initial_value).to_owned(),
+                    flags: vec!["1".to_owned()],
+                };
+                if resolve_token(image, &name, &definition.initial_value).is_err() {
+                    definition.initial_value = "0".to_owned();
+                }
+                state.push_variable(image, &definition, &mut allocated)?;
+            }
+        }
+        for weapon in 12..EDUKE_MAX_CON_WEAPONS {
+            for (property, _) in EDUKE_WEAPON_VARIABLES {
+                let name = format!("WEAPON{weapon}_{property}");
+                if state.variable_ids.contains_key(&name) {
+                    continue;
+                }
+                state.push_variable(
+                    image,
+                    &EdVariableDefinition {
+                        name,
+                        initial_value: "0".to_owned(),
+                        flags: vec!["1".to_owned()],
+                    },
+                    &mut allocated,
+                )?;
+            }
+        }
         for definition in &image.eduke_arrays {
             state.push_array(image, definition, &mut allocated)?;
         }
@@ -1896,6 +2150,40 @@ impl EdukeVmState {
     /// remains within the runtime allocation and quote bounds.
     pub fn validate_for_image(&mut self, image: &ScriptImage) -> Result<(), EdukeVmError> {
         let expected = Self::from_image(image)?;
+        // Version-2 saves created before the built-in weapon gamevars were
+        // modeled have the same user-variable prefix and no weapon suffix.
+        // Migrate that known suffix using the image's defaults so we keep the
+        // saved values and preserve the existing declaration IDs.
+        let saved_variable_count = self.variables.len();
+        let has_predefined_suffix =
+            expected
+                .variables
+                .get(saved_variable_count..)
+                .is_some_and(|suffix| {
+                    !suffix.is_empty()
+                        && suffix
+                            .iter()
+                            .all(|cell| is_migratable_eduke_variable(&cell.name))
+                });
+        let saved_variables_match_prefix = self
+            .variables
+            .iter()
+            .zip(&expected.variables)
+            .all(|(saved, declared)| saved.name.eq_ignore_ascii_case(&declared.name));
+        if saved_variable_count < expected.variables.len()
+            && has_predefined_suffix
+            && saved_variables_match_prefix
+        {
+            let suffix = &expected.variables[saved_variable_count..];
+            self.variables.try_reserve(suffix.len()).map_err(|_| {
+                EdukeVmError::AllocationFailed {
+                    kind: "gamevar migration",
+                    name: "pre-defined weapon variables".to_owned(),
+                }
+            })?;
+            self.variables.extend_from_slice(suffix);
+            self.variable_ids.clone_from(&expected.variable_ids);
+        }
         let legacy_return_missing = expected.variable_ids.contains_key("RETURN")
             && self
                 .variables
@@ -2744,6 +3032,48 @@ impl EdukeVmState {
                             } else {
                                 65536
                             },
+                        })?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::ScreenText(operands) => {
+                    if operands.len() != 20 {
+                        return Err(EdukeVmError::InvalidInstructionArity {
+                            instruction: "screentext",
+                            expected: 20,
+                            actual: operands.len(),
+                        });
+                    }
+                    let mut values = [0_i32; 20];
+                    for (slot, operand) in values.iter_mut().zip(operands) {
+                        *slot = self.read_operand(operand, player, actor, &mut access)?;
+                    }
+                    let quote_index = usize::try_from(values[6]).map_err(|_| {
+                        EdukeVmError::QuoteIndexOutOfBounds {
+                            index: usize::MAX,
+                            extent: EDUKE_MAX_QUOTES,
+                        }
+                    })?;
+                    let text = self.quote(quote_index)?.to_owned();
+                    if let Some(host) = access.as_deref_mut() {
+                        host.draw_hud_screentext(HudScreenTextDraw {
+                            tile: values[0],
+                            x: values[1],
+                            y: values[2],
+                            zoom: values[3],
+                            block_angle: values[4],
+                            char_angle: values[5],
+                            text,
+                            shade: values[7],
+                            palette: values[8],
+                            orientation: values[9],
+                            alpha: values[10],
+                            xspace: values[11],
+                            yline: values[12],
+                            xbetween: values[13],
+                            ybetween: values[14],
+                            text_flags: values[15],
+                            clip: [values[16], values[17], values[18], values[19]],
                         })?;
                     }
                     pc += 1;
@@ -3770,6 +4100,7 @@ impl EdukeVmState {
                     parent,
                     tile,
                     return_sprite,
+                    queue_sprite,
                 } => {
                     let parent = self.read_operand(parent, player, actor, &mut access)?;
                     let tile = self.read_operand(tile, player, actor, &mut access)?;
@@ -3777,8 +4108,18 @@ impl EdukeVmState {
                         .as_mut()
                         .ok_or(EdukeVmError::StructAccessUnavailable)?;
                     let sprite = host.spawn_actor(parent, tile)?;
+                    if *queue_sprite && sprite >= 0 {
+                        host.insert_sprite_queue(sprite)?;
+                    }
                     if *return_sprite {
                         pending_spawn_return = Some(sprite);
+                    }
+                    pc += 1;
+                }
+                EdInstruction::InsertSpriteQueue { sprite } => {
+                    let sprite = self.read_operand(sprite, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.insert_sprite_queue(sprite)?;
                     }
                     pc += 1;
                 }
@@ -4320,6 +4661,12 @@ impl EdukeVmState {
                         | "NUMWALLS"
                         | "Numsprites"
                         | "totalclock"
+                        | "windowx1"
+                        | "windowy1"
+                        | "windowx2"
+                        | "windowy2"
+                        | "xdim"
+                        | "ydim"
                         | "RESPAWN_MONSTERS"
                         | "RESPAWN_ITEMS"
                         | "RESPAWN_INVENTORY"
@@ -4954,6 +5301,25 @@ fn event_context_value(
     })
 }
 
+fn is_migratable_eduke_variable(name: &str) -> bool {
+    if name == "RETURN" {
+        return true;
+    }
+    let Some((weapon, property)) = name
+        .strip_prefix("WEAPON")
+        .and_then(|rest| rest.split_once('_'))
+    else {
+        return false;
+    };
+    weapon
+        .parse::<usize>()
+        .ok()
+        .is_some_and(|weapon| weapon < EDUKE_MAX_CON_WEAPONS)
+        && EDUKE_WEAPON_VARIABLES
+            .iter()
+            .any(|(candidate, _)| *candidate == property)
+}
+
 fn legacy_case_folded_ids_match(
     saved: &BTreeMap<String, usize>,
     expected: &BTreeMap<String, usize>,
@@ -5174,6 +5540,9 @@ mod tests {
         actor_sound_result: bool,
         near_actor_query: Option<(i32, i32, i32)>,
         near_actor_result: i32,
+        spawn_actor_calls: Vec<(i32, i32)>,
+        spawn_actor_result: i32,
+        sprite_queue_calls: Vec<i32>,
         predefined_values: BTreeMap<String, i32>,
     }
 
@@ -5656,6 +6025,16 @@ mod tests {
             } else {
                 Err(EdukeVmError::StructAccessUnavailable)
             }
+        }
+
+        fn spawn_actor(&mut self, parent: i32, tile: i32) -> Result<i32, EdukeVmError> {
+            self.spawn_actor_calls.push((parent, tile));
+            Ok(self.spawn_actor_result)
+        }
+
+        fn insert_sprite_queue(&mut self, sprite: i32) -> Result<(), EdukeVmError> {
+            self.sprite_queue_calls.push(sprite);
+            Ok(())
         }
 
         fn actor_not_stayput(&mut self, actor: usize) -> Result<bool, EdukeVmError> {
@@ -7170,6 +7549,44 @@ mod tests {
             .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
             .expect("ceiling glass command executes");
         assert_eq!(host.ceiling_glass_calls, vec![(12, 3, 4), (7, 5, 6)]);
+    }
+
+    #[test]
+    fn decal_queue_commands_queue_current_and_spawned_sprites_in_source_order() {
+        let image = compile_with_options(
+            b"var tile 9001\ndefstate queue_decals\ninsertspriteq\nqspawn 9002\nqspawnvar tile\neqspawn 9003\neqspawnvar tile\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        for command in [
+            "insertspriteq",
+            "qspawn",
+            "qspawnvar",
+            "eqspawn",
+            "eqspawnvar",
+        ] {
+            assert_eq!(image.eduke_noop_heads.get(command), None, "{command}");
+        }
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["queue_decals"];
+        let mut host = TestStructAccess {
+            spawn_actor_result: 44,
+            ..Default::default()
+        };
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 32, 4, &mut host)
+            .expect("decal queue commands execute");
+
+        assert_eq!(
+            host.spawn_actor_calls,
+            [(7, 9002), (7, 9001), (7, 9003), (7, 9001)]
+        );
+        assert_eq!(host.sprite_queue_calls, [7, 44, 44, 44, 44]);
+        assert_eq!(state.get_variable("RETURN", 0, 7), Ok(44));
     }
 
     #[test]

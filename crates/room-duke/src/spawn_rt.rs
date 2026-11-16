@@ -171,6 +171,7 @@ pub(crate) fn spawn_from(
     randomseed: &mut i32,
     j: i16,
     pn: i16,
+    mut decal_queue: Option<&mut crate::decal_queue::DukeDecalQueue>,
 ) -> i16 {
     let ju = j as usize;
     if ju >= sprites.len() || pn < 0 {
@@ -246,6 +247,11 @@ pub(crate) fn spawn_from(
             sprites[iu].xrepeat = 0;
             sprites[iu].yrepeat = 0;
             let _ = lists.changespritestat(i, STAT_MISC);
+            if is("BLOODPOOL")
+                && let Some(queue) = decal_queue.as_deref_mut()
+            {
+                queue.insert(lists, sprites, i);
+            }
             return i;
         }
         if !is("PUKE") {
@@ -273,6 +279,11 @@ pub(crate) fn spawn_from(
         sprites[iu].xrepeat = 1;
         sprites[iu].yrepeat = 1;
         let _ = lists.changespritestat(i, STAT_MISC);
+        if is("BLOODPOOL")
+            && let Some(queue) = decal_queue.as_deref_mut()
+        {
+            queue.insert(lists, sprites, i);
+        }
         return i;
     }
     if is("FECES") {

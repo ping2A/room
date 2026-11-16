@@ -160,8 +160,20 @@ build_room_web() {
   if [[ -f testdata/duke/duke3d.grp ]]; then
     cp testdata/duke/duke3d.grp "$out/duke3d.grp"
   fi
-  # Default "Play solo" content: Freedoom + Brutal Doom (lobby presets).
-  ./scripts/bundle-solo-content.sh "$out" || echo "room-server: bundled solo content skipped" >&2
+  # The built-in solo preset is opt-in at the deployment boundary: honor
+  # explicit paths first, then use local testdata when present. Commercial
+  # Duke data stays in the local server's output and is never committed.
+  local duke_grp="${ROOM_DUKE3D_GRP:-}"
+  local duke_mod="${ROOM_BRUTAL_DUKE_DIR:-}"
+  if [[ -z "$duke_grp" && -f testdata/duke/duke3d.grp ]]; then
+    duke_grp="testdata/duke/duke3d.grp"
+  fi
+  if [[ -z "$duke_mod" && -f testdata/brutal-duke-v0.2.0/brutal/eduke.con ]]; then
+    duke_mod="testdata/brutal-duke-v0.2.0/brutal"
+  fi
+  # Default "Play solo" content: Freedoom + Brutal Doom + optional Duke.
+  ROOM_DUKE3D_GRP="$duke_grp" ROOM_BRUTAL_DUKE_DIR="$duke_mod" \
+    ./scripts/bundle-solo-content.sh "$out" || echo "room-server: bundled solo content skipped" >&2
 }
 
 # Build each mods/<dir> with a room.toml manifest and pack it as a PWAD:

@@ -8,7 +8,7 @@
 use crate::error::BuildError;
 use crate::palette::Palette;
 use room_formats::image::ImagePixels;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 const MAX_HIGH_RES_TILE_PIXELS: usize = 16 * 1024 * 1024;
@@ -18,6 +18,21 @@ const MAX_DEF_MUSIC_TRACKS: usize = 4096;
 const MAX_DEF_BASE_PALETTES: usize = 256;
 const MAX_DEF_BLEND_TABLES: usize = 256;
 const MAX_DEF_SKYBOXES: usize = 4096;
+const MAX_DEF_INCLUDES: usize = 4096;
+const MAX_DEF_VOXELS: usize = 65_536;
+const MAX_DEF_TINTS: usize = 256;
+const MAX_CACHED_PALETTE_COLORS: usize = 65_536;
+
+fn nearest_palette_index(palette: &Palette, rgb: [u8; 3], cache: &mut HashMap<[u8; 3], u8>) -> u8 {
+    if let Some(&index) = cache.get(&rgb) {
+        return index;
+    }
+    let index = palette.nearest(rgb.map(u32::from));
+    if cache.len() < MAX_CACHED_PALETTE_COLORS {
+        cache.insert(rgb, index);
+    }
+    index
+}
 
 /// A DEF directive and its nested directives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +62,51 @@ pub struct DefMusicTrack {
     /// Music resource path from the `file` child.
     pub file: String,
     /// One-based source line of the `Music` block.
+    pub line: usize,
+}
+
+/// A DEF `include` directive. The caller resolves the path against its mounted
+/// resource stack so filesystem and archive policy stay outside the parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefInclude {
+    /// Included DEF path as written, with its original separators preserved.
+    pub file: String,
+    /// One-based source line.
+    pub line: usize,
+}
+
+/// A voxel model assignment from a DEF `voxel` block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefVoxel {
+    /// KVX resource path as written.
+    pub file: String,
+    /// Zero-based voxel-model index in this DEF document's source order.
+    /// Multiple tile mappings from one `voxel` block share the same index.
+    pub model_index: usize,
+    /// First ART tile replaced by this voxel.
+    pub tile_start: u16,
+    /// Last ART tile replaced by this voxel (inclusive).
+    pub tile_end: u16,
+    /// Model scale, defaulting to 1.
+    pub scale: f32,
+    /// BuildGDX-compatible rotating voxel extension flag.
+    pub rotate: bool,
+    /// One-based source line of the voxel declaration.
+    pub line: usize,
+}
+
+/// A palette tint declared by DEF `tint { ... }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefTint {
+    /// Palette number selected by the tint.
+    pub palette: u8,
+    /// Multiply/colorize RGB tint channels.
+    pub rgb: [u8; 3],
+    /// Optional RGB shade channels.
+    pub shade_rgb: Option<[u8; 3]>,
+    /// EDuke32 `HICTINT_*` flags.
+    pub flags: u16,
+    /// One-based source line.
     pub line: usize,
 }
 
@@ -348,6 +408,7 @@ impl DefDocument {
             .map(|(name, bytes)| (normalize_asset_name(name), *bytes))
             .collect();
         let mut imported = BTreeMap::new();
+        let mut palette_cache = HashMap::new();
         for spec in self.high_res_tiles()? {
             let key = normalize_asset_name(&spec.file);
             let bytes = assets
@@ -406,11 +467,15 @@ impl DefDocument {
                                 if pixels.pixels[source + 3] < spec.opaque_alpha_threshold {
                                     255
                                 } else {
-                                    palette.nearest([
-                                        u32::from(pixels.pixels[source]),
-                                        u32::from(pixels.pixels[source + 1]),
-                                        u32::from(pixels.pixels[source + 2]),
-                                    ])
+                                    nearest_palette_index(
+                                        palette,
+                                        [
+                                            pixels.pixels[source],
+                                            pixels.pixels[source + 1],
+                                            pixels.pixels[source + 2],
+                                        ],
+                                        &mut palette_cache,
+                                    )
                                 };
                         }
                     }
@@ -453,6 +518,7 @@ impl DefDocument {
             .collect();
         let mut imported = BTreeMap::new();
         let mut decoded_faces = BTreeMap::<String, ImportedSkyboxFace>::new();
+        let mut palette_cache = HashMap::new();
         let mut total_pixels = 0usize;
         for skybox in self.skyboxes()? {
             let mut faces = Vec::with_capacity(skybox.faces.len());
@@ -516,11 +582,15 @@ impl DefDocument {
                                 column_major[destination] = if pixels.pixels[source + 3] < 174 {
                                     255
                                 } else {
-                                    palette.nearest([
-                                        u32::from(pixels.pixels[source]),
-                                        u32::from(pixels.pixels[source + 1]),
-                                        u32::from(pixels.pixels[source + 2]),
-                                    ])
+                                    nearest_palette_index(
+                                        palette,
+                                        [
+                                            pixels.pixels[source],
+                                            pixels.pixels[source + 1],
+                                            pixels.pixels[source + 2],
+                                        ],
+                                        &mut palette_cache,
+                                    )
                                 };
                             }
                         }
@@ -592,6 +662,282 @@ impl DefDocument {
         collect_skyboxes(&self.directives, &mut out)?;
         Ok(out)
     }
+
+    /// Extract `include` and `#include` paths in source order.
+    ///
+    /// Includes are returned without resolving them. This keeps archive
+    /// overlays, case folding and path lookup in the caller.
+    pub fn includes(&self) -> Result<Vec<DefInclude>, BuildError> {
+        let mut out = Vec::new();
+        collect_includes(&self.directives, &mut out)?;
+        Ok(out)
+    }
+
+    /// Extract voxel model assignments in source order.
+    ///
+    /// A `tile` child maps one tile. A `tile0` / `tile1` pair maps an
+    /// inclusive range. The parser validates all declared tile numbers and
+    /// retains the renderer-specific `rotate` extension when present.
+    pub fn voxels(&self) -> Result<Vec<DefVoxel>, BuildError> {
+        let mut out = Vec::new();
+        let mut next_model_index = 0;
+        collect_voxels(&self.directives, &mut out, &mut next_model_index)?;
+        Ok(out)
+    }
+
+    /// Extract palette tints declared by `tint { ... }` blocks.
+    pub fn tints(&self) -> Result<Vec<DefTint>, BuildError> {
+        let mut out = Vec::new();
+        collect_tints(&self.directives, &mut out)?;
+        Ok(out)
+    }
+}
+
+fn collect_includes(
+    directives: &[DefDirective],
+    out: &mut Vec<DefInclude>,
+) -> Result<(), BuildError> {
+    for directive in directives {
+        if matches!(directive.keyword.as_str(), "include" | "#include") {
+            let file = directive
+                .args
+                .first()
+                .filter(|path| !path.is_empty())
+                .cloned()
+                .ok_or(BuildError::Invalid("DEF include path"))?;
+            if directive.args.len() != 1 || out.len() >= MAX_DEF_INCLUDES {
+                return Err(BuildError::Invalid("DEF include count or arguments"));
+            }
+            out.push(DefInclude {
+                file,
+                line: directive.line,
+            });
+        }
+        collect_includes(&directive.children, out)?;
+    }
+    Ok(())
+}
+
+fn parse_def_tile(value: Option<&String>, error: &'static str) -> Result<u16, BuildError> {
+    value
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|tile| u32::from(*tile) < crate::art::MAX_TILES)
+        .ok_or(BuildError::Invalid(error))
+}
+
+fn collect_voxels(
+    directives: &[DefDirective],
+    out: &mut Vec<DefVoxel>,
+    next_model_index: &mut usize,
+) -> Result<(), BuildError> {
+    for directive in directives {
+        if directive.keyword == "voxel" {
+            if out.len() >= MAX_DEF_VOXELS {
+                return Err(BuildError::Invalid("DEF voxel count"));
+            }
+            let file = directive
+                .args
+                .first()
+                .filter(|file| !file.is_empty())
+                .cloned()
+                .ok_or(BuildError::Invalid("DEF voxel file"))?;
+            let model_index = *next_model_index;
+            *next_model_index = next_model_index
+                .checked_add(1)
+                .ok_or(BuildError::Invalid("DEF voxel count"))?;
+            let mut tiles = Vec::new();
+            let mut tile0 = None;
+            let mut tile1 = None;
+            let mut scale = 1.0_f32;
+            let mut scale_seen = false;
+            let mut rotate = false;
+
+            let mut parse_options = |keyword: &str, args: &[String]| -> Result<(), BuildError> {
+                match keyword.to_ascii_lowercase().as_str() {
+                    "tile" => {
+                        let value = parse_def_tile(args.first(), "DEF voxel tile")?;
+                        tiles.push((value, value));
+                    }
+                    "tile0" => {
+                        let value = parse_def_tile(args.first(), "DEF voxel tile0")?;
+                        if tile0.replace(value).is_some() || tile1.is_some() {
+                            return Err(BuildError::Invalid("DEF voxel tile range"));
+                        }
+                    }
+                    "tile1" => {
+                        let value = parse_def_tile(args.first(), "DEF voxel tile1")?;
+                        if tile1.replace(value).is_some() || tile0.is_none() {
+                            return Err(BuildError::Invalid("DEF voxel tile range"));
+                        }
+                    }
+                    "scale" => {
+                        let value = args
+                            .first()
+                            .and_then(|value| value.parse::<f32>().ok())
+                            .filter(|value| value.is_finite() && *value > 0.0 && *value <= 64.0)
+                            .ok_or(BuildError::Invalid("DEF voxel scale"))?;
+                        if scale_seen {
+                            return Err(BuildError::Invalid("DEF duplicate voxel scale"));
+                        }
+                        scale = value;
+                        scale_seen = true;
+                    }
+                    "rotate" if args.is_empty() => rotate = true,
+                    _ => {}
+                }
+                Ok(())
+            };
+
+            // Some DEF authors put several options on one line. The generic
+            // syntax tree stores that whole line on its first directive, so
+            // flatten each block line back into keyword/value tokens here.
+            let mut option_tokens = directive.args.iter().skip(1).cloned().collect::<Vec<_>>();
+            for child in &directive.children {
+                option_tokens.push(child.keyword.clone());
+                option_tokens.extend(child.args.iter().cloned());
+            }
+            let mut index = 0;
+            while index < option_tokens.len() {
+                let keyword = &option_tokens[index];
+                if keyword.eq_ignore_ascii_case("rotate") {
+                    parse_options(keyword, &[])?;
+                    index += 1;
+                } else if matches!(
+                    keyword.to_ascii_lowercase().as_str(),
+                    "tile" | "tile0" | "tile1" | "scale"
+                ) {
+                    let value = option_tokens
+                        .get(index + 1)
+                        .cloned()
+                        .ok_or(BuildError::Invalid("DEF voxel option value"))?;
+                    parse_options(keyword, std::slice::from_ref(&value))?;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+
+            match (tile0, tile1) {
+                (Some(start), Some(end)) if start <= end => tiles.push((start, end)),
+                (Some(_), Some(_)) => {
+                    return Err(BuildError::Invalid("DEF voxel tile range order"));
+                }
+                (None, None) => {}
+                _ => return Err(BuildError::Invalid("DEF voxel tile range")),
+            }
+            if tiles.is_empty() {
+                return Err(BuildError::Invalid("DEF voxel tile mapping"));
+            }
+            let new_count = out
+                .len()
+                .checked_add(tiles.len())
+                .filter(|count| *count <= MAX_DEF_VOXELS)
+                .ok_or(BuildError::Invalid("DEF voxel count"))?;
+            out.reserve(new_count - out.len());
+            for (tile_start, tile_end) in tiles {
+                out.push(DefVoxel {
+                    file: file.clone(),
+                    model_index,
+                    tile_start,
+                    tile_end,
+                    scale,
+                    rotate,
+                    line: directive.line,
+                });
+            }
+        }
+        collect_voxels(&directive.children, out, next_model_index)?;
+    }
+    Ok(())
+}
+
+fn collect_tints(directives: &[DefDirective], out: &mut Vec<DefTint>) -> Result<(), BuildError> {
+    for directive in directives {
+        if directive.keyword == "tint" {
+            if out.len() >= MAX_DEF_TINTS {
+                return Err(BuildError::Invalid("DEF tint count"));
+            }
+            let mut palette = None;
+            let mut rgb = [None; 3];
+            let mut shade_rgb = [None; 3];
+            let mut flags = None;
+            let mut tint_tokens = Vec::new();
+            for child in &directive.children {
+                tint_tokens.push(child.keyword.clone());
+                tint_tokens.extend(child.args.iter().cloned());
+            }
+            let mut index = 0;
+            while index + 1 < tint_tokens.len() {
+                let keyword = tint_tokens[index].to_ascii_lowercase();
+                let value = &tint_tokens[index + 1];
+                match keyword.as_str() {
+                    "pal" => set_unique(&mut palette, value.parse::<u8>().ok(), "DEF tint pal")?,
+                    "red" | "r" => {
+                        set_unique(&mut rgb[0], value.parse::<u8>().ok(), "DEF tint red")?
+                    }
+                    "green" | "g" => {
+                        set_unique(&mut rgb[1], value.parse::<u8>().ok(), "DEF tint green")?
+                    }
+                    "blue" | "b" => {
+                        set_unique(&mut rgb[2], value.parse::<u8>().ok(), "DEF tint blue")?
+                    }
+                    "shadered" | "sr" => set_unique(
+                        &mut shade_rgb[0],
+                        value.parse::<u8>().ok(),
+                        "DEF tint shadered",
+                    )?,
+                    "shadegreen" | "sg" => set_unique(
+                        &mut shade_rgb[1],
+                        value.parse::<u8>().ok(),
+                        "DEF tint shadegreen",
+                    )?,
+                    "shadeblue" | "sb" => set_unique(
+                        &mut shade_rgb[2],
+                        value.parse::<u8>().ok(),
+                        "DEF tint shadeblue",
+                    )?,
+                    "flags" => set_unique(&mut flags, value.parse::<u16>().ok(), "DEF tint flags")?,
+                    _ => {}
+                }
+                index += 2;
+            }
+            if index < tint_tokens.len() {
+                return Err(BuildError::Invalid("DEF tint value"));
+            }
+            let palette = palette.ok_or(BuildError::Invalid("DEF tint pal"))?;
+            let rgb = [
+                rgb[0].ok_or(BuildError::Invalid("DEF tint red"))?,
+                rgb[1].ok_or(BuildError::Invalid("DEF tint green"))?,
+                rgb[2].ok_or(BuildError::Invalid("DEF tint blue"))?,
+            ];
+            let shade_rgb = match (shade_rgb[0], shade_rgb[1], shade_rgb[2]) {
+                (None, None, None) => None,
+                (Some(red), Some(green), Some(blue)) => Some([red, green, blue]),
+                _ => return Err(BuildError::Invalid("DEF tint shade RGB")),
+            };
+            out.push(DefTint {
+                palette,
+                rgb,
+                shade_rgb,
+                flags: flags.unwrap_or(0),
+                line: directive.line,
+            });
+        }
+        collect_tints(&directive.children, out)?;
+    }
+    Ok(())
+}
+
+fn set_unique<T>(
+    slot: &mut Option<T>,
+    value: Option<T>,
+    error: &'static str,
+) -> Result<(), BuildError> {
+    let value = value.ok_or(BuildError::Invalid(error))?;
+    if slot.replace(value).is_some() {
+        return Err(BuildError::Invalid(error));
+    }
+    Ok(())
 }
 
 fn collect_music_tracks(
@@ -1490,6 +1836,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cached_palette_mapping_matches_exact_palette_search() {
+        let palette = Palette::parse(&crate::palette::build_palette()).unwrap();
+        let rgb = [93, 147, 211];
+        let expected = palette.nearest(rgb.map(u32::from));
+        let mut cache = HashMap::new();
+
+        assert_eq!(nearest_palette_index(&palette, rgb, &mut cache), expected);
+        assert_eq!(nearest_palette_index(&palette, rgb, &mut cache), expected);
+        assert_eq!(cache.get(&rgb), Some(&expected));
+    }
+
+    #[test]
     fn parses_nested_tile_replacements_and_offsets() {
         let source = r#"
             // replacement with an escaped path separator
@@ -1630,6 +1988,129 @@ mod tests {
                     line: 3,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn extracts_def_includes_in_source_order() {
+        let document =
+            DefDocument::parse("include resources/voxels.def\n#INCLUDE \"extra\\\\tiles.def\"\n")
+                .unwrap();
+        assert_eq!(
+            document.includes().unwrap(),
+            [
+                DefInclude {
+                    file: "resources/voxels.def".into(),
+                    line: 1,
+                },
+                DefInclude {
+                    file: "extra\\tiles.def".into(),
+                    line: 2,
+                },
+            ]
+        );
+        assert!(DefDocument::parse("include\n").unwrap().includes().is_err());
+    }
+
+    #[test]
+    fn extracts_voxel_tiles_ranges_scale_and_rotation() {
+        let document = DefDocument::parse(
+            r#"
+                voxel "voxels/one.kvx" { tile 130 }
+                voxel "voxels/range.kvx" { tile0 200 tile1 205 scale 0.75 rotate }
+                voxel "voxels/multi.kvx" { tile 300 tile 991 }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            document.voxels().unwrap(),
+            [
+                DefVoxel {
+                    file: "voxels/one.kvx".into(),
+                    model_index: 0,
+                    tile_start: 130,
+                    tile_end: 130,
+                    scale: 1.0,
+                    rotate: false,
+                    line: 2,
+                },
+                DefVoxel {
+                    file: "voxels/range.kvx".into(),
+                    model_index: 1,
+                    tile_start: 200,
+                    tile_end: 205,
+                    scale: 0.75,
+                    rotate: true,
+                    line: 3,
+                },
+                DefVoxel {
+                    file: "voxels/multi.kvx".into(),
+                    model_index: 2,
+                    tile_start: 300,
+                    tile_end: 300,
+                    scale: 1.0,
+                    rotate: false,
+                    line: 4,
+                },
+                DefVoxel {
+                    file: "voxels/multi.kvx".into(),
+                    model_index: 2,
+                    tile_start: 991,
+                    tile_end: 991,
+                    scale: 1.0,
+                    rotate: false,
+                    line: 4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_voxel_ranges_and_invalid_scales() {
+        for source in [
+            "voxel model.kvx { tile0 3 }",
+            "voxel model.kvx { tile1 3 tile0 2 }",
+            "voxel model.kvx { tile 2 scale 0 }",
+            "voxel model.kvx { tile 2 scale 1 scale 2 }",
+        ] {
+            assert!(
+                DefDocument::parse(source).unwrap().voxels().is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn extracts_palette_tints_and_optional_shade_rgb() {
+        let document = DefDocument::parse(
+            "tint { pal 3 red 127 green 128 blue 255 flags 3 }\n\
+             tint { pal 7 r 1 g 2 b 3 sr 4 sg 5 sb 6 }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            document.tints().unwrap(),
+            [
+                DefTint {
+                    palette: 3,
+                    rgb: [127, 128, 255],
+                    shade_rgb: None,
+                    flags: 3,
+                    line: 1,
+                },
+                DefTint {
+                    palette: 7,
+                    rgb: [1, 2, 3],
+                    shade_rgb: Some([4, 5, 6]),
+                    flags: 0,
+                    line: 2,
+                },
+            ]
+        );
+        assert!(
+            DefDocument::parse("tint { pal 1 red 0 blue 0 }\n")
+                .unwrap()
+                .tints()
+                .is_err()
         );
     }
 

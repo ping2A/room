@@ -4,7 +4,9 @@
 //! screen and other front-end pages that are not part of the 3D view.
 
 use room_build_engine::soft::{SoftFrame, SoftTiles};
-use room_build_engine::world::{HudGameTextDraw, HudNumberDraw, HudSpriteDraw, HudTextDraw};
+use room_build_engine::world::{
+    HudGameTextDraw, HudNumberDraw, HudScreenTextDraw, HudSpriteDraw, HudTextDraw,
+};
 
 const BIGALPHANUM: i16 = 2940;
 const STARTALPHANUM: i16 = 2822;
@@ -481,6 +483,389 @@ impl<'a> UiPage<'a> {
         }
     }
 
+    /// Draw EDuke32 `screentext` with the common alignment, ASCII/digit tile,
+    /// palette escape, spacing, rotation, alpha and clipping options.
+    pub fn draw_screentext(&mut self, draw: &HudScreenTextDraw) {
+        const FULL16: i32 = 2048;
+        const TOPLEFT: i32 = 16;
+        const TEXT_XRIGHT: i32 = 1;
+        const TEXT_XCENTER: i32 = 2;
+        const TEXT_YBOTTOM: i32 = 4;
+        const TEXT_YCENTER: i32 = 8;
+        const TEXT_TILESPACE: i32 = 32;
+        const TEXT_INTERNALLINE: i32 = 64;
+        const TEXT_TILELINE: i32 = 128;
+        const TEXT_XOFFSETZERO: i32 = 256;
+        const TEXT_XJUSTIFY: i32 = 512;
+        const TEXT_YOFFSETZERO: i32 = 1024;
+        const TEXT_YJUSTIFY: i32 = 2048;
+        const TEXT_INTERNALSPACE: i32 = 16;
+        const TEXT_CONSTWIDTHNUMS: i32 = 1 << 18;
+        const TEXT_UPPERCASE: i32 = 1 << 13;
+        const TEXT_INVERTCASE: i32 = 1 << 14;
+        const TEXT_IGNOREESCAPE: i32 = 1 << 15;
+        const TEXT_LITERALESCAPE: i32 = 1 << 16;
+        const TEXT_BACKWARDS: i32 = 1 << 17;
+        const TEXT_DIGITALNUMBER: i32 = 1 << 19;
+        const TEXT_BIGALPHANUM: i32 = 1 << 20;
+        const TEXT_GRAYFONT: i32 = 1 << 21;
+        const TEXT_VARHEIGHT: i32 = 1 << 23;
+        const TEXT_CENTERCONSTWIDTH: i32 = 1 << 24;
+        if draw.zoom == 0 || draw.alpha >= 255 {
+            return;
+        }
+        let Ok(first_tile) = i16::try_from(draw.tile) else {
+            return;
+        };
+        let zoom = f64::from(draw.zoom.unsigned_abs()) / 65536.0;
+        if !zoom.is_finite() || zoom > 4096.0 {
+            return;
+        }
+
+        #[derive(Clone, Copy)]
+        struct Glyph {
+            tile: Option<i16>,
+            width: f64,
+            height: f64,
+            palette: u8,
+            space: bool,
+        }
+
+        let flags = draw.text_flags;
+        let mut palette = draw.palette.clamp(0, i32::from(u8::MAX)) as u8;
+        let mut lines = vec![Vec::<Glyph>::new()];
+        let mut bytes = draw.text.bytes().peekable();
+        while let Some(mut byte) = bytes.next() {
+            if byte == b'^'
+                && flags & (TEXT_IGNOREESCAPE | TEXT_LITERALESCAPE) == 0
+                && bytes.peek().is_some_and(u8::is_ascii_digit)
+            {
+                let mut color = 0_u16;
+                for _ in 0..3 {
+                    if !bytes.peek().is_some_and(u8::is_ascii_digit) {
+                        break;
+                    }
+                    if let Some(digit) = bytes.next() {
+                        color = color
+                            .saturating_mul(10)
+                            .saturating_add(u16::from(digit - b'0'));
+                    }
+                }
+                palette = color.min(u16::from(u8::MAX)) as u8;
+                continue;
+            }
+            if byte == b'\r' {
+                continue;
+            }
+            if byte == b'\n' {
+                lines.push(Vec::new());
+                continue;
+            }
+            if flags & (TEXT_UPPERCASE | TEXT_INVERTCASE) == (TEXT_UPPERCASE | TEXT_INVERTCASE) {
+                byte = byte.to_ascii_lowercase();
+            } else if flags & TEXT_UPPERCASE != 0 {
+                byte = byte.to_ascii_uppercase();
+            } else if flags & TEXT_INVERTCASE != 0 && byte.is_ascii_alphabetic() {
+                byte = if byte.is_ascii_lowercase() {
+                    byte.to_ascii_uppercase()
+                } else {
+                    byte.to_ascii_lowercase()
+                };
+            }
+            if byte == b' ' {
+                if let Some(line) = lines.last_mut() {
+                    line.push(Glyph {
+                        tile: None,
+                        width: f64::from(draw.xspace),
+                        height: 0.0,
+                        palette,
+                        space: true,
+                    });
+                }
+                continue;
+            }
+
+            let is_digit = byte.is_ascii_digit();
+            let tile = if flags & TEXT_BIGALPHANUM != 0 {
+                let relative_tile = match byte {
+                    b'0'..=b'9' => i16::from(byte - b'0'),
+                    b'A'..=b'Z' => 10 + i16::from(byte - b'A'),
+                    b'a'..=b'z' if flags & TEXT_UPPERCASE != 0 => 10 + i16::from(byte - b'a'),
+                    b'a'..=b'z' => 36 + i16::from(byte - b'a'),
+                    b'-' => -1,
+                    b'.' => 72,
+                    b',' => 73,
+                    b'!' => 74,
+                    b'?' => 75,
+                    b';' => 76,
+                    b':' => 77,
+                    b'\'' => 92,
+                    _ => -2,
+                };
+                if relative_tile < 0 && relative_tile != -1 {
+                    None
+                } else {
+                    first_tile.checked_add(relative_tile)
+                }
+            } else if flags & TEXT_GRAYFONT != 0 {
+                let relative_tile = match byte {
+                    b'0'..=b'9' => -10 + i16::from(byte - b'0'),
+                    b'A'..=b'Z' => i16::from(byte - b'A'),
+                    b'a'..=b'z' if flags & TEXT_UPPERCASE != 0 => i16::from(byte - b'a'),
+                    b'a'..=b'z' => -26 + i16::from(byte - b'a'),
+                    b'-' => -37,
+                    b'.' => 36,
+                    b',' => 37,
+                    b'!' => 38,
+                    b'?' => 39,
+                    b';' => 40,
+                    b':' => 41,
+                    b'\'' => 56,
+                    _ => i16::MIN,
+                };
+                (relative_tile != i16::MIN)
+                    .then(|| first_tile.checked_add(relative_tile))
+                    .flatten()
+            } else if flags & TEXT_DIGITALNUMBER != 0 {
+                is_digit
+                    .then(|| first_tile.checked_add(i16::from(byte - b'0')))
+                    .flatten()
+            } else if (b'!'..=b'~').contains(&byte) {
+                first_tile.checked_add(i16::from(byte - b'!'))
+            } else {
+                None
+            };
+            let (mut width, height) = tile
+                .and_then(|tile| self.tiles.dimensions(tile))
+                .map_or((0.0, 0.0), |(width, height)| {
+                    (f64::from(width), f64::from(height))
+                });
+            if is_digit && flags & TEXT_CONSTWIDTHNUMS != 0 {
+                let zero_tile = if flags & (TEXT_DIGITALNUMBER | TEXT_BIGALPHANUM) != 0 {
+                    Some(first_tile)
+                } else if flags & TEXT_GRAYFONT != 0 {
+                    first_tile.checked_sub(10)
+                } else {
+                    first_tile.checked_add(i16::from(b'0' - b'!'))
+                };
+                width = zero_tile
+                    .and_then(|tile| self.tiles.dimensions(tile))
+                    .map_or(width, |(width, _)| f64::from(width));
+            }
+            if flags & TEXT_TILESPACE != 0 && byte == b'~' {
+                // EDuke32 uses the character following '~' as the reference
+                // tile when selecting a custom font's space width. The marker
+                // itself is not drawn.
+                let reference_width = bytes.peek().and_then(|next| {
+                    let next_tile =
+                        first_tile.checked_add(i16::from(*next).saturating_sub(i16::from(b'!')))?;
+                    self.tiles
+                        .dimensions(next_tile)
+                        .map(|(width, _)| f64::from(width))
+                });
+                if let Some(line) = lines.last_mut() {
+                    line.push(Glyph {
+                        tile: None,
+                        width: reference_width.unwrap_or(width) + f64::from(draw.xspace),
+                        height: 0.0,
+                        palette,
+                        space: true,
+                    });
+                }
+                continue;
+            }
+            if let Some(line) = lines.last_mut() {
+                line.push(Glyph {
+                    tile,
+                    width,
+                    height,
+                    palette,
+                    space: false,
+                });
+            }
+        }
+
+        if flags & TEXT_BACKWARDS != 0 {
+            for line in &mut lines {
+                line.reverse();
+            }
+        }
+        let internal_space = if flags & TEXT_INTERNALSPACE != 0 {
+            lines
+                .iter()
+                .flatten()
+                .find(|glyph| glyph.tile.is_some())
+                .map_or(0.0, |glyph| glyph.width / 2.0)
+        } else {
+            0.0
+        };
+        for glyph in lines.iter_mut().flatten().filter(|glyph| glyph.space) {
+            glyph.width += internal_space;
+        }
+        let measure_line = |line: &[Glyph]| -> f64 {
+            if line.is_empty() {
+                return 0.0;
+            }
+            if flags & TEXT_XJUSTIFY != 0 {
+                return f64::from(draw.xbetween);
+            }
+            if flags & TEXT_XOFFSETZERO != 0 {
+                line.len() as f64 * f64::from(draw.xbetween)
+            } else {
+                line.iter()
+                    .map(|glyph| glyph.width + f64::from(draw.xbetween))
+                    .sum::<f64>()
+                    - f64::from(draw.xbetween)
+            }
+        };
+        let line_widths: Vec<f64> = lines.iter().map(|line| measure_line(line) * zoom).collect();
+        let tile_line_height = lines
+            .iter()
+            .flat_map(|line| line.iter().map(|glyph| glyph.height))
+            .fold(0.0_f64, f64::max);
+        let internal_line = if flags & TEXT_INTERNALLINE != 0 {
+            tile_line_height
+        } else {
+            0.0
+        };
+        let tile_line = if flags & TEXT_TILELINE != 0 {
+            tile_line_height
+        } else {
+            0.0
+        };
+        let line_height = f64::from(draw.yline) + internal_line + tile_line;
+        let natural_line_step = (line_height + f64::from(draw.ybetween)) * zoom;
+        let measured_height = lines
+            .iter()
+            .flat_map(|line| line.iter().map(|glyph| glyph.height))
+            .fold(line_height, f64::max);
+        let text_height = if lines.is_empty() {
+            0.0
+        } else {
+            (lines.len().saturating_sub(1) as f64) * natural_line_step + measured_height * zoom
+        };
+        let line_step = if flags & TEXT_YJUSTIFY != 0 && lines.len() > 1 {
+            ((f64::from(draw.ybetween) - measured_height) / (lines.len() - 1) as f64) * zoom
+        } else if flags & TEXT_YOFFSETZERO != 0 {
+            f64::from(draw.ybetween) * zoom
+        } else {
+            natural_line_step
+        };
+        let text_height = if flags & TEXT_YJUSTIFY != 0 && lines.len() > 1 {
+            f64::from(draw.ybetween) * zoom
+        } else {
+            text_height
+        };
+
+        let full16 = draw.orientation & FULL16 != 0;
+        let coordinate_scale = if full16 { 65536.0 } else { 1.0 };
+        let anchor_x = if full16 {
+            f64::from(draw.x) / 65536.0
+        } else {
+            f64::from(draw.x)
+        };
+        let anchor_y = if full16 {
+            f64::from(draw.y) / 65536.0
+        } else {
+            f64::from(draw.y)
+        };
+        let vertical_offset = if flags & TEXT_YBOTTOM != 0 {
+            -text_height
+        } else if flags & TEXT_YCENTER != 0 {
+            -text_height / 2.0
+        } else {
+            0.0
+        };
+        let block_angle =
+            f64::from(draw.block_angle.rem_euclid(2048)) * std::f64::consts::TAU / 2048.0;
+        let (block_sin, block_cos) = block_angle.sin_cos();
+        let mut orientation = draw.orientation;
+        match draw.alpha.clamp(0, 255) {
+            0 => orientation &= !(1 | 32),
+            1..=127 => orientation = (orientation & !32) | 1,
+            128..=254 => orientation |= 1 | 32,
+            _ => return,
+        }
+        let character_angle = draw.block_angle.wrapping_add(draw.char_angle);
+        let shade = draw.shade;
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_width = line_widths.get(line_index).copied().unwrap_or(0.0);
+            let horizontal_offset = if flags & TEXT_XRIGHT != 0 {
+                -line_width
+            } else if flags & TEXT_XCENTER != 0 {
+                -line_width / 2.0
+            } else {
+                0.0
+            };
+            let glyph_count = line.len();
+            let content_width = line.iter().map(|glyph| glyph.width).sum::<f64>();
+            let justify_step = if flags & TEXT_XJUSTIFY != 0 && glyph_count > 1 {
+                (f64::from(draw.xbetween) - content_width) / (glyph_count - 1) as f64
+            } else {
+                0.0
+            };
+            let constant_advance = f64::from(draw.xbetween);
+            let mut cursor = horizontal_offset;
+            for (glyph_index, glyph) in line.iter().enumerate() {
+                if let Some(tile) = glyph.tile {
+                    let x = cursor
+                        + if flags & TEXT_CENTERCONSTWIDTH != 0 && flags & TEXT_XOFFSETZERO != 0 {
+                            (constant_advance - glyph.width) / 2.0
+                        } else {
+                            0.0
+                        };
+                    let y = vertical_offset + line_index as f64 * line_step;
+                    let (local_x, local_y) = if draw.orientation & TOPLEFT != 0 {
+                        (x, y)
+                    } else {
+                        (x + glyph.width * zoom / 2.0, y + glyph.height * zoom / 2.0)
+                    };
+                    let rotated_x = anchor_x + local_x * block_cos - local_y * block_sin;
+                    let rotated_y = anchor_y + local_x * block_sin + local_y * block_cos;
+                    let var_height_offset =
+                        if flags & TEXT_VARHEIGHT != 0 && draw.orientation & TOPLEFT == 0 {
+                            glyph.height * zoom / 2.0
+                        } else {
+                            0.0
+                        };
+                    let rotated_y = rotated_y + var_height_offset;
+                    let to_coord = |value: f64| {
+                        (value * coordinate_scale)
+                            .round()
+                            .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                            as i32
+                    };
+                    self.rotatesprite(HudSpriteDraw {
+                        x: to_coord(rotated_x),
+                        y: to_coord(rotated_y),
+                        zoom: draw.zoom,
+                        angle: character_angle,
+                        tile: i32::from(tile),
+                        shade,
+                        palette: i32::from(glyph.palette),
+                        orientation,
+                        clip: draw.clip,
+                        unique_id: 0,
+                    });
+                }
+                let advance = if flags & TEXT_XOFFSETZERO != 0 {
+                    constant_advance
+                } else if flags & TEXT_XJUSTIFY != 0 {
+                    glyph.width
+                } else {
+                    glyph.width + f64::from(draw.xbetween)
+                };
+                cursor += if flags & TEXT_XOFFSETZERO != 0 {
+                    advance * zoom
+                } else if glyph_index + 1 < glyph_count {
+                    (advance + justify_step) * zoom
+                } else {
+                    advance * zoom
+                };
+            }
+        }
+    }
+
     /// Draw an EDuke32 `digitalnumber` / `digitalnumberz` value using the
     /// consecutive 0–9 ART tile range. The x coordinate is the text centre;
     /// the optional zoom scales glyphs and spacing in the 320×200 HUD plane.
@@ -653,5 +1038,102 @@ mod tests {
         });
 
         assert_eq!(frame.pixels[10 * 320 + 10], 55);
+    }
+
+    #[test]
+    fn screentext_uppercases_and_centers_ascii_font_tiles() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(1032, 1, 1, vec![61]);
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_screentext(&HudScreenTextDraw {
+            tile: 1000,
+            x: 160,
+            y: 10,
+            zoom: 65536,
+            block_angle: 0,
+            char_angle: 0,
+            text: "a".to_owned(),
+            shade: 0,
+            palette: 0,
+            orientation: 16,
+            alpha: 0,
+            xspace: 4,
+            yline: 8,
+            xbetween: 0,
+            ybetween: 0,
+            text_flags: 2 | (1 << 13),
+            clip: [0, 0, 319, 199],
+        });
+
+        assert_eq!(frame.pixels[10 * 320 + 160], 61);
+    }
+
+    #[test]
+    fn screentext_big_and_gray_font_modes_follow_case_and_tile_order() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(2940, 1, 1, vec![71]);
+        tiles.insert(2966, 1, 1, vec![72]);
+        let draw = |tile, flags| HudScreenTextDraw {
+            tile,
+            x: 0,
+            y: 0,
+            zoom: 65536,
+            block_angle: 0,
+            char_angle: 0,
+            text: "Aa".to_owned(),
+            shade: 0,
+            palette: 0,
+            orientation: 16,
+            alpha: 0,
+            xspace: 4,
+            yline: 8,
+            xbetween: 0,
+            ybetween: 0,
+            text_flags: flags,
+            clip: [0, 0, 319, 199],
+        };
+
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_screentext(&draw(2930, 1 << 20));
+        assert_eq!(frame.pixels[0], 71); // uppercase uses red BIGALPHANUM
+        assert_eq!(frame.pixels[1], 72); // lowercase uses the gray alphabet
+
+        tiles.insert(2966, 1, 1, vec![81]);
+        tiles.insert(2940, 1, 1, vec![82]);
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_screentext(&draw(2966, 1 << 21));
+        assert_eq!(frame.pixels[0], 81); // uppercase uses the gray alphabet
+        assert_eq!(frame.pixels[1], 82); // lowercase uses red letter tiles
+    }
+
+    #[test]
+    fn screentext_centers_glyphs_in_constant_width_slots() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(1032, 2, 1, vec![91, 92]);
+        tiles.insert(1033, 1, 1, vec![93]);
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_screentext(&HudScreenTextDraw {
+            tile: 1000,
+            x: 0,
+            y: 0,
+            zoom: 65536,
+            block_angle: 0,
+            char_angle: 0,
+            text: "AB".to_owned(),
+            shade: 0,
+            palette: 0,
+            orientation: 16,
+            alpha: 0,
+            xspace: 0,
+            yline: 8,
+            xbetween: 4,
+            ybetween: 0,
+            text_flags: (1 << 8) | (1 << 24),
+            clip: [0, 0, 319, 199],
+        });
+
+        assert_eq!(frame.pixels[1], 91);
+        assert_eq!(frame.pixels[2], 92);
+        assert_eq!(frame.pixels[6], 93);
     }
 }

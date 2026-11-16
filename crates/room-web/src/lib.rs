@@ -193,10 +193,15 @@ mod browser {
 
     impl room_duke::con::IncludeResolver for BrowserDukeIncludes {
         fn read_include(&mut self, name: &str) -> Option<Vec<u8>> {
+            let requested = name.replace('\\', "/");
             self.0
                 .iter()
                 .rev()
-                .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+                .find(|(candidate, _)| {
+                    candidate
+                        .replace('\\', "/")
+                        .eq_ignore_ascii_case(&requested)
+                })
                 .map(|(_, bytes)| bytes.clone())
         }
     }
@@ -208,14 +213,29 @@ mod browser {
     ) -> Result<room_duke::DukeSession, String> {
         let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
         let override_con = DUKE_CON.with(|script| script.borrow().clone());
-        let includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        let mut includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        DUKE_MOD_FILES.with(|files| {
+            includes.extend(
+                files
+                    .borrow()
+                    .iter()
+                    .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".con"))
+                    .cloned(),
+            );
+        });
         let mut resolver = BrowserDukeIncludes(includes);
-        room_duke::session_from_grp_layers_with_con_and_includes(
+        let dialect = if DUKE_MOD_FILES.with(|files| !files.borrow().is_empty()) {
+            room_duke::ConDialect::EDuke32
+        } else {
+            room_duke::ConDialect::Atomic
+        };
+        room_duke::session_from_grp_layers_with_con_and_includes_dialect(
             &layer_refs,
             map,
             skill,
             override_con.as_deref(),
             Some(&mut resolver),
+            dialect,
         )
     }
 
@@ -236,6 +256,34 @@ mod browser {
         layers
     }
 
+    fn duke_renderer(grp_layers: &[Vec<u8>]) -> Result<room_duke::DukeSoftRenderer, String> {
+        let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
+        DUKE_MOD_FILES.with(|files| {
+            let files = files.borrow();
+            let def_files: Vec<_> = files
+                .iter()
+                .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".def"))
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let mhk_files: Vec<_> = files
+                .iter()
+                .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".mhk"))
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            let tile_assets: Vec<_> = files
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect();
+            room_duke::DukeSoftRenderer::from_grp_layers_with_mod_assets_and_mhks(
+                &layer_refs,
+                None,
+                &def_files,
+                &tile_assets,
+                &mhk_files,
+            )
+        })
+    }
+
     thread_local! {
         static APP: RefCell<Option<Shared>> = const { RefCell::new(None) };
         /// IWAD bytes received before GPU init finished.
@@ -251,6 +299,8 @@ mod browser {
         static DUKE_CON_INCLUDES: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
         /// Native Duke add-on GRPs, in increasing override priority.
         static DUKE_ADDON_GRPS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        /// Extracted files from streamed Duke mod directories / ZIPs.
+        static DUKE_MOD_FILES: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
         /// Current native editor overlay (replaced between preview runs).
         static DUKE_EDITOR_GRP: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
         /// Browser host settings corresponding to Duke's native F4 audio controls.
@@ -606,6 +656,144 @@ mod browser {
         Ok(())
     }
 
+    /// Mount the path-preserving `RDUKMOD1` bundle produced by
+    /// `bundle-solo-content.sh`. The single browser/WASM transfer avoids
+    /// thousands of per-file requests while retaining CON include paths.
+    #[wasm_bindgen(js_name = roomAddDukeModBundle)]
+    pub fn room_add_duke_mod_bundle(data: &[u8]) -> Result<(), JsValue> {
+        const HEADER: &[u8; 8] = b"RDUKMOD1";
+        const MAX_FILES: usize = 4096;
+        const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
+        const MAX_BUNDLE_BYTES: usize = 256 * 1024 * 1024;
+
+        if data.len() > MAX_BUNDLE_BYTES {
+            return Err(JsValue::from_str(
+                "Duke mod bundle exceeds the 256 MiB limit",
+            ));
+        }
+        if data.len() < 12 || &data[..8] != HEADER {
+            return Err(JsValue::from_str("Duke mod bundle has an invalid header"));
+        }
+        let mut offset = 8;
+        let file_count = u32::from_le_bytes(
+            data[offset..offset + 4]
+                .try_into()
+                .map_err(|_| JsValue::from_str("Duke mod bundle header is truncated"))?,
+        ) as usize;
+        offset += 4;
+        if file_count > MAX_FILES {
+            return Err(JsValue::from_str("Duke mod bundle has too many files"));
+        }
+
+        let mut files = Vec::with_capacity(file_count);
+        for _ in 0..file_count {
+            let header_end = offset
+                .checked_add(6)
+                .filter(|end| *end <= data.len())
+                .ok_or_else(|| JsValue::from_str("Duke mod bundle entry is truncated"))?;
+            let path_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+            let file_len = u32::from_le_bytes(
+                data[offset + 2..header_end]
+                    .try_into()
+                    .map_err(|_| JsValue::from_str("Duke mod bundle entry is truncated"))?,
+            ) as usize;
+            offset = header_end;
+            if path_len == 0 || file_len > MAX_FILE_BYTES {
+                return Err(JsValue::from_str(
+                    "Duke mod bundle entry exceeds its limits",
+                ));
+            }
+            let path_end = offset
+                .checked_add(path_len)
+                .filter(|end| *end <= data.len())
+                .ok_or_else(|| JsValue::from_str("Duke mod bundle path is truncated"))?;
+            let path = std::str::from_utf8(&data[offset..path_end])
+                .map_err(|_| JsValue::from_str("Duke mod bundle path is not UTF-8"))?
+                .replace('\\', "/");
+            let path = path.trim_start_matches("./");
+            if path.is_empty()
+                || path.starts_with('/')
+                || path.as_bytes().get(1) == Some(&b':')
+                || path
+                    .split('/')
+                    .any(|component| component.is_empty() || component == "." || component == "..")
+            {
+                return Err(JsValue::from_str("Duke mod bundle path is invalid"));
+            }
+            offset = path_end;
+            let file_end = offset
+                .checked_add(file_len)
+                .filter(|end| *end <= data.len())
+                .ok_or_else(|| JsValue::from_str("Duke mod bundle file is truncated"))?;
+            files.push((path.to_owned(), data[offset..file_end].to_vec()));
+            offset = file_end;
+        }
+        if offset != data.len() {
+            return Err(JsValue::from_str("Duke mod bundle has trailing bytes"));
+        }
+
+        let root_con = files
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("eduke.con"))
+            .or_else(|| {
+                files
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name.to_ascii_lowercase().ends_with("/eduke.con"))
+            })
+            .map(|(_, bytes)| bytes.clone());
+        if root_con.is_none() {
+            return Err(JsValue::from_str(
+                "Duke mod bundle does not contain eduke.con",
+            ));
+        }
+        DUKE_MOD_FILES.with(|mounted| *mounted.borrow_mut() = files);
+        DUKE_CON.with(|script| *script.borrow_mut() = root_con);
+        Ok(())
+    }
+
+    /// Remove the loose files of a previously mounted web Duke mod.
+    #[wasm_bindgen(js_name = roomClearDukeModFiles)]
+    pub fn room_clear_duke_mod_files() {
+        DUKE_MOD_FILES.with(|files| files.borrow_mut().clear());
+        DUKE_CON.with(|script| *script.borrow_mut() = None);
+    }
+
+    /// Add one path-preserving file from a Duke mod directory or ZIP archive.
+    /// The browser streams and caches files individually, so large mod packs
+    /// do not need to be expanded into one extra in-memory archive.
+    #[wasm_bindgen(js_name = roomAddDukeModFile)]
+    pub fn room_add_duke_mod_file(name: &str, data: &[u8]) -> Result<(), JsValue> {
+        let name = name.replace('\\', "/");
+        let normalized = name.trim_start_matches("./");
+        if normalized.is_empty()
+            || normalized.starts_with('/')
+            || normalized
+                .split('/')
+                .any(|component| component.is_empty() || component == "..")
+        {
+            return Err(JsValue::from_str("Duke mod file path is invalid"));
+        }
+        let key = normalized.to_ascii_lowercase();
+        let bytes = data.to_vec();
+        DUKE_MOD_FILES.with(|files| {
+            let mut files = files.borrow_mut();
+            if let Some((existing, existing_bytes)) = files
+                .iter_mut()
+                .find(|(existing, _)| existing.eq_ignore_ascii_case(normalized))
+            {
+                *existing = normalized.to_owned();
+                *existing_bytes = bytes.clone();
+            } else {
+                files.push((normalized.to_owned(), bytes.clone()));
+            }
+        });
+        if key == "eduke.con" || key.ends_with("/eduke.con") {
+            DUKE_CON.with(|script| *script.borrow_mut() = Some(bytes));
+        }
+        Ok(())
+    }
+
     /// Replace the current native editor GRP overlay used by live play tests.
     #[wasm_bindgen(js_name = roomSetDukeEditorGrp)]
     pub fn room_set_duke_editor_grp(data: &[u8]) -> Result<(), JsValue> {
@@ -646,17 +834,32 @@ mod browser {
         let grp_layers = duke_grp_layers(grp);
         let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
         let override_con = DUKE_CON.with(|script| script.borrow().clone());
-        let includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        let mut includes = DUKE_CON_INCLUDES.with(|files| files.borrow().clone());
+        DUKE_MOD_FILES.with(|files| {
+            includes.extend(
+                files
+                    .borrow()
+                    .iter()
+                    .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".con"))
+                    .cloned(),
+            );
+        });
         let mut resolver = BrowserDukeIncludes(includes);
-        let session = room_duke::session_from_grp_map_bytes_with_con_and_includes(
+        let dialect = if DUKE_MOD_FILES.with(|files| !files.borrow().is_empty()) {
+            room_duke::ConDialect::EDuke32
+        } else {
+            room_duke::ConDialect::Atomic
+        };
+        let session = room_duke::session_from_grp_map_bytes_with_con_and_includes_dialect(
             &layer_refs,
             map,
             skill,
             override_con.as_deref(),
             Some(&mut resolver),
+            dialect,
         )
         .map_err(|error| JsValue::from_str(&format!("Duke user map: {error}")))?;
-        let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+        let renderer = duke_renderer(&grp_layers)
             .map_err(|error| JsValue::from_str(&format!("Duke renderer: {error}")))?;
         enter_native_duke_mode(state, session, renderer, grp_layers, "USER")
     }
@@ -701,6 +904,11 @@ mod browser {
                     "native Duke coop cannot send local add-on GRPs to the room; remove them before joining",
                 ));
             }
+            if room_build::is_grp(data) && DUKE_MOD_FILES.with(|files| !files.borrow().is_empty()) {
+                return Err(JsValue::from_str(
+                    "native Duke multiplayer cannot send local mod directory files to the room",
+                ));
+            }
             return begin_net_lobby(state, data, map, &ws);
         }
         set_status("Loading IWAD…");
@@ -711,8 +919,7 @@ mod browser {
         if room_build::is_grp(data) {
             let map_name = map.unwrap_or("E1L1");
             let grp_layers = duke_grp_layers(data);
-            let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
-            let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+            let renderer = duke_renderer(&grp_layers)
                 .map_err(|e| JsValue::from_str(&format!("Duke renderer: {e}")))?;
             let mut session = load_duke_grp_map(&grp_layers, map_name, skill - 1)
                 .map_err(|e| JsValue::from_str(&format!("Duke start: {e}")))?;
@@ -1209,7 +1416,6 @@ mod browser {
                 (iwad.clone(), map, skill, players, game_mode, friendly_fire)
             };
             let grp_layers = duke_grp_layers(&grp);
-            let layer_refs: Vec<&[u8]> = grp_layers.iter().map(Vec::as_slice).collect();
             let mut session = load_duke_grp_map(&grp_layers, &map, skill.saturating_sub(1))
                 .map_err(|e| JsValue::from_str(&format!("Duke prepare: {e}")))?;
             // Keep the Atomic episode/map cursor in networked sessions too;
@@ -1228,7 +1434,7 @@ mod browser {
             session
                 .configure_multiplayer_mode(usize::from(players), game_mode, friendly_fire)
                 .map_err(|e| JsValue::from_str(&format!("Duke coop setup: {e}")))?;
-            let renderer = room_duke::DukeSoftRenderer::from_grp_layers(&layer_refs)
+            let renderer = duke_renderer(&grp_layers)
                 .map_err(|e| JsValue::from_str(&format!("Duke renderer: {e}")))?;
             let mut s = state.borrow_mut();
             if let Mode::Lobby {
@@ -3115,7 +3321,11 @@ mod browser {
                     ..
                 } => (|| -> Option<Canvas> {
                     let view_seat = duke_view_seat(network.as_ref());
-                    let world = match session.render_world_with_eduke_events(view_seat) {
+                    let world = match session.render_world_with_eduke_events_viewport(
+                        view_seat,
+                        native_fb_width as usize,
+                        native_fb_height as usize,
+                    ) {
                         Ok(Some(world)) => world,
                         Ok(None) => return None,
                         Err(error) => {

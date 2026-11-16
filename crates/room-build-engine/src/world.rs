@@ -237,6 +237,8 @@ pub struct BuildWorld {
     /// A nonzero `EVENT_DISPLAYWEAPON` return suppresses the native weapon
     /// layer for this view.
     pub render_hide_native_weapon: bool,
+    /// An `EVENT_DISPLAYCROSSHAIR` hook owns crosshair rendering for this view.
+    pub render_hide_native_crosshair: bool,
 }
 
 /// One EDuke32 CON `rotatesprite` command captured for the software HUD pass.
@@ -273,8 +275,12 @@ pub enum HudDrawCommand {
     Text(HudTextDraw),
     /// A quote rendered with the EDuke32 `gametext` font.
     GameText(HudGameTextDraw),
+    /// A quote rendered with EDuke32's configurable `screentext` command.
+    ScreenText(HudScreenTextDraw),
     /// A numeric value rendered with a consecutive ART digit range.
     Number(HudNumberDraw),
+    /// The native crosshair requested by `EVENT_DISPLAYCROSSHAIR`'s return values.
+    Crosshair(HudSpriteDraw),
 }
 
 /// One EDuke32 CON `minitext` command captured for the software HUD pass.
@@ -313,6 +319,45 @@ pub struct HudGameTextDraw {
     pub clip: [i32; 4],
     /// 16.16 text scale (65536 is the native size).
     pub zoom: i32,
+}
+
+/// One EDuke32 `screentext` command captured during a display event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudScreenTextDraw {
+    /// First tile in the font range.
+    pub tile: i32,
+    /// X coordinate in HUD units or FULL16 fixed-point units.
+    pub x: i32,
+    /// Y coordinate in HUD units or FULL16 fixed-point units.
+    pub y: i32,
+    /// 16.16 text scale.
+    pub zoom: i32,
+    /// Build angle of the full text block.
+    pub block_angle: i32,
+    /// Build angle added to each character.
+    pub char_angle: i32,
+    /// Text resolved from the VM quote slot at command execution.
+    pub text: String,
+    /// Build shade value.
+    pub shade: i32,
+    /// Palette lookup id.
+    pub palette: i32,
+    /// `rotatesprite` orientation flags.
+    pub orientation: i32,
+    /// EDuke32 translucence amount (0 opaque, 255 transparent).
+    pub alpha: i32,
+    /// Width of a space character.
+    pub xspace: i32,
+    /// Height of an empty line.
+    pub yline: i32,
+    /// Horizontal advance adjustment between characters.
+    pub xbetween: i32,
+    /// Vertical advance adjustment between lines.
+    pub ybetween: i32,
+    /// EDuke32 screentext layout and font flags.
+    pub text_flags: i32,
+    /// Inclusive HUD clip window, in 320×200 units.
+    pub clip: [i32; 4],
 }
 
 /// One EDuke32 CON `digitalnumber` or `digitalnumberz` command.
@@ -379,6 +424,7 @@ impl BuildWorld {
             mirror_render_sprite_blends: BTreeMap::new(),
             render_hud_draws: Vec::new(),
             render_hide_native_weapon: false,
+            render_hide_native_crosshair: false,
         }
     }
 

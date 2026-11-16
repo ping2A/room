@@ -74,6 +74,7 @@ impl BuildWorld {
             mirror_render_sprite_blends: Default::default(),
             render_hud_draws: Default::default(),
             render_hide_native_weapon: false,
+            render_hide_native_crosshair: false,
         })
     }
 

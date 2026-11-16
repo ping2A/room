@@ -870,6 +870,7 @@ pub(crate) fn checkhitsprite_object(
             randomseed,
             target as i16,
             pn,
+            None,
         );
         if water >= 0 {
             sprites[water as usize].shade = -16;

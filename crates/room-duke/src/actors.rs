@@ -682,6 +682,52 @@ pub fn moveactors_with_skill(
     actor_toggle: u8,
     global_random: i32,
 ) {
+    let mut decal_queue = crate::decal_queue::DukeDecalQueue::default();
+    moveactors_with_skill_with_decal_queue(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        tile_meta,
+        picnum,
+        actorscrptr,
+        script,
+        players,
+        sync_bits,
+        randomseed,
+        temps,
+        player_skill,
+        respawn_settings,
+        monsters_off,
+        active_sound_owners,
+        actor_toggle,
+        global_random,
+        &mut decal_queue,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) fn moveactors_with_skill_with_decal_queue(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    tile_meta: &[TileZMeta],
+    picnum: &mut Vec<i16>,
+    actorscrptr: &[i32],
+    script: &ScriptImage,
+    players: &mut [Player],
+    sync_bits: u32,
+    randomseed: &mut i32,
+    temps: &mut Vec<ActorConTemps>,
+    player_skill: u8,
+    respawn_settings: [bool; 3],
+    monsters_off: bool,
+    active_sound_owners: &mut [Option<i16>],
+    actor_toggle: u8,
+    global_random: i32,
+    decal_queue: &mut crate::decal_queue::DukeDecalQueue,
+) {
     let heavybomb_tile = crate::shoot::script_tile_or(Some(script), "HEAVYHBOMB", HEAVYHBOMB);
     let morter_tile = crate::shoot::script_tile_or(Some(script), "MORTER", 1650);
     let bouncemine_tile = crate::shoot::script_tile_or(Some(script), "BOUNCEMINE", 940);
@@ -778,6 +824,7 @@ pub fn moveactors_with_skill(
                 global_random,
                 single_player: players_len < 2,
                 actor_toggle,
+                decal_queue,
             };
             if crate::c_actors::move_c_actor(&mut ctx, iu) {
                 i = next;
@@ -1450,8 +1497,18 @@ pub fn moveactors_with_skill(
                 );
             } else {
                 let _ = crate::spawn_rt::spawn_from(
-                    lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed,
-                    i, pn,
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum,
+                    temps,
+                    tile_meta,
+                    script,
+                    randomseed,
+                    i,
+                    pn,
+                    Some(decal_queue),
                 );
             }
         }
@@ -1999,7 +2056,7 @@ fn move_pipebombs(
         {
             let j = crate::spawn_rt::spawn_from(
                 lists, sprites, sectors, walls, picnum, temps, tile_meta, script, randomseed, i,
-                trail,
+                trail, None,
             );
             if j >= 0 {
                 let ju = j as usize;

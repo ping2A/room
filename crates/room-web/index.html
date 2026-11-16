@@ -2635,8 +2635,37 @@
           return false;
         }
       };
+      const dukeModManifest = params.get("duke_mod") || "";
+      let dukeModFailed = false;
+      if (!params.get("ws") && dukeModManifest && sameOrigin(dukeModManifest)) {
+        try {
+          const raw = await cachedFetch(dukeModManifest);
+          const manifest = JSON.parse(new TextDecoder().decode(raw));
+          const bundle = manifest.bundle;
+          if (!bundle || typeof bundle.url !== "string" || !sameOrigin(bundle.url)) {
+            throw new Error("Duke mod bundle manifest is invalid");
+          }
+          mod.roomClearDukeModFiles();
+          status.textContent = `Loading Duke mod resources (${Math.ceil((bundle.bytes || 0) / 1048576)} MB)…`;
+          const bytes = await cachedFetch(bundle.url);
+          if (Number.isFinite(bundle.bytes) && bytes.byteLength !== bundle.bytes) {
+            throw new Error(`Duke mod bundle size mismatch (${bytes.byteLength} / ${bundle.bytes} bytes)`);
+          }
+          mod.roomAddDukeModBundle(bytes);
+          console.info("[Room solo] streamed Duke mod", {
+            manifest: dukeModManifest,
+            files: bundle.files || 0,
+            bytes: bytes.byteLength,
+          });
+        } catch (err) {
+          dukeModFailed = true;
+          console.error("[Room solo] Duke mod load failed", err);
+          status.textContent = `Could not load the Duke mod: ${err.message || err}`;
+          status.style.color = "#f66";
+        }
+      }
       const bundledAddons = (params.get("addon") || "").split(",").map((u) => u.trim()).filter(Boolean).filter(sameOrigin);
-      if (!loaded && params.get("local") !== "1" && bundledAddons.length) {
+      if (!loaded && !dukeModFailed && params.get("local") !== "1" && bundledAddons.length) {
         try {
           for (const url of bundledAddons) {
             const bytes = await cachedFetch(url);
@@ -2664,7 +2693,7 @@
         }
       }
       for (const url of tryUrls) {
-        if (loaded || params.get("local") === "1") break;
+        if (loaded || dukeModFailed || params.get("local") === "1") break;
         try {
           const res = await fetch(url, { cache: "no-cache" });
           if (!res.ok) continue;
@@ -2678,7 +2707,7 @@
         }
       }
       if (!loaded) {
-        status.textContent = "Choose a Doom WAD or Duke GRP to play in the browser";
+        if (!dukeModFailed) status.textContent = "Choose a Doom WAD or Duke GRP to play in the browser";
       } else if (params.has("iwad")) {
         // An explicit URL is a direct-play link; packaged defaults leave the
         // refreshed start screen available so users can choose another file.

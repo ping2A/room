@@ -13,12 +13,227 @@ use room_build_engine::view::BuildView;
 use room_build_engine::world::BuildWorld;
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::player::Player;
 
 fn identity_brightness_table() -> [[u8; 64]; 16] {
     std::array::from_fn(|_| std::array::from_fn(|channel| channel as u8))
+}
+
+const MAX_DEF_INCLUDE_DEPTH: usize = 64;
+const MAX_DEF_INCLUDE_EXPANSIONS: usize = 4096;
+
+fn normalize_def_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with('/')
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
+    {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            component => parts.push(component.to_ascii_lowercase()),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+fn resolve_def_include(
+    source_path: &str,
+    include_path: &str,
+    sources: &BTreeMap<String, (String, Vec<u8>)>,
+) -> Option<String> {
+    let include = include_path.replace('\\', "/");
+    if include.starts_with('/') || include.as_bytes().get(1).is_some_and(|byte| *byte == b':') {
+        return None;
+    }
+    let parent = source_path
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let mut candidates = Vec::with_capacity(3);
+    let joined = if parent.is_empty() {
+        include.clone()
+    } else {
+        format!("{parent}/{include}")
+    };
+    if let Some(path) = normalize_def_path(&joined)
+        && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+    if let Some(path) = normalize_def_path(&include)
+        && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+    if !include.to_ascii_lowercase().starts_with("resources/")
+        && let Some(path) = normalize_def_path(&format!("resources/{include}"))
+        && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| sources.contains_key(candidate))
+}
+
+fn resolve_def_asset(
+    source_path: &str,
+    asset_path: &str,
+    assets: &BTreeMap<String, &[u8]>,
+) -> Option<String> {
+    let normalized = asset_path.replace('\\', "/");
+    if normalized.starts_with('/')
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
+    {
+        return None;
+    }
+    let parent = source_path
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let mut candidates = Vec::with_capacity(3);
+    if let Some(path) = normalize_def_path(&format!("{parent}/{normalized}")) {
+        candidates.push(path);
+    }
+    if let Some(path) = normalize_def_path(&normalized)
+        && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+    if !normalized.to_ascii_lowercase().starts_with("resources/")
+        && let Some(path) = normalize_def_path(&format!("resources/{normalized}"))
+        && !candidates.contains(&path)
+    {
+        candidates.push(path);
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| assets.contains_key(candidate))
+}
+
+fn expand_def_source(
+    source_path: &str,
+    sources: &BTreeMap<String, (String, Vec<u8>)>,
+    active: &mut BTreeSet<String>,
+    include_count: &mut usize,
+    output: &mut Vec<room_build::def::DefDirective>,
+) -> Result<(), String> {
+    if active.len() >= MAX_DEF_INCLUDE_DEPTH {
+        return Err(format!(
+            "DEF include nesting exceeds {MAX_DEF_INCLUDE_DEPTH}"
+        ));
+    }
+    if !active.insert(source_path.to_owned()) {
+        return Err(format!("DEF include cycle at {source_path}"));
+    }
+    let Some((display_name, bytes)) = sources.get(source_path) else {
+        return Err(format!("missing DEF include `{source_path}`"));
+    };
+    let source = String::from_utf8_lossy(bytes);
+    let document = room_build::def::DefDocument::parse(&source)
+        .map_err(|error| format!("{display_name}: {error}"))?;
+    for directive in document.directives {
+        if matches!(directive.keyword.as_str(), "include" | "#include") {
+            let include = directive
+                .args
+                .first()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| format!("{display_name}:{}: DEF include path", directive.line))?;
+            if directive.args.len() != 1 {
+                return Err(format!(
+                    "{display_name}:{}: DEF include arguments",
+                    directive.line
+                ));
+            }
+            *include_count = include_count
+                .checked_add(1)
+                .filter(|count| *count <= MAX_DEF_INCLUDE_EXPANSIONS)
+                .ok_or_else(|| format!("DEF include count exceeds {MAX_DEF_INCLUDE_EXPANSIONS}"))?;
+            let target = resolve_def_include(source_path, include, sources).ok_or_else(|| {
+                format!(
+                    "{display_name}:{}: missing DEF include `{include}`",
+                    directive.line
+                )
+            })?;
+            expand_def_source(&target, sources, active, include_count, output)?;
+        } else {
+            output.push(directive);
+        }
+    }
+    active.remove(source_path);
+    Ok(())
+}
+
+fn expand_def_sources(
+    def_files: &[(&str, &[u8])],
+) -> Result<Vec<(String, room_build::def::DefDocument)>, String> {
+    let mut sources = BTreeMap::new();
+    let mut source_order = Vec::new();
+    for (name, bytes) in def_files {
+        let key = normalize_def_path(name).ok_or_else(|| format!("invalid DEF path `{name}`"))?;
+        if !sources.contains_key(&key) {
+            source_order.push(key.clone());
+        }
+        sources.insert(key, ((*name).to_owned(), bytes.to_vec()));
+    }
+    let mut included = BTreeSet::new();
+    for (source_path, (display_name, bytes)) in &sources {
+        let source = String::from_utf8_lossy(bytes);
+        let document = room_build::def::DefDocument::parse(&source)
+            .map_err(|error| format!("{display_name}: {error}"))?;
+        for include in document
+            .includes()
+            .map_err(|error| format!("{display_name}: {error}"))?
+        {
+            if let Some(target) = resolve_def_include(source_path, &include.file, &sources) {
+                included.insert(target);
+            }
+        }
+    }
+
+    let roots = source_order
+        .iter()
+        .filter(|source_path| !included.contains(*source_path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let roots = if roots.is_empty() {
+        source_order
+    } else {
+        roots
+    };
+    let mut expanded = Vec::with_capacity(roots.len());
+    let mut include_count = 0;
+    for root in roots {
+        let Some((display_name, _)) = sources.get(&root) else {
+            continue;
+        };
+        let mut directives = Vec::new();
+        expand_def_source(
+            &root,
+            &sources,
+            &mut BTreeSet::new(),
+            &mut include_count,
+            &mut directives,
+        )?;
+        expanded.push((
+            display_name.clone(),
+            room_build::def::DefDocument { directives },
+        ));
+    }
+    Ok(expanded)
 }
 
 fn apply_base_palette_operations(
@@ -180,6 +395,8 @@ pub struct DukeSoftRenderer {
     /// Atomic's default `ud.brightness` is 16, i.e. BRITABLE row 4.
     brightness: Cell<u8>,
     tiles: RefCell<SoftTiles>,
+    /// DEF voxel resources indexed by the ART tile they replace.
+    voxel_tiles: BTreeMap<i16, room_build_engine::soft::DefVoxelTile>,
     /// Render-only cache for Chocolate's twelve-tic camera-screen refresh.
     camera_feed: RefCell<Option<CameraFeedCache>>,
     /// Previous/current geometry for render-only interpolation of moving
@@ -358,6 +575,7 @@ impl DukeSoftRenderer {
             brightness_table,
             brightness: Cell::new(4),
             tiles: RefCell::new(tiles),
+            voxel_tiles: BTreeMap::new(),
             camera_feed: RefCell::new(None),
             geometry_interpolation: RefCell::new(None),
             weapon_tiles,
@@ -445,9 +663,18 @@ impl DukeSoftRenderer {
             .iter()
             .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
             .collect::<Vec<_>>();
-        let selected =
-            room_build::map_hack::select_map_hack(&def_refs, &mhk_refs, map_file, map_bytes)
-                .map_err(|error| error.to_string())?;
+        let expanded_defs = expand_def_sources(&def_refs)?;
+        let expanded_documents = expanded_defs
+            .into_iter()
+            .map(|(_, document)| document)
+            .collect::<Vec<_>>();
+        let selected = room_build::map_hack::select_map_hack_from_documents(
+            &expanded_documents,
+            &mhk_refs,
+            map_file,
+            map_bytes,
+        )
+        .map_err(|error| error.to_string())?;
         let Some((name, document)) = selected else {
             self.map_hack_sprite_angles.borrow_mut().clear();
             return Ok(None);
@@ -472,10 +699,8 @@ impl DukeSoftRenderer {
         let mut skyboxes = Vec::new();
         let mut base_palette_operations = Vec::new();
         let mut blend_table_operations = Vec::new();
-        for (name, bytes) in def_files {
-            let source = String::from_utf8_lossy(bytes);
-            let document = room_build::def::DefDocument::parse(&source)
-                .map_err(|error| format!("{name}: {error}"))?;
+        let expanded_defs = expand_def_sources(def_files)?;
+        for (name, document) in &expanded_defs {
             base_palette_operations.extend(
                 document
                     .base_palette_operations()
@@ -491,6 +716,97 @@ impl DukeSoftRenderer {
             .iter()
             .map(|(name, bytes)| (name.replace('\\', "/").to_ascii_lowercase(), *bytes))
             .collect();
+        let voxel_assets: BTreeMap<String, &[u8]> = tile_assets
+            .iter()
+            .filter_map(|(name, bytes)| {
+                normalize_def_path(name).map(|normalized| (normalized, *bytes))
+            })
+            .collect();
+        let mut voxel_models = BTreeMap::new();
+        let mut voxel_palette_maps = BTreeMap::new();
+        let mut voxel_sample_counts = BTreeMap::new();
+        let mut voxel_tiles = BTreeMap::new();
+        let mut next_direct_voxel_index = 0usize;
+        for (name, document) in &expanded_defs {
+            let voxel_definitions = document
+                .voxels()
+                .map_err(|error| format!("{name}: {error}"))?;
+            let document_voxel_count = voxel_definitions
+                .iter()
+                .map(|voxel| voxel.model_index)
+                .max()
+                .map_or(0, |index| index.saturating_add(1));
+            for voxel in voxel_definitions {
+                let model_index = next_direct_voxel_index
+                    .checked_add(voxel.model_index)
+                    .filter(|&index| index <= i16::MAX as usize)
+                    .ok_or_else(|| format!("{name}: voxel model index exceeds i16"))?
+                    as i16;
+                let resource =
+                    resolve_def_asset(name, &voxel.file, &voxel_assets).ok_or_else(|| {
+                        format!(
+                            "{name}:{}: missing KVX resource `{}`",
+                            voxel.line, voxel.file
+                        )
+                    })?;
+                let model = if let Some(model) = voxel_models.get(&resource) {
+                    Arc::clone(model)
+                } else {
+                    let bytes = voxel_assets
+                        .get(&resource)
+                        .copied()
+                        .ok_or_else(|| format!("missing KVX resource `{resource}`"))?;
+                    let model = Arc::new(
+                        room_build::kvx::KvxDocument::parse(bytes)
+                            .map_err(|error| format!("{resource}: {error}"))?,
+                    );
+                    voxel_models.insert(resource.clone(), Arc::clone(&model));
+                    model
+                };
+                let mip_sample_counts = if let Some(counts) = voxel_sample_counts.get(&resource) {
+                    Arc::clone(counts)
+                } else {
+                    let counts: Arc<[usize]> = Arc::from(
+                        model
+                            .mipmaps
+                            .iter()
+                            .map(room_build::kvx::KvxMipLevel::surface_voxel_count)
+                            .collect::<Vec<_>>(),
+                    );
+                    voxel_sample_counts.insert(resource.clone(), Arc::clone(&counts));
+                    counts
+                };
+                let palette_map = if let Some(palette_map) = voxel_palette_maps.get(&resource) {
+                    Arc::clone(palette_map)
+                } else {
+                    let palette_map = Arc::new(room_build_engine::soft::kvx_palette_map(
+                        &model,
+                        &self.palette.rgb,
+                    ));
+                    voxel_palette_maps.insert(resource.clone(), Arc::clone(&palette_map));
+                    palette_map
+                };
+                for tile in voxel.tile_start..=voxel.tile_end {
+                    let tile = i16::try_from(tile)
+                        .map_err(|_| format!("{name}:{}: KVX tile id", voxel.line))?;
+                    voxel_tiles.insert(
+                        tile,
+                        room_build_engine::soft::DefVoxelTile {
+                            model: Arc::clone(&model),
+                            model_index,
+                            scale: voxel.scale,
+                            rotate: voxel.rotate,
+                            mip_sample_counts: Arc::clone(&mip_sample_counts),
+                            palette_map: Arc::clone(&palette_map),
+                        },
+                    );
+                }
+            }
+            next_direct_voxel_index = next_direct_voxel_index
+                .checked_add(document_voxel_count)
+                .filter(|&index| index <= i16::MAX as usize + 1)
+                .ok_or_else(|| format!("{name}: voxel model count exceeds i16"))?;
+        }
         apply_base_palette_operations(
             &mut self.custom_base_palettes,
             &base_palette_operations,
@@ -502,10 +818,7 @@ impl DukeSoftRenderer {
         if let Some(base_palette) = self.custom_base_palettes.get(&0) {
             import_palette.rgb = *base_palette;
         }
-        for (name, bytes) in def_files {
-            let source = String::from_utf8_lossy(bytes);
-            let document = room_build::def::DefDocument::parse(&source)
-                .map_err(|error| format!("{name}: {error}"))?;
+        for (name, document) in &expanded_defs {
             skyboxes.extend(
                 document
                     .import_skyboxes(tile_assets, &import_palette)
@@ -583,6 +896,8 @@ impl DukeSoftRenderer {
                 }) => soft_tiles.set_animation_range(start, end, speed, animation),
             }
         }
+        drop(soft_tiles);
+        self.voxel_tiles = voxel_tiles;
         Ok(())
     }
 
@@ -876,6 +1191,8 @@ impl DukeSoftRenderer {
                 camera_player.posy = camera_y;
                 camera_player.posz = camera_z;
                 camera_player.ang = camera_ang;
+                camera_player.q16_ang = i32::from(camera_ang).wrapping_shl(16);
+                camera_player.look_ang = 0;
                 camera_player.cursectnum = camera_sector;
                 camera_player.remote_camera = None;
                 camera_player.over_shoulder_on = false;
@@ -913,6 +1230,9 @@ impl DukeSoftRenderer {
         let mut frame = SoftFrame::new(width, height);
         let mut view_z = player.posz;
         let mut view_ang = player.view_ang();
+        let mut view_ang_q16 = player
+            .q16_angle()
+            .wrapping_add(i32::from(player.look_ang).wrapping_shl(16));
         let mut view_x = player.posx;
         let mut view_y = player.posy;
         let mut view_sector = player.cursectnum;
@@ -921,6 +1241,7 @@ impl DukeSoftRenderer {
             view_y = y;
             view_z = z;
             view_ang = angle;
+            view_ang_q16 = i32::from(angle).wrapping_shl(16);
             view_sector = sector;
         } else if player.over_shoulder_on {
             let walls = world.wall_xy();
@@ -928,10 +1249,12 @@ impl DukeSoftRenderer {
             // Chocolate `view()` starts at the player and hitscans along the
             // rear camera ray. Its `cameradist` is Q16, capped at one Build
             // unit (65536); wall hits shorten that distance before projection.
-            let (sin, cos) = room_build_engine::helpers::sincos_q14(i32::from(view_ang));
+            let (sin, cos) = room_build_engine::helpers::sincos_q14_16(view_ang_q16);
             let ray_x = -(cos >> 4);
             let ray_y = -(sin >> 4);
-            let ray_z = (i32::from(player.view_horizon()) - 100) * 128;
+            let ray_z =
+                i32::try_from((i64::from(player.view_horizon_q16()) - (100_i64 << 16)) * 128 >> 16)
+                    .unwrap_or_default();
             let sector_z = world
                 .sectors
                 .iter()
@@ -1042,24 +1365,29 @@ impl DukeSoftRenderer {
         }
         if earthquake_time > 0 && player.on_ground {
             view_z = view_z.wrapping_add(256 - ((i32::from(earthquake_time) & 1) << 9));
-            view_ang = view_ang.wrapping_add(((2 - (i32::from(earthquake_time) & 2)) << 2) as i16);
+            let angle_delta = ((2 - (i32::from(earthquake_time) & 2)) << 2) as i16;
+            view_ang = view_ang.wrapping_add(angle_delta);
+            view_ang_q16 = view_ang_q16.wrapping_add(i32::from(angle_delta).wrapping_shl(16));
         }
-        let view: BuildView = render_world.build_view(
+        let view: BuildView = render_world.build_view_with_camera_q16(
             view_x,
             view_y,
             view_z,
             view_ang,
+            view_ang_q16,
             player.view_horizon(),
+            player.view_horizon_q16(),
             view_sector,
         );
         let map_hack_angles = self.map_hack_sprite_angles.borrow();
-        room_build_engine::soft::render_fp_textured_at_with_sprite_angle_offsets(
+        room_build_engine::soft::render_fp_textured_at_with_def_voxels(
             render_world,
             &view,
             &mut frame,
             &self.tiles.borrow(),
             tic.wrapping_mul(4),
             (!map_hack_angles.is_empty()).then_some(&map_hack_angles),
+            Some(&self.voxel_tiles),
         );
         // Chocolate's `displayweapon` returns as soon as `animatetip` draws
         // the TIP tile, so the weapon is hidden for the complete tip pose.
@@ -1092,13 +1420,10 @@ impl DukeSoftRenderer {
         let mut palette_pixels = rotate_palette_frame(&frame.pixels, width, height, screen_roll);
         // The status HUD is screen space: it never rolls with the view.
         if player.remote_camera.is_none() || !render_world.render_hud_draws.is_empty() {
-            let mut hud = SoftFrame {
-                width,
-                height,
-                pixels: std::mem::take(&mut palette_pixels),
-            };
+            let mut hud =
+                SoftFrame::with_pixels(width, height, std::mem::take(&mut palette_pixels));
             if player.remote_camera.is_none() {
-                self.draw_mini_hud(&mut hud, player);
+                self.draw_mini_hud(&mut hud, player, !render_world.render_hide_native_crosshair);
             }
             if !render_world.render_hud_draws.is_empty() {
                 let tiles = self.tiles.borrow();
@@ -1114,8 +1439,14 @@ impl DukeSoftRenderer {
                         room_build_engine::world::HudDrawCommand::GameText(text) => {
                             page.draw_gametext(text);
                         }
+                        room_build_engine::world::HudDrawCommand::ScreenText(text) => {
+                            page.draw_screentext(text);
+                        }
                         room_build_engine::world::HudDrawCommand::Number(number) => {
                             page.draw_digitalnumber(*number);
+                        }
+                        room_build_engine::world::HudDrawCommand::Crosshair(sprite) => {
+                            page.rotatesprite(*sprite);
                         }
                     }
                 }
@@ -1147,6 +1478,14 @@ impl DukeSoftRenderer {
     #[must_use]
     pub fn tile_dimensions(&self, picnum: i16) -> (u16, u16) {
         self.tiles.borrow().dimensions(picnum).unwrap_or_default()
+    }
+
+    /// Loaded DEF voxel model and its scale/rotation declaration for an ART tile.
+    #[must_use]
+    pub fn def_voxel(&self, picnum: i16) -> Option<(&room_build::kvx::KvxDocument, f32, bool)> {
+        self.voxel_tiles
+            .get(&picnum)
+            .map(|voxel| (voxel.model.as_ref(), voxel.scale, voxel.rotate))
     }
 
     /// Editor preview: draw `world` from a free camera with no weapon, HUD or
@@ -1219,11 +1558,8 @@ impl DukeSoftRenderer {
         draw: impl FnOnce(&mut crate::ui_page::UiPage<'_>),
     ) -> Vec<u8> {
         let tiles = self.tiles.borrow();
-        let mut frame = SoftFrame {
-            width,
-            height,
-            pixels: vec![0; (width as usize) * (height as usize)],
-        };
+        let mut frame =
+            SoftFrame::with_pixels(width, height, vec![0; width as usize * height as usize]);
         {
             let mut page = crate::ui_page::UiPage::new(&tiles, &mut frame);
             draw(&mut page);
@@ -1251,11 +1587,11 @@ impl DukeSoftRenderer {
         draw: impl FnOnce(&mut crate::ui_page::UiPage<'_>),
     ) -> Vec<u8> {
         let tiles = self.tiles.borrow();
-        let mut frame = SoftFrame {
+        let mut frame = SoftFrame::with_pixels(
             width,
             height,
-            pixels: vec![room_build::art::TRANSPARENT; (width as usize) * (height as usize)],
-        };
+            vec![room_build::art::TRANSPARENT; width as usize * height as usize],
+        );
         {
             let mut page = crate::ui_page::UiPage::new(&tiles, &mut frame);
             draw(&mut page);
@@ -1432,7 +1768,7 @@ impl DukeSoftRenderer {
     /// 4): health and ammo boxes with DIGITALNUM counters, plus the selected
     /// inventory item with its THREEBYFIVE amount. Coordinates are Atomic's
     /// 320×200 `rotatesprite` plane with top-left anchoring (flag 16).
-    fn draw_mini_hud(&self, frame: &mut SoftFrame, player: &Player) {
+    fn draw_mini_hud(&self, frame: &mut SoftFrame, player: &Player, draw_native_crosshair: bool) {
         const HEALTHBOX: i16 = 30;
         const AMMOBOX: i16 = 31;
         const INVENTORYBOX: i16 = 33;
@@ -1475,7 +1811,7 @@ impl DukeSoftRenderer {
             }
         };
         // Chocolate `ud.crosshair`: CROSSHAIR centred at (160 - look_ang/2, 100).
-        if player.dead_flag == 0 {
+        if draw_native_crosshair && player.dead_flag == 0 {
             const CROSSHAIR: i16 = 2523;
             if let Some((tw, th)) = tiles.dimensions(CROSSHAIR) {
                 let cx = 160 - (i32::from(player.look_ang) >> 1);
@@ -1967,6 +2303,120 @@ mod tests {
 
     use super::*;
 
+    fn tiny_kvx() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&40u32.to_le_bytes()); // one 40-byte mip level
+        for dimension in [1u32, 1, 1] {
+            bytes.extend_from_slice(&dimension.to_le_bytes());
+        }
+        for pivot in [0i32, 0, 0] {
+            bytes.extend_from_slice(&pivot.to_le_bytes());
+        }
+        bytes.extend_from_slice(&12u32.to_le_bytes()); // offset table size
+        bytes.extend_from_slice(&16u32.to_le_bytes()); // table + slab size
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&[0, 1, 0x3f, 42]);
+        bytes.extend_from_slice(&[0; 768]);
+        bytes
+    }
+
+    #[test]
+    fn def_includes_expand_at_the_declaration_site() {
+        let root = b"dummytile 9000 1 1\ninclude \"sub/tiles.def\"\ndummytile 9002 1 1";
+        let child = b"dummytile 9001 1 1";
+        let expanded = expand_def_sources(&[
+            ("defs/main.def", root.as_slice()),
+            ("defs/sub/tiles.def", child.as_slice()),
+        ])
+        .unwrap();
+
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].0, "defs/main.def");
+        assert_eq!(
+            expanded[0]
+                .1
+                .directives
+                .iter()
+                .map(|directive| directive.args[0].as_str())
+                .collect::<Vec<_>>(),
+            ["9000", "9001", "9002"]
+        );
+    }
+
+    #[test]
+    fn def_include_cycles_and_missing_paths_are_rejected() {
+        let first = b"include \"second.def\"";
+        let second = b"include \"first.def\"";
+        let cycle = expand_def_sources(&[
+            ("first.def", first.as_slice()),
+            ("second.def", second.as_slice()),
+        ])
+        .unwrap_err();
+        assert!(cycle.contains("cycle"));
+
+        let traversal =
+            expand_def_sources(&[("root.def", b"include \"../outside.def\"".as_slice())])
+                .unwrap_err();
+        assert!(traversal.contains("missing DEF include"));
+    }
+
+    #[test]
+    fn def_voxel_asset_paths_resolve_relative_and_reject_escape() {
+        let bytes = [1u8];
+        let assets = BTreeMap::from([("defs/models/one.kvx".to_owned(), bytes.as_slice())]);
+        assert_eq!(
+            resolve_def_asset("defs/main.def", "models/one.kvx", &assets),
+            Some("defs/models/one.kvx".to_owned())
+        );
+        assert_eq!(
+            resolve_def_asset("defs/main.def", "../../outside.kvx", &assets),
+            None
+        );
+    }
+
+    #[test]
+    fn renderer_loads_resources_from_included_defs_in_order() {
+        let grp = mini_grp();
+        let root = b"dummytile 9000 1 1\ninclude \"sub/tiles.def\"\n\
+            dummytile 9002 1 1\n\
+            tilefromtexture 9003 { file \"resources/tile.bmp\" }";
+        let child = b"dummytile 9000 2 1\ndummytile 9001 1 1\n\
+            voxel \"resources/one.kvx\" { tile0 9010 tile1 9011 scale 1.5 rotate }";
+        let later_def = b"dummytile 9002 2 1";
+        let voxel = tiny_kvx();
+        let first_image = bmp_1x1();
+        let later_image = bmp_2x1();
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[
+                ("defs/main.def", root.as_slice()),
+                ("defs/sub/tiles.def", child.as_slice()),
+                ("defs/override.def", later_def.as_slice()),
+            ],
+            &[
+                ("resources/one.kvx", voxel.as_slice()),
+                ("resources/tile.bmp", first_image.as_slice()),
+                ("resources/tile.bmp", later_image.as_slice()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(renderer.tile_dimensions(9000), (2, 1));
+        assert_eq!(renderer.tile_dimensions(9001), (1, 1));
+        assert_eq!(renderer.tile_dimensions(9002), (2, 1));
+        assert_eq!(renderer.tile_dimensions(9003), (2, 1));
+        let (model, scale, rotate) = renderer.def_voxel(9010).unwrap();
+        assert_eq!(model.mipmaps[0].dimensions, [1, 1, 1]);
+        assert_eq!(scale, 1.5);
+        assert!(rotate);
+        assert_eq!(renderer.voxel_tiles[&9010].model_index, 0);
+        assert_eq!(renderer.voxel_tiles[&9011].model_index, 0);
+        assert_eq!(renderer.voxel_tiles[&9010].mip_sample_counts[0], 1);
+        assert!(std::ptr::eq(model, renderer.def_voxel(9011).unwrap().0));
+    }
+
     #[test]
     fn mod_def_image_replaces_art_tile_in_renderer() {
         let grp = mini_grp();
@@ -2075,6 +2525,7 @@ mod tests {
     #[test]
     fn map_mhk_is_selected_by_map_name_and_hash() {
         let grp = mini_grp();
+        let includes_mapinfo = br#"include "mapinfo.def""#;
         let def = br#"mapinfo {
             maptitle "Fixture map"
             mapfile E1L1.MAP
@@ -2085,7 +2536,10 @@ mod tests {
         let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets_and_mhks(
             &[&grp],
             None,
-            &[("maps.def", def.as_slice())],
+            &[
+                ("defs/maps.def", includes_mapinfo.as_slice()),
+                ("defs/mapinfo.def", def.as_slice()),
+            ],
             &[],
             &[("mods/resources/maphacks/E1L1.MHK", mhk.as_slice())],
         )

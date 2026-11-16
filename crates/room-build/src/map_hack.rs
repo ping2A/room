@@ -125,9 +125,26 @@ pub fn select_map_hack(
     map_file: &str,
     map_bytes: &[u8],
 ) -> Result<Option<(String, MapHackDocument)>, BuildError> {
+    let documents = def_files
+        .iter()
+        .map(|(_, bytes)| crate::def::DefDocument::parse(&String::from_utf8_lossy(bytes)))
+        .collect::<Result<Vec<_>, _>>()?;
+    select_map_hack_from_documents(&documents, mhk_files, map_file, map_bytes)
+}
+
+/// Select an MHK from already-expanded DEF documents.
+///
+/// This lets loaders expand DEF includes at their declaration sites before
+/// selecting map-specific metadata, preserving the same source order used by
+/// tile and palette resource imports.
+pub fn select_map_hack_from_documents(
+    documents: &[crate::def::DefDocument],
+    mhk_files: &[(&str, &[u8])],
+    map_file: &str,
+    map_bytes: &[u8],
+) -> Result<Option<(String, MapHackDocument)>, BuildError> {
     let mut infos = Vec::new();
-    for (_, bytes) in def_files {
-        let document = crate::def::DefDocument::parse(&String::from_utf8_lossy(bytes))?;
+    for document in documents {
         infos.extend(map_hack_infos(&document.directives)?);
     }
     for info in infos {

@@ -24,6 +24,7 @@ pub mod error;
 pub mod export;
 mod fx;
 pub mod grp;
+pub mod kvx;
 pub mod lookup;
 pub mod map;
 pub mod map_hack;

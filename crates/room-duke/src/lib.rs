@@ -37,6 +37,7 @@ mod c_actors;
 pub mod campaign;
 pub mod con;
 mod cyclers;
+mod decal_queue;
 pub mod demo;
 pub mod demo_sync;
 pub mod dummyplayers;
@@ -88,6 +89,7 @@ pub use demo_sync::{
     session_from_grp_layers_with_con_and_includes_dialect, session_from_grp_map,
     session_from_grp_map_bytes, session_from_grp_map_bytes_with_con,
     session_from_grp_map_bytes_with_con_and_includes,
+    session_from_grp_map_bytes_with_con_and_includes_dialect,
 };
 pub use explosions::moveexplosions;
 pub use fta::{findplayer_dist, movefta};

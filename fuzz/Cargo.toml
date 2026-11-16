@@ -16,6 +16,7 @@ room-formats = { path = "../crates/room-formats" }
 room-game = { path = "../crates/room-game" }
 room-proto = { path = "../crates/room-proto" }
 room-build-engine = { path = "../crates/room-build-engine" }
+room-build = { path = "../crates/room-build" }
 room-faceswap = { path = "../crates/room-faceswap" }
 
 [[bin]]
@@ -84,6 +85,13 @@ bench = false
 [[bin]]
 name = "build_primitives"
 path = "fuzz_targets/build_primitives.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kvx"
+path = "fuzz_targets/kvx.rs"
 test = false
 doc = false
 bench = false
