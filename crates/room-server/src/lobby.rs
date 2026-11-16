@@ -156,8 +156,8 @@ pub struct PublicRoom {
     /// Content packs (e.g. `voxel`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<String>,
-    /// Match time limit (minutes).
-    pub time_limit: u16,
+    /// Match time limit (seconds).
+    pub time_limit_secs: u32,
     /// `doom` or `duke3d`.
     pub game: String,
     /// Netgame mode for the lobby card: `coop`, `deathmatch` (Doom, or Duke
@@ -222,7 +222,7 @@ pub async fn list_public_rooms(
             visibility: h.settings.visibility.clone(),
             game_mod: h.settings.game_mod.clone(),
             packs: h.settings.packs.clone(),
-            time_limit: h.settings.time_limit,
+            time_limit_secs: h.settings.time_limit_secs,
             game: h.settings.game.clone(),
             mode: room_mode(&h.settings),
             friendly_fire: h.settings.game == "duke3d" && h.settings.duke_friendly_fire,

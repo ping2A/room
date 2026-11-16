@@ -21,6 +21,121 @@ fn identity_brightness_table() -> [[u8; 64]; 16] {
     std::array::from_fn(|_| std::array::from_fn(|channel| channel as u8))
 }
 
+fn apply_base_palette_operations(
+    custom: &mut BTreeMap<u8, [u8; 768]>,
+    operations: &[room_build::def::BasePaletteOperation],
+    assets: &BTreeMap<String, &[u8]>,
+    builtins: Option<&room_build::lookup::BasePalettes>,
+    base_rgb: &[u8; 768],
+) -> Result<(), String> {
+    for operation in operations {
+        match operation {
+            room_build::def::BasePaletteOperation::Load {
+                palette,
+                file,
+                offset,
+                shift_left,
+                line,
+            } => {
+                let normalized = file.replace('\\', "/").to_ascii_lowercase();
+                let bytes = assets
+                    .get(&normalized)
+                    .ok_or_else(|| format!("DEF basepalette line {line}: missing {file}"))?;
+                let end = offset.checked_add(768).ok_or_else(|| {
+                    format!("DEF basepalette line {line}: resource offset overflow")
+                })?;
+                let source = bytes.get(*offset..end).ok_or_else(|| {
+                    format!("DEF basepalette line {line}: {file} needs 768 RGB bytes")
+                })?;
+                let mut rgb = [0u8; 768];
+                for (destination, &component) in rgb.iter_mut().zip(source) {
+                    *destination = component.wrapping_shl(u32::from(*shift_left));
+                }
+                custom.insert(*palette, rgb);
+            }
+            room_build::def::BasePaletteOperation::Copy {
+                palette,
+                source,
+                line,
+            } => {
+                let colors = custom
+                    .get(source)
+                    .copied()
+                    .or_else(|| match source {
+                        0 => Some(*base_rgb),
+                        1 => builtins.map(|palettes| palettes.water),
+                        2 => builtins.map(|palettes| palettes.slime),
+                        3 => builtins.map(|palettes| palettes.drealms),
+                        4 => builtins.map(|palettes| palettes.title),
+                        5 => builtins.map(|palettes| palettes.ending),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        format!("DEF basepalette line {line}: source palette {source} is undefined")
+                    })?;
+                custom.insert(*palette, colors);
+            }
+            room_build::def::BasePaletteOperation::Undef { palette, .. } => {
+                custom.remove(palette);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_blend_table_operations(
+    tiles: &mut SoftTiles,
+    operations: &[room_build::def::BlendTableOperation],
+    assets: &BTreeMap<String, &[u8]>,
+    base_table: Option<&[u8]>,
+) -> Result<(), String> {
+    let mut tables = BTreeMap::new();
+    if let Some(base) = base_table.filter(|bytes| bytes.len() >= 65_536) {
+        tables.insert(0, base[..65_536].to_vec());
+    }
+    for operation in operations {
+        match operation {
+            room_build::def::BlendTableOperation::Load {
+                table,
+                file,
+                offset,
+                line,
+            } => {
+                let key = file.replace('\\', "/").to_ascii_lowercase();
+                let bytes = assets
+                    .get(&key)
+                    .ok_or_else(|| format!("DEF blendtable line {line}: missing {file}"))?;
+                let end = offset.checked_add(65_536).ok_or_else(|| {
+                    format!("DEF blendtable line {line}: resource offset overflow")
+                })?;
+                let table_bytes = bytes.get(*offset..end).ok_or_else(|| {
+                    format!("DEF blendtable line {line}: {file} needs 65536 indexed bytes")
+                })?;
+                tables.insert(*table, table_bytes.to_vec());
+            }
+            room_build::def::BlendTableOperation::Copy {
+                table,
+                source,
+                line,
+            } => {
+                let copied = tables.get(source).cloned().ok_or_else(|| {
+                    format!("DEF blendtable line {line}: source table {source} is undefined")
+                })?;
+                tables.insert(*table, copied);
+            }
+            room_build::def::BlendTableOperation::Undef { table, .. } => {
+                tables.remove(table);
+            }
+        }
+    }
+    for (table, pixels) in tables {
+        if table != 0 {
+            tiles.insert_blend_table(table, pixels);
+        }
+    }
+    Ok(())
+}
+
 /// Rotate the palette frame around its center using Build-angle fixed-point
 /// trig. Outside pixels use palette index zero, matching a clipped screen edge.
 fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> Vec<u8> {
@@ -56,6 +171,8 @@ fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> V
 pub struct DukeSoftRenderer {
     palette: Palette,
     base_palettes: Option<room_build::lookup::BasePalettes>,
+    /// Base palettes loaded from mounted EDuke32 DEF assets.
+    custom_base_palettes: BTreeMap<u8, [u8; 768]>,
     /// Full-screen palette variants generated from LOOKUP.DAT remap tables.
     game_palette_tables: BTreeMap<u8, [u8; 768]>,
     /// Atomic `BRITABLE`, indexed by brightness (0..15) and six-bit channel.
@@ -236,6 +353,7 @@ impl DukeSoftRenderer {
         Ok(Self {
             palette,
             base_palettes,
+            custom_base_palettes: BTreeMap::new(),
             game_palette_tables,
             brightness_table,
             brightness: Cell::new(4),
@@ -279,7 +397,7 @@ impl DukeSoftRenderer {
         tile_assets: &[(&str, &[u8])],
         mhk_files: &[(&str, &[u8])],
     ) -> Result<Self, String> {
-        let renderer = Self::from_grp_layers_with_tables(grp_layers, tables_dat)?;
+        let mut renderer = Self::from_grp_layers_with_tables(grp_layers, tables_dat)?;
         let grp = GrpStack::parse_layers(grp_layers).map_err(|error| format!("GRP: {error}"))?;
         let mut all_defs: Vec<(&str, &[u8])> = grp
             .names()
@@ -299,7 +417,6 @@ impl DukeSoftRenderer {
             .filter_map(|name| grp.get(name).map(|bytes| (name, bytes)))
             .collect();
         all_mhks.extend_from_slice(mhk_files);
-        let mut renderer = renderer;
         renderer.map_hack_defs = all_defs
             .iter()
             .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
@@ -343,7 +460,7 @@ impl DukeSoftRenderer {
     }
 
     fn load_def_tile_assets(
-        &self,
+        &mut self,
         def_files: &[(&str, &[u8])],
         tile_assets: &[(&str, &[u8])],
     ) -> Result<(), String> {
@@ -352,12 +469,50 @@ impl DukeSoftRenderer {
             Operation(room_build::def::TileOperation),
         }
         let mut actions = Vec::new();
+        let mut skyboxes = Vec::new();
+        let mut base_palette_operations = Vec::new();
+        let mut blend_table_operations = Vec::new();
         for (name, bytes) in def_files {
             let source = String::from_utf8_lossy(bytes);
             let document = room_build::def::DefDocument::parse(&source)
                 .map_err(|error| format!("{name}: {error}"))?;
+            base_palette_operations.extend(
+                document
+                    .base_palette_operations()
+                    .map_err(|error| format!("{name}: {error}"))?,
+            );
+            blend_table_operations.extend(
+                document
+                    .blend_table_operations()
+                    .map_err(|error| format!("{name}: {error}"))?,
+            );
+        }
+        let asset_map: BTreeMap<String, &[u8]> = tile_assets
+            .iter()
+            .map(|(name, bytes)| (name.replace('\\', "/").to_ascii_lowercase(), *bytes))
+            .collect();
+        apply_base_palette_operations(
+            &mut self.custom_base_palettes,
+            &base_palette_operations,
+            &asset_map,
+            self.base_palettes.as_ref(),
+            &self.palette.rgb,
+        )?;
+        let mut import_palette = self.palette.clone();
+        if let Some(base_palette) = self.custom_base_palettes.get(&0) {
+            import_palette.rgb = *base_palette;
+        }
+        for (name, bytes) in def_files {
+            let source = String::from_utf8_lossy(bytes);
+            let document = room_build::def::DefDocument::parse(&source)
+                .map_err(|error| format!("{name}: {error}"))?;
+            skyboxes.extend(
+                document
+                    .import_skyboxes(tile_assets, &import_palette)
+                    .map_err(|error| format!("{name}: {error}"))?,
+            );
             let imported = document
-                .import_high_res_tiles(tile_assets, &self.palette)
+                .import_high_res_tiles(tile_assets, &import_palette)
                 .map_err(|error| format!("{name}: {error}"))?;
             actions.extend(imported.into_iter().map(TileAction::Import));
             let operations = document
@@ -366,16 +521,37 @@ impl DukeSoftRenderer {
             actions.extend(operations.into_iter().map(TileAction::Operation));
         }
         let mut soft_tiles = self.tiles.borrow_mut();
+        apply_blend_table_operations(
+            &mut soft_tiles,
+            &blend_table_operations,
+            &asset_map,
+            self.palette.translucency.as_deref(),
+        )?;
+        for skybox in skyboxes {
+            soft_tiles.insert_skybox(skybox);
+        }
         for action in actions {
             match action {
-                TileAction::Import(tile) => soft_tiles.insert_with_offset(
-                    tile.tile,
-                    tile.width,
-                    tile.height,
-                    tile.pixels,
-                    tile.x_offset,
-                    tile.y_offset,
-                ),
+                TileAction::Import(tile) => {
+                    if let Some(palette) = tile.palette {
+                        soft_tiles.insert_palette_variant(
+                            tile.tile,
+                            palette,
+                            tile.width,
+                            tile.height,
+                            tile.pixels,
+                        );
+                    } else {
+                        soft_tiles.insert_with_offset(
+                            tile.tile,
+                            tile.width,
+                            tile.height,
+                            tile.pixels,
+                            tile.x_offset,
+                            tile.y_offset,
+                        );
+                    }
+                }
                 TileAction::Operation(room_build::def::TileOperation::Copy {
                     destination,
                     source,
@@ -435,6 +611,11 @@ impl DukeSoftRenderer {
     ) -> Option<&'a [u8; 768]> {
         if player.game_palette != 0 {
             let palette_id = u8::try_from(player.game_palette).ok();
+            if let Some(palette) =
+                palette_id.and_then(|palette_id| self.custom_base_palettes.get(&palette_id))
+            {
+                return Some(palette);
+            }
             if let Some(palettes) = self.base_palettes.as_ref() {
                 match palette_id {
                     Some(1) => return Some(&palettes.water),
@@ -454,20 +635,37 @@ impl DukeSoftRenderer {
             // PALETTE.DAT instead of reapplying the sector water/heat effect.
             return None;
         }
-        let palettes = self.base_palettes.as_ref()?;
         if player.heat_on {
-            return Some(&palettes.slime);
+            return self.base_palette_by_id(2);
         }
-        let sector = world
-            .sectors
-            .get(usize::try_from(player.cursectnum).ok()?)?;
+        let Some(sector_index) = usize::try_from(player.cursectnum).ok() else {
+            return self.custom_base_palettes.get(&0);
+        };
+        let sector = world.sectors.get(sector_index);
+        let Some(sector) = sector else {
+            return self.custom_base_palettes.get(&0);
+        };
         if (200..=202).contains(&sector.ceilingpicnum) {
-            Some(&palettes.slime)
+            self.base_palette_by_id(2)
         } else if sector.lotag == 2 {
-            Some(&palettes.water)
+            self.base_palette_by_id(1)
         } else {
-            None
+            self.custom_base_palettes.get(&0)
         }
+    }
+
+    fn base_palette_by_id(&self, palette_id: u8) -> Option<&[u8; 768]> {
+        self.custom_base_palettes.get(&palette_id).or_else(|| {
+            let palettes = self.base_palettes.as_ref()?;
+            match palette_id {
+                1 => Some(&palettes.water),
+                2 => Some(&palettes.slime),
+                3 => Some(&palettes.drealms),
+                4 => Some(&palettes.title),
+                5 => Some(&palettes.ending),
+                _ => None,
+            }
+        })
     }
 
     /// Remap one shell/UI RGB sample through the active full-screen palette.
@@ -865,7 +1063,11 @@ impl DukeSoftRenderer {
         );
         // Chocolate's `displayweapon` returns as soon as `animatetip` draws
         // the TIP tile, so the weapon is hidden for the complete tip pose.
-        if player.tip_timer == 0 && !player.over_shoulder_on && player.remote_camera.is_none() {
+        if player.tip_timer == 0
+            && !player.over_shoulder_on
+            && player.remote_camera.is_none()
+            && !render_world.render_hide_native_weapon
+        {
             if !self.draw_access_hand(&mut frame, render_world, player) {
                 self.draw_weapon(&mut frame, render_world, player);
             }
@@ -889,13 +1091,35 @@ impl DukeSoftRenderer {
         };
         let mut palette_pixels = rotate_palette_frame(&frame.pixels, width, height, screen_roll);
         // The status HUD is screen space: it never rolls with the view.
-        if player.remote_camera.is_none() {
+        if player.remote_camera.is_none() || !render_world.render_hud_draws.is_empty() {
             let mut hud = SoftFrame {
                 width,
                 height,
                 pixels: std::mem::take(&mut palette_pixels),
             };
-            self.draw_mini_hud(&mut hud, player);
+            if player.remote_camera.is_none() {
+                self.draw_mini_hud(&mut hud, player);
+            }
+            if !render_world.render_hud_draws.is_empty() {
+                let tiles = self.tiles.borrow();
+                let mut page = crate::ui_page::UiPage::new(&tiles, &mut hud);
+                for draw in &render_world.render_hud_draws {
+                    match draw {
+                        room_build_engine::world::HudDrawCommand::Sprite(sprite) => {
+                            page.rotatesprite(*sprite);
+                        }
+                        room_build_engine::world::HudDrawCommand::Text(text) => {
+                            page.draw_minitext(text);
+                        }
+                        room_build_engine::world::HudDrawCommand::GameText(text) => {
+                            page.draw_gametext(text);
+                        }
+                        room_build_engine::world::HudDrawCommand::Number(number) => {
+                            page.draw_digitalnumber(*number);
+                        }
+                    }
+                }
+            }
             palette_pixels = hud.pixels;
         }
         // Chocolate `player.c::setpal` chooses the screen DAC palette from
@@ -1772,6 +1996,83 @@ mod tests {
     }
 
     #[test]
+    fn mod_def_texture_selects_palette_specific_image() {
+        let grp = mini_grp();
+        let def = b"texture 9005 { pal 0 { file \"base.bmp\" } pal 21 { file \"red.bmp\" } }";
+        let base = bmp_2x1();
+        let alternate = bmp_1x1();
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[("textures.def", def.as_slice())],
+            &[
+                ("base.bmp", base.as_slice()),
+                ("red.bmp", alternate.as_slice()),
+            ],
+        )
+        .unwrap();
+        let tiles = renderer.tiles.borrow();
+
+        assert_eq!(tiles.dimensions_for_palette(9005, 0), Some((2, 1)));
+        assert_eq!(tiles.dimensions_for_palette(9005, 21), Some((1, 1)));
+        assert_eq!(tiles.dimensions_for_palette(9005, 22), Some((2, 1)));
+        assert!(tiles.sample_at_for_palette(9005, 21, 0, 0, 0).is_some());
+    }
+
+    #[test]
+    fn mod_def_skybox_imports_all_six_face_images_by_palette() {
+        let grp = mini_grp();
+        let def = b"skybox {\n\
+            tile 9006 pal 21\n\
+            front \"face.bmp\" nocompress\n\
+            right \"face.bmp\"\n\
+            back \"face.bmp\"\n\
+            left \"face.bmp\"\n\
+            top \"face.bmp\"\n\
+            down \"face.bmp\"\n\
+            }";
+        let face = bmp_2x1();
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[("skyboxes.def", def.as_slice())],
+            &[("face.bmp", face.as_slice())],
+        )
+        .unwrap();
+
+        let tiles = renderer.tiles.borrow();
+        assert!(tiles.has_skybox(9006, 21));
+        assert!(!tiles.has_skybox(9006, 0));
+    }
+
+    #[test]
+    fn def_blend_tables_load_raw_and_copy_the_base_lookup() {
+        let document = room_build::def::DefDocument::parse(
+            r#"
+                blendtable 200 { copy 0 }
+                blendtable 201 { raw { file "multiply.raw" offset 4 } }
+            "#,
+        )
+        .unwrap();
+        let mut raw = vec![0; 65_540];
+        raw[4..].fill(7);
+        let assets = BTreeMap::from([("multiply.raw".to_owned(), raw.as_slice())]);
+        let mut tiles = SoftTiles::new();
+        let base_table = vec![3; 65_536];
+
+        apply_blend_table_operations(
+            &mut tiles,
+            &document.blend_table_operations().unwrap(),
+            &assets,
+            Some(&base_table),
+        )
+        .unwrap();
+
+        assert!(tiles.has_blend_table(200));
+        assert!(tiles.has_blend_table(201));
+    }
+
+    #[test]
     fn map_mhk_is_selected_by_map_name_and_hash() {
         let grp = mini_grp();
         let def = br#"mapinfo {
@@ -1821,6 +2122,48 @@ mod tests {
             .screen_palette_for_player(&BuildWorld::new(), &player)
             .expect("lookup palette is present");
         assert_eq!(&selected[..3], &renderer.palette.rgb[255 * 3..255 * 3 + 3]);
+    }
+
+    #[test]
+    fn def_basepalette_asset_is_selected_for_explicit_player_palette() {
+        let grp = mini_grp();
+        let def = b"basepalette 240 { raw { file \"cinematic.pal\" offset 768 shiftleft 1 } }";
+        let mut palette_bytes = vec![255; 768];
+        palette_bytes.extend((0..768).map(|index| (index % 100) as u8));
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[("palettes.def", def.as_slice())],
+            &[("cinematic.pal", palette_bytes.as_slice())],
+        )
+        .unwrap();
+        let mut player = Player::default();
+        player.game_palette = 240;
+
+        let selected = renderer
+            .screen_palette_for_player(&BuildWorld::new(), &player)
+            .expect("custom DEF base palette is loaded");
+        assert_eq!(&selected[..6], &[0, 2, 4, 6, 8, 10]);
+        assert_eq!(renderer.palette.rgb[0], 0);
+    }
+
+    #[test]
+    fn def_basepalette_zero_replaces_the_neutral_screen_palette() {
+        let grp = mini_grp();
+        let def = b"basepalette 0 { raw { file \"base.pal\" } }";
+        let palette_bytes: Vec<u8> = (0..768).map(|index| (index % 251) as u8).collect();
+        let renderer = DukeSoftRenderer::from_grp_layers_with_mod_assets(
+            &[&grp],
+            None,
+            &[("palettes.def", def.as_slice())],
+            &[("base.pal", palette_bytes.as_slice())],
+        )
+        .unwrap();
+        let selected = renderer
+            .screen_palette_for_player(&BuildWorld::new(), &Player::default())
+            .expect("custom base palette replaces neutral screen palette");
+
+        assert_eq!(&selected[..6], &[0, 1, 2, 3, 4, 5]);
     }
 
     fn mini_grp() -> Vec<u8> {
@@ -1878,6 +2221,24 @@ mod tests {
         bmp.extend_from_slice(&8u32.to_le_bytes());
         bmp.extend_from_slice(&[0; 16]);
         bmp.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        bmp
+    }
+
+    fn bmp_1x1() -> Vec<u8> {
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&58u32.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&1i32.to_le_bytes());
+        bmp.extend_from_slice(&(-1i32).to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&24u16.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&4u32.to_le_bytes());
+        bmp.extend_from_slice(&[0; 16]);
+        bmp.extend_from_slice(&[0, 0, 255, 0]);
         bmp
     }
 }

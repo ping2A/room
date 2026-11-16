@@ -369,6 +369,19 @@ pub mod game {
         /// are not removed on pickup so each player can take them once
         /// (`docs/30` W17). Dropped weapons always disappear.
         pub const WEAPON_STAY: i32 = 8;
+        /// Read-only: live human (non-bot) players with health left. `0` on
+        /// engines that predate it, so treat a `0` read at match start as
+        /// unknown.
+        pub const HUMANS_ALIVE: i32 = 9;
+        /// Write `1`: save every live player's inventory and ready weapon
+        /// (seats already saved keep their first copy).
+        pub const SAVE_INVENTORIES: i32 = 10;
+        /// Write `1`: give every saved player back exactly what was saved
+        /// (e.g. ammo spent during a pre-match countdown), then forget it.
+        pub const RESTORE_INVENTORIES: i32 = 11;
+        /// Level exits (normal, secret, `Teleport_NewMap`) do nothing while
+        /// on (0/1, default 0). A mod's own `level_exit` still works.
+        pub const NO_EXIT: i32 = 12;
     }
 
     /// Map thing editor numbers for `level_things`.

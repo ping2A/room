@@ -625,6 +625,8 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             None
         }
         GameFn::LevelExit => {
+            // The mod asked for it: its own `NO_EXIT` does not apply.
+            world.no_exit = false;
             world.level.exiting = true;
             if !cfg!(test) {
                 eprintln!(
@@ -652,6 +654,8 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
             rule::SQUAD_DBNO => i32::from(world.squad_dbno),
             rule::PAUSED => i32::from(world.paused),
             rule::WEAPON_STAY => i32::from(world.weapon_stay),
+            rule::HUMANS_ALIVE => world.humans_alive() as i32,
+            rule::NO_EXIT => i32::from(world.no_exit),
             _ => 0,
         }),
         GameFn::GameEndMatch => {
@@ -939,6 +943,9 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 rule::SQUAD_DBNO => world.squad_dbno = on,
                 rule::PAUSED => world.paused = on,
                 rule::WEAPON_STAY => world.weapon_stay = on,
+                rule::NO_EXIT => world.no_exit = on,
+                rule::SAVE_INVENTORIES if on => world.save_player_inventories(),
+                rule::RESTORE_INVENTORIES if on => world.restore_player_inventories(),
                 _ => {}
             }
             None

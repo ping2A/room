@@ -21,6 +21,14 @@ use tracing::info;
 
 /// Longest room time limit (minutes).
 pub const MAX_TIME_LIMIT_MINS: u16 = 180;
+/// Shortest quick-play start delay (seconds).
+pub const MIN_START_DELAY_SECS: u32 = 5;
+/// Longest quick-play start delay (seconds).
+pub const MAX_START_DELAY_SECS: u32 = 600;
+/// Shortest room time limit (seconds).
+pub const MIN_TIME_LIMIT_SECS: u32 = 30;
+/// Longest room time limit (seconds).
+pub const MAX_TIME_LIMIT_SECS: u32 = MAX_TIME_LIMIT_MINS as u32 * 60;
 
 /// Registry errors.
 #[derive(Debug, Error)]
@@ -322,6 +330,7 @@ impl RoomRegistry {
         if self.rooms.len() >= self.cfg.max_rooms {
             return Err(RegistryError::Full);
         }
+        let time_limit_secs = room_time_limit_secs(&req, self.cfg.room_time_limit_mins);
         if req.duke_game_mode > 2 {
             return Err(RegistryError::InvalidDukeGameMode);
         }
@@ -455,14 +464,19 @@ impl RoomRegistry {
             enable_verifier: want_verifier,
             game_mod,
             packs,
-            time_limit: req
-                .time_limit
-                .filter(|&m| m > 0)
-                .unwrap_or(self.cfg.room_time_limit_mins)
-                .clamp(1, MAX_TIME_LIMIT_MINS),
+            time_limit_secs,
             game: game.into(),
             fill_bots: req.fill_bots,
             quick_play: req.quick_play,
+            start_delay_secs: req
+                .start_delay_secs
+                .filter(|&s| s > 0)
+                .map_or(0, |s| s.clamp(MIN_START_DELAY_SECS, MAX_START_DELAY_SECS)),
+            // Normal (2) is stored as 0 so it never reaches the wire.
+            bot_skill: match req.bot_skill {
+                Some(s @ (1 | 3 | 4)) => s,
+                _ => 0,
+            },
         };
         let id = new_room_id().map_err(|_| RegistryError::Rng)?;
         let rng_seed = new_rng_seed();
@@ -633,4 +647,19 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Seconds a new room runs for: `time_limit_secs`, else `time_limit`
+/// (minutes), else the node default (minutes); clamped to 30 s .. 180 min.
+#[must_use]
+pub fn room_time_limit_secs(req: &CreateRoomRequest, default_mins: u16) -> u32 {
+    req.time_limit_secs
+        .filter(|&s| s > 0)
+        .or_else(|| {
+            req.time_limit
+                .filter(|&m| m > 0)
+                .map(|m| u32::from(m.min(MAX_TIME_LIMIT_MINS)) * 60)
+        })
+        .unwrap_or(u32::from(default_mins.clamp(1, MAX_TIME_LIMIT_MINS)) * 60)
+        .clamp(MIN_TIME_LIMIT_SECS, MAX_TIME_LIMIT_SECS)
 }

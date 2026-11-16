@@ -754,6 +754,21 @@ impl Mixer {
                         }
                     }
                 }
+                SoundEvent::AdjustSoundPitch {
+                    sound,
+                    source_id,
+                    cents,
+                } => {
+                    let cents = cents.clamp(-9_600, 9_600) as f32;
+                    let ratio = 2.0_f32.powf(cents / 1_200.0);
+                    for voice in &mut self.voices {
+                        if voice.sound == sound
+                            && source_id.is_none_or(|source_id| voice.source_id == Some(source_id))
+                        {
+                            voice.pitch *= ratio;
+                        }
+                    }
+                }
                 SoundEvent::SetVolume {
                     origin,
                     channel,
@@ -1285,6 +1300,44 @@ mod tests {
         let v2 = mix.voices.iter().find(|v| v.channel == 2).unwrap();
         assert!((v1.pitch - 2.0).abs() < 1e-6);
         assert!((v2.pitch - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adjust_sound_pitch_filters_by_source_and_adds_cents() {
+        let mut mix = Mixer::new();
+        let pcm: Arc<[f32]> = Arc::from(vec![0.5f32; 32]);
+        mix.bank.insert(SoundId::from_raw(1), pcm);
+        let start = |channel, source_id| SoundEvent::Start {
+            origin: SoundOrigin::None,
+            channel,
+            sound: SoundId::from_raw(1),
+            check_sound: None,
+            start_time: 0.0,
+            source_id,
+            no_restart: false,
+            volume: 1.0,
+            attenuation: 0.0,
+            pitch: 1.0,
+            flags: SoundFlags::default(),
+        };
+        mix.apply(&[
+            start(1, Some(7)),
+            start(2, Some(8)),
+            SoundEvent::AdjustSoundPitch {
+                sound: SoundId::from_raw(1),
+                source_id: Some(7),
+                cents: 1_200,
+            },
+            SoundEvent::AdjustSoundPitch {
+                sound: SoundId::from_raw(1),
+                source_id: None,
+                cents: 600,
+            },
+        ]);
+        let v1 = mix.voices.iter().find(|voice| voice.channel == 1).unwrap();
+        let v2 = mix.voices.iter().find(|voice| voice.channel == 2).unwrap();
+        assert!((v1.pitch - 2.0 * 2.0_f32.sqrt()).abs() < 1e-5);
+        assert!((v2.pitch - 2.0_f32.sqrt()).abs() < 1e-5);
     }
 
     #[test]

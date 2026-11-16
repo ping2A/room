@@ -9,6 +9,10 @@
 //! ([`crate::physics::check_position`]) and takes the open heading closest
 //! to the goal; a bot that barely moves for a moment takes a detour, so it
 //! never runs on the spot against a wall. Fists only swing at melee range.
+//! Bots aim up and down at their target too, so guns without vertical
+//! autoaim (Brutal Doom's) still hit players on other floor heights.
+//! [`skill`] levels tune turn speed, aim error, reaction and hunting range;
+//! bot seats get callsigns from [`BOT_NAMES`] picked by the match seed.
 
 use crate::actor::{Actor, ActorId};
 use crate::player::{Buttons, MAX_PLAYERS, PlayerState, TicCmd};
@@ -16,7 +20,146 @@ use crate::sight::check_sight;
 use crate::world::World;
 use room_core::{DVec3, dmath};
 
-const TURN_PER_TIC: f64 = 8.0;
+/// Bot difficulty levels ([`crate::World::bot_skill`]).
+pub mod skill {
+    /// Slow to turn and react, shoots less and misses more.
+    pub const EASY: u8 = 1;
+    /// The classic bot (also `0`, unset).
+    pub const NORMAL: u8 = 2;
+    /// Quick aim, fires every chance, hunts further.
+    pub const HARD: u8 = 3;
+    /// Near-instant aim and constant pressure.
+    pub const NIGHTMARE: u8 = 4;
+}
+
+/// Per-level tuning. `NORMAL` keeps the original constants exactly.
+#[derive(Clone, Copy)]
+struct Tuning {
+    /// Turn per tic (degrees).
+    turn: f64,
+    /// Up / down aim per tic (degrees).
+    pitch: f64,
+    /// Fire only when facing within this many degrees of the target.
+    aim_tolerance: f64,
+    /// Random yaw error added to the aim (± degrees).
+    aim_error: f64,
+    /// Tics the target must stay in sight before the first shot.
+    reaction: u16,
+    /// Strafe when `random & mask == 0` (smaller = more often).
+    strafe_mask: u8,
+    /// Enemies this close are chased even out of sight.
+    chase_blind: f64,
+    level: u8,
+}
+
+fn tuning(level: u8) -> Tuning {
+    match level {
+        skill::EASY => Tuning {
+            turn: 4.5,
+            pitch: 3.0,
+            aim_tolerance: 22.0,
+            aim_error: 7.0,
+            reaction: 20,
+            strafe_mask: 31,
+            chase_blind: 512.0,
+            level,
+        },
+        skill::HARD => Tuning {
+            turn: 12.0,
+            pitch: 10.0,
+            aim_tolerance: 10.0,
+            aim_error: 0.0,
+            reaction: 4,
+            strafe_mask: 7,
+            chase_blind: 1024.0,
+            level,
+        },
+        skill::NIGHTMARE => Tuning {
+            turn: 20.0,
+            pitch: 16.0,
+            aim_tolerance: 6.0,
+            aim_error: 0.0,
+            reaction: 0,
+            strafe_mask: 3,
+            chase_blind: 1600.0,
+            level,
+        },
+        _ => Tuning {
+            turn: 8.0,
+            pitch: 6.0,
+            aim_tolerance: 15.0,
+            aim_error: 0.0,
+            reaction: 0,
+            strafe_mask: 15,
+            chase_blind: CHASE_BLIND,
+            level: skill::NORMAL,
+        },
+    }
+}
+
+/// Callsigns for bot seats (plain ASCII, valid display names).
+pub const BOT_NAMES: [&str; 40] = [
+    "Viper",
+    "Rook",
+    "Havoc",
+    "Banshee",
+    "Reaper",
+    "Gunner",
+    "Specter",
+    "Blaze",
+    "Cinder",
+    "Mortar",
+    "Wraith",
+    "Jackal",
+    "Nova",
+    "Raptor",
+    "Onyx",
+    "Vulture",
+    "Hex",
+    "Scorch",
+    "Talon",
+    "Bishop",
+    "Ghoul",
+    "Rampage",
+    "Fang",
+    "Brimstone",
+    "Cobra",
+    "Echo",
+    "Ironside",
+    "Sable",
+    "Torque",
+    "Vandal",
+    "Warden",
+    "Zephyr",
+    "Diesel",
+    "Grit",
+    "Maul",
+    "Nitro",
+    "Rivet",
+    "Slag",
+    "Thorn",
+    "Kestrel",
+];
+
+/// Deterministic callsign for `seat` in a match seeded with `seed`: the
+/// match picks a permutation of [`BOT_NAMES`], seats walk it, and names
+/// `taken` elsewhere are skipped.
+#[must_use]
+pub fn pick_bot_name(seed: u32, seat: usize, taken: impl Fn(&str) -> bool) -> &'static str {
+    const STEPS: [usize; 16] = [1, 3, 7, 9, 11, 13, 17, 19, 21, 23, 27, 29, 31, 33, 37, 39];
+    let n = BOT_NAMES.len();
+    let mut h = u64::from(seed) ^ 0x9E37_79B9_7F4A_7C15;
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    let start = (h % n as u64) as usize;
+    let step = STEPS[((h >> 32) % STEPS.len() as u64) as usize];
+    let first = (start + seat * step) % n;
+    (0..n)
+        .map(|k| BOT_NAMES[(first + k) % n])
+        .find(|name| !taken(name))
+        .unwrap_or(BOT_NAMES[first])
+}
 const YAW_SCALE: f64 = 65536.0 / 360.0;
 const MOVE: i16 = 40 * 256;
 /// Doom max step up.
@@ -87,9 +230,29 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
         (dmath::sqrt(dx * dx + dy * dy), p.bot_walking)
     };
 
+    let tune = tuning(world.bot_skill);
     let enemy = nearest_enemy(world, seat, mo);
     let enemy_seen = enemy.filter(|&e| check_sight(world, mo, e));
-    let goal = bot_goal_xy(world, seat, mo, &a, armed, enemy, enemy_seen);
+    let goal = bot_goal_xy(
+        world,
+        seat,
+        mo,
+        &a,
+        armed,
+        enemy,
+        enemy_seen,
+        tune.chase_blind,
+    );
+    // Reaction delay: how long the current target has been in sight.
+    let seen_for = {
+        let p = world.players[seat].as_mut().unwrap();
+        p.bot_seen = if enemy_seen.is_some() {
+            p.bot_seen.saturating_add(1)
+        } else {
+            0
+        };
+        p.bot_seen
+    };
 
     let mut walking = false;
     if let Some((gx, gy)) = goal {
@@ -132,7 +295,7 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
             } else {
                 open_heading(world, &a, mo, want).unwrap_or(want)
             };
-            cmd.yaw = yaw_toward_deg(angle_deg, heading);
+            cmd.yaw = yaw_toward_deg(angle_deg, heading, tune.turn);
             // Walk once roughly facing the heading (no wide arcs into walls);
             // near the goal turn on the spot first, or the bot orbits it.
             let off = wrap(heading - angle_deg).abs();
@@ -147,26 +310,48 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
                 walking = true;
             }
             let r = world.p_random(&format!("bot_strafe_{seat}"));
-            if r & 15 == 0 && enemy_seen.is_some() {
+            if r & tune.strafe_mask == 0 && enemy_seen.is_some() {
                 cmd.side_move = if r & 16 != 0 { MOVE / 2 } else { -MOVE / 2 };
             }
         }
     }
 
+    // Aim up / down too: weapons without vertical autoaim (Brutal Doom's,
+    // or any game with autoaim off) shoot along the pitch, so a level gun
+    // misses anyone on another floor height. Level out with no target.
+    let pitch_deg = a.pitch.degrees();
+    let mut want_pitch = 0.0;
     if let Some(target) = enemy_seen {
         let ta = world.actors.get(target).unwrap();
         let (tx, ty) = (ta.pos.x() - px, ta.pos.y() - py);
         let dist = dmath::sqrt(tx * tx + ty * ty);
+        let eye = world.players[seat]
+            .as_ref()
+            .map_or(a.pos.z() + 41.0, |p| p.view_z);
+        let chest = ta.pos.z() + ta.height * 0.55;
+        want_pitch = dmath::atan2(chest - eye, dist.max(1.0)).to_degrees();
         let close_enough = !melee_only || dist < MELEE + ta.radius;
         if close_enough {
-            cmd.yaw = yaw_toward_deg(angle_deg, dmath::atan2(ty, tx).to_degrees());
+            let mut want = dmath::atan2(ty, tx).to_degrees();
+            if tune.aim_error > 0.0 {
+                let r = world.p_random(&format!("bot_aim_{seat}"));
+                want += (f64::from(r % 201) / 100.0 - 1.0) * tune.aim_error;
+            }
+            cmd.yaw = yaw_toward_deg(angle_deg, want, tune.turn);
             let fire = world.p_random(&format!("bot_fire_{seat}"));
-            let aimed = wrap(dmath::atan2(ty, tx).to_degrees() - angle_deg).abs() < 15.0;
-            if aimed && (melee_only || fire % 3 != 0) {
+            let aimed = wrap(want - angle_deg).abs() < tune.aim_tolerance;
+            let trigger = match tune.level {
+                skill::EASY => fire % 3 == 0,
+                skill::NORMAL => fire % 3 != 0,
+                _ => true,
+            };
+            if aimed && seen_for > tune.reaction && (melee_only || trigger) {
                 cmd.buttons = Buttons(Buttons::ATTACK);
             }
         }
     }
+
+    cmd.pitch = pitch_toward_deg(pitch_deg, want_pitch, tune.pitch);
 
     if let Some(p) = world.players[seat].as_mut() {
         p.bot_last_xy = (px, py);
@@ -184,6 +369,7 @@ fn bot_goal_xy(
     armed: bool,
     enemy: Option<ActorId>,
     enemy_seen: Option<ActorId>,
+    chase_blind: f64,
 ) -> Option<(f64, f64)> {
     let (px, py) = (a.pos.x(), a.pos.y());
     let zone = world
@@ -211,7 +397,7 @@ fn bot_goal_xy(
     }
     if let Some(e) = enemy
         && let Some((ex, ey)) = enemy_xy(e)
-        && (ex - px).powi(2) + (ey - py).powi(2) < CHASE_BLIND * CHASE_BLIND
+        && (ex - px).powi(2) + (ey - py).powi(2) < chase_blind * chase_blind
     {
         return Some((ex, ey));
     }
@@ -320,7 +506,55 @@ fn wrap(mut deg: f64) -> f64 {
     deg
 }
 
-fn yaw_toward_deg(from_deg: f64, want_deg: f64) -> i16 {
-    let turn = wrap(want_deg - from_deg).clamp(-TURN_PER_TIC, TURN_PER_TIC);
+/// Pitch step toward `want_deg` (positive looks up), same units as yaw.
+fn pitch_toward_deg(from_deg: f64, want_deg: f64, per_tic: f64) -> i16 {
+    let turn = wrap(want_deg - from_deg).clamp(-per_tic, per_tic);
     (turn * YAW_SCALE) as i16
+}
+
+fn yaw_toward_deg(from_deg: f64, want_deg: f64, per_tic: f64) -> i16 {
+    let turn = wrap(want_deg - from_deg).clamp(-per_tic, per_tic);
+    (turn * YAW_SCALE) as i16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_names_are_valid_distinct_and_vary_by_match() {
+        for name in BOT_NAMES {
+            assert_eq!(
+                crate::sanitize_display_name(name).as_deref(),
+                Some(name),
+                "{name} must be a valid display name"
+            );
+        }
+        let pick_all = |seed: u32| {
+            let mut got: Vec<&str> = Vec::new();
+            for seat in 0..8 {
+                let n = pick_bot_name(seed, seat, |c| {
+                    got.iter().any(|g| g.eq_ignore_ascii_case(c))
+                });
+                got.push(n);
+            }
+            got
+        };
+        let a = pick_all(1);
+        let mut uniq = a.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), 8, "eight different names: {a:?}");
+        assert_eq!(a, pick_all(1), "same seed, same names (lockstep)");
+        assert_ne!(a, pick_all(2), "another match, other names");
+    }
+
+    #[test]
+    fn normal_is_the_default_level() {
+        let n = tuning(0);
+        assert_eq!(n.level, skill::NORMAL);
+        assert!((n.turn - 8.0).abs() < f64::EPSILON);
+        assert!(tuning(skill::EASY).turn < n.turn);
+        assert!(tuning(skill::NIGHTMARE).turn > tuning(skill::HARD).turn);
+    }
 }

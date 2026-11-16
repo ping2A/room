@@ -243,6 +243,8 @@ pub struct NetJoinConfig {
     pub fill_bots: bool,
     /// First bot seat index from server `start`.
     pub bot_first_seat: u8,
+    /// Bot difficulty from `welcome` (`0` = normal).
+    pub bot_skill: u8,
 }
 
 /// Ready lockstep session + match settings (hand off to [`crate::play::PlaySession`]).
@@ -275,6 +277,8 @@ pub struct NetReady {
     pub fill_bots: bool,
     /// First bot seat from server `start`.
     pub bot_first_seat: u8,
+    /// Bot difficulty (`0` = normal).
+    pub bot_skill: u8,
     /// Doom deathmatch from `welcome`.
     pub deathmatch: bool,
 }
@@ -498,6 +502,12 @@ impl NetLobby {
         self.cfg.fill_bots
     }
 
+    /// Bot difficulty from `welcome` (`0` = normal).
+    #[must_use]
+    pub fn bot_skill(&self) -> u8 {
+        self.cfg.bot_skill
+    }
+
     /// Doom deathmatch from `welcome`.
     #[must_use]
     pub fn doom_deathmatch(&self) -> bool {
@@ -593,6 +603,7 @@ impl NetLobby {
             spectator: self.cfg.spectate,
             starts_in_secs: self.transport.as_ref().and_then(CoopSocket::starts_in_secs),
             fill_bots: self.cfg.fill_bots,
+            time_limit_secs: self.cfg.time_limit,
         }
     }
 
@@ -678,6 +689,7 @@ impl NetLobby {
                 self.cfg.iwad = w.room.iwad.clone();
                 self.cfg.time_limit = w.room.time_limit;
                 self.cfg.fill_bots = w.room.fill_bots;
+                self.cfg.bot_skill = w.room.bot_skill;
                 transport.set_peer_count(w.room.max_players);
                 for seat in &w.roster {
                     self.peer_names.insert(PeerId(seat.seat), seat.name.clone());
@@ -724,6 +736,7 @@ impl NetLobby {
                     self.cfg.duke_friendly_fire = room.duke_friendly_fire;
                     self.cfg.doom_deathmatch = room.doom_deathmatch;
                     self.cfg.fill_bots = room.fill_bots;
+                    self.cfg.bot_skill = room.bot_skill;
                     self.cfg.game_mod = room.game_mod.clone();
                     self.cfg.packs = room.packs.clone();
                     self.cfg.content = room.content.clone();
@@ -955,6 +968,7 @@ impl NetLobby {
                 time_limit: self.cfg.time_limit,
                 fill_bots: self.cfg.fill_bots,
                 bot_first_seat: self.cfg.bot_first_seat,
+                bot_skill: self.cfg.bot_skill,
                 deathmatch: self.cfg.doom_deathmatch,
             }));
         }
@@ -1037,6 +1051,8 @@ pub struct LobbyPanel {
     pub starts_in_secs: Option<u32>,
     /// Empty slots become bots at the start.
     pub fill_bots: bool,
+    /// Match length in seconds (0 = none).
+    pub time_limit_secs: u32,
 }
 
 /// Extract `room_id` from a v2 WebSocket URL (`…/v2/rooms/{id}/ws`).
@@ -1994,6 +2010,9 @@ fn sample_input(
     }
     if held.contains("use") {
         keys.push(Key::Use);
+    }
+    if held.contains("jump") {
+        keys.push(Key::Jump);
     }
     if held.contains("up") {
         keys.push(Key::MoveUp);

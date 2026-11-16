@@ -99,6 +99,35 @@ pub const ZONE_ROWS: [ZoneRow; 6] = [
     },
 ];
 
+/// Whole zone timeline from loot start: grace, then every hold and shrink
+/// (seconds).
+pub fn zone_schedule_secs() -> i32 {
+    GRACE_SECS
+        + ZONE_ROWS
+            .iter()
+            .map(|r| r.hold_secs + r.shrink_secs)
+            .sum::<i32>()
+}
+
+/// Fastest the zone may run (× normal speed).
+pub const MAX_ZONE_PACE_MILLI: i32 = 30_000;
+
+/// Zone speed for a match with `time_left_tics` to go at loot start
+/// (`1000` = normal). A time limit shorter than the zone timeline speeds
+/// the zone up so it is fully closed a little before time runs out (the
+/// last fighters are decided by the zone, not the clock). `0` = no limit.
+pub fn zone_pace_milli(time_left_tics: i32) -> i32 {
+    if time_left_tics <= 0 {
+        return 1000;
+    }
+    // Keep a sixth of the time (5..20 s) after the zone has closed.
+    let margin = (time_left_tics / 6).clamp(5 * TICRATE, 20 * TICRATE);
+    let budget = (time_left_tics - margin).max(10 * TICRATE);
+    let full = i64::from(zone_schedule_secs() * TICRATE);
+    let pace = (full * 1000 + i64::from(budget) - 1) / i64::from(budget);
+    (pace as i32).clamp(1000, MAX_ZONE_PACE_MILLI)
+}
+
 /// Zone damage per second for gameplay phase `phase` (1..=6).
 pub fn zone_damage_for_phase(phase: i32) -> i32 {
     if phase <= 0 {
@@ -181,6 +210,35 @@ impl Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_time_limits_keep_the_normal_zone() {
+        assert_eq!(zone_schedule_secs(), 450);
+        assert_eq!(zone_pace_milli(0), 1000, "no limit");
+        assert_eq!(zone_pace_milli(20 * 60 * TICRATE), 1000);
+        assert_eq!(zone_pace_milli(10 * 60 * TICRATE), 1000);
+    }
+
+    #[test]
+    fn short_time_limits_close_the_zone_before_time_runs_out() {
+        for secs in [30, 60, 90, 180, 300, 420] {
+            let left = secs * TICRATE;
+            let pace = zone_pace_milli(left);
+            assert!(pace > 1000, "{secs}s speeds the zone up");
+            let zone_real = zone_schedule_secs() * TICRATE * 1000 / pace;
+            assert!(
+                zone_real <= left - 5 * TICRATE,
+                "{secs}s: zone closes after {} s",
+                zone_real / TICRATE
+            );
+            // Not absurdly early either: the zone uses most of the match.
+            assert!(
+                zone_real * 10 >= left * 6,
+                "{secs}s: zone {}",
+                zone_real / TICRATE
+            );
+        }
+    }
 
     #[test]
     fn loot_scales_with_players() {

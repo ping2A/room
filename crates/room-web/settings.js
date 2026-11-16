@@ -13,9 +13,10 @@ const ACTIONS = [
   { id: "right", label: "Turn right" },
   { id: "shift", label: "Run" },
   { id: "use", label: "Use / open" },
+  { id: "jump", label: "Jump" },
   { id: "attack", label: "Attack" },
   { id: "up", label: "Swim / fly up" },
-  { id: "down", label: "Swim / fly down" },
+  { id: "down", label: "Crouch / swim / fly down" },
   { id: "kick", label: "Quick kick" },
   { id: "invuse", label: "Use inventory" },
   { id: "scores", label: "Scoreboard" },
@@ -91,10 +92,14 @@ function defaultsFromMod(mod) {
   } catch (_) {
     binds = {};
   }
+  const mobile = !!window.ROOM_MOBILE;
   return {
     mouseSens: 1,
     invertY: false,
-    renderCap: 0,
+    // Phones: a Doom-sized render buffer instead of 3× the screen pixels.
+    renderCap: mobile ? 640 : 0,
+    lowPower: mobile,
+    mobilePerfV1: mobile,
     windowScale: 1,
     binds,
     /** @type {Record<string, string>} */
@@ -200,6 +205,19 @@ export function initSettings(mod, opts = {}) {
   // Merge missing default binds / shader keys so new toggles appear after updates.
   state.binds = { ...factoryAll.binds, ...(state.binds || {}) };
   state.shaders = { ...factoryAll.shaders, ...(state.shaders || {}) };
+  // Space used to be bound to Use; it jumps now (GZDoom default, E still
+  // uses). Move saved default binds over once, so Brutal Doom & co. can jump.
+  if (!state.jumpBindV1) {
+    if (state.binds.Space === "use") state.binds.Space = "jump";
+    state.jumpBindV1 = true;
+  }
+  // Phones that saved settings before the mobile profile existed: move them
+  // onto it once (a resolution they picked themselves is kept).
+  if (window.ROOM_MOBILE && !state.mobilePerfV1) {
+    if (!state.renderCap) state.renderCap = 640;
+    state.lowPower = true;
+    state.mobilePerfV1 = true;
+  }
 
   const root = document.createElement("div");
   root.id = "settings";
@@ -224,6 +242,8 @@ export function initSettings(mod, opts = {}) {
             <select id="settings-res"></select>
           </label>
           <p class="settings-hint">Caps the longest edge of the render buffer (internal pixels).</p>
+          <label class="settings-check"><input id="settings-lowpower" type="checkbox" /> Performance mode</label>
+          <p class="settings-hint">For phones and tablets: no dynamic lights. On by default there, with Pixel resolution.</p>
           <button type="button" id="settings-fs" class="settings-btn">Toggle fullscreen</button>
         </section>
         <section>
@@ -275,6 +295,42 @@ export function initSettings(mod, opts = {}) {
           <input id="modopt-search" class="modopt-search" type="search" placeholder="Find a setting" aria-label="Find a mod setting" />
           <div id="modopt-groups" class="modopt-groups"></div>
           <button type="button" id="modopt-reset" class="settings-btn ghost">Reset mod options</button>
+        </section>
+        <section id="settings-touch">
+          <h3>Touch controls</h3>
+          <label class="settings-row">Look speed
+            <input id="touch-look" type="range" min="20" max="300" step="5" />
+            <span id="touch-look-val"></span>
+          </label>
+          <label class="settings-row">Up/down speed
+            <input id="touch-looky" type="range" min="30" max="300" step="5" />
+            <span id="touch-looky-val"></span>
+          </label>
+          <label class="settings-check"><input id="touch-accel" type="checkbox" /> Look acceleration</label>
+          <p class="settings-hint">Slow drags aim precisely, quick swipes turn further.</p>
+          <label class="settings-check"><input id="touch-tapfire" type="checkbox" /> Double-tap and hold to fire</label>
+          <p class="settings-hint">On the look side: tap, then touch again and hold to fire while you aim.</p>
+          <label class="settings-check"><input id="touch-gyro" type="checkbox" /> Aim by turning the device</label>
+          <label class="settings-row">Gyro speed
+            <input id="touch-gyro-speed" type="range" min="25" max="300" step="5" />
+            <span id="touch-gyro-speed-val"></span>
+          </label>
+          <p class="settings-hint" id="touch-gyro-note">Uses the motion sensor. Dragging still works alongside it.</p>
+          <label class="settings-row">Button size
+            <input id="touch-size" type="range" min="60" max="160" step="5" />
+            <span id="touch-size-val"></span>
+          </label>
+          <label class="settings-row">Opacity
+            <input id="touch-opacity" type="range" min="15" max="100" step="5" />
+            <span id="touch-opacity-val"></span>
+          </label>
+          <label class="settings-check"><input id="touch-lefty" type="checkbox" /> Left-handed (stick on the right)</label>
+          <label class="settings-check"><input id="touch-haptics" type="checkbox" /> Vibrate on presses</label>
+          <label class="settings-check"><input id="touch-jumpduck" type="checkbox" /> Jump and crouch buttons in Doom</label>
+          <p class="settings-hint">Doom maps allow jumping and crouching like GZDoom, unless a map turns them off. Turn this off for a classic layout. Duke always shows them.</p>
+          <p class="settings-hint">Hold ‹ or › to pick a weapon by number. Invert look Y below applies to touch too.</p>
+          <button type="button" id="touch-reset" class="settings-btn ghost">Reset touch controls</button>
+          <p class="settings-hint" id="touch-version"></p>
         </section>
         <section>
           <h3>Mouse</h3>
@@ -439,15 +495,76 @@ export function initSettings(mod, opts = {}) {
     sens.value = String(Math.round((state.mouseSens || 1) * 100));
     root.querySelector("#settings-sens-val").textContent = (state.mouseSens || 1).toFixed(2);
     root.querySelector("#settings-invert").checked = !!state.invertY;
+    root.querySelector("#settings-lowpower").checked = !!state.lowPower;
     qualitySel.value = String(Number(state.shaders.r_quality || 0));
     tonemapSel.value = String(Number(state.shaders.gl_tonemap || 0));
     goreSel.value = String(Number(state.shaders.r_gore || 1));
     syncMinimap();
+    syncTouch();
     syncMessages();
     renderModOptions();
     renderShaderToggles();
     renderBinds();
   }
+
+  // ---- Touch controls (touch.js keeps these in localStorage.roomTouch).
+  const touchApi = () => window.roomTouch;
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const TOUCH_RANGES = [
+    ["#touch-look", "look"],
+    ["#touch-looky", "lookY"],
+    ["#touch-gyro-speed", "gyroSpeed"],
+    ["#touch-size", "size"],
+    ["#touch-opacity", "opacity"],
+  ];
+  const TOUCH_CHECKS = [
+    ["#touch-accel", "accel"],
+    ["#touch-tapfire", "tapFire"],
+    ["#touch-gyro", "gyro"],
+    ["#touch-lefty", "lefty"],
+    ["#touch-haptics", "haptics"],
+    ["#touch-jumpduck", "jumpDuck"],
+  ];
+  function syncTouch() {
+    const api = touchApi();
+    const sec = root.querySelector("#settings-touch");
+    sec.hidden = !api;
+    if (!api) return;
+    const t = api.get();
+    root.querySelector("#touch-version").textContent = `Controls version: ${api.version || "old"}`;
+    for (const [sel, key] of TOUCH_RANGES) {
+      root.querySelector(sel).value = String(Math.round(Number(t[key]) * 100));
+      root.querySelector(`${sel}-val`).textContent = pct(Number(t[key]));
+    }
+    for (const [sel, key] of TOUCH_CHECKS) root.querySelector(sel).checked = !!t[key];
+    const gyroOk = api.gyroAvailable();
+    root.querySelector("#touch-gyro").disabled = !gyroOk;
+    root.querySelector("#touch-gyro-speed").disabled = !gyroOk || !t.gyro;
+    if (!gyroOk) root.querySelector("#touch-gyro-note").textContent = "This device has no motion sensor.";
+  }
+  for (const [sel, key] of TOUCH_RANGES) {
+    const r = root.querySelector(sel);
+    r.addEventListener("input", () => {
+      const v = Number(r.value) / 100;
+      root.querySelector(`${sel}-val`).textContent = pct(v);
+      if (touchApi()) touchApi().set(key, v);
+    });
+  }
+  for (const [sel, key] of TOUCH_CHECKS) {
+    const c = root.querySelector(sel);
+    c.addEventListener("change", async () => {
+      if (!touchApi()) return;
+      const got = await touchApi().set(key, c.checked);
+      if (key === "gyro" && c.checked && !got) {
+        root.querySelector("#touch-gyro-note").textContent = "Motion access was not allowed, so gyro aiming stays off.";
+      }
+      syncTouch();
+    });
+  }
+  root.querySelector("#touch-reset").addEventListener("click", () => {
+    if (touchApi()) touchApi().reset();
+    syncTouch();
+  });
 
   // ---- Messages: which kinds of in-game messages show, and how.
   const MSG_LABELS = {
@@ -734,6 +851,11 @@ export function initSettings(mod, opts = {}) {
   function apply() {
     const bindsJson = JSON.stringify(state.binds || {});
     try {
+      if (typeof mod.roomSetLowPower === "function") mod.roomSetLowPower(!!state.lowPower);
+    } catch (_) {
+      /* old wasm */
+    }
+    try {
       mod.roomApplySettings(
         Number(state.mouseSens) || 1,
         !!state.invertY,
@@ -795,6 +917,10 @@ export function initSettings(mod, opts = {}) {
     root.querySelector("#settings-sens-val").textContent = state.mouseSens.toFixed(2);
   });
   root.querySelector("#settings-sens").addEventListener("change", apply);
+  root.querySelector("#settings-lowpower").addEventListener("change", (ev) => {
+    state.lowPower = ev.target.checked;
+    apply();
+  });
   root.querySelector("#settings-invert").addEventListener("change", (ev) => {
     state.invertY = ev.target.checked;
     apply();

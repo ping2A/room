@@ -168,6 +168,15 @@ pub enum SoundEvent {
         /// Pitch scale. 1 is nominal.
         pitch: f32,
     },
+    /// Add a cents offset to every active voice of a sound, optionally filtered by actor.
+    AdjustSoundPitch {
+        /// Logical sound to match.
+        sound: SoundId,
+        /// Actor token to match, or `None` for every source.
+        source_id: Option<u64>,
+        /// Additional pitch in 1/100 semitone units.
+        cents: i32,
+    },
     /// Change the gain of a voice already playing at `origin` on `channel`.
     SetVolume {
         /// Origin.

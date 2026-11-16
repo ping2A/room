@@ -80,6 +80,12 @@ pub(crate) const AUTO_AIM_ANGLE: i16 = 48;
 pub(crate) const PROJECTILE_FLAG_HITSCAN: i32 = 1;
 /// EDuke32 `PROJECTILE_FLAG_KNEE` (`PROJ_WORKSLIKE` bit 4).
 pub(crate) const PROJECTILE_FLAG_KNEE: i32 = 16;
+/// EDuke32 `PROJECTILE_FLAG_SPIT` (`PROJ_WORKSLIKE` bit 8).
+pub(crate) const PROJECTILE_FLAG_SPIT: i32 = 256;
+/// EDuke32 `PROJECTILE_FLAG_RANDDECALSIZE` (`PROJ_WORKSLIKE` bit 13).
+pub(crate) const PROJECTILE_FLAG_RANDDECALSIZE: i32 = 8_192;
+/// EDuke32 `PROJECTILE_FLAG_RADIUS_PICNUM` (`PROJ_WORKSLIKE` bit 16).
+pub(crate) const PROJECTILE_FLAG_RADIUS_PICNUM: i32 = 65_536;
 /// EDuke32 `PROJECTILE_FLAG_RPG` (`PROJ_WORKSLIKE` bit 1).
 pub(crate) const PROJECTILE_FLAG_RPG: i32 = 2;
 /// EDuke32 `PROJECTILE_FLAG_WATERBUBBLES` (`PROJ_WORKSLIKE` bit 5).
@@ -92,6 +98,8 @@ pub(crate) const PROJECTILE_FLAG_BOUNCESOFFWALLS: i32 = 4;
 pub(crate) const PROJECTILE_FLAG_BOUNCESOFFMIRRORS: i32 = 8;
 /// EDuke32 `PROJECTILE_FLAG_BOUNCESOFFSPRITES` (`PROJ_WORKSLIKE` bit 7).
 pub(crate) const PROJECTILE_FLAG_BOUNCESOFFSPRITES: i32 = 128;
+/// EDuke32 `PROJECTILE_FLAG_LOSESVELOCITY` (`PROJ_WORKSLIKE` bit 11).
+pub(crate) const PROJECTILE_FLAG_LOSESVELOCITY: i32 = 2048;
 /// EDuke32 `PROJECTILE_FLAG_TIMED` (`PROJ_WORKSLIKE` bit 6).
 pub(crate) const PROJECTILE_FLAG_TIMED: i32 = 64;
 /// EDuke32 `PROJECTILE_FLAG_EXPLODEONTIMER` (`PROJ_WORKSLIKE` bit 14).
@@ -1174,9 +1182,18 @@ pub(crate) fn shoot_defined_hitscan(
         {
             let angle =
                 getangle(wall.x.wrapping_sub(end.x), wall.y.wrapping_sub(end.y)).wrapping_add(512);
-            sprites[decal_index].xrepeat = decal_xrepeat.unwrap_or(3);
-            sprites[decal_index].yrepeat = decal_yrepeat.unwrap_or(3);
-            sprites[decal_index].cstat = 16;
+            let decal_xrepeat = decal_xrepeat.unwrap_or(3);
+            let decal_yrepeat = decal_yrepeat.unwrap_or(3);
+            sprites[decal_index].xrepeat = decal_xrepeat;
+            sprites[decal_index].yrepeat = decal_yrepeat;
+            if workslike & PROJECTILE_FLAG_RANDDECALSIZE != 0 {
+                let size = (krand_step(randomseed) & i32::from(decal_xrepeat))
+                    .max(i32::from(decal_yrepeat))
+                    .min(i32::from(decal_xrepeat)) as u8;
+                sprites[decal_index].xrepeat = size;
+                sprites[decal_index].yrepeat = size;
+            }
+            sprites[decal_index].cstat = 16 + (krand_step(randomseed) & (4 | 8)) as u16;
             sprites[decal_index].xvel = -1;
             sprites[decal_index].ang = angle as i16;
 
@@ -1618,7 +1635,7 @@ pub fn shoot_shotgun_player(
         };
         let dist = f64::from(hit.hitx - sx).hypot(f64::from(hit.hity - sy));
         push_hit_log(format!(
-            "hit: weapon pic {weapon_picnum} -> {what} at ({}, {}, {}) dist {dist:.0} aim {}",
+            "hit: weapon pic {weapon_picnum} -> {what} at ({}, {}, {}) dist {dist:.0} aim {} sa {sa} horiz {} zvel {zvel} startz {sz}",
             hit.hitx,
             hit.hity,
             hit.hitz,
@@ -1626,7 +1643,8 @@ pub fn shoot_shotgun_player(
                 format!("locked on #{j}")
             } else {
                 "free".to_string()
-            }
+            },
+            player.horiz,
         ));
     }
     if hit.hitsect < 0 {

@@ -813,6 +813,26 @@
     #stats td.left { color: var(--r-dim); }
     #stats .st-hint { margin-top: 0.7rem; font-size: 11px; color: var(--r-dim); }
 
+
+    /* The renderer stopped: say why instead of leaving a black screen. */
+    #crash {
+      position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center;
+      padding: 1rem; background: rgba(0, 0, 0, 0.78);
+    }
+    #crash[hidden] { display: none; }
+    #crash .panel {
+      box-sizing: border-box; width: min(32rem, 100%); max-height: calc(100dvh - 2rem); overflow: auto;
+      padding: 1rem 1.1rem; background: var(--r-grain); border: var(--r-raised); border-color: var(--r-raised-c);
+      box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.8); color: var(--r-bone); font: 13px/1.45 var(--r-ui);
+    }
+    #crash h2 { margin: 0 0 0.4rem; font: 400 1.6rem/1.1 var(--r-display); color: var(--r-red); text-shadow: 2px 2px 0 #000; }
+    #crash pre {
+      margin: 0.6rem 0; padding: 0.5rem 0.6rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+      background: var(--r-well); border: 2px solid; border-color: var(--r-sunk-c); color: var(--r-amber); font: 11px/1.4 ui-monospace, Menlo, monospace;
+    }
+    #crash .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    #crash button { min-height: 40px; padding: 0.4rem 0.9rem; cursor: pointer; border: 2px solid; border-color: var(--r-raised-c); background: var(--r-face); color: var(--r-bone); font: 700 0.85rem var(--r-ui); }
+
     /* Screenshot / GIF capture */
     #gamebar button#capture-gif.recording { background: var(--r-red); color: #fff; border-color: var(--r-sunk-c); }
     #capture-badge {
@@ -876,6 +896,82 @@
     <div class="mm-well"><canvas width="220" height="220"></canvas></div>
     <div class="mm-bar"><span class="mm-name"></span><span class="mm-zoom"></span></div>
   </div>
+  <div id="crash" hidden role="alertdialog" aria-labelledby="crash-title">
+    <div class="panel">
+      <h2 id="crash-title">The game stopped</h2>
+      <p id="crash-what">The 3D renderer could not run on this device.</p>
+      <pre id="crash-detail"></pre>
+      <div class="row">
+        <button type="button" id="crash-reload">Reload</button>
+        <button type="button" id="crash-copy">Copy details</button>
+      </div>
+    </div>
+  </div>
+  <script>
+  // Phones and tablets get a lighter profile (Settings › Performance mode,
+  // Pixel resolution, no voxel models by default).
+  window.ROOM_MOBILE = (() => {
+    try {
+      const coarse = matchMedia('(pointer: coarse)').matches;
+      const ua = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(navigator.userAgent);
+      const ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+      return (coarse && ua) || ipadOs;
+    } catch (_) { return false; }
+  })();
+  </script>
+  <script>
+  // Black screens on phones are usually a renderer error that only reaches
+  // the console. Keep the last engine error and show it with what the
+  // browser offers (WebGPU or WebGL2), so it can be read off the device.
+  (() => {
+    let last = '';
+    const keep = (args) => {
+      const t = args.map((a) => (a && a.stack) ? a.stack : String(a)).join(' ');
+      if (/room-web|panicked|wgpu|Validation|WebGL|adapter/i.test(t)) last = t.slice(0, 4000);
+    };
+    const orig = console.error.bind(console);
+    console.error = (...args) => { keep(args); orig(...args); };
+    const gl = (() => {
+      try {
+        const c = document.createElement('canvas').getContext('webgl2');
+        if (!c) return 'none';
+        const d = c.getExtension('WEBGL_debug_renderer_info');
+        return d ? c.getParameter(d.UNMASKED_RENDERER_WEBGL) : 'yes';
+      } catch (_) { return 'none'; }
+    })();
+    let shown = false;
+    function show(reason) {
+      if (shown) return;
+      shown = true;
+      const box = document.getElementById('crash');
+      if (!box) return;
+      const detail = [
+        last || String(reason || 'unknown error'),
+        '',
+        `WebGPU: ${'gpu' in navigator ? 'present' : 'absent'} · WebGL2: ${gl}`,
+        `Screen: ${screen.width}×${screen.height} @${devicePixelRatio} · ${navigator.userAgent}`,
+      ].join('\n');
+      document.getElementById('crash-detail').textContent = detail;
+      if (/WebGL|GLSL|Downlevel|webgl2/i.test(last)) {
+        document.getElementById('crash-what').textContent =
+          "This browser has no WebGPU, and the WebGL2 fallback hit something it can't draw.";
+      }
+      box.hidden = false;
+      document.getElementById('crash-reload').onclick = () => location.reload();
+      document.getElementById('crash-copy').onclick = () => navigator.clipboard?.writeText(detail);
+    }
+    // A wasm panic surfaces as `RuntimeError: unreachable`.
+    window.addEventListener('error', (e) => {
+      const m = String(e.message || e.error || '');
+      if (/unreachable|RuntimeError|wasm/i.test(m)) show(m);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const m = String(e.reason && (e.reason.stack || e.reason));
+      if (/room_web|wasm|unreachable/i.test(m)) show(m);
+    });
+    window.roomShowCrash = show;
+  })();
+  </script>
   <div id="toasts" aria-live="polite"></div>
   <div id="stats" hidden aria-live="off"><div class="panel"></div></div>
   <div id="capture-badge" hidden aria-live="polite"></div>
@@ -1810,7 +1906,7 @@
               v === "true" ||
               packHas ||
               params.get("mod") === "voxel" ||
-              v === "");
+              (v === "" && !window.ROOM_MOBILE));
           voxelBox.checked = on;
           voxelBox.addEventListener("change", () => {
             // Persist intent explicitly so default-on stays stable across reloads.
@@ -1938,7 +2034,7 @@
         const voxelParam = (params.get("voxel") || "").toLowerCase();
         if (voxelParam === "1" || voxelParam === "true") packs.add("voxel");
         else if (voxelParam === "0" || voxelParam === "false") packs.delete("voxel");
-        else packs.add("voxel"); // default on
+        else if (!window.ROOM_MOBILE) packs.add("voxel"); // default on (off on phones)
         let gameplay = rawMod;
         if (rawMod === "voxel") {
           packs.add("voxel");

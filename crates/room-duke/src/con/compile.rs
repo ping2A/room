@@ -667,6 +667,16 @@ fn parse_command(cx: &mut Cx<'_>, lx: &mut Lexer<'_>, includes: &mut dyn Include
                 .eduke_program
                 .instructions
                 .push(EdInstruction::Return),
+            "pstomp" => cx
+                .img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::PlayerStomp),
+            "wackplayer" => cx
+                .img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::PlayerWack),
             "{" | "}" => {}
             _ => cx.emit_eduke_noop(),
         }
@@ -874,7 +884,34 @@ fn parse_command(cx: &mut Cx<'_>, lx: &mut Lexer<'_>, includes: &mut dyn Include
         | 109 => parse_if_tail(cx, lx, includes),
         // `else`
         10 => {
-            if cx.checking_ifelse > 0 {
+            if cx.img.dialect == ConDialect::EDuke32 {
+                // Unlike Atomic CON, EDuke32 accepts unmatched `else`
+                // statements in legacy scripts. Their following statement is
+                // ignored (the original GAME.CON has this in
+                // pigshootenemystate because its `ifcansee` was commented
+                // out). Pair a condition that reached the generic parser;
+                // otherwise parse and discard the orphan branch.
+                cx.img.rewind();
+                if let Some(pending) = cx.eduke_pending_ifelse.pop() {
+                    let skip_jump = if pending.skip_jump == usize::MAX {
+                        let index = cx.img.eduke_program.instructions.len();
+                        cx.img
+                            .eduke_program
+                            .instructions
+                            .push(EdInstruction::Jump { target: 0 });
+                        index
+                    } else {
+                        pending.skip_jump
+                    };
+                    let else_start = cx.img.eduke_program.instructions.len();
+                    patch_eduke_conditional(cx, pending.condition_instruction, else_start);
+                    compile_eduke_body(cx, lx, includes, &[]);
+                    let after_else = cx.img.eduke_program.instructions.len();
+                    patch_eduke_jump(cx, skip_jump, after_else);
+                } else {
+                    discard_eduke_orphan_else_body(cx, lx, includes);
+                }
+            } else if cx.checking_ifelse > 0 {
                 cx.checking_ifelse -= 1;
                 let slot = cx.img.here() as usize;
                 cx.img.emit(0);
@@ -915,6 +952,26 @@ fn parse_command(cx: &mut Cx<'_>, lx: &mut Lexer<'_>, includes: &mut dyn Include
             false
         }
     }
+}
+
+/// Consume an EDuke32 orphan `else` branch while keeping its statements out
+/// of the VM. The source still needs parsing so following statements and
+/// closing braces remain aligned.
+fn discard_eduke_orphan_else_body(
+    cx: &mut Cx<'_>,
+    lx: &mut Lexer<'_>,
+    includes: &mut dyn IncludeResolver,
+) {
+    let instruction_start = cx.img.eduke_program.instructions.len();
+    let pending_start = cx.eduke_pending_ifelse.len();
+    let break_start = cx.eduke_break_stack.len();
+    compile_eduke_body(cx, lx, includes, &[]);
+    cx.img
+        .eduke_program
+        .instructions
+        .truncate(instruction_start);
+    cx.eduke_pending_ifelse.truncate(pending_start);
+    cx.eduke_break_stack.truncate(break_start);
 }
 
 fn account_eduke_braces(cx: &mut Cx<'_>, source: &str) {
@@ -1393,6 +1450,10 @@ fn parse_eduke_vm_command(
             | "getzrange"
             | "rotatesprite"
             | "minitext"
+            | "gametext"
+            | "gametextz"
+            | "digitalnumber"
+            | "digitalnumberz"
             | "freezerhurtowner"
             | "echo"
             | "definegamefuncname"
@@ -2244,6 +2305,7 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
             "actorsound" | "stopactorsound" => 2,
             "ifactorsound" => 2,
             "findnearactor3d" => 3,
+            "lineintersect" => 14,
             "set" | "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shiftl"
             | "shiftr" | "rand" | "randvar" | "randvarvar" | "mulscale" | "divscale"
             | "scalevar" | "ldist" | "dist" | "changespritestat" | "changespritesect"
@@ -2262,6 +2324,13 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
             "cansee" => 9,
             "getzrange" => 10,
             "hitscan" => 14,
+            "rotatesprite" => 12,
+            "guniqhudid" => 1,
+            "minitext" => 5,
+            "gametext" => 11,
+            "gametextz" => 12,
+            "digitalnumber" => 11,
+            "digitalnumberz" => 12,
             "hitradius" => 5,
             "ifpinventory" => 2,
             "setarray" => {
@@ -2490,6 +2559,84 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             .eduke_program
             .instructions
             .push(EdInstruction::PlayerTip),
+        "guniqhudid" if operands.len() == 1 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::SetHudUniqueId(eduke_operand(
+                    cx.img,
+                    &operands[0],
+                )))
+        }
+        "rotatesprite" if operands.len() == 12 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::RotateSprite(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
+        "minitext" if operands.len() == 5 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::Minitext {
+                    x: eduke_operand(cx.img, &operands[0]),
+                    y: eduke_operand(cx.img, &operands[1]),
+                    quote: eduke_operand(cx.img, &operands[2]),
+                    shade: eduke_operand(cx.img, &operands[3]),
+                    palette: eduke_operand(cx.img, &operands[4]),
+                })
+        }
+        "gametext" if operands.len() == 11 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::GameText(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
+        "gametextz" if operands.len() == 12 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::GameText(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
+        "digitalnumber" if operands.len() == 11 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::DigitalNumber(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
+        "digitalnumberz" if operands.len() == 12 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::DigitalNumber(
+                    operands
+                        .iter()
+                        .map(|operand| eduke_operand(cx.img, operand))
+                        .collect(),
+                ))
+        }
+        "guniqhudid" | "rotatesprite" | "minitext" | "gametext" | "gametextz" | "digitalnumber"
+        | "digitalnumberz" => eduke_bad_arity(cx),
         "sound" | "soundvar" | "soundonce" | "globalsound" | "globalsoundvar"
             if operands.len() == 1 =>
         {
@@ -2545,8 +2692,18 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     sound: eduke_operand(cx.img, &operands[1]),
                 })
         }
+        "setactorsoundpitch" if operands.len() == 3 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::SetActorSoundPitch {
+                    actor: eduke_operand(cx.img, &operands[0]),
+                    sound: eduke_operand(cx.img, &operands[1]),
+                    pitch_offset: eduke_operand(cx.img, &operands[2]),
+                });
+        }
         "sound" | "soundvar" | "soundonce" | "globalsound" | "globalsoundvar" | "stopsound"
-        | "actorsound" | "stopactorsound" => eduke_bad_arity(cx),
+        | "actorsound" | "stopactorsound" | "setactorsoundpitch" => eduke_bad_arity(cx),
         "rand" | "randvar" | "randvarvar" | "displayrand" | "displayrandvar"
         | "displayrandvarvar"
             if !operands.is_empty() =>
@@ -2799,6 +2956,14 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             .eduke_program
             .instructions
             .push(EdInstruction::Operate),
+        "operatemasterswitches" if operands.len() == 1 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::OperateMasterSwitches {
+                    lotag: eduke_operand(cx.img, &operands[0]),
+                })
+        }
         "respawnhitag" if operands.is_empty() => cx
             .img
             .eduke_program
@@ -2890,6 +3055,35 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     tile: eduke_operand(cx.img, &operands[0]),
                     distance: eduke_operand(cx.img, &operands[1]),
                     target: eduke_lvalue(cx.img, &operands[2]),
+                });
+        }
+        "lineintersect" if operands.len() == 14 => {
+            cx.img
+                .eduke_program
+                .instructions
+                .push(EdInstruction::LineIntersect {
+                    origin: [
+                        eduke_operand(cx.img, &operands[0]),
+                        eduke_operand(cx.img, &operands[1]),
+                        eduke_operand(cx.img, &operands[2]),
+                    ],
+                    destination: [
+                        eduke_operand(cx.img, &operands[3]),
+                        eduke_operand(cx.img, &operands[4]),
+                        eduke_operand(cx.img, &operands[5]),
+                    ],
+                    line: [
+                        eduke_operand(cx.img, &operands[6]),
+                        eduke_operand(cx.img, &operands[7]),
+                        eduke_operand(cx.img, &operands[8]),
+                        eduke_operand(cx.img, &operands[9]),
+                    ],
+                    outputs: [
+                        eduke_lvalue(cx.img, &operands[10]),
+                        eduke_lvalue(cx.img, &operands[11]),
+                        eduke_lvalue(cx.img, &operands[12]),
+                        eduke_lvalue(cx.img, &operands[13]),
+                    ],
                 });
         }
         "headspritestat" | "nextspritestat" | "headspritesect" | "nextspritesect"
@@ -3192,17 +3386,12 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
             || matches!(
                 command.as_str(),
                 "sectorofwall"
-                    | "guniqhudid"
-                    | "lineintersect"
                     | "setactorsoundpitch"
                     | "getzrange"
-                    | "rotatesprite"
-                    | "minitext"
                     | "freezerhurtowner"
                     | "definegamefuncname"
                     | "exit"
                     | "ifactorsound"
-                    | "operatemasterswitches"
                     | "prependstate"
             ) =>
         {
@@ -3783,6 +3972,13 @@ fn eduke_inline_command_token(token: &str) -> bool {
                 | "randvar"
                 | "randvarvar"
                 | "displayrand"
+                | "guniqhudid"
+                | "rotatesprite"
+                | "minitext"
+                | "gametext"
+                | "gametextz"
+                | "digitalnumber"
+                | "digitalnumberz"
                 | "soundvar"
                 | "spawn"
                 | "espawn"
@@ -3915,6 +4111,10 @@ fn eduke_statement_head(token: &str) -> bool {
                 | "setactorsoundpitch"
                 | "rotatesprite"
                 | "minitext"
+                | "gametext"
+                | "gametextz"
+                | "digitalnumber"
+                | "digitalnumberz"
                 | "freezerhurtowner"
                 | "echo"
                 | "exit"
@@ -5017,6 +5217,26 @@ mod tests {
         assert_eq!(img.errors, 0, "errors={}", img.errors);
         assert_eq!(img.labels.get("FOO").map(|label| label.value), Some(7));
         assert_eq!(img.con_size(), 0);
+    }
+
+    #[test]
+    fn eduke32_ignores_an_orphan_else_branch() {
+        let image = compile_with_options(
+            b"var branch 0\ndefstate orphan_else\n{\nelse\nset branch 1\n}\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert!(
+            image
+                .eduke_program
+                .instructions
+                .iter()
+                .all(|instruction| !matches!(instruction, EdInstruction::Assign { .. })),
+            "an orphan else body must not enter the VM"
+        );
     }
 
     #[test]

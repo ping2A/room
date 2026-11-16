@@ -4,7 +4,9 @@ use super::compile::EDUKE_MAX_QUOTES;
 use super::{ConDialect, EdArrayDefinition, EdVariableDefinition, ScriptImage};
 use room_build_engine::helpers::{getangle, sincos_q14};
 use room_build_engine::numeric::{divscale, krand_step, mulscale};
-use room_build_engine::world::{MAXSECTORS, MAXSPRITES, MAXWALLS};
+use room_build_engine::world::{
+    HudGameTextDraw, HudNumberDraw, HudSpriteDraw, HudTextDraw, MAXSECTORS, MAXSPRITES, MAXWALLS,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -296,6 +298,27 @@ pub enum EdInstruction {
     /// Preserve an instruction boundary for a host command not yet handled by
     /// the EDuke32 VM core.
     NoOp,
+    /// Select EDuke32's per-command HUD interpolation identity.
+    SetHudUniqueId(EdOperand),
+    /// Capture one screen-space ART draw for the current render event.
+    RotateSprite(Vec<EdOperand>),
+    /// Capture a quote rendered with EDuke32's small HUD font.
+    Minitext {
+        /// Top-left X coordinate.
+        x: EdOperand,
+        /// Top-left Y coordinate.
+        y: EdOperand,
+        /// Quote slot.
+        quote: EdOperand,
+        /// Build shade value.
+        shade: EdOperand,
+        /// Palette lookup id.
+        palette: EdOperand,
+    },
+    /// Capture one quote rendered with EDuke32's large game font.
+    GameText(Vec<EdOperand>),
+    /// Capture one EDuke32 `digitalnumber` or `digitalnumberz` command.
+    DigitalNumber(Vec<EdOperand>),
     /// End the current event handler while allowing later appended handlers.
     EndEvent,
     /// Delete or hide the current actor and stop the current script body.
@@ -337,6 +360,11 @@ pub enum EdInstruction {
     },
     /// Queue the current actor's nearby-sector operation for the session phase.
     Operate,
+    /// Arm every untriggered masterswitch with the requested lotag.
+    OperateMasterSwitches {
+        /// Masterswitch lotag to match.
+        lotag: EdOperand,
+    },
     /// Activate matching Build respawn markers for the current actor's tag.
     RespawnHitag,
     /// Request a single-player map restart and stop this event chain.
@@ -350,6 +378,10 @@ pub enum EdInstruction {
     },
     /// Request the current actor's nearest player to perform a quick kick.
     PlayerQuickKick,
+    /// Request the current actor's nearest player to start a stomp attack.
+    PlayerStomp,
+    /// Request the current actor's nearest player view to tilt.
+    PlayerWack,
     /// Drop the nearest player's current weapon using the shared Build RNG.
     TossWeapon,
     /// Queue an actor or global sound through the live session audio bridge.
@@ -360,6 +392,15 @@ pub enum EdInstruction {
         mode: EdSoundMode,
         /// Explicit source sprite for EDuke32 `actorsound`; otherwise `THISACTOR`.
         actor: Option<EdOperand>,
+    },
+    /// Adjust the pitch of an active actor sound by cents.
+    SetActorSoundPitch {
+        /// Actor source ID, with `-1` selecting all sources.
+        actor: EdOperand,
+        /// Sound definition ID.
+        sound: EdOperand,
+        /// Additional pitch offset in 1/100 semitone units.
+        pitch_offset: EdOperand,
     },
     /// Stop every active voice for a sound ID.
     StopSound {
@@ -642,6 +683,17 @@ pub enum EdInstruction {
         /// Y component.
         y: EdOperand,
     },
+    /// Intersect a 3D segment with the vertical plane through an XY segment.
+    LineIntersect {
+        /// Origin `(x, y, z)`.
+        origin: [EdOperand; 3],
+        /// Destination `(x, y, z)`.
+        destination: [EdOperand; 3],
+        /// XY endpoints defining the vertical plane.
+        line: [EdOperand; 4],
+        /// Output intersection X, Y, Z, and boolean result destinations.
+        outputs: [EdLValue; 4],
+    },
     /// Read a sector's floor or ceiling plane at a Build-space position.
     GetSlopeZ {
         /// Destination.
@@ -905,12 +957,51 @@ pub trait EdukeStructAccess {
         value: i32,
     ) -> Result<(), EdukeVmError>;
 
+    /// Set `guniqhudid` for following screen-space sprite commands.
+    fn set_hud_unique_id(&mut self, _id: i32) {}
+
+    /// Append one render-only `rotatesprite` request.
+    fn draw_hud_sprite(&mut self, _draw: HudSpriteDraw) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Append one render-only `minitext` request.
+    fn draw_hud_text(&mut self, _draw: HudTextDraw) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Append one render-only `gametext` request.
+    fn draw_hud_gametext(&mut self, _draw: HudGameTextDraw) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Append one render-only digital-number request.
+    fn draw_hud_number(&mut self, _draw: HudNumberDraw) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Current `guniqhudid` value for constructing interpolation metadata.
+    fn current_hud_unique_id(&self) -> i32 {
+        0
+    }
+
     /// Queue a sound using the current Build actor or local player position.
     fn play_sound(
         &mut self,
         _actor: i32,
         _sound: i32,
         _mode: EdSoundMode,
+    ) -> Result<(), EdukeVmError> {
+        Ok(())
+    }
+
+    /// Adjust the pitch of an active sound, optionally restricted to one actor.
+    fn set_actor_sound_pitch(
+        &mut self,
+        _context_actor: i32,
+        _actor: i32,
+        _sound: i32,
+        _pitch_offset: i32,
     ) -> Result<(), EdukeVmError> {
         Ok(())
     }
@@ -1124,6 +1215,11 @@ pub trait EdukeStructAccess {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
+    /// Arm matching masterswitch sprites for their native delayed tick.
+    fn operate_master_switches(&mut self, _lotag: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
     /// Run EDuke32 `respawnhitag` for the selected actor.
     fn respawn_hitag(&mut self, _actor: i32) -> Result<(), EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
@@ -1166,6 +1262,21 @@ pub trait EdukeStructAccess {
 
     /// Queue the classic CON `pkick` effect for the current actor.
     fn request_player_quick_kick(&mut self, _actor: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Start the CON `pstomp` knee sequence when the player can see the actor.
+    fn request_player_stomp(&mut self, _player: usize, _actor: i32) -> Result<(), EdukeVmError> {
+        Err(EdukeVmError::StructAccessUnavailable)
+    }
+
+    /// Queue the CON `wackplayer` view angle for the current actor's player.
+    fn request_player_wack(
+        &mut self,
+        _player: usize,
+        _actor: i32,
+        _angle: i32,
+    ) -> Result<(), EdukeVmError> {
         Err(EdukeVmError::StructAccessUnavailable)
     }
 
@@ -1483,12 +1594,54 @@ fn random_range_from_bits(maximum: i32, random: i32) -> i32 {
     }
 }
 
+fn line_intersect_3d(origin: [i32; 3], destination: [i32; 3], line: [i32; 4]) -> Option<[i32; 3]> {
+    let ray_x = i128::from(destination[0]) - i128::from(origin[0]);
+    let ray_y = i128::from(destination[1]) - i128::from(origin[1]);
+    let wall_x = i128::from(line[2]) - i128::from(line[0]);
+    let wall_y = i128::from(line[3]) - i128::from(line[1]);
+    let mut denominator = ray_x * wall_y - ray_y * wall_x;
+    if denominator == 0 {
+        return None;
+    }
+    let offset_x = i128::from(line[0]) - i128::from(origin[0]);
+    let offset_y = i128::from(line[1]) - i128::from(origin[1]);
+    let mut ray_numerator = offset_x * wall_y - offset_y * wall_x;
+    let mut wall_numerator = offset_x * ray_y - offset_y * ray_x;
+    if denominator < 0 {
+        denominator = -denominator;
+        ray_numerator = -ray_numerator;
+        wall_numerator = -wall_numerator;
+    }
+    if !(0..=denominator).contains(&ray_numerator) || !(0..=denominator).contains(&wall_numerator) {
+        return None;
+    }
+    let interpolate = |start: i32, end: i32| {
+        let delta = i128::from(end) - i128::from(start);
+        i32::try_from(i128::from(start) + delta * ray_numerator / denominator).ok()
+    };
+    Some([
+        interpolate(origin[0], destination[0])?,
+        interpolate(origin[1], destination[1])?,
+        interpolate(origin[2], destination[2])?,
+    ])
+}
+
 /// Failures while constructing or accessing EDuke32 VM storage.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EdukeVmError {
     /// An Atomic image was passed to the EDuke32 storage layer.
     #[error("EDuke32 runtime state requires an EDuke32 CON image")]
     WrongDialect,
+    /// A malformed compiled instruction has an unexpected operand count.
+    #[error("EDuke32 instruction `{instruction}` expects {expected} operands, got {actual}")]
+    InvalidInstructionArity {
+        /// Instruction name.
+        instruction: &'static str,
+        /// Required operand count.
+        expected: usize,
+        /// Compiled operand count.
+        actual: usize,
+    },
     /// A serialized EDuke32 state does not match its compiled declarations.
     #[error("EDuke32 VM snapshot does not match the compiled CON declarations")]
     InvalidSnapshot,
@@ -2491,6 +2644,141 @@ impl EdukeVmState {
             let mut pending_spawn_return = None;
             match instruction {
                 EdInstruction::NoOp => pc += 1,
+                EdInstruction::SetHudUniqueId(id) => {
+                    let id = self.read_operand(id, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.set_hud_unique_id(id);
+                    }
+                    pc += 1;
+                }
+                EdInstruction::RotateSprite(operands) => {
+                    if operands.len() != 12 {
+                        return Err(EdukeVmError::InvalidInstructionArity {
+                            instruction: "rotatesprite",
+                            expected: 12,
+                            actual: operands.len(),
+                        });
+                    }
+                    let mut values = [0_i32; 12];
+                    for (slot, operand) in values.iter_mut().zip(operands) {
+                        *slot = self.read_operand(operand, player, actor, &mut access)?;
+                    }
+                    if let Some(host) = access.as_deref_mut() {
+                        let unique_id = host.current_hud_unique_id();
+                        host.draw_hud_sprite(HudSpriteDraw {
+                            x: values[0],
+                            y: values[1],
+                            zoom: values[2],
+                            angle: values[3],
+                            tile: values[4],
+                            shade: values[5],
+                            palette: values[6],
+                            orientation: values[7],
+                            clip: [values[8], values[9], values[10], values[11]],
+                            unique_id,
+                        })?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::Minitext {
+                    x,
+                    y,
+                    quote,
+                    shade,
+                    palette,
+                } => {
+                    let x = self.read_operand(x, player, actor, &mut access)?;
+                    let y = self.read_operand(y, player, actor, &mut access)?;
+                    let quote = self.read_operand(quote, player, actor, &mut access)?;
+                    let quote_index = usize::try_from(quote).map_err(|_| {
+                        EdukeVmError::QuoteIndexOutOfBounds {
+                            index: usize::MAX,
+                            extent: EDUKE_MAX_QUOTES,
+                        }
+                    })?;
+                    let text = self.quote(quote_index)?.to_owned();
+                    let shade = self.read_operand(shade, player, actor, &mut access)?;
+                    let palette = self.read_operand(palette, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.draw_hud_text(HudTextDraw {
+                            x,
+                            y,
+                            text,
+                            shade,
+                            palette,
+                        })?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::GameText(operands) => {
+                    if operands.len() != 11 && operands.len() != 12 {
+                        return Err(EdukeVmError::InvalidInstructionArity {
+                            instruction: "gametext",
+                            expected: 11,
+                            actual: operands.len(),
+                        });
+                    }
+                    let mut values = [0_i32; 12];
+                    for (slot, operand) in values.iter_mut().zip(operands) {
+                        *slot = self.read_operand(operand, player, actor, &mut access)?;
+                    }
+                    let quote_index = usize::try_from(values[3]).map_err(|_| {
+                        EdukeVmError::QuoteIndexOutOfBounds {
+                            index: usize::MAX,
+                            extent: EDUKE_MAX_QUOTES,
+                        }
+                    })?;
+                    let text = self.quote(quote_index)?.to_owned();
+                    if let Some(host) = access.as_deref_mut() {
+                        host.draw_hud_gametext(HudGameTextDraw {
+                            tile: values[0],
+                            x: values[1],
+                            y: values[2],
+                            text,
+                            shade: values[4],
+                            palette: values[5],
+                            orientation: values[6],
+                            clip: [values[7], values[8], values[9], values[10]],
+                            zoom: if operands.len() == 12 {
+                                values[11]
+                            } else {
+                                65536
+                            },
+                        })?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::DigitalNumber(operands) => {
+                    if operands.len() != 11 && operands.len() != 12 {
+                        return Err(EdukeVmError::InvalidInstructionArity {
+                            instruction: "digitalnumber",
+                            expected: 11,
+                            actual: operands.len(),
+                        });
+                    }
+                    let mut values = [0_i32; 12];
+                    for (slot, operand) in values.iter_mut().zip(operands) {
+                        *slot = self.read_operand(operand, player, actor, &mut access)?;
+                    }
+                    if let Some(host) = access.as_deref_mut() {
+                        host.draw_hud_number(HudNumberDraw {
+                            tile: values[0],
+                            x: values[1],
+                            y: values[2],
+                            number: values[3],
+                            shade: values[4],
+                            palette: values[5],
+                            orientation: values[6],
+                            clip: [values[7], values[8], values[9], values[10]],
+                            zoom: if operands.len() == 12 {
+                                values[11]
+                            } else {
+                                65536
+                            },
+                        })?;
+                    }
+                    pc += 1;
+                }
                 EdInstruction::KillIt => {
                     let kill_actor_id = if actor == NO_EVENT_CONTEXT {
                         None
@@ -2567,6 +2855,28 @@ impl EdukeVmState {
                         && let Some(host) = access.as_deref_mut()
                     {
                         host.play_sound(actor_id, sound, *mode)?;
+                    }
+                    pc += 1;
+                }
+                EdInstruction::SetActorSoundPitch {
+                    actor: source_actor,
+                    sound,
+                    pitch_offset,
+                } => {
+                    let source_actor =
+                        self.read_operand(source_actor, player, actor, &mut access)?;
+                    let sound = self.read_operand(sound, player, actor, &mut access)?;
+                    let pitch_offset =
+                        self.read_operand(pitch_offset, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        let context_actor =
+                            event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                        host.set_actor_sound_pitch(
+                            context_actor,
+                            source_actor,
+                            sound,
+                            pitch_offset,
+                        )?;
                     }
                     pc += 1;
                 }
@@ -2696,6 +3006,13 @@ impl EdukeVmState {
                     }
                     pc += 1;
                 }
+                EdInstruction::OperateMasterSwitches { lotag } => {
+                    let lotag = self.read_operand(lotag, player, actor, &mut access)?;
+                    if let Some(host) = access.as_deref_mut() {
+                        host.operate_master_switches(lotag)?;
+                    }
+                    pc += 1;
+                }
                 EdInstruction::RespawnHitag => {
                     let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
                     if let Some(host) = access.as_deref_mut() {
@@ -2785,6 +3102,60 @@ impl EdukeVmState {
                         .as_deref_mut()
                         .ok_or(EdukeVmError::StructAccessUnavailable)?;
                     host.request_player_quick_kick(actor_id)?;
+                    pc += 1;
+                }
+                EdInstruction::PlayerStomp => {
+                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                    let host = access
+                        .as_deref_mut()
+                        .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                    host.request_player_stomp(player, actor_id)?;
+                    pc += 1;
+                }
+                EdInstruction::PlayerWack => {
+                    let actor_id = event_context_value("actor", "THISACTOR", actor, MAXSPRITES)?;
+                    let angle = (128 - (self.next_game_random(&mut access) & 255)) >> 1;
+                    let host = access
+                        .as_deref_mut()
+                        .ok_or(EdukeVmError::StructAccessUnavailable)?;
+                    host.request_player_wack(player, actor_id, angle)?;
+                    pc += 1;
+                }
+                EdInstruction::LineIntersect {
+                    origin,
+                    destination,
+                    line,
+                    outputs,
+                } => {
+                    let origin = [
+                        self.read_operand(&origin[0], player, actor, &mut access)?,
+                        self.read_operand(&origin[1], player, actor, &mut access)?,
+                        self.read_operand(&origin[2], player, actor, &mut access)?,
+                    ];
+                    let destination = [
+                        self.read_operand(&destination[0], player, actor, &mut access)?,
+                        self.read_operand(&destination[1], player, actor, &mut access)?,
+                        self.read_operand(&destination[2], player, actor, &mut access)?,
+                    ];
+                    let line = [
+                        self.read_operand(&line[0], player, actor, &mut access)?,
+                        self.read_operand(&line[1], player, actor, &mut access)?,
+                        self.read_operand(&line[2], player, actor, &mut access)?,
+                        self.read_operand(&line[3], player, actor, &mut access)?,
+                    ];
+                    let intersection = line_intersect_3d(origin, destination, line);
+                    if let Some([x, y, z]) = intersection {
+                        self.write_lvalue(&outputs[0], player, actor, x, &mut access)?;
+                        self.write_lvalue(&outputs[1], player, actor, y, &mut access)?;
+                        self.write_lvalue(&outputs[2], player, actor, z, &mut access)?;
+                    }
+                    self.write_lvalue(
+                        &outputs[3],
+                        player,
+                        actor,
+                        i32::from(intersection.is_some()),
+                        &mut access,
+                    )?;
                     pc += 1;
                 }
                 EdInstruction::TossWeapon => {
@@ -4741,6 +5112,7 @@ mod tests {
         player_cursectnum: i32,
         actor_tile_geometry: [i32; 4],
         nearest_player_distance: i32,
+        sound_pitch_calls: Vec<(i32, i32, i32, i32)>,
         ifp_result: bool,
         player_input_mask: u32,
         actor_squished: bool,
@@ -4759,12 +5131,15 @@ mod tests {
         operate_calls: Vec<i32>,
         respawn_hitag_calls: Vec<i32>,
         player_restart_requests: Vec<usize>,
+        master_switch_lotags: Vec<i32>,
         game_palette_calls: Vec<(usize, i32)>,
         timer_rate_calls: Vec<i32>,
         end_of_game_calls: Vec<(usize, i32)>,
         tip_calls: Vec<usize>,
         hitradius_calls: Vec<(i32, i32, [i32; 4])>,
         quick_kick_calls: Vec<i32>,
+        stomp_calls: Vec<(usize, i32)>,
+        wack_calls: Vec<(usize, i32, i32)>,
         quote_calls: Vec<(usize, usize)>,
         palette_calls: Vec<(usize, [i32; 4])>,
         vm_sprite: i32,
@@ -4921,6 +5296,18 @@ mod tests {
             mode: EdSoundMode,
         ) -> Result<(), EdukeVmError> {
             self.played_sounds.push((actor, sound, mode));
+            Ok(())
+        }
+
+        fn set_actor_sound_pitch(
+            &mut self,
+            context_actor: i32,
+            actor: i32,
+            sound: i32,
+            pitch_offset: i32,
+        ) -> Result<(), EdukeVmError> {
+            self.sound_pitch_calls
+                .push((context_actor, actor, sound, pitch_offset));
             Ok(())
         }
 
@@ -5187,6 +5574,11 @@ mod tests {
             Ok(())
         }
 
+        fn operate_master_switches(&mut self, lotag: i32) -> Result<(), EdukeVmError> {
+            self.master_switch_lotags.push(lotag);
+            Ok(())
+        }
+
         fn respawn_hitag(&mut self, actor: i32) -> Result<(), EdukeVmError> {
             self.respawn_hitag_calls.push(actor);
             Ok(())
@@ -5229,6 +5621,21 @@ mod tests {
 
         fn request_player_quick_kick(&mut self, actor: i32) -> Result<(), EdukeVmError> {
             self.quick_kick_calls.push(actor);
+            Ok(())
+        }
+
+        fn request_player_stomp(&mut self, player: usize, actor: i32) -> Result<(), EdukeVmError> {
+            self.stomp_calls.push((player, actor));
+            Ok(())
+        }
+
+        fn request_player_wack(
+            &mut self,
+            player: usize,
+            actor: i32,
+            angle: i32,
+        ) -> Result<(), EdukeVmError> {
+            self.wack_calls.push((player, actor, angle));
             Ok(())
         }
 
@@ -6226,6 +6633,28 @@ mod tests {
     }
 
     #[test]
+    fn setactorsoundpitch_forwards_actor_sound_and_cent_offset() {
+        let image = compile_with_options(
+            b"defstate retune_sound\nsetactorsoundpitch -1 18 -750\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("setactorsoundpitch"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["retune_sound"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("sound pitch command executes");
+
+        assert_eq!(host.sound_pitch_calls, [(7, -1, 18, -750)]);
+    }
+
+    #[test]
     fn findnearactor3d_writes_the_host_search_result() {
         let image = compile_with_options(
             b"var found -2\ndefstate search_actor\nfindnearactor3d 9001 200 found\nends\n",
@@ -6877,6 +7306,76 @@ mod tests {
             .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
             .expect("operate command executes");
         assert_eq!(host.operate_calls, [7]);
+    }
+
+    #[test]
+    fn pstomp_and_wackplayer_dispatch_with_deterministic_angle() {
+        let image = compile_with_options(
+            b"defstate player_commands\npstomp\nwackplayer\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("pstomp"), None);
+        assert_eq!(image.eduke_noop_heads.get("wackplayer"), None);
+
+        let mut expected_seed = 1996;
+        let expected_angle = (128 - (krand_step(&mut expected_seed) & 255)) >> 1;
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["player_commands"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 1, 7, 8, 2, &mut host)
+            .expect("player CON commands execute");
+
+        assert_eq!(host.stomp_calls, [(1, 7)]);
+        assert_eq!(host.wack_calls, [(1, 7, expected_angle)]);
+        assert_eq!(state.get_variable("randomseed", 1, 7), Ok(expected_seed));
+    }
+
+    #[test]
+    fn operatemasterswitches_dispatches_its_lotag() {
+        let image = compile_with_options(
+            b"defstate arm_masterswitches\noperatemasterswitches 42\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("operatemasterswitches"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        let entry = image.eduke_program.states["arm_masterswitches"];
+        let mut host = TestStructAccess::default();
+        state
+            .execute_at_with_access(&image.eduke_program, entry, 0, 7, 16, 4, &mut host)
+            .expect("masterswitch command executes");
+        assert_eq!(host.master_switch_lotags, [42]);
+    }
+
+    #[test]
+    fn lineintersect_updates_outputs_only_when_segments_cross() {
+        let image = compile_with_options(
+            b"var ix 0 0\nvar iy 0 0\nvar iz 0 0\nvar hit 0 0\ndefstate intersect\nlineintersect 0 0 0 10 10 20 0 10 10 0 ix iy iz hit\nlineintersect 0 0 0 10 0 20 0 10 10 10 ix iy iz hit\nends\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        assert_eq!(image.eduke_noop_heads.get("lineintersect"), None);
+
+        let mut state = EdukeVmState::from_image(&image).expect("valid declarations");
+        state
+            .execute_state(&image.eduke_program, "intersect", 0, 0, 16, 2)
+            .expect("run line intersection commands");
+        assert_eq!(state.get_variable("ix", 0, 0), Ok(5));
+        assert_eq!(state.get_variable("iy", 0, 0), Ok(5));
+        assert_eq!(state.get_variable("iz", 0, 0), Ok(10));
+        assert_eq!(state.get_variable("hit", 0, 0), Ok(0));
     }
 
     #[test]

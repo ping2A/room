@@ -211,6 +211,24 @@ const VIEW_SEATS: usize = 4;
 /// Seats whose eye is interpolated between tics (every seat).
 const EYE_SEATS: usize = room_sim::MAX_PLAYERS;
 
+/// Doom run speeds in `TicCmd` units (`room_input` FORWARD_RUN / SIDE_RUN).
+const ANALOG_FORWARD_RUN: f64 = 50.0 * 256.0;
+const ANALOG_SIDE_RUN: f64 = 40.0 * 256.0;
+
+/// Replace key movement with the on-screen stick when it is pushed: a full
+/// push runs, a half push walks, and any angle is possible (not just 8).
+fn apply_analog_move(bits: &mut room_input::TicCmdBits) {
+    if let Some((x, y)) = crate::input_hub::analog_move() {
+        bits.forward_move = analog_units(y, ANALOG_FORWARD_RUN);
+        bits.side_move = analog_units(x, ANALOG_SIDE_RUN);
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn analog_units(v: f64, run: f64) -> i16 {
+    (v.clamp(-1.0, 1.0) * run).round() as i16
+}
+
 /// Spectators fast-forward while this many frames are queued.
 const CATCHUP_BACKLOG: u32 = 35;
 /// Cap on tics simulated in one frame by the clocked netplay (a hidden tab
@@ -258,6 +276,8 @@ pub struct PlayStartOpts {
     pub fill_bots: bool,
     /// First bot seat when [`Self::fill_bots`].
     pub bot_first_seat: u8,
+    /// Bot difficulty (`0` = normal).
+    pub bot_skill: u8,
     /// Doom deathmatch netgame (room `doom_deathmatch`).
     pub deathmatch: bool,
 }
@@ -277,6 +297,7 @@ impl Default for PlayStartOpts {
             session_names: Vec::new(),
             fill_bots: false,
             bot_first_seat: 0,
+            bot_skill: 0,
             deathmatch: false,
         }
     }
@@ -348,6 +369,7 @@ impl PlaySession {
             time_limit_tics: opts.time_limit_secs.saturating_mul(35),
             fill_bots: opts.fill_bots,
             bot_first_seat: opts.bot_first_seat,
+            bot_skill: opts.bot_skill,
             deathmatch: opts.deathmatch,
             ..GameOptions::default()
         });
@@ -614,10 +636,21 @@ impl PlaySession {
                     continue;
                 };
                 for item in items {
-                    let cvar = item.get("cvar").and_then(|c| c.as_str()).unwrap_or_default().to_owned();
-                    let value = self.game.mod_cvar(&cvar).map(str::to_owned).unwrap_or_else(|| {
-                        item.get("default").and_then(|d| d.as_str()).unwrap_or_default().to_owned()
-                    });
+                    let cvar = item
+                        .get("cvar")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let value = self
+                        .game
+                        .mod_cvar(&cvar)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            item.get("default")
+                                .and_then(|d| d.as_str())
+                                .unwrap_or_default()
+                                .to_owned()
+                        });
                     item["value"] = serde_json::Value::String(value);
                 }
             }
@@ -749,7 +782,11 @@ impl PlaySession {
                 if i == seat {
                     continue;
                 }
-                let Some(a) = p.as_ref().and_then(|p| p.mo).and_then(|id| world.actors.get(id)) else {
+                let Some(a) = p
+                    .as_ref()
+                    .and_then(|p| p.mo)
+                    .and_then(|id| world.actors.get(id))
+                else {
                     continue;
                 };
                 if a.destroyed || a.health <= 0 {
@@ -770,7 +807,9 @@ impl PlaySession {
             fwd.y.atan2(fwd.x).to_degrees(),
             if allmap { 1.0 } else { 0.0 },
             #[allow(clippy::cast_precision_loss)]
-            { (others.len() / 4) as f32 },
+            {
+                (others.len() / 4) as f32
+            },
         ];
         out.extend(others);
         out
@@ -1188,7 +1227,11 @@ impl PlaySession {
         }
         let now = now_ms();
         self.feed.prune(now);
-        let net_lines = self.net.as_mut().map(NetPlay::take_feed).unwrap_or_default();
+        let net_lines = self
+            .net
+            .as_mut()
+            .map(NetPlay::take_feed)
+            .unwrap_or_default();
         for line in net_lines {
             self.announce("system", line, now);
         }
@@ -1229,7 +1272,8 @@ impl PlaySession {
                         cmds
                     } else {
                         let sample = self.sample_input();
-                        let bits = build_ticcmd_with_mods(&sample, ModButtonState::default());
+                        let mut bits = build_ticcmd_with_mods(&sample, ModButtonState::default());
+                        apply_analog_move(&mut bits);
                         vec![TicCmd {
                             buttons: Buttons(bits.buttons),
                             pitch: bits.pitch,
@@ -1829,6 +1873,9 @@ impl PlaySession {
         }
         if self.held.contains("use") {
             keys.push(Key::Use);
+        }
+        if self.held.contains("jump") {
+            keys.push(Key::Jump);
         }
         if self.held.contains("up") {
             keys.push(Key::MoveUp);
@@ -3909,4 +3956,36 @@ fn point_in_subsector(nodes: &room_map::GameNodes, x: f64, y: f64) -> Option<usi
         index = node.children[usize::from(cross >= 0.0)];
     }
     None
+}
+
+#[cfg(test)]
+mod analog_tests {
+    use super::*;
+
+    #[test]
+    fn stick_scales_movement_between_walk_and_run() {
+        crate::input_hub::set_analog_move(0.0, 1.0);
+        let mut bits = room_input::TicCmdBits::default();
+        apply_analog_move(&mut bits);
+        assert_eq!(bits.forward_move, 50 * 256);
+        assert_eq!(bits.side_move, 0);
+
+        // Over-long vectors are cut back to the rim.
+        crate::input_hub::set_analog_move(2.0, -2.0);
+        apply_analog_move(&mut bits);
+        assert_eq!(
+            bits.forward_move,
+            analog_units(-std::f64::consts::FRAC_1_SQRT_2, ANALOG_FORWARD_RUN)
+        );
+        assert_eq!(
+            bits.side_move,
+            analog_units(std::f64::consts::FRAC_1_SQRT_2, ANALOG_SIDE_RUN)
+        );
+
+        // Released stick leaves key movement alone.
+        crate::input_hub::set_analog_move(0.0, 0.0);
+        bits.forward_move = 123;
+        apply_analog_move(&mut bits);
+        assert_eq!(bits.forward_move, 123);
+    }
 }

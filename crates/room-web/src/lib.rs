@@ -277,6 +277,8 @@ mod browser {
         static NET_CONTENT: RefCell<NetContentState> = const { RefCell::new(NetContentState::Idle) };
         /// Soft cap on the longest canvas edge (Settings → Resolution). 0 = device max.
         static RENDER_CAP: Cell<u32> = const { Cell::new(0) };
+        /// Phone performance mode (`roomSetLowPower`): no dynamic lights.
+        static LOW_POWER: Cell<bool> = const { Cell::new(false) };
         /// CSS playfield scale vs fitted viewport (Settings → Window size). 1.0 = full.
         static WINDOW_SCALE: Cell<f64> = const { Cell::new(1.0) };
     }
@@ -313,7 +315,17 @@ mod browser {
         wasm_bindgen_futures::spawn_local(async {
             match init_loop().await {
                 Ok(()) => {}
-                Err(e) => web_sys::console::error_1(&format!("room-web: {e}").into()),
+                Err(e) => {
+                    let msg = format!("room-web: {e}");
+                    web_sys::console::error_1(&msg.clone().into());
+                    // Say it on screen too (phones show no console).
+                    if let Some(f) = web_sys::window()
+                        .and_then(|w| js_sys::Reflect::get(&w, &"roomShowCrash".into()).ok())
+                        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+                    {
+                        let _ = f.call1(&JsValue::NULL, &msg.into());
+                    }
+                }
             }
         });
     }
@@ -946,6 +958,7 @@ mod browser {
             time_limit: 0,
             fill_bots: false,
             bot_first_seat: 0,
+            bot_skill: 0,
         };
         NET_MOD.with(|n| *n.borrow_mut() = NetModState::Idle);
         NET_CONTENT.with(|n| *n.borrow_mut() = NetContentState::Idle);
@@ -1290,6 +1303,7 @@ mod browser {
                     // with none (set_bot_seats applies them before tic 0).
                     fill_bots: false,
                     bot_first_seat: 0,
+                    bot_skill: lobby.bot_skill(),
                     deathmatch: lobby.doom_deathmatch(),
                     ..PlayStartOpts::default()
                 },
@@ -1807,6 +1821,7 @@ mod browser {
         let time_limit_secs = ready.time_limit;
         let fill_bots = ready.fill_bots;
         let bot_first_seat = ready.bot_first_seat;
+        let bot_skill = ready.bot_skill;
         let deathmatch = ready.deathmatch;
         let net = NetPlay::from_ready(ready);
         let (iwad, prepared) = {
@@ -1818,6 +1833,7 @@ mod browser {
         };
         let mut play = if let Some(mut p) = prepared {
             // Prepared before Start: now the server said which seats are bots.
+            p.game.set_bot_skill(bot_skill);
             p.game.set_bot_seats(fill_bots, bot_first_seat);
             *p
         } else {
@@ -1838,6 +1854,7 @@ mod browser {
                     session_names: net.session_names(),
                     fill_bots,
                     bot_first_seat,
+                    bot_skill,
                     deathmatch,
                     ..PlayStartOpts::default()
                 },
@@ -1901,6 +1918,14 @@ mod browser {
             ),
             _ => String::new(),
         };
+        // The match length, so the start countdown above is not mistaken
+        // for it.
+        let length = match p.time_limit_secs {
+            0 => String::new(),
+            s if s < 60 => format!(" · {s} s match"),
+            s if s % 60 == 0 => format!(" · {} min match", s / 60),
+            s => format!(" · {} min {} s match", s / 60, s % 60),
+        };
         let hint = if p.starts_in_secs.is_some() {
             if p.fill_bots {
                 "When the timer runs out, bots take the empty slots."
@@ -1913,7 +1938,7 @@ mod browser {
         let html = format!(
             "<h2>{phase}</h2>\
              {countdown}\
-             <p class=\"meta\"><span>{map}</span> · skill {skill} · {present}/{max} players</p>\
+             <p class=\"meta\"><span>{map}</span> · skill {skill} · {present}/{max} players{length}</p>\
              <p class=\"muted\">{role}</p>\
              <ul class=\"seats\">{seats}</ul>\
              <p class=\"hint\">{hint}</p>",
@@ -2816,6 +2841,14 @@ mod browser {
                                 }]);
                                 continue;
                             }
+                            if let Some(cents) = event.pitch_offset {
+                                mixer.apply(&[room_audio::SoundEvent::AdjustSoundPitch {
+                                    sound,
+                                    source_id: event.source_id,
+                                    cents,
+                                }]);
+                                continue;
+                            }
                             if view_time_before_exit > 0 && view_time_before_exit <= 26 * 3 {
                                 // Chocolate rejects new `xyzsound` starts during
                                 // the final three seconds of a timed exit.
@@ -3202,8 +3235,12 @@ mod browser {
                     Some(&sizes),
                 );
                 play.animate_textures(&mut lists);
-                lists.dyn_lights = play.collect_dyn_lights();
-                room_render::apply_dyn_lights(&mut lists);
+                // Phones: every dynamic light is a per-pixel loop in the
+                // world shader; skip them (sector lighting stays).
+                if !LOW_POWER.with(Cell::get) {
+                    lists.dyn_lights = play.collect_dyn_lights();
+                    room_render::apply_dyn_lights(&mut lists);
+                }
                 voxel_uploads = play.append_voxel_poses(&mut lists);
                 play.append_particles(&mut lists, cam, particle_stretch);
                 particle_uploads = play.particle_texture_uploads();
@@ -3654,6 +3691,13 @@ mod browser {
     /// Apply Settings menu values. `binds_json` is `{ "KeyW": "w", … }` or `""` / `"{}"` for defaults.
     /// `render_cap` is the longest canvas edge in pixels (`0` = native / device max).
     /// `window_scale` is the CSS playfield size vs the fitted viewport (`1.0` = full).
+    /// Phone performance mode: no dynamic lights (the page also caps the
+    /// render resolution and leaves voxel models off on phones).
+    #[wasm_bindgen(js_name = roomSetLowPower)]
+    pub fn room_set_low_power(on: bool) {
+        LOW_POWER.with(|c| c.set(on));
+    }
+
     #[wasm_bindgen(js_name = roomApplySettings)]
     pub fn room_apply_settings(
         mouse_sens: f64,
@@ -3760,6 +3804,14 @@ mod browser {
     #[wasm_bindgen(js_name = roomInputLook)]
     pub fn room_input_look(dx: f64, dy: f64) {
         input_hub::add_mouse_delta(dx, dy);
+    }
+
+    /// On-screen controls: analog stick (`x` right, `y` forward, each `-1..=1`;
+    /// `0, 0` = released). Solo Doom moves at that fraction of run speed;
+    /// netplay and Duke keep using the keys the stick also presses.
+    #[wasm_bindgen(js_name = roomInputMove)]
+    pub fn room_input_move(x: f64, y: f64) {
+        input_hub::set_analog_move(x, y);
     }
 
     /// On-screen controls: switch weapon (`1` = next, `-1` = previous).

@@ -39,10 +39,15 @@ fn format_mss(secs: i32) -> Msg {
     m
 }
 
-fn zone_label(t_rel: i32) -> (Msg, Option<(i32, i32)>) {
+fn zone_label(t_rel: i32, pace: i32) -> (Msg, Option<(i32, i32)>) {
+    // `t_rel` is zone schedule time; countdowns show real seconds.
+    let real_secs = |sched_tics: i32| {
+        let real = i64::from(sched_tics.max(0)) * 1000 / i64::from(pace.max(1));
+        ((real + i64::from(TICRATE) - 1) / i64::from(TICRATE)) as i32
+    };
     let grace = GRACE_SECS * TICRATE;
     if t_rel < grace {
-        let left = (grace - t_rel + TICRATE - 1) / TICRATE;
+        let left = real_secs(grace - t_rel);
         let mut line = Msg::new();
         let _ = write!(line, "ZONE IN ");
         let _ = write!(line, "{}", format_mss(left).as_str());
@@ -56,12 +61,12 @@ fn zone_label(t_rel: i32) -> (Msg, Option<(i32, i32)>) {
     let shrink = row.shrink_secs * TICRATE;
     let mut line = Msg::new();
     if shrinking {
-        let left = ((shrink - into) + TICRATE - 1) / TICRATE;
+        let left = real_secs(shrink - into);
         let _ = write!(line, "ZONE CLOSING ");
         let _ = write!(line, "{}", format_mss(left).as_str());
         (line, Some((into, shrink.max(1))))
     } else {
-        let left = ((hold - into) + TICRATE - 1) / TICRATE;
+        let left = real_secs(hold - into);
         let _ = write!(line, "NEXT ZONE ");
         let _ = write!(line, "{}", format_mss(left).as_str());
         (line, Some((into, hold.max(1))))
@@ -102,6 +107,8 @@ pub struct HudFrame<'a> {
     pub match_over: bool,
     pub show_zone: bool,
     pub t_rel: Option<i32>,
+    /// Zone speed (`1000` = normal) to turn schedule time into real seconds.
+    pub zone_pace: i32,
     pub alive_n: usize,
     pub contender: &'a [bool; MAX_PLAYERS],
     pub combat: &'a CombatHud,
@@ -181,7 +188,7 @@ impl HudFrame<'_> {
                     .rgba2(0x0b10_17d8)
                     .show();
                 if let Some(t_rel) = self.t_rel {
-                    let (label, bar) = zone_label(t_rel);
+                    let (label, bar) = zone_label(t_rel, self.zone_pace);
                     let closing = label.as_str().starts_with("ZONE CLOSING");
                     if !label.as_str().is_empty() {
                         let _ = Hud::text(id::ZONE_TEXT)

@@ -2766,7 +2766,7 @@ fn activate_switch(
     // Chocolate `checkhitswitch` calls `operatemasterswitches(lotag)` after
     // activating the tagged sectors. A master switch is a one-shot marker:
     // `yvel == 0` means armed, and the first matching switch sets it to 1.
-    arm_master_switches(world, lotag);
+    arm_master_switches(world, i32::from(lotag));
     // Chocolate `checkhitswitch` advances every matching SE 12's light state.
     toggle_tagged_se12(world, actor_temps, lotag);
     if is_door_operator_wall(switch_picnum) && !is_switch(switch_picnum) {
@@ -3306,13 +3306,15 @@ pub(crate) fn tick_access_switch(
     false
 }
 
-fn arm_master_switches(world: &mut BuildWorld, lotag: i16) {
+pub(crate) fn arm_master_switches(world: &mut BuildWorld, lotag: i32) {
     let mut master = world.lists.headspritestat[crate::stat::STAT_STANDABLE as usize];
     while master >= 0 {
         let index = master as usize;
         master = world.lists.nextspritestat[index];
         let sprite = &mut world.sprites[index];
-        if sprite.picnum == crate::spawn::MASTERSWITCH && sprite.lotag == lotag && sprite.yvel == 0
+        if sprite.picnum == crate::spawn::MASTERSWITCH
+            && i32::from(sprite.lotag) == lotag
+            && sprite.yvel == 0
         {
             sprite.yvel = 1;
         }
@@ -3390,7 +3392,7 @@ pub(crate) fn tick_touchplates(
                 temp[0] = 1;
                 temp[1] = 1;
                 temp[3] = i32::from(temp[3] == 0);
-                arm_master_switches(world, lotag);
+                arm_master_switches(world, i32::from(lotag));
                 operate_activators(
                     world,
                     motions,

@@ -9,10 +9,15 @@ use crate::error::BuildError;
 use crate::palette::Palette;
 use room_formats::image::ImagePixels;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const MAX_HIGH_RES_TILE_PIXELS: usize = 16 * 1024 * 1024;
+const MAX_DEF_SKYBOX_PIXELS: usize = 256 * 1024 * 1024;
 const MAX_DUMMY_RANGE_PIXELS: usize = 64 * 1024 * 1024;
 const MAX_DEF_MUSIC_TRACKS: usize = 4096;
+const MAX_DEF_BASE_PALETTES: usize = 256;
+const MAX_DEF_BLEND_TABLES: usize = 256;
+const MAX_DEF_SKYBOXES: usize = 4096;
 
 /// A DEF directive and its nested directives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,12 +50,15 @@ pub struct DefMusicTrack {
     pub line: usize,
 }
 
-/// A high-resolution tile file referenced by `tilefromtexture` or by the
-/// palette-zero branch of a `texture` declaration.
+/// A high-resolution tile file referenced by `tilefromtexture` or by a
+/// palette branch of a `texture` declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HighResTileSpec {
     /// Build tile number replaced by this image.
     pub tile: u16,
+    /// Palette-specific override from a DEF `texture` `pal` block.
+    /// `None` is the default tile image; `Some(0)` is normalized to `None`.
+    pub palette: Option<u8>,
     /// Image path relative to the DEF source file.
     pub file: String,
     /// Horizontal tile offset (`xoff`), defaulting to zero.
@@ -78,6 +86,107 @@ pub struct DefTextureVariant {
     pub line: usize,
 }
 
+/// Six image resources for one tile/palette DEF skybox override.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefSkybox {
+    /// Parallax tile overridden by this skybox.
+    pub tile: u16,
+    /// Palette bank selected by the declaration.
+    pub palette: u8,
+    /// Face paths in EDuke32 order: front, right, back, left, top, down.
+    pub faces: [String; 6],
+    /// One-based source line of the skybox block.
+    pub line: usize,
+}
+
+/// Palette-mapped image face imported from a DEF skybox resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedSkyboxFace {
+    /// Native image width.
+    pub width: u16,
+    /// Native image height.
+    pub height: u16,
+    /// Column-major Build palette indices (`255` is transparent).
+    pub pixels: Arc<[u8]>,
+}
+
+/// Six decoded faces ready for a renderer's skybox cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedSkybox {
+    /// Parallax tile overridden by this skybox.
+    pub tile: i16,
+    /// Palette bank selected by the declaration.
+    pub palette: u8,
+    /// Faces in EDuke32 order: front, right, back, left, top, down.
+    pub faces: [ImportedSkyboxFace; 6],
+}
+
+/// Ordered full-screen base-palette operation declared by DEF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BasePaletteOperation {
+    /// Load 256 RGB colors from a raw palette resource.
+    Load {
+        /// Base palette identifier.
+        palette: u8,
+        /// Resource path relative to the DEF source file.
+        file: String,
+        /// Byte offset of the RGB data in the resource.
+        offset: usize,
+        /// Left shift applied to each source color channel.
+        shift_left: u8,
+        /// One-based source line.
+        line: usize,
+    },
+    /// Copy an already loaded base palette.
+    Copy {
+        /// Destination base palette identifier.
+        palette: u8,
+        /// Source base palette identifier.
+        source: u8,
+        /// One-based source line.
+        line: usize,
+    },
+    /// Remove a previously loaded base palette override.
+    Undef {
+        /// Base palette identifier.
+        palette: u8,
+        /// One-based source line.
+        line: usize,
+    },
+}
+
+/// Ordered classic blend-table operation declared by DEF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlendTableOperation {
+    /// Load one 256×256 indexed table from a raw resource.
+    Load {
+        /// Destination blend-table identifier (0 is reserved by the game).
+        table: u8,
+        /// Resource path relative to the DEF source file.
+        file: String,
+        /// Byte offset of the 65,536-byte table.
+        offset: usize,
+        /// One-based source line.
+        line: usize,
+    },
+    /// Copy an already loaded blend table.
+    Copy {
+        /// Destination blend-table identifier.
+        table: u8,
+        /// Source blend-table identifier.
+        source: u8,
+        /// One-based source line.
+        line: usize,
+    },
+    /// Remove a previously loaded blend table override.
+    Undef {
+        /// Blend-table identifier.
+        table: u8,
+        /// One-based source line.
+        line: usize,
+    },
+}
+
 /// A decoded high-resolution replacement ready to insert into the indexed
 /// Build tile set. Pixels use Build's column-major layout; palette entries
 /// are selected from the supplied GRP palette.
@@ -85,6 +194,8 @@ pub struct DefTextureVariant {
 pub struct ImportedTile {
     /// Build tile number being replaced.
     pub tile: i16,
+    /// Palette bank for a DEF `texture` variant; `None` replaces the base tile.
+    pub palette: Option<u8>,
     /// Native image width.
     pub width: u16,
     /// Native image height.
@@ -171,8 +282,9 @@ impl DefDocument {
         Ok(Self { directives })
     }
 
-    /// Extract image replacements from `tilefromtexture` and base-palette
-    /// (`texture ... pal 0`) declarations.
+    /// Extract image replacements from `tilefromtexture` and every `texture`
+    /// palette branch. A palette-zero texture replaces the default tile;
+    /// nonzero palettes remain per-palette overrides.
     ///
     /// The parser preserves image dimensions and pixels by leaving decoding to
     /// `room-formats`; the returned offsets are applied by the renderer.
@@ -190,16 +302,37 @@ impl DefDocument {
     /// Extract palette-specific file branches from DEF `texture` blocks.
     ///
     /// This describes resources without imposing a renderer's palette or
-    /// true-colour policy. The indexed desktop path currently imports only
-    /// palette 0 through [`Self::high_res_tiles`].
+    /// true-colour policy.
     pub fn texture_variants(&self) -> Result<Vec<DefTextureVariant>, BuildError> {
         let mut variants = Vec::new();
         collect_texture_variants(&self.directives, &mut variants)?;
         Ok(variants)
     }
 
-    /// Decode and palette-map all `tilefromtexture` assets in this document.
-    /// Later declarations for one tile replace earlier ones.
+    /// Extract `basepalette` raw loads, copies, and undefinitions in source order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid palette identifiers, malformed resource
+    /// fields, or a palette declaration without exactly one operation.
+    pub fn base_palette_operations(&self) -> Result<Vec<BasePaletteOperation>, BuildError> {
+        let mut operations = Vec::new();
+        collect_base_palette_operations(&self.directives, &mut operations)?;
+        Ok(operations)
+    }
+
+    /// Extract classic `blendtable` raw loads, copies and undefinitions in
+    /// source order. OpenGL `glblend` parameters are retained by the syntax
+    /// tree but are not part of the indexed software renderer.
+    pub fn blend_table_operations(&self) -> Result<Vec<BlendTableOperation>, BuildError> {
+        let mut operations = Vec::new();
+        collect_blend_table_operations(&self.directives, &mut operations)?;
+        Ok(operations)
+    }
+
+    /// Decode and palette-map all `tilefromtexture` and `texture` assets in
+    /// this document. Later declarations for one tile/palette pair replace
+    /// earlier ones.
     ///
     /// # Errors
     ///
@@ -283,16 +416,135 @@ impl DefDocument {
                     }
                 }
             }
+            let tile_id =
+                i16::try_from(spec.tile).map_err(|_| BuildError::Invalid("DEF tile number"))?;
             imported.insert(
-                i16::try_from(spec.tile).map_err(|_| BuildError::Invalid("DEF tile number"))?,
+                (tile_id, spec.palette),
                 ImportedTile {
-                    tile: i16::try_from(spec.tile)
-                        .map_err(|_| BuildError::Invalid("DEF tile number"))?,
+                    tile: tile_id,
+                    palette: spec.palette,
                     width,
                     height,
                     pixels: column_major,
                     x_offset,
                     y_offset,
+                },
+            );
+        }
+        Ok(imported.into_values().collect())
+    }
+
+    /// Decode every DEF skybox face and map it through the supplied Build
+    /// palette. Later declarations for a tile/palette pair replace earlier
+    /// ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a face is missing, malformed, too large, or the
+    /// document exceeds the bounded aggregate face-pixel budget.
+    pub fn import_skyboxes(
+        &self,
+        assets: &[(&str, &[u8])],
+        palette: &Palette,
+    ) -> Result<Vec<ImportedSkybox>, BuildError> {
+        let assets: BTreeMap<String, &[u8]> = assets
+            .iter()
+            .map(|(name, bytes)| (normalize_asset_name(name), *bytes))
+            .collect();
+        let mut imported = BTreeMap::new();
+        let mut decoded_faces = BTreeMap::<String, ImportedSkyboxFace>::new();
+        let mut total_pixels = 0usize;
+        for skybox in self.skyboxes()? {
+            let mut faces = Vec::with_capacity(skybox.faces.len());
+            for file in &skybox.faces {
+                let key = normalize_asset_name(file);
+                if let Some(face) = decoded_faces.get(&key) {
+                    faces.push(face.clone());
+                    continue;
+                }
+                let bytes = assets
+                    .get(&key)
+                    .ok_or_else(|| BuildError::Missing(file.clone()))?;
+                let image = decode_tile_image(bytes)
+                    .map_err(|error| BuildError::Resource(format!("{file}: {error}")))?;
+                let width = u16::try_from(image.width())
+                    .map_err(|_| BuildError::Invalid("DEF skybox image width"))?;
+                let height = u16::try_from(image.height())
+                    .map_err(|_| BuildError::Invalid("DEF skybox image height"))?;
+                let count = usize::from(width)
+                    .checked_mul(usize::from(height))
+                    .ok_or(BuildError::Invalid("DEF skybox image size"))?;
+                if width == 0 || height == 0 || count > MAX_HIGH_RES_TILE_PIXELS {
+                    return Err(BuildError::Invalid("DEF skybox image size"));
+                }
+                total_pixels = total_pixels
+                    .checked_add(count)
+                    .filter(|total| *total <= MAX_DEF_SKYBOX_PIXELS)
+                    .ok_or(BuildError::Invalid("DEF skybox total image size"))?;
+                let mut column_major = vec![255; count];
+                match image.pixels {
+                    ImagePixels::Paletted(pixels) => {
+                        if pixels.indices.len() != count
+                            || (!pixels.alpha.is_empty() && pixels.alpha.len() != count)
+                        {
+                            return Err(BuildError::Invalid("DEF skybox image pixel count"));
+                        }
+                        for y in 0..usize::from(height) {
+                            for x in 0..usize::from(width) {
+                                let source = y * usize::from(width) + x;
+                                let destination = x * usize::from(height) + y;
+                                column_major[destination] =
+                                    if !pixels.alpha.is_empty() && pixels.alpha[source] < 174 {
+                                        255
+                                    } else {
+                                        pixels.indices[source]
+                                    };
+                            }
+                        }
+                    }
+                    ImagePixels::Rgba8(pixels) => {
+                        let rgba_len = count
+                            .checked_mul(4)
+                            .ok_or(BuildError::Invalid("DEF skybox image size"))?;
+                        if pixels.pixels.len() != rgba_len {
+                            return Err(BuildError::Invalid("DEF skybox image pixel count"));
+                        }
+                        for y in 0..usize::from(height) {
+                            for x in 0..usize::from(width) {
+                                let source = (y * usize::from(width) + x) * 4;
+                                let destination = x * usize::from(height) + y;
+                                column_major[destination] = if pixels.pixels[source + 3] < 174 {
+                                    255
+                                } else {
+                                    palette.nearest([
+                                        u32::from(pixels.pixels[source]),
+                                        u32::from(pixels.pixels[source + 1]),
+                                        u32::from(pixels.pixels[source + 2]),
+                                    ])
+                                };
+                            }
+                        }
+                    }
+                }
+                let face = ImportedSkyboxFace {
+                    width,
+                    height,
+                    pixels: Arc::from(column_major),
+                };
+                decoded_faces.insert(key, face.clone());
+                faces.push(face);
+            }
+            let faces: [ImportedSkyboxFace; 6] = faces
+                .try_into()
+                .map_err(|_| BuildError::Invalid("DEF skybox face count"))?;
+            let tile =
+                i16::try_from(skybox.tile).map_err(|_| BuildError::Invalid("DEF skybox tile"))?;
+            imported.insert(
+                (tile, skybox.palette),
+                ImportedSkybox {
+                    tile,
+                    palette: skybox.palette,
+                    faces,
                 },
             );
         }
@@ -323,6 +575,21 @@ impl DefDocument {
     pub fn music_tracks(&self) -> Result<Vec<DefMusicTrack>, BuildError> {
         let mut out = Vec::new();
         collect_music_tracks(&self.directives, &mut out)?;
+        Ok(out)
+    }
+
+    /// Extract complete six-face `skybox` resources in source order.
+    ///
+    /// The returned file paths are relative to the DEF source; loading and
+    /// renderer selection remain the caller's responsibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid tile/palette values, repeated fields,
+    /// missing face files, or too many skybox blocks.
+    pub fn skyboxes(&self) -> Result<Vec<DefSkybox>, BuildError> {
+        let mut out = Vec::new();
+        collect_skyboxes(&self.directives, &mut out)?;
         Ok(out)
     }
 }
@@ -374,6 +641,106 @@ fn collect_music_tracks(
         collect_music_tracks(&directive.children, out)?;
     }
     Ok(())
+}
+
+fn collect_skyboxes(
+    directives: &[DefDirective],
+    out: &mut Vec<DefSkybox>,
+) -> Result<(), BuildError> {
+    for directive in directives {
+        if directive.keyword == "skybox" {
+            if out.len() >= MAX_DEF_SKYBOXES {
+                return Err(BuildError::Invalid("DEF skybox count"));
+            }
+            let mut tile = None;
+            let mut palette = None;
+            let mut faces: [Option<String>; 6] = std::array::from_fn(|_| None);
+            for child in &directive.children {
+                if child.keyword == "tile" {
+                    if tile.is_some() {
+                        return Err(BuildError::Invalid("DEF skybox tile"));
+                    }
+                    tile = child
+                        .args
+                        .first()
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .filter(|value| u32::from(*value) < crate::art::MAX_TILES);
+                    if tile.is_none() {
+                        return Err(BuildError::Invalid("DEF skybox tile"));
+                    }
+                    let mut index = 1;
+                    while index < child.args.len() {
+                        if child.args[index].eq_ignore_ascii_case("pal") {
+                            if palette.is_some() {
+                                return Err(BuildError::Invalid("DEF skybox palette"));
+                            }
+                            palette = child
+                                .args
+                                .get(index + 1)
+                                .and_then(|value| value.parse::<u8>().ok());
+                            if palette.is_none() {
+                                return Err(BuildError::Invalid("DEF skybox palette"));
+                            }
+                            index += 2;
+                        } else {
+                            return Err(BuildError::Invalid("DEF skybox tile option"));
+                        }
+                    }
+                } else if child.keyword == "pal" {
+                    if palette.is_some() {
+                        return Err(BuildError::Invalid("DEF skybox palette"));
+                    }
+                    palette = child
+                        .args
+                        .first()
+                        .and_then(|value| value.parse::<u8>().ok());
+                    if palette.is_none() {
+                        return Err(BuildError::Invalid("DEF skybox palette"));
+                    }
+                } else if let Some(face_index) = skybox_face_index(&child.keyword) {
+                    let file = child
+                        .args
+                        .first()
+                        .filter(|value| !value.is_empty())
+                        .cloned()
+                        .ok_or(BuildError::Invalid("DEF skybox face file"))?;
+                    if faces[face_index].replace(file).is_some() {
+                        return Err(BuildError::Invalid("DEF skybox duplicate face"));
+                    }
+                }
+            }
+
+            let [front, right, back, left, top, down] = faces;
+            let faces = [
+                front.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+                right.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+                back.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+                left.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+                top.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+                down.ok_or(BuildError::Invalid("DEF skybox missing face"))?,
+            ];
+            out.push(DefSkybox {
+                tile: tile.ok_or(BuildError::Invalid("DEF skybox tile"))?,
+                palette: palette.ok_or(BuildError::Invalid("DEF skybox palette"))?,
+                faces,
+                line: directive.line,
+            });
+        }
+        collect_skyboxes(&directive.children, out)?;
+    }
+    Ok(())
+}
+
+fn skybox_face_index(keyword: &str) -> Option<usize> {
+    match keyword {
+        "front" | "ft" | "forward" => Some(0),
+        "right" | "rt" => Some(1),
+        "back" | "bk" => Some(2),
+        "left" | "lf" | "lt" => Some(3),
+        "top" | "up" | "ceiling" | "ceil" => Some(4),
+        "down" | "dn" | "floor" | "bottom" => Some(5),
+        _ => None,
+    }
 }
 
 /// Decode a high-resolution tile image (PNG, BMP and other supported formats)
@@ -548,24 +915,23 @@ fn collect_tile_specs(
                 x_offset,
                 y_offset,
                 opaque_alpha_threshold,
+                palette: None,
                 line: directive.line,
             });
         } else if directive.keyword == "texture" {
             // EDuke32 falls back to palette 0 for palette banks without an
-            // explicit branch. The classic indexed renderer stores one tile
-            // image, so import that base branch and leave other pal variants
-            // to renderers with per-palette texture storage.
+            // explicit branch. Keep each declared branch so renderers can
+            // select the matching image and fall back to the base tile.
             for variant in parse_texture_variants(directive)? {
-                if variant.palette == 0 {
-                    out.push(HighResTileSpec {
-                        tile: variant.tile,
-                        file: variant.file,
-                        x_offset: 0,
-                        y_offset: 0,
-                        opaque_alpha_threshold: variant.opaque_alpha_threshold,
-                        line: variant.line,
-                    });
-                }
+                out.push(HighResTileSpec {
+                    tile: variant.tile,
+                    palette: (variant.palette != 0).then_some(variant.palette),
+                    file: variant.file,
+                    x_offset: 0,
+                    y_offset: 0,
+                    opaque_alpha_threshold: variant.opaque_alpha_threshold,
+                    line: variant.line,
+                });
             }
         }
         collect_tile_specs(&directive.children, out)?;
@@ -582,6 +948,237 @@ fn collect_texture_variants(
             out.extend(parse_texture_variants(directive)?);
         }
         collect_texture_variants(&directive.children, out)?;
+    }
+    Ok(())
+}
+
+fn collect_base_palette_operations(
+    directives: &[DefDirective],
+    out: &mut Vec<BasePaletteOperation>,
+) -> Result<(), BuildError> {
+    for directive in directives {
+        if directive.keyword == "basepalette" {
+            if out.len() >= MAX_DEF_BASE_PALETTES {
+                return Err(BuildError::Invalid("DEF basepalette count"));
+            }
+            let palette = directive
+                .args
+                .first()
+                .and_then(|value| value.parse::<u8>().ok())
+                .ok_or(BuildError::Invalid("DEF basepalette id"))?;
+            let mut operation = None;
+            for child in &directive.children {
+                let candidate = match child.keyword.as_str() {
+                    "raw" => {
+                        let mut file = None;
+                        let mut offset = 0usize;
+                        let mut shift_left = 0u8;
+                        let mut offset_seen = false;
+                        let mut shift_left_seen = false;
+                        for field in &child.children {
+                            if field.keyword == "file" {
+                                let filename = field
+                                    .args
+                                    .first()
+                                    .filter(|filename| !filename.is_empty())
+                                    .ok_or(BuildError::Invalid("DEF basepalette raw file"))?;
+                                if file.replace(filename.clone()).is_some() {
+                                    return Err(BuildError::Invalid("DEF basepalette raw file"));
+                                }
+                                let mut index = 1;
+                                while index < field.args.len() {
+                                    let key = field
+                                        .args
+                                        .get(index)
+                                        .ok_or(BuildError::Invalid("DEF basepalette raw option"))?;
+                                    let value = field
+                                        .args
+                                        .get(index + 1)
+                                        .ok_or(BuildError::Invalid("DEF basepalette raw option"))?;
+                                    match key.to_ascii_lowercase().as_str() {
+                                        "offset" if !offset_seen => {
+                                            offset = value.parse::<usize>().map_err(|_| {
+                                                BuildError::Invalid("DEF basepalette raw offset")
+                                            })?;
+                                            offset_seen = true;
+                                        }
+                                        "shiftleft" if !shift_left_seen => {
+                                            shift_left = value
+                                                .parse::<u8>()
+                                                .ok()
+                                                .filter(|value| *value <= 7)
+                                                .ok_or(BuildError::Invalid(
+                                                    "DEF basepalette raw shiftleft",
+                                                ))?;
+                                            shift_left_seen = true;
+                                        }
+                                        _ => {
+                                            return Err(BuildError::Invalid(
+                                                "DEF basepalette raw option",
+                                            ));
+                                        }
+                                    }
+                                    index += 2;
+                                }
+                            } else if field.keyword == "offset" && !offset_seen {
+                                offset = field
+                                    .args
+                                    .first()
+                                    .and_then(|value| value.parse::<usize>().ok())
+                                    .ok_or(BuildError::Invalid("DEF basepalette raw offset"))?;
+                                offset_seen = true;
+                            } else if field.keyword == "shiftleft" && !shift_left_seen {
+                                shift_left = field
+                                    .args
+                                    .first()
+                                    .and_then(|value| value.parse::<u8>().ok())
+                                    .filter(|value| *value <= 7)
+                                    .ok_or(BuildError::Invalid("DEF basepalette raw shiftleft"))?;
+                                shift_left_seen = true;
+                            } else if matches!(field.keyword.as_str(), "offset" | "shiftleft") {
+                                return Err(BuildError::Invalid("DEF basepalette raw option"));
+                            }
+                        }
+                        let file = file.ok_or(BuildError::Invalid("DEF basepalette raw file"))?;
+                        BasePaletteOperation::Load {
+                            palette,
+                            file,
+                            offset,
+                            shift_left,
+                            line: directive.line,
+                        }
+                    }
+                    "copy" => {
+                        let source = child
+                            .args
+                            .first()
+                            .and_then(|value| value.parse::<u8>().ok())
+                            .ok_or(BuildError::Invalid("DEF basepalette copy"))?;
+                        BasePaletteOperation::Copy {
+                            palette,
+                            source,
+                            line: directive.line,
+                        }
+                    }
+                    "undef" => BasePaletteOperation::Undef {
+                        palette,
+                        line: directive.line,
+                    },
+                    _ => continue,
+                };
+                if operation.replace(candidate).is_some() {
+                    return Err(BuildError::Invalid("DEF basepalette operation"));
+                }
+            }
+            out.push(operation.ok_or(BuildError::Invalid("DEF basepalette operation"))?);
+        }
+        collect_base_palette_operations(&directive.children, out)?;
+    }
+    Ok(())
+}
+
+fn collect_blend_table_operations(
+    directives: &[DefDirective],
+    out: &mut Vec<BlendTableOperation>,
+) -> Result<(), BuildError> {
+    for directive in directives {
+        if directive.keyword == "blendtable" {
+            if out.len() >= MAX_DEF_BLEND_TABLES {
+                return Err(BuildError::Invalid("DEF blendtable count"));
+            }
+            let table = directive
+                .args
+                .first()
+                .and_then(|value| value.parse::<u8>().ok())
+                .filter(|table| *table != 0)
+                .ok_or(BuildError::Invalid("DEF blendtable id"))?;
+            let mut operation = None;
+            for child in &directive.children {
+                let candidate = match child.keyword.as_str() {
+                    "raw" => {
+                        let mut file = None;
+                        let mut offset = 0usize;
+                        let mut offset_seen = false;
+                        for field in &child.children {
+                            match field.keyword.as_str() {
+                                "file" | "name" => {
+                                    let filename = field
+                                        .args
+                                        .first()
+                                        .filter(|filename| !filename.is_empty())
+                                        .ok_or(BuildError::Invalid("DEF blendtable raw file"))?;
+                                    if file.replace(filename.clone()).is_some() {
+                                        return Err(BuildError::Invalid("DEF blendtable raw file"));
+                                    }
+                                    let mut index = 1;
+                                    while index < field.args.len() {
+                                        let key = field.args.get(index).ok_or(
+                                            BuildError::Invalid("DEF blendtable raw option"),
+                                        )?;
+                                        let value = field.args.get(index + 1).ok_or(
+                                            BuildError::Invalid("DEF blendtable raw option"),
+                                        )?;
+                                        if key.eq_ignore_ascii_case("offset") && !offset_seen {
+                                            offset = value.parse::<usize>().map_err(|_| {
+                                                BuildError::Invalid("DEF blendtable raw offset")
+                                            })?;
+                                            offset_seen = true;
+                                        } else {
+                                            return Err(BuildError::Invalid(
+                                                "DEF blendtable raw option",
+                                            ));
+                                        }
+                                        index += 2;
+                                    }
+                                }
+                                "offset" if !offset_seen => {
+                                    offset = field
+                                        .args
+                                        .first()
+                                        .and_then(|value| value.parse::<usize>().ok())
+                                        .ok_or(BuildError::Invalid("DEF blendtable raw offset"))?;
+                                    offset_seen = true;
+                                }
+                                "offset" => {
+                                    return Err(BuildError::Invalid("DEF blendtable raw offset"));
+                                }
+                                _ => return Err(BuildError::Invalid("DEF blendtable raw option")),
+                            }
+                        }
+                        BlendTableOperation::Load {
+                            table,
+                            file: file.ok_or(BuildError::Invalid("DEF blendtable raw file"))?,
+                            offset,
+                            line: directive.line,
+                        }
+                    }
+                    "copy" => BlendTableOperation::Copy {
+                        table,
+                        source: child
+                            .args
+                            .first()
+                            .and_then(|value| value.parse::<u8>().ok())
+                            .ok_or(BuildError::Invalid("DEF blendtable copy"))?,
+                        line: directive.line,
+                    },
+                    "undef" => BlendTableOperation::Undef {
+                        table,
+                        line: directive.line,
+                    },
+                    // OpenGL blend factors do not replace a classic indexed
+                    // table, but are accepted as a separate renderer feature.
+                    "glblend" => continue,
+                    _ => continue,
+                };
+                if operation.replace(candidate).is_some() {
+                    return Err(BuildError::Invalid("DEF blendtable operation"));
+                }
+            }
+            if let Some(operation) = operation {
+                out.push(operation);
+            }
+        }
+        collect_blend_table_operations(&directive.children, out)?;
     }
     Ok(())
 }
@@ -907,6 +1504,7 @@ mod tests {
             [
                 HighResTileSpec {
                     tile: 9020,
+                    palette: None,
                     file: "sprites\\9020.png".into(),
                     x_offset: 8,
                     y_offset: -3,
@@ -915,6 +1513,7 @@ mod tests {
                 },
                 HighResTileSpec {
                     tile: 100,
+                    palette: None,
                     file: "base.png".into(),
                     x_offset: 0,
                     y_offset: 0,
@@ -933,14 +1532,26 @@ mod tests {
         .unwrap();
         assert_eq!(
             document.high_res_tiles().unwrap(),
-            [HighResTileSpec {
-                tile: 3586,
-                file: "base.png".into(),
-                x_offset: 0,
-                y_offset: 0,
-                opaque_alpha_threshold: 174,
-                line: 1,
-            }]
+            [
+                HighResTileSpec {
+                    tile: 3586,
+                    palette: Some(21),
+                    file: "red.png".into(),
+                    x_offset: 0,
+                    y_offset: 0,
+                    opaque_alpha_threshold: 174,
+                    line: 1,
+                },
+                HighResTileSpec {
+                    tile: 3586,
+                    palette: None,
+                    file: "base.png".into(),
+                    x_offset: 0,
+                    y_offset: 0,
+                    opaque_alpha_threshold: 174,
+                    line: 1,
+                }
+            ]
         );
         assert_eq!(
             document.texture_variants().unwrap(),
@@ -964,9 +1575,20 @@ mod tests {
     }
 
     #[test]
-    fn texture_without_palette_zero_is_not_an_indexed_replacement() {
+    fn texture_without_palette_zero_is_a_palette_specific_replacement() {
         let document = DefDocument::parse(r#"texture 3586 { pal 21 { file "red.png" } }"#).unwrap();
-        assert!(document.high_res_tiles().unwrap().is_empty());
+        assert_eq!(
+            document.high_res_tiles().unwrap(),
+            [HighResTileSpec {
+                tile: 3586,
+                palette: Some(21),
+                file: "red.png".into(),
+                x_offset: 0,
+                y_offset: 0,
+                opaque_alpha_threshold: 174,
+                line: 1,
+            }]
+        );
         assert_eq!(document.texture_variants().unwrap()[0].palette, 21,);
     }
 
@@ -1017,6 +1639,258 @@ mod tests {
         assert_eq!(
             doc.music_tracks(),
             Err(BuildError::Invalid("DEF music ID/file child"))
+        );
+    }
+
+    #[test]
+    fn extracts_skybox_faces_and_face_aliases() {
+        let document = DefDocument::parse(
+            r#"
+                skybox {
+                    tile 95 pal 7
+                    ft "front.png" nocompress
+                    rt "right.png"
+                    bk "back.png"
+                    lt "left.png"
+                    up "top.png"
+                    dn "down.png"
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            document.skyboxes().unwrap(),
+            [DefSkybox {
+                tile: 95,
+                palette: 7,
+                faces: [
+                    "front.png".into(),
+                    "right.png".into(),
+                    "back.png".into(),
+                    "left.png".into(),
+                    "top.png".into(),
+                    "down.png".into(),
+                ],
+                line: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_the_bundled_brutal_active_skybox_resources() {
+        let source =
+            include_str!("../../../testdata/brutal-duke-v0.2.0/brutal/resources/skyboxes.def");
+        let document = DefDocument::parse(source).unwrap();
+        let skyboxes = document.skyboxes().unwrap();
+        // The file contains 22 textual declarations; four legacy add-on
+        // sections are disabled inside block comments.
+        assert_eq!(skyboxes.len(), 18);
+        let palette_variant = skyboxes
+            .iter()
+            .find(|skybox| skybox.tile == 94 && skybox.palette == 13)
+            .unwrap();
+        assert_eq!(
+            palette_variant.faces,
+            [
+                "resources\\skyboxes\\vaca\\0094_13_north.png",
+                "resources\\skyboxes\\vaca\\0094_13_north.png",
+                "resources\\skyboxes\\vaca\\0094_13_north.png",
+                "resources\\skyboxes\\vaca\\0094_13_north.png",
+                "resources\\skyboxes\\vaca\\0094_13_top.png",
+                "resources\\skyboxes\\vaca\\0094_13_bottom.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_and_shares_skybox_faces_by_resource_path() {
+        let document = DefDocument::parse(
+            r#"
+                skybox {
+                    tile 95 pal 0
+                    front "face.bmp"
+                    right "face.bmp"
+                    back "face.bmp"
+                    left "face.bmp"
+                    top "face.bmp"
+                    down "face.bmp"
+                }
+            "#,
+        )
+        .unwrap();
+        let bmp = bmp_2x1_red_green();
+        let palette = Palette {
+            rgb: [0; 768],
+            shades: Vec::new(),
+            numshades: 1,
+            translucency: None,
+        };
+
+        let imported = document
+            .import_skyboxes(&[("face.bmp", bmp.as_slice())], &palette)
+            .unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(
+            (imported[0].faces[0].width, imported[0].faces[0].height),
+            (2, 1)
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            &imported[0].faces[0].pixels,
+            &imported[0].faces[5].pixels,
+        ));
+    }
+
+    #[test]
+    fn rejects_incomplete_or_duplicated_skybox_resources() {
+        let missing = DefDocument::parse(
+            r#"
+                skybox {
+                    tile 95 pal 0
+                    front f.png
+                    right r.png
+                    back b.png
+                    left l.png
+                    top t.png
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            missing.skyboxes(),
+            Err(BuildError::Invalid("DEF skybox missing face"))
+        );
+
+        let duplicate = DefDocument::parse(
+            r#"
+                skybox {
+                    tile 95 pal 0
+                    front f.png
+                    ft other.png
+                    right r.png
+                    back b.png
+                    left l.png
+                    top t.png
+                    down d.png
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            duplicate.skyboxes(),
+            Err(BuildError::Invalid("DEF skybox duplicate face"))
+        );
+    }
+
+    #[test]
+    fn extracts_base_palette_load_copy_and_undef_in_source_order() {
+        let doc = DefDocument::parse(
+            r#"
+                basepalette 240 { raw { file "resources\\palettes\\cinema.pal" offset 768 shiftleft 2 } }
+                basepalette 241 { copy 240 }
+                basepalette 241 { undef }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.base_palette_operations().unwrap(),
+            [
+                BasePaletteOperation::Load {
+                    palette: 240,
+                    file: "resources\\palettes\\cinema.pal".into(),
+                    offset: 768,
+                    shift_left: 2,
+                    line: 2,
+                },
+                BasePaletteOperation::Copy {
+                    palette: 241,
+                    source: 240,
+                    line: 3,
+                },
+                BasePaletteOperation::Undef {
+                    palette: 241,
+                    line: 4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_base_palette_resource_fields() {
+        let missing_file = DefDocument::parse("basepalette 240 { raw { offset 768 } }").unwrap();
+        assert_eq!(
+            missing_file.base_palette_operations(),
+            Err(BuildError::Invalid("DEF basepalette raw file"))
+        );
+        let invalid_shift =
+            DefDocument::parse("basepalette 240 { raw { file palette.pal shiftleft 8 } }").unwrap();
+        assert_eq!(
+            invalid_shift.base_palette_operations(),
+            Err(BuildError::Invalid("DEF basepalette raw shiftleft"))
+        );
+        let conflicting =
+            DefDocument::parse("basepalette 240 { raw { file palette.pal } copy 1 }").unwrap();
+        assert_eq!(
+            conflicting.base_palette_operations(),
+            Err(BuildError::Invalid("DEF basepalette operation"))
+        );
+    }
+
+    #[test]
+    fn extracts_blend_table_load_copy_and_undef_in_source_order() {
+        let document = DefDocument::parse(
+            r#"
+                blendtable 200 { copy 0 glblend { both { src DST_COLOR dst SRC_COLOR } } }
+                blendtable 201 { raw { file "multiply.raw" offset 65536 } }
+                blendtable 201 { undef }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            document.blend_table_operations().unwrap(),
+            [
+                BlendTableOperation::Copy {
+                    table: 200,
+                    source: 0,
+                    line: 2,
+                },
+                BlendTableOperation::Load {
+                    table: 201,
+                    file: "multiply.raw".into(),
+                    offset: 65536,
+                    line: 3,
+                },
+                BlendTableOperation::Undef {
+                    table: 201,
+                    line: 4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_blend_table_resources_and_ids() {
+        let missing_file = DefDocument::parse("blendtable 201 { raw { offset 10 } }").unwrap();
+        assert_eq!(
+            missing_file.blend_table_operations(),
+            Err(BuildError::Invalid("DEF blendtable raw file"))
+        );
+        let invalid_offset =
+            DefDocument::parse("blendtable 201 { raw { file table.raw offset -1 } }").unwrap();
+        assert_eq!(
+            invalid_offset.blend_table_operations(),
+            Err(BuildError::Invalid("DEF blendtable raw offset"))
+        );
+        let reserved_id = DefDocument::parse("blendtable 0 { copy 0 }").unwrap();
+        assert_eq!(
+            reserved_id.blend_table_operations(),
+            Err(BuildError::Invalid("DEF blendtable id"))
+        );
+        let conflicting =
+            DefDocument::parse("blendtable 201 { raw { file one.raw } copy 0 }").unwrap();
+        assert_eq!(
+            conflicting.blend_table_operations(),
+            Err(BuildError::Invalid("DEF blendtable operation"))
         );
     }
 

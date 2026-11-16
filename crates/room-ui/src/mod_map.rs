@@ -1,12 +1,13 @@
 //! Styled MAP widget for mods (`docs/28` BE2): a clean tactical map rather
 //! than the Doom automap look.
 //!
-//! - Walls are light outlines, ledges dimmer, steps and doors faint; lines
-//!   with no height change are left out, so rooms read as shapes.
+//! - A tactical palette that keeps red for danger: icy walls, amber
+//!   drop-offs (ledges you can fall from), gold doors, dim teal steps.
+//!   Lines with no height change are left out, so rooms read as shapes.
 //! - Everything is clipped to the widget frame.
 //! - Zone 0 tints the area outside its circle red; rings are drawn on top
-//!   (next circle dashed).
-//! - Markers are framed squares; the viewer is a white arrow.
+//!   with a glow (next circle dashed white).
+//! - Markers are framed squares; the viewer is a lime arrow.
 //!
 //! Line colours are opaque: the canvas blit stamps line segments, so a
 //! translucent colour would show the overlaps as dots.
@@ -22,12 +23,23 @@ const AML_NOT_MAPPED: i32 = 8;
 /// Floor step a player cannot walk up (Doom max step is 24).
 const LEDGE: f64 = 24.0;
 
-const WALL: Rgba = Rgba::new(0.84, 0.88, 0.93, 1.0);
-const LEDGE_COLOR: Rgba = Rgba::new(0.47, 0.53, 0.62, 1.0);
-const STEP: Rgba = Rgba::new(0.27, 0.31, 0.37, 1.0);
-const FRAME: Rgba = Rgba::new(0.30, 0.35, 0.43, 1.0);
+/// Solid walls: icy white-blue, the brightest lines on the map.
+const WALL: Rgba = Rgba::new(0.80, 0.91, 1.0, 1.0);
+/// Soft halo under walls so rooms read at a glance.
+const WALL_GLOW: Rgba = Rgba::new(0.22, 0.42, 0.62, 1.0);
+/// Drop-offs higher than a step: amber (you can fall, not climb).
+const LEDGE_COLOR: Rgba = Rgba::new(0.78, 0.52, 0.26, 1.0);
+/// Doors and other closed two-sided lines.
+const DOOR: Rgba = Rgba::new(1.0, 0.88, 0.30, 1.0);
+/// Small steps and ceiling changes: dim teal.
+const STEP: Rgba = Rgba::new(0.20, 0.42, 0.46, 1.0);
+const FRAME: Rgba = Rgba::new(0.42, 0.52, 0.64, 1.0);
+const FRAME_HI: Rgba = Rgba::new(0.70, 0.80, 0.90, 1.0);
 const SHADOW: Rgba = Rgba::new(0.02, 0.03, 0.05, 1.0);
-const ARROW: Rgba = Rgba::new(1.0, 1.0, 1.0, 1.0);
+const ARROW: Rgba = Rgba::new(0.66, 1.0, 0.30, 1.0);
+/// Next zone circle (dashed): pure white and thicker than the walls.
+const NEXT_RING: Rgba = Rgba::new(1.0, 1.0, 1.0, 1.0);
+const NEXT_RING_T: f32 = 0.6;
 
 /// Line thickness in virtual pixels (the blit scales it with the screen).
 const WALL_T: f32 = 0.34;
@@ -132,12 +144,29 @@ pub(crate) fn draw_frame(list: &mut UiDrawList, r: Rect, bg: Rgba, alpha: f32) {
         shadow,
     );
     list.fill(r, bg);
+    // Bevelled rim: lit top / left, darker bottom / right.
+    let hi = Rgba::new(FRAME_HI.r, FRAME_HI.g, FRAME_HI.b, alpha);
     let f = Rgba::new(FRAME.r, FRAME.g, FRAME.b, alpha);
     let t = 0.5;
-    list.fill(Rect::new(r.x, r.y, r.w, t), f);
+    list.fill(Rect::new(r.x, r.y, r.w, t), hi);
+    list.fill(Rect::new(r.x, r.y, t, r.h), hi);
     list.fill(Rect::new(r.x, r.y + r.h - t, r.w, t), f);
-    list.fill(Rect::new(r.x, r.y, t, r.h), f);
     list.fill(Rect::new(r.x + r.w - t, r.y, t, r.h), f);
+    // Corner ticks, like a scope frame.
+    let k = (r.w.min(r.h) * 0.12).clamp(2.0, 6.0);
+    for (x, y, sx, sy) in [
+        (r.x, r.y, 1.0, 1.0),
+        (r.x + r.w, r.y, -1.0, 1.0),
+        (r.x, r.y + r.h, 1.0, -1.0),
+        (r.x + r.w, r.y + r.h, -1.0, -1.0),
+    ] {
+        let x0 = if sx > 0.0 { x } else { x - k };
+        let y0 = if sy > 0.0 { y } else { y - 0.6 };
+        list.fill(Rect::new(x0, y0, k, 0.6), hi);
+        let x1 = if sx > 0.0 { x } else { x - 0.6 };
+        let y1 = if sy > 0.0 { y } else { y - k };
+        list.fill(Rect::new(x1, y1, 0.6, k), hi);
+    }
 }
 
 /// Level outlines. `reveal`: every line, not only the explored ones.
@@ -150,7 +179,9 @@ pub(crate) fn draw_geometry(
     reveal: bool,
 ) {
     let wall = over(WALL, bg, alpha);
+    let glow = over(WALL_GLOW, bg, 0.55 * alpha);
     let ledge = over(LEDGE_COLOR, bg, alpha);
+    let door = over(DOOR, bg, alpha);
     let step = over(STEP, bg, alpha);
     // Draw faint lines first so walls sit on top.
     let mut walls: Vec<(Vec2, Vec2)> = Vec::new();
@@ -188,11 +219,16 @@ pub(crate) fn draw_geometry(
             || bs.ceiling_height <= fs.floor_height
             || fs.ceiling_height <= fs.floor_height
             || bs.ceiling_height <= bs.floor_height;
-        if floor > LEDGE {
+        if closed {
+            line(list, a, b, proj.rect, door, WALL_T);
+        } else if floor > LEDGE {
             line(list, a, b, proj.rect, ledge, THIN_T);
-        } else if floor > 0.5 || closed || (fs.ceiling_height - bs.ceiling_height).abs() > 0.5 {
+        } else if floor > 0.5 || (fs.ceiling_height - bs.ceiling_height).abs() > 0.5 {
             line(list, a, b, proj.rect, step, THIN_T);
         }
+    }
+    for &(a, b) in &walls {
+        line(list, a, b, proj.rect, glow, WALL_T * 2.6);
     }
     for (a, b) in walls {
         line(list, a, b, proj.rect, wall, WALL_T);
@@ -252,7 +288,13 @@ pub(crate) fn draw_zones(
     if let Some(z) = zones.get(0).filter(|z| z.flags & zone_flags::HIDDEN == 0) {
         let (cx, cy, rad) = z.interp_current(maptime, ticfrac_milli);
         let base = rgba_u32(z.rgba);
-        let tint = Rgba::new(base.r, base.g * 0.5, base.b * 0.5, 0.30 * alpha);
+        // Outside the zone: a deeper wash of the zone colour (danger).
+        let tint = Rgba::new(
+            (base.r * 1.1).min(1.0),
+            base.g * 0.35,
+            base.b * 0.35,
+            0.36 * alpha,
+        );
         let c = proj.project(f64::from(cx), f64::from(cy));
         let pr = rad.max(0) as f32 * proj.scale;
         let strip: f32 = 0.5;
@@ -280,10 +322,19 @@ pub(crate) fn draw_zones(
         if z.flags & zone_flags::HIDDEN != 0 {
             continue;
         }
-        let color = over(rgba_u32(z.rgba | 0xff), bg, alpha);
+        let full = rgba_u32(z.rgba | 0xff);
+        // Brighten the ring a touch so it beats the tint around it.
+        let lit = Rgba::new(
+            (full.r * 1.15 + 0.08).min(1.0),
+            (full.g * 1.15 + 0.08).min(1.0),
+            (full.b * 1.15 + 0.08).min(1.0),
+            1.0,
+        );
+        let color = over(lit, bg, alpha);
+        let halo = over(full, bg, 0.35 * alpha);
         let (cx, cy, rad) = z.interp_current(maptime, ticfrac_milli);
         if z.next_r > 0 {
-            let next = over(Rgba::new(1.0, 1.0, 1.0, 1.0), bg, 0.85 * alpha);
+            let next = over(NEXT_RING, bg, alpha);
             ring(
                 list,
                 proj,
@@ -291,7 +342,7 @@ pub(crate) fn draw_zones(
                 f64::from(z.next_cy),
                 f64::from(z.next_r),
                 next,
-                THIN_T,
+                NEXT_RING_T,
                 true,
             );
         }
@@ -301,8 +352,18 @@ pub(crate) fn draw_zones(
             f64::from(cx),
             f64::from(cy),
             f64::from(rad),
+            halo,
+            1.2,
+            false,
+        );
+        ring(
+            list,
+            proj,
+            f64::from(cx),
+            f64::from(cy),
+            f64::from(rad),
             color,
-            0.45,
+            0.5,
             false,
         );
     }
@@ -339,7 +400,7 @@ pub(crate) fn draw_arrow(
     let left = at(screen_angle_deg + 140.0, size * 0.7);
     let right = at(screen_angle_deg - 140.0, size * 0.7);
     let back = at(screen_angle_deg + 180.0, size * 0.25);
-    for (t, c) in [(0.9, SHADOW), (0.45, ARROW)] {
+    for (t, c) in [(1.0, SHADOW), (0.5, ARROW)] {
         for (a, b) in [(left, tip), (tip, right), (right, back), (back, left)] {
             line(list, a, b, r, c, t);
         }

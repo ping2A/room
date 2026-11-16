@@ -64,6 +64,12 @@ pub struct Royale {
     countdown_end: i32,
     phase_until: i32,
     loot_start_tic: i32,
+    /// Zone speed, `1000` = normal; faster when the time limit is shorter
+    /// than the zone timeline ([`crate::tables::zone_pace_milli`]).
+    zone_pace: i32,
+    /// Humans alive when the loot phase began (`rule::HUMANS_ALIVE`; `0` =
+    /// none, or an engine without that rule: never end early then).
+    humans_at_start: i32,
     shield_until: i32,
     zone_rt: ZoneRuntime,
     announced_phase: i32,
@@ -113,6 +119,8 @@ impl Default for Royale {
             countdown_end: 0,
             phase_until: 0,
             loot_start_tic: 0,
+            zone_pace: 1000,
+            humans_at_start: 0,
             shield_until: 0,
             zone_rt: ZoneRuntime::new([0.0; 2], 0.0),
             announced_phase: -1,
@@ -215,6 +223,8 @@ impl Royale {
     }
 
     fn begin_deploy<H: Host>(&mut self, host: &mut H, t: i32) {
+        // Ammo and weapons as they were when the countdown began.
+        host.set_rule(rule::RESTORE_INVENTORIES, 1);
         self.plan_loot(host);
         self.spawn_loot(host);
         self.place_players(host);
@@ -242,7 +252,25 @@ impl Royale {
         // Loot guns must despawn after pickup (docs/30 N6).
         host.set_rule(rule::WEAPON_STAY, 0);
         self.clear_landing_shields(host);
-        tell!(host, None, "The zone closes in {}s", GRACE_SECS);
+        self.zone_pace = crate::tables::zone_pace_milli(host.get_rule(rule::TIME_LEFT));
+        self.humans_at_start = host.get_rule(rule::HUMANS_ALIVE);
+        let grace = (self.grace_tics() + TICRATE - 1) / TICRATE;
+        tell!(host, None, "The zone closes in {}s", grace);
+        if self.zone_pace > 1000 {
+            let zone = crate::tables::zone_schedule_secs() * 1000 / self.zone_pace;
+            tell!(
+                host,
+                None,
+                "Short match: the zone closes completely in {}:{:02}",
+                zone / 60,
+                zone % 60
+            );
+        }
+    }
+
+    /// Loot grace in real tics (shorter when the zone runs fast).
+    fn grace_tics(&self) -> i32 {
+        (i64::from(GRACE_SECS * TICRATE) * 1000 / i64::from(self.zone_pace.max(1))) as i32
     }
 
     fn tick_match_phases<H: Host>(&mut self, host: &mut H, t: i32) {
@@ -253,6 +281,8 @@ impl Royale {
                     self.countdown_end = t + PREGAME_COUNTDOWN_SECS * TICRATE;
                     // Nobody can hurt anybody before the match starts.
                     self.apply_landing_shield(host, i32::MAX);
+                    // Shots fired during the countdown are given back at deploy.
+                    host.set_rule(rule::SAVE_INVENTORIES, 1);
                     tell!(host, None, "PREGAME");
                 }
                 if t % TICRATE == 0 {
@@ -274,7 +304,7 @@ impl Royale {
                 }
             }
             MatchPhase::Loot => {
-                let grace_end = self.loot_start_tic + GRACE_SECS * TICRATE;
+                let grace_end = self.loot_start_tic + self.grace_tics();
                 if t >= grace_end {
                     self.phase = MatchPhase::Zone;
                 }
@@ -288,6 +318,8 @@ impl Royale {
     }
 
     pub(crate) fn on_loaded<H: Host>(&mut self, host: &mut H) {
+        // One map per match: exits and secret exits lead nowhere.
+        host.set_rule(rule::NO_EXIT, 1);
         host.set_rule(rule::DEATHMATCH, 0);
         host.set_rule(rule::RESPAWN, 0);
         // Coop default enables stay; BR loot must despawn (docs/30 N6).
@@ -340,6 +372,10 @@ impl Royale {
         }
         let _ = host.actor_take(body, self.pistol, 1);
         let _ = host.actor_take(body, self.clip, 999);
+        if self.phase == MatchPhase::Pregame && self.pregame_ready {
+            // Joined mid-countdown: keep this kit for the deploy refill too.
+            host.set_rule(rule::SAVE_INVENTORIES, 1);
+        }
         let spot = if let Some(i) = self.farthest(host, &self.dm[..self.ndm], &self.dm_taken) {
             self.dm_taken[i] = true;
             self.dm[i]
@@ -410,6 +446,20 @@ impl Royale {
 
     /// Time is up: the survivor with the most frags (then health) wins.
     fn time_up<H: Host>(&mut self, host: &mut H, t: i32) {
+        self.end_by_standings(host, t, "TIME!");
+    }
+
+    /// Every human is out and only bots are left: no one is watching a bot
+    /// fight to the end, so the match ends on the current standings.
+    fn only_bots_left<H: Host>(&self, host: &H) -> bool {
+        self.humans_at_start > 0
+            && self.zone_active()
+            && self.alive() > 0
+            && host.get_rule(rule::HUMANS_ALIVE) == 0
+    }
+
+    /// End now: the survivor with the most frags (then health) wins.
+    fn end_by_standings<H: Host>(&mut self, host: &mut H, t: i32, banner: &str) {
         let mut best: Option<(usize, i32, i32)> = None;
         let mut tie = false;
         for s in 0..MAX_PLAYERS {
@@ -432,7 +482,7 @@ impl Royale {
                 }
             }
         }
-        tell!(host, None, "TIME!");
+        tell!(host, None, "{}", banner);
         let winner = best.filter(|_| !tie && self.contenders() >= 2).map(|b| b.0);
         self.decide(host, winner, t);
     }
@@ -445,7 +495,9 @@ impl Royale {
         if !self.zone_active() || self.loot_start_tic == 0 {
             return None;
         }
-        Some(t - self.loot_start_tic)
+        // Zone schedule time: runs `zone_pace / 1000` × real time.
+        let real = i64::from(t - self.loot_start_tic);
+        Some((real * i64::from(self.zone_pace) / 1000) as i32)
     }
 
     pub(crate) fn on_tick<H: Host>(&mut self, host: &mut H, t: i32) {
@@ -493,11 +545,15 @@ impl Royale {
         if t % TICRATE != 0 {
             return;
         }
+        if self.only_bots_left(host) {
+            self.end_by_standings(host, t, "No players left - only bots remain");
+            return;
+        }
         if left == 60 * TICRATE + 1 || left == 10 * TICRATE + 1 {
             tell!(host, None, "{} seconds left!", left / TICRATE);
         }
         if self.phase == MatchPhase::Loot {
-            let grace_left = self.loot_start_tic + GRACE_SECS * TICRATE - t;
+            let grace_left = self.loot_start_tic + self.grace_tics() - t;
             if grace_left == 10 * TICRATE {
                 tell!(host, None, "The zone closes in 10s");
             }
@@ -686,6 +742,7 @@ impl Royale {
             match_over: false,
             show_zone: self.loot_start_tic > 0,
             t_rel: self.zone_t_rel(t),
+            zone_pace: self.zone_pace,
             alive_n: self.alive(),
             contender: &self.contender,
             combat: &self.combat,
@@ -750,5 +807,27 @@ impl RoomMod for Royale {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod only_bots_tests {
+    use super::*;
+    use crate::host::{FakeHost, Host};
+
+    #[test]
+    fn the_match_ends_once_every_human_is_out() {
+        let mut h = FakeHost::new(1);
+        let mut r = Royale::default();
+        r.contender[0] = true;
+        r.contender[1] = true;
+        r.phase = MatchPhase::Zone;
+        r.humans_at_start = 1;
+        h.set_rule(rule::HUMANS_ALIVE, 1);
+        assert!(!r.only_bots_left(&h), "a human still plays");
+        h.set_rule(rule::HUMANS_ALIVE, 0);
+        assert!(r.only_bots_left(&h), "only bots: end it");
+        r.humans_at_start = 0;
+        assert!(!r.only_bots_left(&h), "older engine / bots-only room: never");
     }
 }

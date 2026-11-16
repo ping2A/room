@@ -185,8 +185,10 @@ pub struct PostChain {
     pub post: PostPass,
     /// Kawase mip bloom pyramid.
     pub bloom: BloomPass,
-    /// Screen-space AO (Full tier).
-    pub ssao: SsaoPass,
+    /// Screen-space AO, Full tier only: its shader loads from the depth
+    /// texture, which WebGL2 / GLSL ES cannot do, so building it there fails
+    /// pipeline validation (black screen on phones without WebGPU).
+    pub ssao: Option<SsaoPass>,
     /// Scene format the bloom/SSAO pipelines were built for.
     scene_format: wgpu::TextureFormat,
     /// LDR / present format the tonemap pipeline was built for (R10).
@@ -204,7 +206,7 @@ impl PostChain {
         Self {
             post: PostPass::new(gpu, ldr_format),
             bloom: BloomPass::new(gpu, scene_format),
-            ssao: SsaoPass::new(gpu, scene_format),
+            ssao: (gpu.tier == GpuTier::Full).then(|| SsaoPass::new(gpu, scene_format)),
             scene_format,
             ldr_format,
         }
@@ -219,7 +221,7 @@ impl PostChain {
     ) {
         if self.scene_format != scene_format {
             self.bloom = BloomPass::new(gpu, scene_format);
-            self.ssao = SsaoPass::new(gpu, scene_format);
+            self.ssao = (gpu.tier == GpuTier::Full).then(|| SsaoPass::new(gpu, scene_format));
             self.scene_format = scene_format;
         }
         if self.ldr_format != ldr_format {
@@ -271,11 +273,11 @@ impl PostChain {
         let mut src_view = scene;
 
         // SSAO (Full tier only; CVar-gated).
-        if s.ssao > 0 && gpu.tier == GpuTier::Full {
-            self.ssao.uniforms.configure(true, w, h);
-            self.ssao.uniforms.params[3] = s.ssao_strength;
+        if let (true, Some(ssao)) = (s.ssao > 0, self.ssao.as_mut()) {
+            ssao.uniforms.configure(true, w, h);
+            ssao.uniforms.params[3] = s.ssao_strength;
             let depth = depth_only_view(depth_tex);
-            self.ssao.apply(gpu, encoder, src_view, &depth, ping);
+            ssao.apply(gpu, encoder, src_view, &depth, ping);
             src_view = ping;
         }
 

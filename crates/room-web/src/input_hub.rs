@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 thread_local! {
     static HELD: RefCell<BTreeSet<&'static str>> = const { RefCell::new(BTreeSet::new()) };
     static ATTACK: Cell<bool> = const { Cell::new(false) };
-    /// Space key is also Duke's jump input while Doom maps it to use.
+    /// Space key: Duke's jump input (Doom reads Space through its `jump` bind).
     static JUMP: Cell<bool> = const { Cell::new(false) };
     static ALT_ATTACK: Cell<bool> = const { Cell::new(false) };
     static WEAPON: Cell<u8> = const { Cell::new(0) };
@@ -41,6 +41,9 @@ thread_local! {
     static MOUSE_SENS: Cell<f64> = const { Cell::new(1.0) };
     /// Flip look up/down when true.
     static MOUSE_INVERT_Y: Cell<bool> = const { Cell::new(false) };
+    /// On-screen stick as an analog axis: `(x right, y forward)`, each in
+    /// `-1..=1`. `(0, 0)` means no stick (keys decide the movement).
+    static ANALOG_MOVE: Cell<(f64, f64)> = const { Cell::new((0.0, 0.0)) };
     /// `KeyboardEvent.code` → logical action (`w`, `attack`, …). Empty = built-in defaults.
     static BINDS: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -59,7 +62,8 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("ShiftLeft", "shift"),
         ("ShiftRight", "shift"),
         ("KeyE", "use"),
-        ("Space", "use"),
+        // GZDoom defaults: Space jumps, E uses (classic Doom used Space).
+        ("Space", "jump"),
         ("Enter", "enter"),
         ("NumpadEnter", "enter"),
         ("ControlLeft", "attack"),
@@ -141,6 +145,7 @@ fn intern_action(action: &str) -> Option<&'static str> {
         "right" => "right",
         "shift" => "shift",
         "use" => "use",
+        "jump" => "jump",
         "enter" => "enter",
         "attack" => "attack",
         "scores" => "scores",
@@ -193,8 +198,8 @@ pub fn set_key(code: &str, down: bool) {
     if code == "Space" {
         JUMP.set(down);
     }
-    // Space remains Doom's Use binding, but Duke treats it as jump. Sending
-    // both bits would make the native input differ from the Duke controls.
+    // Duke reads Space as its own jump bit above; don't also send Doom's
+    // bound action, or the native input would differ from Duke's controls.
     if DUKE_MODE.get() && code == "Space" {
         return;
     }
@@ -453,6 +458,36 @@ pub fn add_weapon_wheel(delta_y: f64) {
     }
 }
 
+/// On-screen stick position: `x` right, `y` forward, magnitude up to 1
+/// (full deflection is run speed). `(0, 0)` releases the stick.
+pub fn set_analog_move(x: f64, y: f64) {
+    let (mut x, mut y) = (
+        if x.is_finite() {
+            x.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        },
+        if y.is_finite() {
+            y.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        },
+    );
+    let mag = x.hypot(y);
+    if mag > 1.0 {
+        x /= mag;
+        y /= mag;
+    }
+    ANALOG_MOVE.set((x, y));
+}
+
+/// Analog stick, when the player is pushing it.
+#[must_use]
+pub fn analog_move() -> Option<(f64, f64)> {
+    let (x, y) = ANALOG_MOVE.get();
+    (x != 0.0 || y != 0.0).then_some((x, y))
+}
+
 /// Pointer-lock mouse motion (CSS pixels), same sign as [`PlaySession::add_mouse_delta`].
 pub fn add_mouse_delta(dx: f64, dy: f64) {
     let s = MOUSE_SENS.get();
@@ -502,6 +537,7 @@ pub fn reset() {
     VIEW_GRID.set(false);
     MOUSE_YAW.set(0);
     MOUSE_PITCH.set(0);
+    ANALOG_MOVE.set((0.0, 0.0));
     DUKE_TURN_HELD.set(0);
     DUKE_TURN_RESIDUAL.set(0.0);
     DUKE_HORIZ_RESIDUAL.set(0.0);

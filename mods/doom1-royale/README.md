@@ -26,16 +26,32 @@ blocked (no running on the spot), and only punch at melee range.
 
 1. **Pregame** (10 s) — fists only; nobody can be hurt (every player is
    shielded until the match starts).
+   Anything fired or switched during the countdown is given back at deploy
+   (ammo and weapons as they were when the countdown began).
 2. **Deploy** (3 s) — the weapons spawn, then every player is placed
    automatically, as far as possible from the others, on a free spot (never
    on a gun), at full health; brief landing shield. There is no landing
    choice.
 3. **Loot** (60 s grace) — pick up what is on the map; the zone is visible.
 4. **Zone phases** — hold → shrink (centre moves); damage outside; final circle ~60 s to zero.
+
+The whole zone timeline (grace + phases) lasts 7 min 30 s. With a shorter
+room time limit (set in minutes in the lobby) the zone runs
+faster in proportion, so it has fully closed 5–20 s before time runs out;
+the on-screen countdowns stay in real seconds.
 5. **Victory** — winner, your place and the full standings (kills, damage)
    stay on screen; `game::end_match_ex`.
 
+## One map per match
+
+Exits, secret exits and `Teleport_NewMap` do nothing during a match (mod
+rule `NO_EXIT`): nobody can leave the arena for another level.
+
 ## Death and spectating
+
+When every human player is out and only bots are left, the match ends at
+once on the current standings (most frags, then health) instead of letting
+the bots fight on.
 
 When you are eliminated a stats screen shows your place (#3 of 8), who
 killed you and how much health they had left (or that the zone got you), and

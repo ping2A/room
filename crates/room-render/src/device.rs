@@ -78,7 +78,9 @@ impl GpuContext {
                 label: Some("room"),
                 required_features: wgpu::Features::empty(),
                 required_limits: if tier == GpuTier::Downlevel {
-                    wgpu::Limits::downlevel_webgl2_defaults()
+                    // WebGL2 baseline, but with the textures and render size
+                    // the GPU really allows (phones: 4096–16384, not 2048).
+                    wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
                 } else {
                     wgpu::Limits::default()
                 },

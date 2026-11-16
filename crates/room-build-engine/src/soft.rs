@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default)]
 pub struct SoftTiles {
     tiles: BTreeMap<i16, (u16, u16, Vec<u8>)>,
+    /// DEF `texture` image overrides keyed by `(tile, palette)`.
+    palette_tiles: BTreeMap<(i16, u8), (u16, u16, Vec<u8>)>,
     /// Build `LOOKUP.DAT` remaps keyed by sprite/wall palette.
     palette_lookups: BTreeMap<u8, [u8; 256]>,
     /// Build shade tables from `PALETTE.DAT`, brightest first.
@@ -17,6 +19,10 @@ pub struct SoftTiles {
     shade_count: usize,
     /// Build's optional indexed-color translucency lookup from `PALETTE.DAT`.
     translucency: Option<Vec<u8>>,
+    /// Classic indexed blend tables declared by DEF (table zero stays in `translucency`).
+    blend_tables: BTreeMap<u8, Vec<u8>>,
+    /// Decoded DEF cubemap faces keyed by `(parallax tile, palette)`.
+    skyboxes: BTreeMap<(i16, u8), room_build::def::ImportedSkybox>,
     /// ART picanm cycle and frame duration in 120 Hz Build clock ticks.
     animations: BTreeMap<i16, (Vec<i16>, u32)>,
     /// ART picanm sprite-origin offsets, keyed by base tile.
@@ -51,12 +57,47 @@ impl SoftTiles {
         self.sprite_offsets.insert(picnum, (x_offset, y_offset));
     }
 
+    /// Insert a DEF texture branch for one Build palette bank.
+    pub fn insert_palette_variant(
+        &mut self,
+        picnum: i16,
+        palette: u8,
+        width: u16,
+        height: u16,
+        pixels: Vec<u8>,
+    ) {
+        if palette != 0 && usize::from(width).saturating_mul(usize::from(height)) == pixels.len() {
+            self.palette_tiles
+                .insert((picnum, palette), (width, height, pixels));
+        }
+    }
+
+    /// Insert decoded DEF skybox faces, replacing the same tile/palette pair.
+    pub fn insert_skybox(&mut self, skybox: room_build::def::ImportedSkybox) {
+        self.skyboxes.insert((skybox.tile, skybox.palette), skybox);
+    }
+
+    /// Whether a DEF cubemap exists for this parallax tile and palette.
+    #[must_use]
+    pub fn has_skybox(&self, tile: i16, palette: u8) -> bool {
+        self.skyboxes.contains_key(&(tile, palette))
+    }
+
     /// Copy an already loaded tile, including its animation and sprite origin.
     pub fn copy_tile(&mut self, source: i16, destination: i16) -> bool {
         let Some(tile) = self.tiles.get(&source).cloned() else {
             return false;
         };
         self.tiles.insert(destination, tile);
+        let variants: Vec<_> = self
+            .palette_tiles
+            .iter()
+            .filter(|((picnum, _), _)| *picnum == source)
+            .map(|((_, palette), tile)| ((*palette), tile.clone()))
+            .collect();
+        for (palette, tile) in variants {
+            self.palette_tiles.insert((destination, palette), tile);
+        }
         if let Some(offset) = self.sprite_offsets.get(&source).copied() {
             self.sprite_offsets.insert(destination, offset);
         }
@@ -143,19 +184,47 @@ impl SoftTiles {
 
     /// Resolve a tile (with its ART animation frame) once, for span drawing.
     pub(crate) fn resolve(&self, picnum: i16, clock_120hz: u32) -> Option<TileRef<'_>> {
-        let resolved = self
-            .animations
-            .get(&picnum)
-            .map_or(picnum, |(frames, step)| {
-                let frame = (clock_120hz / (*step).max(1)) as usize % frames.len();
-                frames[frame]
-            });
+        let resolved = self.animated_picnum(picnum, clock_120hz);
         let (w, h, pix) = self.tiles.get(&resolved)?;
         (*w != 0 && *h != 0).then_some(TileRef {
             w: usize::from(*w),
             h: usize::from(*h),
             pix,
         })
+    }
+
+    /// Resolve a tile animation, preferring a declared DEF image for `palette`.
+    pub(crate) fn resolve_for_palette(
+        &self,
+        picnum: i16,
+        palette: u8,
+        clock_120hz: u32,
+    ) -> Option<TileRef<'_>> {
+        let resolved = self.animated_picnum(picnum, clock_120hz);
+        let (w, h, pix) = self
+            .palette_tiles
+            .get(&(resolved, palette))
+            .or_else(|| self.tiles.get(&resolved))?;
+        (*w != 0 && *h != 0).then_some(TileRef {
+            w: usize::from(*w),
+            h: usize::from(*h),
+            pix,
+        })
+    }
+
+    /// Whether this frame has an explicit DEF image for the requested palette.
+    pub(crate) fn has_palette_variant(&self, picnum: i16, palette: u8, clock_120hz: u32) -> bool {
+        let resolved = self.animated_picnum(picnum, clock_120hz);
+        self.palette_tiles.contains_key(&(resolved, palette))
+    }
+
+    fn animated_picnum(&self, picnum: i16, clock_120hz: u32) -> i16 {
+        self.animations
+            .get(&picnum)
+            .map_or(picnum, |(frames, step)| {
+                let frame = (clock_120hz / (*step).max(1)) as usize % frames.len();
+                frames[frame]
+            })
     }
 
     /// `LOOKUP.DAT` remap for `pal` (`None` = identity).
@@ -175,27 +244,47 @@ impl SoftTiles {
     /// Sample a tile at a 120 Hz Build animation clock.
     #[must_use]
     pub fn sample_at(&self, picnum: i16, u: u32, v: u32, clock_120hz: u32) -> Option<u8> {
-        let resolved = self
-            .animations
-            .get(&picnum)
-            .map_or(picnum, |(frames, step)| {
-                let frame = (clock_120hz / (*step).max(1)) as usize % frames.len();
-                frames[frame]
-            });
-        let (w, h, pix) = self.tiles.get(&resolved)?;
-        if *w == 0 || *h == 0 {
+        self.sample_resolved(self.resolve(picnum, clock_120hz), u, v)
+    }
+
+    /// Sample the palette-specific DEF image, falling back to the base tile.
+    #[must_use]
+    pub fn sample_at_for_palette(
+        &self,
+        picnum: i16,
+        palette: u8,
+        u: u32,
+        v: u32,
+        clock_120hz: u32,
+    ) -> Option<u8> {
+        self.sample_resolved(self.resolve_for_palette(picnum, palette, clock_120hz), u, v)
+    }
+
+    fn sample_resolved(&self, tile: Option<TileRef<'_>>, u: u32, v: u32) -> Option<u8> {
+        let tile = tile?;
+        let (w, h, pix) = (tile.w, tile.h, tile.pix);
+        if w == 0 || h == 0 {
             return None;
         }
-        let x = (u as usize) % (*w as usize);
-        let y = (v as usize) % (*h as usize);
+        let x = (u as usize) % w;
+        let y = (v as usize) % h;
         // column-major: pixels[x * height + y]
-        pix.get(x * (*h as usize) + y).copied()
+        pix.get(x * h + y).copied()
     }
 
     /// Pixel dimensions of a loaded tile.
     #[must_use]
     pub fn dimensions(&self, picnum: i16) -> Option<(u16, u16)> {
         self.tiles.get(&picnum).map(|(w, h, _)| (*w, *h))
+    }
+
+    /// Pixel dimensions for a palette override, falling back to the base tile.
+    #[must_use]
+    pub fn dimensions_for_palette(&self, picnum: i16, palette: u8) -> Option<(u16, u16)> {
+        self.palette_tiles
+            .get(&(picnum, palette))
+            .or_else(|| self.tiles.get(&picnum))
+            .map(|(width, height, _)| (*width, *height))
     }
 
     /// Install one Build palette remap table from `LOOKUP.DAT`.
@@ -217,14 +306,29 @@ impl SoftTiles {
         self.translucency = table.filter(|bytes| bytes.len() >= 65_536);
     }
 
-    fn composite_sprite(&self, background: u8, foreground: u8, cstat: u16) -> u8 {
+    /// Install one DEF 256×256 indexed blend table. Table zero is reserved for
+    /// the game's original `PALETTE.DAT` translucency table.
+    pub fn insert_blend_table(&mut self, table: u8, pixels: Vec<u8>) {
+        if table != 0 && pixels.len() == 65_536 {
+            self.blend_tables.insert(table, pixels);
+        }
+    }
+
+    /// Whether a nonzero custom blend table was loaded.
+    #[must_use]
+    pub fn has_blend_table(&self, table: u8) -> bool {
+        table != 0 && self.blend_tables.contains_key(&table)
+    }
+
+    fn composite_sprite(&self, background: u8, foreground: u8, cstat: u16, blend_table: u8) -> u8 {
         const TRANSLUCENT: u16 = 2;
         const REVERSE_TRANSLUCENT: u16 = 512;
-        self.composite_layer(
+        self.composite_layer_with_table(
             background,
             foreground,
             cstat & TRANSLUCENT != 0,
             cstat & REVERSE_TRANSLUCENT != 0,
+            blend_table,
         )
     }
 
@@ -235,10 +339,26 @@ impl SoftTiles {
         translucent: bool,
         reverse: bool,
     ) -> u8 {
+        self.composite_layer_with_table(background, foreground, translucent, reverse, 0)
+    }
+
+    fn composite_layer_with_table(
+        &self,
+        background: u8,
+        foreground: u8,
+        translucent: bool,
+        reverse: bool,
+        blend_table: u8,
+    ) -> u8 {
         if !translucent {
             return foreground;
         }
-        let Some(table) = self.translucency.as_deref() else {
+        let table = self
+            .blend_tables
+            .get(&blend_table)
+            .map(Vec::as_slice)
+            .or_else(|| self.translucency.as_deref());
+        let Some(table) = table else {
             return foreground;
         };
         let (back, front) = if reverse {
@@ -247,6 +367,19 @@ impl SoftTiles {
             (background, foreground)
         };
         table[usize::from(back) * 256 + usize::from(front)]
+    }
+
+    /// Composite a screen-space EDuke32 `rotatesprite` pixel. Orientation bit
+    /// 1 selects translucency and bit 32 selects the reverse (lighter) table;
+    /// bit 64 disables both masking and translucency at the caller.
+    #[must_use]
+    pub fn composite_hud_pixel(&self, background: u8, foreground: u8, orientation: i32) -> u8 {
+        self.composite_layer(
+            background,
+            foreground,
+            orientation & 1 != 0,
+            orientation & 32 != 0,
+        )
     }
 
     /// Remap a non-transparent ART index by a Build sprite/wall palette.
@@ -287,6 +420,7 @@ impl SoftTiles {
     pub(crate) fn sky_column(
         &self,
         base: i16,
+        palette: u8,
         angle: i16,
         col: i32,
         width: i32,
@@ -300,12 +434,86 @@ impl SoftTiles {
         let look = (i32::from(angle) + ((col - width / 2) * 512) / width).rem_euclid(2048);
         let slot = (look >> 8) as usize;
         let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
-        let tile = self.resolve(base.saturating_add(offset), clock_120hz)?;
+        let tile = self.resolve_for_palette(base.saturating_add(offset), palette, clock_120hz)?;
         let u = i64::from(look & 255) * tile.w as i64 / 256;
         let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
         let half = i64::from(height / 2);
         let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
         Some((tile, u, sky_horizon))
+    }
+
+    /// Sample a DEF cubemap for one screen pixel. A palette-specific skybox
+    /// wins; palette zero is the fallback for unlisted banks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sample_skybox_at(
+        &self,
+        base: i16,
+        palette: u8,
+        angle: i16,
+        col: i32,
+        width: i32,
+        y: i32,
+        height: i32,
+        horizon: i32,
+    ) -> Option<u8> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let skybox = self.skyboxes.get(&(base, palette)).or_else(|| {
+            (palette != 0)
+                .then(|| self.skyboxes.get(&(base, 0)))
+                .flatten()
+        })?;
+
+        let look = i32::from(angle).rem_euclid(2048);
+        let (sin, cos) = crate::helpers::approx_sincos_q14(look);
+        let focal_x = i64::from((width / 2).max(1));
+        let focal_y = i64::from((height / 2).max(1));
+        let dx = i64::from(col - width / 2);
+        let ray_x = i64::from(cos) * focal_x - i64::from(sin) * dx;
+        let ray_y = i64::from(sin) * focal_x + i64::from(cos) * dx;
+        let ray_up = i64::from(horizon - y) * focal_x * (1 << 14) / focal_y;
+        let abs_x = ray_x.abs();
+        let abs_y = ray_y.abs();
+        let abs_up = ray_up.abs();
+
+        // Cubemap coordinates are expressed as signed face-local values and
+        // converted to [0, 1] only after selecting the dominant direction.
+        let (face, u_axis, v_axis, dominant) = if abs_x >= abs_y && abs_x >= abs_up {
+            if ray_x >= 0 {
+                (0, ray_y, -ray_up, abs_x) // front (+X)
+            } else {
+                (2, -ray_y, -ray_up, abs_x) // back (-X)
+            }
+        } else if abs_y >= abs_up {
+            if ray_y >= 0 {
+                (1, -ray_x, -ray_up, abs_y) // right (+Y)
+            } else {
+                (3, ray_x, -ray_up, abs_y) // left (-Y)
+            }
+        } else if ray_up >= 0 {
+            (4, ray_y, -ray_x, abs_up) // top (+Z)
+        } else {
+            (5, ray_y, ray_x, abs_up) // down (-Z)
+        };
+        if dominant == 0 {
+            return None;
+        }
+        let texture_coordinate =
+            |axis: i64| -> u32 { ((axis + dominant) * 32_768 / dominant).clamp(0, 65_535) as u32 };
+        let face = &skybox.faces[face];
+        if face.width == 0 || face.height == 0 {
+            return None;
+        }
+        let u = (u64::from(texture_coordinate(u_axis)) * u64::from(face.width) >> 16) as usize;
+        let v = (u64::from(texture_coordinate(v_axis)) * u64::from(face.height) >> 16) as usize;
+        face.pixels
+            .get(
+                u.min(usize::from(face.width) - 1) * usize::from(face.height)
+                    + v.min(usize::from(face.height) - 1),
+            )
+            .copied()
+            .filter(|pixel| *pixel != room_build::art::TRANSPARENT)
     }
 
     /// Build `parascan`: the sky is a wall at fixed distance whose middle
@@ -348,6 +556,7 @@ impl SoftTiles {
     fn sample_sky_at(
         &self,
         base: i16,
+        palette: u8,
         angle: i16,
         col: i32,
         width: i32,
@@ -355,7 +564,6 @@ impl SoftTiles {
         band: i32,
         clock_120hz: u32,
     ) -> Option<u8> {
-        let (tile_width, tile_height) = self.dimensions(base)?;
         if width <= 0 {
             return None;
         }
@@ -365,13 +573,14 @@ impl SoftTiles {
         let slot = (look >> 8) as usize;
         let offset = self.sky_offsets.get(&base).map_or(0, |o| o[slot]);
         let pic = base.saturating_add(offset);
+        let (tile_width, tile_height) = self.dimensions_for_palette(pic, palette)?;
         let u = ((look & 255) * i32::from(tile_width) / 256) as u32;
         let v = if band > 0 {
             (y * i32::from(tile_height) / band.max(1)).clamp(0, i32::from(tile_height) - 1) as u32
         } else {
             0
         };
-        self.sample_at(pic, u, v, clock_120hz)
+        self.sample_at_for_palette(pic, palette, u, v, clock_120hz)
             .filter(|&p| p != room_build::art::TRANSPARENT)
     }
 }
@@ -678,17 +887,10 @@ fn render_fp_mirror_at(
         wall.nextsector,
     );
     let mut reflected_frame = SoftFrame::new(frame.width, frame.height);
-    // Chocolate draws the viewing player in mirrors only.
-    let with_viewer = world.mirror_viewer.and_then(|(index, yrepeat)| {
-        let index = usize::try_from(index).ok()?;
-        world.sprites.get(index)?;
-        let mut copy = world.clone();
-        copy.sprites[index].yrepeat = yrepeat;
-        copy.sprites[index].cstat &= !0x8000;
-        Some(copy)
-    });
+    let mirror_world = mirror_render_world(world);
+    let mirror_world = mirror_world.as_ref().unwrap_or(world);
     let _ = render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
-        with_viewer.as_ref().unwrap_or(world),
+        mirror_world,
         &reflected_view,
         &mut reflected_frame,
         tiles,
@@ -719,6 +921,38 @@ fn render_fp_mirror_at(
         scene_depth,
         [points[0], points[2], points[3]],
     );
+}
+
+fn mirror_render_world(world: &BuildWorld) -> Option<BuildWorld> {
+    if world.mirror_viewer.is_none()
+        && world.mirror_render_sprites.is_empty()
+        && world.mirror_render_sprite_blends.is_empty()
+    {
+        return None;
+    }
+    let mut copy = world.clone();
+    for (&index, sprite) in &world.mirror_render_sprites {
+        if let Some(target) = copy.sprites.get_mut(index) {
+            *target = *sprite;
+        }
+    }
+    copy.render_sprite_blends.extend(
+        world
+            .mirror_render_sprite_blends
+            .iter()
+            .map(|(&index, &blend)| (index, blend)),
+    );
+    if let Some((index, yrepeat)) = world.mirror_viewer
+        && let Ok(index) = usize::try_from(index)
+        && let Some(sprite) = copy.sprites.get_mut(index)
+    {
+        // Chocolate draws the viewing player in mirrors only. Preserve the
+        // event-mutated transient fields, restoring only the fields needed to
+        // make the mirror copy drawable.
+        sprite.yrepeat = yrepeat;
+        sprite.cstat &= !0x8000;
+    }
+    Some(copy)
 }
 
 fn reflect_camera(x: i32, y: i32, ax: i32, ay: i32, bx: i32, by: i32) -> Option<(i32, i32)> {
@@ -954,21 +1188,26 @@ pub fn fill_fp_flats_sky_at(
             let pix = if parallax {
                 tiles
                     .and_then(|ts| {
-                        ts.sample_sky_at(
-                            picnum,
-                            view.ang,
-                            col,
-                            w,
-                            if above_horizon { y } else { y - horizon },
-                            if above_horizon { horizon } else { h - horizon },
-                            clock_120hz,
-                        )
+                        ts.sample_skybox_at(picnum, pal, view.ang, col, w, y, h, horizon)
+                            .or_else(|| {
+                                ts.sample_sky_at(
+                                    picnum,
+                                    pal,
+                                    view.ang,
+                                    col,
+                                    w,
+                                    if above_horizon { y } else { y - horizon },
+                                    if above_horizon { horizon } else { h - horizon },
+                                    clock_120hz,
+                                )
+                            })
                     })
                     .unwrap_or_else(|| sky_color(picnum, view.ang, col, y))
             } else {
                 project_plane_pixel(
                     tiles,
                     picnum,
+                    pal,
                     flat,
                     view,
                     sin,
@@ -990,7 +1229,12 @@ pub fn fill_fp_flats_sky_at(
                 )
             };
             let pix = tiles.map_or(pix, |ts| {
-                ts.shade_palette(sec_shade, ts.remap_palette(pal, pix))
+                let palette_pixel = if ts.has_palette_variant(picnum, pal, clock_120hz) {
+                    pix
+                } else {
+                    ts.remap_palette(pal, pix)
+                };
+                ts.shade_palette(sec_shade, palette_pixel)
             });
             frame.put(col, y, pix);
         }
@@ -1001,6 +1245,7 @@ pub fn fill_fp_flats_sky_at(
 fn project_plane_pixel(
     tiles: Option<&SoftTiles>,
     picnum: i16,
+    palette: u8,
     flat: u8,
     view: &BuildView,
     sin: i32,
@@ -1124,7 +1369,7 @@ fn project_plane_pixel(
         tex_y = -tex_y;
     }
     let (tile_width, tile_height) = tiles
-        .and_then(|ts| ts.dimensions(picnum))
+        .and_then(|ts| ts.dimensions_for_palette(picnum, palette))
         .unwrap_or((64, 64));
     // Chocolate's plane basis uses picsiz to scale each axis, so ART tile
     // dimensions affect world texel density. Sector bit 3 doubles physical
@@ -1140,7 +1385,7 @@ fn project_plane_pixel(
         .rem_euclid(1 << 30) as u32;
     tiles
         .and_then(|ts| {
-            ts.sample_at(picnum, u, v, clock_120hz)
+            ts.sample_at_for_palette(picnum, palette, u, v, clock_120hz)
                 .filter(|&p| p != room_build::art::TRANSPARENT)
         })
         .unwrap_or(flat)
@@ -1279,7 +1524,7 @@ fn render_fp_walls_at(
                 }
                 let flat = wall_color(wall.picnum, wall.shade);
                 let (tile_width, tile_height) = tiles
-                    .and_then(|ts| ts.dimensions(wall.picnum))
+                    .and_then(|ts| ts.dimensions_for_palette(wall.picnum, wall.pal))
                     .unwrap_or((64, 64));
                 let sample_width = u32::from(tile_width).max(1);
                 let sample_height = u32::from(tile_height).max(1);
@@ -1318,7 +1563,7 @@ fn render_fp_walls_at(
                             } else {
                                 vv
                             };
-                            ts.sample_at(wall.picnum, uu, vv, clock_120hz)
+                            ts.sample_at_for_palette(wall.picnum, wall.pal, uu, vv, clock_120hz)
                         });
                         let pix = match sample {
                             Some(pixel)
@@ -1329,7 +1574,16 @@ fn render_fp_walls_at(
                             }
                             Some(pixel) if pixel != room_build::art::TRANSPARENT => {
                                 tiles.map_or(pixel, |ts| {
-                                    ts.shade_palette(wall.shade, ts.remap_palette(wall.pal, pixel))
+                                    let palette_pixel = if ts.has_palette_variant(
+                                        wall.picnum,
+                                        wall.pal,
+                                        clock_120hz,
+                                    ) {
+                                        pixel
+                                    } else {
+                                        ts.remap_palette(wall.pal, pixel)
+                                    };
+                                    ts.shade_palette(wall.shade, palette_pixel)
                                 })
                             }
                             _ => flat,
@@ -1451,17 +1705,22 @@ pub fn render_fp_sprites_at_with_angle_offsets(
         }
         if let Some(ts) = tiles
             && ts
-                .dimensions(sp.picnum)
+                .dimensions_for_palette(sp.picnum, sp.pal)
                 .is_none_or(|(tw, th)| tw == 0 || th == 0)
         {
             continue;
         }
+        let blend_table = world
+            .render_sprite_blends
+            .get(&i)
+            .and_then(|value| u8::try_from(*value).ok())
+            .unwrap_or(0);
         if sp.cstat & CSTAT_WALL_ALIGN != 0 {
-            render_wall_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz);
+            render_wall_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz, blend_table);
             continue;
         }
         if sp.cstat & CSTAT_FLOOR_ALIGN != 0 {
-            render_floor_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz);
+            render_floor_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz, blend_table);
             continue;
         }
         let Some((rx, ry, rz)) = cam_project(view, sin, cos, sp.x, sp.y, sp.z) else {
@@ -1477,7 +1736,7 @@ pub fn render_fp_sprites_at_with_angle_offsets(
         let xrep = i32::from(sp.xrepeat).max(1);
         let yrep = i32::from(sp.yrepeat).max(1);
         let (tile_w, tile_h) = tiles
-            .and_then(|ts| ts.dimensions(sp.picnum))
+            .and_then(|ts| ts.dimensions_for_palette(sp.picnum, sp.pal))
             .unwrap_or((64, 64));
         // Build: a sprite is tilesize*repeat/4 world units across (and
         // tilesize*repeat*4 Z units tall, i.e. /4 in XY-equivalent units).
@@ -1509,10 +1768,14 @@ pub fn render_fp_sprites_at_with_angle_offsets(
         let flat = wall_color(sp.picnum, sp.shade);
         let span_x = i64::from((right - left).max(1));
         let span_y = i64::from((bot - top).max(1));
-        let tile = tiles.and_then(|ts| ts.resolve(sp.picnum, clock_120hz));
+        let tile = tiles.and_then(|ts| ts.resolve_for_palette(sp.picnum, sp.pal, clock_120hz));
         let (tw, th) = tile.map_or((64, 64), |t| (t.w as i64, t.h as i64));
         let fog = sprite_fog_shade(Some(world), sp.shade, i64::from(z), sp.sectnum);
-        let pal_table = tiles.and_then(|ts| ts.pal_table(sp.pal));
+        let use_palette_variant =
+            tiles.is_some_and(|ts| ts.has_palette_variant(sp.picnum, sp.pal, clock_120hz));
+        let pal_table = (!use_palette_variant)
+            .then(|| tiles.and_then(|ts| ts.pal_table(sp.pal)))
+            .flatten();
         let shade_row = tiles.and_then(|ts| ts.shade_row(fog));
         for col in left.max(0)..right.min(w) {
             let cu = col as usize;
@@ -1541,7 +1804,7 @@ pub fn render_fp_sprites_at_with_angle_offsets(
                     col,
                     y,
                     tiles.map_or(pix, |ts| {
-                        ts.composite_sprite(frame.pixels[depth_index], pix, sp.cstat)
+                        ts.composite_sprite(frame.pixels[depth_index], pix, sp.cstat, blend_table)
                     }),
                 );
                 if sp.cstat & CSTAT_TRANSLUCENT == 0 {
@@ -1562,9 +1825,11 @@ fn render_floor_aligned_sprite(
     zbuf: &mut [i32],
     sprite: &SpriteT,
     clock_120hz: u32,
+    blend_table: u8,
 ) {
     let Some(tiles) = tiles else { return };
-    let Some((tile_width, tile_height)) = tiles.dimensions(sprite.picnum) else {
+    let Some((tile_width, tile_height)) = tiles.dimensions_for_palette(sprite.picnum, sprite.pal)
+    else {
         return;
     };
     if tile_width == 0 || tile_height == 0 || sprite.xrepeat == 0 || sprite.yrepeat == 0 {
@@ -1669,6 +1934,7 @@ fn render_floor_aligned_sprite(
         sprite,
         clock_120hz,
         flat,
+        blend_table,
         [projected[0], projected[1], projected[2]],
     );
     draw_sprite_triangle(
@@ -1678,6 +1944,7 @@ fn render_floor_aligned_sprite(
         sprite,
         clock_120hz,
         flat,
+        blend_table,
         [projected[0], projected[2], projected[3]],
     );
 }
@@ -1689,6 +1956,7 @@ fn draw_sprite_triangle(
     sprite: &SpriteT,
     clock_120hz: u32,
     flat: u8,
+    blend_table: u8,
     vertices: [(i32, i32, i32, i32, i32); 3],
 ) {
     let [
@@ -1696,8 +1964,11 @@ fn draw_sprite_triangle(
         (x1, y1, z1, u1, v1),
         (x2, y2, z2, u2, v2),
     ] = vertices;
-    let tile = tiles.resolve(sprite.picnum, clock_120hz);
-    let pal_table = tiles.pal_table(sprite.pal);
+    let tile = tiles.resolve_for_palette(sprite.picnum, sprite.pal, clock_120hz);
+    let use_palette_variant = tiles.has_palette_variant(sprite.picnum, sprite.pal, clock_120hz);
+    let pal_table = (!use_palette_variant)
+        .then(|| tiles.pal_table(sprite.pal))
+        .flatten();
     let edge = |ax: i32, ay: i32, bx: i32, by: i32, px: i32, py: i32| {
         i64::from(px - ax) * i64::from(by - ay) - i64::from(py - ay) * i64::from(bx - ax)
     };
@@ -1746,7 +2017,7 @@ fn draw_sprite_triangle(
             frame.put(
                 x,
                 y,
-                tiles.composite_sprite(frame.pixels[index], pixel, sprite.cstat),
+                tiles.composite_sprite(frame.pixels[index], pixel, sprite.cstat, blend_table),
             );
         }
     }
@@ -1766,12 +2037,14 @@ fn render_wall_aligned_sprite(
     zbuf: &mut [i32],
     sprite: &SpriteT,
     clock_120hz: u32,
+    blend_table: u8,
 ) {
     let Some(tiles) = tiles else { return };
-    let Some((tile_width, tile_height)) = tiles.dimensions(sprite.picnum) else {
+    let Some((tile_width, tile_height)) = tiles.dimensions_for_palette(sprite.picnum, sprite.pal)
+    else {
         return;
     };
-    let wall_tile = tiles.resolve(sprite.picnum, clock_120hz);
+    let wall_tile = tiles.resolve_for_palette(sprite.picnum, sprite.pal, clock_120hz);
     if tile_width == 0 || tile_height == 0 || sprite.xrepeat == 0 || sprite.yrepeat == 0 {
         return;
     }
@@ -1910,10 +2183,18 @@ fn render_wall_aligned_sprite(
             };
             let pix = match wall_tile.map(|t| t.at(u, v)) {
                 Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                Some(pixel) => tiles.shade_palette(
-                    sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum),
-                    tiles.remap_palette(sprite.pal, pixel),
-                ),
+                Some(pixel) => {
+                    let palette_pixel =
+                        if tiles.has_palette_variant(sprite.picnum, sprite.pal, clock_120hz) {
+                            pixel
+                        } else {
+                            tiles.remap_palette(sprite.pal, pixel)
+                        };
+                    tiles.shade_palette(
+                        sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum),
+                        palette_pixel,
+                    )
+                }
                 None => flat,
             };
             if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
@@ -1922,7 +2203,7 @@ fn render_wall_aligned_sprite(
             frame.put(
                 col,
                 y,
-                tiles.composite_sprite(frame.pixels[index], pix, sprite.cstat),
+                tiles.composite_sprite(frame.pixels[index], pix, sprite.cstat, blend_table),
             );
         }
     }
@@ -2078,6 +2359,43 @@ mod tests {
     use crate::types::{SectorT, SpriteT, WallT};
 
     #[test]
+    fn mirror_render_world_applies_per_view_sprite_and_blend_edits() {
+        let mut world = BuildWorld::new();
+        world.sprites[0] = SpriteT {
+            cstat: 0x8000,
+            yrepeat: 0,
+            ..SpriteT::default()
+        };
+        world.sprites[5] = SpriteT {
+            x: 100,
+            xrepeat: 16,
+            yrepeat: 16,
+            ..SpriteT::default()
+        };
+        world.mirror_viewer = Some((0, 40));
+        world.mirror_render_sprites.insert(
+            5,
+            SpriteT {
+                x: 900,
+                ..world.sprites[5]
+            },
+        );
+        world.render_sprite_blends.insert(5, 2);
+        world.mirror_render_sprite_blends.insert(5, 201);
+
+        let mirrored = mirror_render_world(&world).expect("mirror render copy");
+
+        assert_eq!(mirrored.sprites[0].yrepeat, 40);
+        assert_eq!(mirrored.sprites[0].cstat & 0x8000, 0);
+        assert_eq!(mirrored.sprites[5].x, 900);
+        assert_eq!(mirrored.render_sprite_blends.get(&5), Some(&201));
+        assert_eq!(world.sprites[0].yrepeat, 0);
+        assert_ne!(world.sprites[0].cstat & 0x8000, 0);
+        assert_eq!(world.sprites[5].x, 100);
+        assert_eq!(world.render_sprite_blends.get(&5), Some(&2));
+    }
+
+    #[test]
     fn fp_flats_fill_horizon() {
         let sectors = vec![SectorT {
             wallptr: 0,
@@ -2197,13 +2515,123 @@ mod tests {
     }
 
     #[test]
+    fn parallax_ceiling_draw_uses_loaded_def_skybox_faces() {
+        let sectors = vec![SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -8192,
+            floorz: 0,
+            ceilingpicnum: 42,
+            ceilingstat: 1,
+            ..SectorT::default()
+        }];
+        let walls = vec![
+            WallT {
+                x: 0,
+                y: 0,
+                point2: 1,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 200,
+                y: 0,
+                point2: 2,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 200,
+                y: 200,
+                point2: 3,
+                nextsector: -1,
+                ..WallT::default()
+            },
+            WallT {
+                x: 0,
+                y: 200,
+                point2: 0,
+                nextsector: -1,
+                ..WallT::default()
+            },
+        ];
+        let world =
+            BuildWorld::load_arrays(sectors, walls, &[], [100, 100, -1024], 0, 100, 0).unwrap();
+        let view = world.build_view(100, 100, -1024, 0, 100, 0);
+        let face = || room_build::def::ImportedSkyboxFace {
+            width: 1,
+            height: 1,
+            pixels: std::sync::Arc::from(vec![77]),
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert_skybox(room_build::def::ImportedSkybox {
+            tile: 42,
+            palette: 0,
+            faces: [face(), face(), face(), face(), face(), face()],
+        });
+        let mut frame = SoftFrame::new(32, 24);
+
+        fill_fp_flats_sky(&world, &view, &mut frame, Some(&tiles));
+
+        assert_eq!(frame.pixels[1], 77);
+    }
+
+    #[test]
     fn duke_sky_sampling_selects_the_configured_angular_tile() {
         let mut tiles = SoftTiles::new();
         tiles.insert(100, 1, 1, vec![11]);
         tiles.insert(102, 1, 1, vec![22]);
         tiles.set_sky_offsets(100, [0, 2, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(tiles.sample_sky_at(100, 128, 0, 1, 0, 1, 0), Some(11));
-        assert_eq!(tiles.sample_sky_at(100, 384, 0, 1, 0, 1, 0), Some(22));
+        assert_eq!(tiles.sample_sky_at(100, 0, 128, 0, 1, 0, 1, 0), Some(11));
+        assert_eq!(tiles.sample_sky_at(100, 0, 384, 0, 1, 0, 1, 0), Some(22));
+    }
+
+    #[test]
+    fn palette_specific_def_tile_falls_back_to_base_image() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(9000, 1, 1, vec![12]);
+        tiles.insert_palette_variant(9000, 21, 1, 1, vec![34]);
+
+        assert_eq!(tiles.sample_at_for_palette(9000, 21, 0, 0, 0), Some(34));
+        assert_eq!(tiles.sample_at_for_palette(9000, 22, 0, 0, 0), Some(12));
+        assert_eq!(tiles.dimensions_for_palette(9000, 21), Some((1, 1)));
+    }
+
+    #[test]
+    fn def_skybox_samples_directional_faces_and_palette_zero_fallback() {
+        let face = |pixel| room_build::def::ImportedSkyboxFace {
+            width: 1,
+            height: 1,
+            pixels: std::sync::Arc::from(vec![pixel]),
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert_skybox(room_build::def::ImportedSkybox {
+            tile: 42,
+            palette: 0,
+            faces: [face(10), face(20), face(30), face(40), face(50), face(60)],
+        });
+        let center = |angle| tiles.sample_skybox_at(42, 0, angle, 1, 2, 1, 4, 1);
+
+        assert_eq!(center(0), Some(10)); // front
+        assert_eq!(center(512), Some(20)); // right
+        assert_eq!(center(1024), Some(30)); // back
+        assert_eq!(center(1536), Some(40)); // left
+        assert_eq!(tiles.sample_skybox_at(42, 5, 0, 1, 2, 1, 4, 1), Some(10));
+        assert_eq!(tiles.sample_skybox_at(42, 0, 0, 1, 2, 0, 4, 3), Some(50)); // top
+        assert_eq!(tiles.sample_skybox_at(42, 0, 0, 1, 2, 3, 4, 0), Some(60)); // down
+    }
+
+    #[test]
+    fn translucent_sprite_uses_its_def_blend_table() {
+        let mut tiles = SoftTiles::new();
+        tiles.set_translucency_table(Some(vec![3; 65_536]));
+        let mut custom = vec![5; 65_536];
+        custom[usize::from(10_u8) * 256 + usize::from(20_u8)] = 42;
+        tiles.insert_blend_table(201, custom);
+
+        assert_eq!(tiles.composite_sprite(10, 20, 2, 201), 42);
+        assert_eq!(tiles.composite_sprite(10, 20, 2, 0), 3);
+        assert_eq!(tiles.composite_sprite(10, 20, 0, 201), 20);
     }
 
     #[test]

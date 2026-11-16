@@ -85,12 +85,17 @@ impl TextureManager {
     ) -> TextureId {
         let id = self.alloc_id();
         let (w, h) = (image.width().max(1), image.height().max(1));
-        let levels = mip_chain(w, h, expand_image(image, playpal));
+        // Larger than the device allows (phones on WebGL2, hi-res mod art):
+        // shrink the pixels, keep the logical size so texture scaling and UVs
+        // stay as authored. Creating it full size fails validation.
+        let max = device.limits().max_texture_dimension_2d.max(1);
+        let (gw, gh, base) = fit_to_limit(w, h, expand_image(image, playpal), max);
+        let levels = mip_chain(gw, gh, base);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("tex"),
             size: wgpu::Extent3d {
-                width: w,
-                height: h,
+                width: gw,
+                height: gh,
                 depth_or_array_layers: 1,
             },
             #[allow(clippy::cast_possible_truncation)]
@@ -337,6 +342,17 @@ mod tests {
     }
 
     #[test]
+    fn oversized_textures_shrink_to_the_device_limit() {
+        let px = vec![200u8; 8 * 4 * 4];
+        let (w, h, out) = fit_to_limit(8, 4, px, 4);
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(out.len(), 4 * 2 * 4);
+        assert!(out.iter().all(|&b| b == 200));
+        let (w, h, _) = fit_to_limit(3, 3, vec![0; 36], 4);
+        assert_eq!((w, h), (3, 3));
+    }
+
+    #[test]
     fn mip_chain_averages_colour_and_keeps_masks_binary() {
         // 2×2 masked: two red opaque, two holes → 1×1 opaque red.
         let base = vec![255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0];
@@ -380,6 +396,38 @@ mod tests {
 /// Box-filtered mip levels down to 1×1, level 0 first. Colour averages the
 /// visible texels. Masked textures (alpha only 0 / 255) stay binary and stay
 /// opaque when any source texel is, so a sprite does not vanish at distance.
+/// Shrink `rgba` (`w`×`h`) by whole factors of two, box-averaged, until both
+/// sides fit `max`. Returns the size and pixels to upload.
+fn fit_to_limit(w: u32, h: u32, rgba: Vec<u8>, max: u32) -> (u32, u32, Vec<u8>) {
+    let (mut w, mut h, mut px) = (w, h, rgba);
+    while (w > max || h > max) && (w > 1 || h > 1) {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut out = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut acc = [0u32; 4];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let sx = (x * 2 + dx).min(w - 1);
+                    let sy = (y * 2 + dy).min(h - 1);
+                    let i = ((sy * w + sx) * 4) as usize;
+                    for c in 0..4 {
+                        acc[c] += u32::from(px[i + c]);
+                    }
+                }
+                let o = ((y * nw + x) * 4) as usize;
+                for c in 0..4 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        out[o + c] = (acc[c] / 4) as u8;
+                    }
+                }
+            }
+        }
+        (w, h, px) = (nw, nh, out);
+    }
+    (w, h, px)
+}
+
 fn mip_chain(w: u32, h: u32, base: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
     let binary = base.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 255);
     let mut levels = vec![(w, h, base)];

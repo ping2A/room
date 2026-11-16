@@ -8518,6 +8518,7 @@ impl ViewerApp {
                 no_attenuation: true,
                 stop: false,
                 stop_source_sound: false,
+                pitch_offset: None,
             })
             .collect();
         if !events.is_empty() {
@@ -8582,6 +8583,14 @@ impl ViewerApp {
                 shared.mixer.apply(&[SoundEvent::Stop {
                     origin: SoundOrigin::Point(to_audio_point(event.position)),
                     channel: i32::from(event.sound_id),
+                }]);
+                continue;
+            }
+            if let Some(cents) = event.pitch_offset {
+                shared.mixer.apply(&[SoundEvent::AdjustSoundPitch {
+                    sound,
+                    source_id: event.source_id,
+                    cents,
                 }]);
                 continue;
             }

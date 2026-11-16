@@ -258,9 +258,9 @@ pub struct RoomSettings {
     /// Content packs stacked with the IWAD / gameplay mod (e.g. `voxel`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<String>,
-    /// Match time limit in minutes; the room closes when it runs out.
-    #[serde(default = "default_time_limit")]
-    pub time_limit: u16,
+    /// Match time limit in seconds; the room closes when it runs out.
+    #[serde(default = "default_time_limit_secs")]
+    pub time_limit_secs: u32,
     /// Content every seat loads: `doom` (doom1.wad) or `duke3d` (duke3d.grp).
     #[serde(default = "default_game")]
     pub game: String,
@@ -270,6 +270,13 @@ pub struct RoomSettings {
     /// Quick-play queue: start after timeout with bots for empty seats.
     #[serde(default)]
     pub quick_play: bool,
+    /// Quick play / bot fill: seconds from the first join to the start
+    /// (`0` = the node's `quick_play_timeout_secs`).
+    #[serde(default)]
+    pub start_delay_secs: u32,
+    /// Bot difficulty: 1 easy, 3 hard, 4 nightmare (`0` = normal).
+    #[serde(default)]
+    pub bot_skill: u8,
     /// Library files every seat mounts after the IWAD (from the preset).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<room_proto::RoomContentRef>,
@@ -294,10 +301,12 @@ impl Default for RoomSettings {
             enable_verifier: false,
             game_mod: None,
             packs: Vec::new(),
-            time_limit: default_time_limit(),
+            time_limit_secs: default_time_limit_secs(),
             game: default_game(),
             fill_bots: false,
             quick_play: false,
+            start_delay_secs: 0,
+            bot_skill: 0,
             content: Vec::new(),
             iwad: None,
             preset: String::new(),
@@ -305,8 +314,8 @@ impl Default for RoomSettings {
     }
 }
 
-fn default_time_limit() -> u16 {
-    20
+fn default_time_limit_secs() -> u32 {
+    20 * 60
 }
 
 fn default_game() -> String {
@@ -354,8 +363,13 @@ pub struct CreateRoomRequest {
     #[serde(default)]
     pub packs: Vec<String>,
     /// Match time limit in minutes (1..=180); absent / 0 = the node default.
+    /// `time_limit_secs` wins when both are given.
     #[serde(default)]
     pub time_limit: Option<u16>,
+    /// Match time limit in seconds (30 s .. 180 min); absent / 0 = use
+    /// `time_limit` (minutes), else the node default.
+    #[serde(default)]
+    pub time_limit_secs: Option<u32>,
     /// One of [`GAMES`]; absent = `doom`.
     #[serde(default)]
     pub game: Option<String>,
@@ -365,6 +379,13 @@ pub struct CreateRoomRequest {
     /// Quick-play queue room (`S-BR4`): start after timeout, not only when full.
     #[serde(default)]
     pub quick_play: bool,
+    /// Quick play: seconds from the first join to the start (5 s .. 10 min);
+    /// absent / 0 = the node default (`quick_play_timeout_secs`).
+    #[serde(default)]
+    pub start_delay_secs: Option<u32>,
+    /// Bot difficulty: 1 easy, 2 normal, 3 hard, 4 nightmare (absent = normal).
+    #[serde(default)]
+    pub bot_skill: Option<u8>,
     /// Admin preset id (`GET /api/presets`): its IWAD, content files and map
     /// list. Required when the node sets `require_preset`.
     #[serde(default)]
@@ -385,9 +406,12 @@ impl Default for CreateRoomRequest {
             game_mod: None,
             packs: Vec::new(),
             time_limit: None,
+            time_limit_secs: None,
             game: None,
             fill_bots: false,
             quick_play: false,
+            start_delay_secs: None,
+            bot_skill: None,
             preset: None,
         }
     }
@@ -548,6 +572,8 @@ struct MatchReport {
 /// Wall-clock slack past the time limit before the server closes the room
 /// itself (seat sims end the match on their tic clock, which can lag).
 const TIME_LIMIT_SLACK: Duration = Duration::from_secs(30);
+/// Shortest life of a room nobody has started yet (see [`time_limit_deadline`]).
+const UNSTARTED_ROOM_MIN: Duration = Duration::from_secs(20 * 60);
 
 #[cfg(feature = "verifier")]
 struct VerifierHandles {
@@ -1073,8 +1099,11 @@ fn v2_hello(state: &mut RoomState, conn: ConnId, h: HelloMsg) {
     state.conn_seat.insert(conn, seat);
     state.v2.set_seat_absent(seat, false);
     if state.settings.quick_play && state.quick_play_deadline.is_none() {
-        state.quick_play_deadline =
-            Some(Instant::now() + Duration::from_secs(state.cfg.quick_play_timeout_secs));
+        let delay = match state.settings.start_delay_secs {
+            0 => state.cfg.quick_play_timeout_secs,
+            s => u64::from(s),
+        };
+        state.quick_play_deadline = Some(Instant::now() + Duration::from_secs(delay));
     }
     finish_v2_welcome(state, seat);
 }
@@ -1242,8 +1271,9 @@ fn welcome_room(state: &RoomState) -> WelcomeRoom {
         delay: 0,
         game_mod: state.settings.game_mod.clone(),
         packs: state.settings.packs.clone(),
-        time_limit: u32::from(state.settings.time_limit) * 60,
+        time_limit: state.settings.time_limit_secs,
         fill_bots: state.settings.fill_bots,
+        bot_skill: state.settings.bot_skill,
         content: state.settings.content.clone(),
         iwad: state.settings.iwad.clone(),
         preset: state.settings.preset.clone(),
@@ -1259,11 +1289,41 @@ fn start_control(state: &RoomState) -> ControlMsg {
     }
 }
 
-/// Wall-clock deadline: the time limit from the start (or from creation for
-/// a room nobody started), plus slack for seats whose tic clock lags.
+/// Wall-clock deadline: the time limit from the start, plus slack for seats
+/// whose tic clock lags. A room nobody started counts from its creation and
+/// gets at least [`UNSTARTED_ROOM_MIN`]: short matches (30 s) must not close
+/// the room while players are still gathering or a bot-fill timer runs.
 fn time_limit_deadline(state: &RoomState) -> Instant {
-    let limit = Duration::from_secs(u64::from(state.settings.time_limit) * 60);
-    state.clock_from + limit + TIME_LIMIT_SLACK
+    state.clock_from + time_limit_window(state.started, state.settings.time_limit_secs)
+}
+
+/// How long after `clock_from` the server closes the room on its own.
+fn time_limit_window(started: bool, limit_secs: u32) -> Duration {
+    let limit = Duration::from_secs(u64::from(limit_secs));
+    let limit = if started {
+        limit
+    } else {
+        limit.max(UNSTARTED_ROOM_MIN)
+    };
+    limit + TIME_LIMIT_SLACK
+}
+
+#[cfg(test)]
+mod time_limit_tests {
+    use super::*;
+
+    #[test]
+    fn short_limits_do_not_close_a_room_that_has_not_started() {
+        // 30 s match, bot-fill start after 60 s: the waiting room must live.
+        assert!(time_limit_window(false, 30) > Duration::from_secs(10 * 60));
+        // Once started, the 30 s match ends the room 30 s + slack later.
+        assert_eq!(time_limit_window(true, 30), Duration::from_secs(60));
+        // Long limits keep their own length either way.
+        assert_eq!(
+            time_limit_window(false, 3600),
+            Duration::from_secs(3600) + TIME_LIMIT_SLACK
+        );
+    }
 }
 
 /// A seat reports the end of the match. Close once most seats agree; put it
@@ -1717,7 +1777,7 @@ fn start_verifier_if_needed(state: &mut RoomState) {
             state.settings.skill,
             state.rng_seed,
             state.settings.max_players,
-            u32::from(state.settings.time_limit) * 60 * 35,
+            state.settings.time_limit_secs.saturating_mul(35),
             state.settings.doom_deathmatch,
         ) {
             Ok((frames, checksums)) => {

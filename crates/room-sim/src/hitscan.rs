@@ -90,8 +90,19 @@ pub(crate) fn shoot_origin(world: &World, source: ActorId) -> Option<(DVec3, Ang
     } else {
         a.height * 0.5
     };
+    // GZDoom scales a player's shot height by its crouch factor. A crouched
+    // player's body is shrunk to match, so read the factor off its height
+    // (the shooter's slot is out of `players` while it thinks). Duke's
+    // stance keeps its own eye height.
+    let is_player = world.players.iter().flatten().any(|p| p.mo == Some(source))
+        || world.taken_player.is_some_and(|(_, mo)| mo == source);
+    let crouch = world
+        .classes
+        .get(a.class)
+        .filter(|c| is_player && c.height > 0.0 && c.name != "DukePlayer")
+        .map_or(1.0, |c| (a.height / c.height).clamp(0.5, 1.0));
     let shoot_z = if has_view {
-        a.pos.z() + view_h + az
+        a.pos.z() + (view_h + az) * crouch
     } else {
         a.pos.z() + a.height * 0.5 + 8.0
     };

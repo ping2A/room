@@ -1,6 +1,8 @@
 //! `BuildWorld` capacities and sprite sector/stat lists.
 //! Spec: `docs/build-engine-primitives/01-world.md`.
 
+use std::collections::BTreeMap;
+
 pub const MAXSECTORS: usize = 1024;
 pub const MAXWALLS: usize = 8192;
 pub const MAXSPRITES: usize = 4096;
@@ -220,6 +222,120 @@ pub struct BuildWorld {
     /// Camera player's own sprite, hidden from the normal view but drawn in
     /// mirrors (Chocolate `display_mirror`): `(sprite index, real yrepeat)`.
     pub mirror_viewer: Option<(i16, u8)>,
+    /// Render-only EDuke32 blend-table overrides keyed by sprite slot.
+    /// Populated on a render-world copy; never read by the playsim.
+    pub render_sprite_blends: BTreeMap<usize, i32>,
+    /// Render-only sprite copies produced by a second EDuke32 sprite event
+    /// pass for the reflected camera in the currently visible mirror.
+    pub mirror_render_sprites: BTreeMap<usize, crate::types::SpriteT>,
+    /// Blend-table overrides paired with `mirror_render_sprites`.
+    pub mirror_render_sprite_blends: BTreeMap<usize, i32>,
+    /// CON `rotatesprite` draws appended by EDuke32 display hooks. This is
+    /// presentation state attached to the render-world copy, never the game
+    /// world used by the playsim.
+    pub render_hud_draws: Vec<HudDrawCommand>,
+    /// A nonzero `EVENT_DISPLAYWEAPON` return suppresses the native weapon
+    /// layer for this view.
+    pub render_hide_native_weapon: bool,
+}
+
+/// One EDuke32 CON `rotatesprite` command captured for the software HUD pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HudSpriteDraw {
+    /// X coordinate, in ordinary 320×200 units or FULL16 fixed-point units.
+    pub x: i32,
+    /// Y coordinate, in ordinary 320×200 units or FULL16 fixed-point units.
+    pub y: i32,
+    /// 16.16 scale (65536 is the native size).
+    pub zoom: i32,
+    /// Build angle (0–2047).
+    pub angle: i32,
+    /// ART tile number.
+    pub tile: i32,
+    /// Build shade value.
+    pub shade: i32,
+    /// Palette lookup id.
+    pub palette: i32,
+    /// `rotatesprite` orientation flags.
+    pub orientation: i32,
+    /// Inclusive HUD clip window, in 320×200 units.
+    pub clip: [i32; 4],
+    /// Current EDuke32 `guniqhudid` value.
+    pub unique_id: i32,
+}
+
+/// Ordered screen-space draw commands captured from one view's CON events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HudDrawCommand {
+    /// An ART tile rendered with `rotatesprite`.
+    Sprite(HudSpriteDraw),
+    /// A quote rendered with the EDuke32 `minitext` font.
+    Text(HudTextDraw),
+    /// A quote rendered with the EDuke32 `gametext` font.
+    GameText(HudGameTextDraw),
+    /// A numeric value rendered with a consecutive ART digit range.
+    Number(HudNumberDraw),
+}
+
+/// One EDuke32 CON `minitext` command captured for the software HUD pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudTextDraw {
+    /// Top-left X coordinate in the 320×200 HUD plane.
+    pub x: i32,
+    /// Top-left Y coordinate in the 320×200 HUD plane.
+    pub y: i32,
+    /// Text resolved from the VM quote slot at command execution.
+    pub text: String,
+    /// Build shade value.
+    pub shade: i32,
+    /// Palette lookup id.
+    pub palette: i32,
+}
+
+/// One EDuke32 CON `gametext` or `gametextz` command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudGameTextDraw {
+    /// First tile in the ASCII-order font range (`!` is this tile).
+    pub tile: i32,
+    /// Legacy x coordinate, where 320 requests centered text.
+    pub x: i32,
+    /// Y coordinate in 320×200 HUD units.
+    pub y: i32,
+    /// Text resolved from the VM quote slot at command execution.
+    pub text: String,
+    /// Build shade value.
+    pub shade: i32,
+    /// Palette lookup id.
+    pub palette: i32,
+    /// `rotatesprite` orientation flags.
+    pub orientation: i32,
+    /// Inclusive HUD clip window, in 320×200 units.
+    pub clip: [i32; 4],
+    /// 16.16 text scale (65536 is the native size).
+    pub zoom: i32,
+}
+
+/// One EDuke32 CON `digitalnumber` or `digitalnumberz` command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HudNumberDraw {
+    /// First tile in the font's 0–9 digit range.
+    pub tile: i32,
+    /// X coordinate in 320×200 units or FULL16 precision.
+    pub x: i32,
+    /// Y coordinate in 320×200 units or FULL16 precision.
+    pub y: i32,
+    /// Number displayed by the command.
+    pub number: i32,
+    /// Build shade value.
+    pub shade: i32,
+    /// Palette lookup id.
+    pub palette: i32,
+    /// `rotatesprite` orientation flags.
+    pub orientation: i32,
+    /// Inclusive clip window in 320×200 units.
+    pub clip: [i32; 4],
+    /// 16.16 scale (65536 is native size).
+    pub zoom: i32,
 }
 
 impl Default for BuildWorld {
@@ -258,6 +374,11 @@ impl BuildWorld {
             start_ang: 0,
             start_sector: 0,
             mirror_viewer: None,
+            render_sprite_blends: BTreeMap::new(),
+            mirror_render_sprites: BTreeMap::new(),
+            mirror_render_sprite_blends: BTreeMap::new(),
+            render_hud_draws: Vec::new(),
+            render_hide_native_weapon: false,
         }
     }
 

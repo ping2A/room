@@ -72,7 +72,9 @@ fn puke_commands(cmd: &str) -> Vec<(String, bool)> {
                 return None;
             }
             let name = words.next()?.trim_matches('"').to_owned();
-            let always = words.next().is_some_and(|w| w.eq_ignore_ascii_case("always"));
+            let always = words
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("always"));
             Some((name, always))
         })
         .collect()
@@ -133,7 +135,10 @@ pub fn clean_text(s: &str) -> String {
         }
         out.push(c);
     }
-    out.replace("\\n", " ").split_whitespace().collect::<Vec<_>>().join(" ")
+    out.replace("\\n", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn resolve(lang: &Language, s: &str) -> String {
@@ -148,7 +153,10 @@ fn resolve(lang: &Language, s: &str) -> String {
 
 fn builtin_values(name: &str) -> Option<Vec<(String, String)>> {
     let pair = |a: &str, b: &str, c: &str, d: &str| {
-        Some(vec![(a.to_owned(), b.to_owned()), (c.to_owned(), d.to_owned())])
+        Some(vec![
+            (a.to_owned(), b.to_owned()),
+            (c.to_owned(), d.to_owned()),
+        ])
     };
     match name.to_ascii_lowercase().as_str() {
         "onoff" => pair("0", "Off", "1", "On"),
@@ -161,8 +169,13 @@ fn builtin_values(name: &str) -> Option<Vec<(String, String)>> {
 
 fn option_values(menu: &MenuDef, lang: &Language, name: &str) -> Vec<(String, String)> {
     let block = menu.blocks.iter().rev().find(|b| {
-        matches!(b.kind, MenuBlockKind::OptionValue | MenuBlockKind::OptionString)
-            && b.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))
+        matches!(
+            b.kind,
+            MenuBlockKind::OptionValue | MenuBlockKind::OptionString
+        ) && b
+            .name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
     });
     if let Some(block) = block {
         let mut out = Vec::new();
@@ -184,22 +197,22 @@ fn option_values(menu: &MenuDef, lang: &Language, name: &str) -> Vec<(String, St
 }
 
 fn num(args: &[String], i: usize, or: f64) -> f64 {
-    args.get(i).and_then(|a| a.trim().parse::<f64>().ok()).unwrap_or(or)
+    args.get(i)
+        .and_then(|a| a.trim().parse::<f64>().ok())
+        .unwrap_or(or)
 }
 
-fn walk(
-    body: &[MenuCmd],
-    ctx: &mut Walk<'_>,
-    items: &mut Vec<ModOption>,
-    hint_open: &mut bool,
-) {
+fn walk(body: &[MenuCmd], ctx: &mut Walk<'_>, items: &mut Vec<ModOption>, hint_open: &mut bool) {
     for cmd in body {
         match cmd {
             MenuCmd::Block { body, .. } => walk(body, ctx, items, hint_open),
             MenuCmd::Cmd { name, args } => {
                 let lname = name.to_ascii_lowercase();
                 if lname == "statictext" {
-                    let text = args.first().map(|a| resolve(ctx.lang, a)).unwrap_or_default();
+                    let text = args
+                        .first()
+                        .map(|a| resolve(ctx.lang, a))
+                        .unwrap_or_default();
                     if text.is_empty() {
                         *hint_open = false;
                     } else if *hint_open {
@@ -229,7 +242,8 @@ fn walk(
                     continue;
                 };
                 let key = cvar.to_ascii_lowercase();
-                let Some(decl) = ctx.decls.iter().find(|d| d.name.eq_ignore_ascii_case(cvar)) else {
+                let Some(decl) = ctx.decls.iter().find(|d| d.name.eq_ignore_ascii_case(cvar))
+                else {
                     continue;
                 };
                 if !ctx.seen.insert(key) {
@@ -438,7 +452,9 @@ OptionMenu "BDLevel"
             decor.kind,
             ModOptionKind::Choice(vec![("0".into(), "On".into()), ("1".into(), "Off".into())])
         );
-        assert!(matches!(groups[0].items[1].kind, ModOptionKind::Range { step, .. } if (step - 0.25).abs() < 1e-9));
+        assert!(
+            matches!(groups[0].items[1].kind, ModOptionKind::Range { step, .. } if (step - 0.25).abs() < 1e-9)
+        );
         // Not in a menu: listed under its own name, bool default normalised.
         assert_eq!(groups[1].items[0].cvar, "bd_gore");
         assert_eq!(groups[1].items[0].default, "1");

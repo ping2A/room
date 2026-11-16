@@ -2240,6 +2240,7 @@ fn move_pipebombs(
                     i32::from(center.extra.max(1)),
                     pipebomb_radius,
                     RADIUSEXPLOSION_DAMAGE,
+                    None,
                     center,
                     i,
                     picnum,

@@ -1223,7 +1223,8 @@ impl AcsHost for WorldAcsHost<'_> {
 
     fn print(&mut self, text: &str, _bold: bool) {
         if !text.is_empty() {
-            self.world.push_message_kind(crate::world::MessageKind::Script, text);
+            self.world
+                .push_message_kind(crate::world::MessageKind::Script, text);
         }
     }
 
@@ -4130,7 +4131,10 @@ pub(crate) fn init_acs(world: &mut World) {
             start_open_on(world);
         }
         Err(e) => {
-            world.push_message_kind(crate::world::MessageKind::System, format!("ACS load failed: {e}"));
+            world.push_message_kind(
+                crate::world::MessageKind::System,
+                format!("ACS load failed: {e}"),
+            );
         }
     }
 }
@@ -4197,13 +4201,19 @@ pub fn push_acs_library_tree(world: &mut World, name: &str, pool: &[(String, Vec
         return true;
     }
     let Some((_, bytes)) = pool.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) else {
-        world.push_message_kind(crate::world::MessageKind::System, format!("Could not find ACS library {name}."));
+        world.push_message_kind(
+            crate::world::MessageKind::System,
+            format!("Could not find ACS library {name}."),
+        );
         return false;
     };
     let module = match room_acs::load_behavior(bytes) {
         Ok(m) => m,
         Err(e) => {
-            world.push_message_kind(crate::world::MessageKind::System, format!("ACS library {name} load failed: {e}"));
+            world.push_message_kind(
+                crate::world::MessageKind::System,
+                format!("ACS library {name} load failed: {e}"),
+            );
             return false;
         }
     };
@@ -4233,7 +4243,10 @@ pub fn push_acs_library(world: &mut World, bytes: &[u8]) -> bool {
             true
         }
         Err(e) => {
-            world.push_message_kind(crate::world::MessageKind::System, format!("ACS library load failed: {e}"));
+            world.push_message_kind(
+                crate::world::MessageKind::System,
+                format!("ACS library load failed: {e}"),
+            );
             false
         }
     }

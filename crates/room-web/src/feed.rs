@@ -138,7 +138,11 @@ pub fn kill_message(
 ) -> Option<(&'static str, String)> {
     let who = |s: u8, cap: bool| {
         if s == local {
-            if cap { "You".to_owned() } else { "you".to_owned() }
+            if cap {
+                "You".to_owned()
+            } else {
+                "you".to_owned()
+            }
         } else {
             name_of(s)
         }
@@ -152,7 +156,10 @@ pub fn kill_message(
                 format!("{} killed themself", name_of(v))
             },
         ),
-        (Some(v), Some(k)) => ("frag", format!("{} fragged {}", who(k, true), who(v, false))),
+        (Some(v), Some(k)) => (
+            "frag",
+            format!("{} fragged {}", who(k, true), who(v, false)),
+        ),
         (Some(v), None) if !ev.killer_class.is_empty() => (
             "death",
             format!(
@@ -165,7 +172,11 @@ pub fn kill_message(
         (Some(v), None) => ("death", format!("{} died", who(v, true))),
         (None, Some(k)) => (
             "kill",
-            format!("{} killed {}", who(k, true), with_article(&monster_name(&ev.victim_class))),
+            format!(
+                "{} killed {}",
+                who(k, true),
+                with_article(&monster_name(&ev.victim_class))
+            ),
         ),
         (None, None) => return None,
     })
@@ -272,14 +283,26 @@ mod tests {
     #[test]
     fn kill_messages_speak_to_the_player() {
         let k = |e: KillEvent| kill_message(&e, 0, name);
-        assert_eq!(k(ev(None, Some(0), "DoomImp", "")), Some(("kill", "You killed an imp".into())));
-        assert_eq!(k(ev(None, Some(1), "Demon", "")), Some(("kill", "bob killed a demon".into())));
+        assert_eq!(
+            k(ev(None, Some(0), "DoomImp", "")),
+            Some(("kill", "You killed an imp".into()))
+        );
+        assert_eq!(
+            k(ev(None, Some(1), "Demon", "")),
+            Some(("kill", "bob killed a demon".into()))
+        );
         assert_eq!(
             k(ev(Some(0), None, "DoomPlayer", "Cacodemon")),
             Some(("death", "You were killed by a cacodemon".into()))
         );
-        assert_eq!(k(ev(Some(1), Some(0), "DoomPlayer", "")), Some(("frag", "You fragged bob".into())));
-        assert_eq!(k(ev(Some(0), Some(1), "DoomPlayer", "")), Some(("frag", "bob fragged you".into())));
+        assert_eq!(
+            k(ev(Some(1), Some(0), "DoomPlayer", "")),
+            Some(("frag", "You fragged bob".into()))
+        );
+        assert_eq!(
+            k(ev(Some(0), Some(1), "DoomPlayer", "")),
+            Some(("frag", "bob fragged you".into()))
+        );
         assert_eq!(k(ev(None, None, "DoomImp", "Demon")), None);
     }
 

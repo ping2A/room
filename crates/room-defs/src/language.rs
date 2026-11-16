@@ -26,7 +26,8 @@ impl Language {
                 .unwrap_or(key);
         }
         let bare = !t.is_empty()
-            && t.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+            && t.bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
         if bare {
             if let Some(v) = self.get(locale, t).or_else(|| engine_string(t)) {
                 return v;
@@ -351,13 +352,20 @@ mod tests {
 
     #[test]
     fn resolves_dollar_bare_and_engine_keys() {
-        let l = parse_language("[enu default]\nGOTRIFLE = \"You got the Assault Rifle!\";\n").unwrap();
+        let l =
+            parse_language("[enu default]\nGOTRIFLE = \"You got the Assault Rifle!\";\n").unwrap();
         assert_eq!(l.resolve("enu", "$GOTRIFLE"), "You got the Assault Rifle!");
         assert_eq!(l.resolve("enu", "GOTRIFLE"), "You got the Assault Rifle!");
         assert_eq!(l.resolve("enu", "Picked up a clip."), "Picked up a clip.");
         assert_eq!(l.resolve("enu", "$NOPE"), "NOPE");
-        assert_eq!(l.resolve("enu", "$GOTSHOTGUN2"), "You got the super shotgun!");
-        assert_eq!(l.resolve("enu", "PD_BLUEK"), "You need a blue key to open this door");
+        assert_eq!(
+            l.resolve("enu", "$GOTSHOTGUN2"),
+            "You got the super shotgun!"
+        );
+        assert_eq!(
+            l.resolve("enu", "PD_BLUEK"),
+            "You need a blue key to open this door"
+        );
     }
 
     #[test]

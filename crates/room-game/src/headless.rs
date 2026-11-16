@@ -95,6 +95,8 @@ pub struct GameOptions {
     pub fill_bots: bool,
     /// First seat index filled by bots when [`Self::fill_bots`] (`0` = all seats can be bots).
     pub bot_first_seat: u8,
+    /// Bot difficulty (`room_sim::bot::skill`; `0` = normal).
+    pub bot_skill: u8,
     /// Match time limit in tics across the maps of one game (`0` = none);
     /// [`World::match_over`] is set when it runs out.
     pub time_limit_tics: u32,
@@ -1329,6 +1331,8 @@ impl Headless {
         if let Some(info) = self.mapinfo.as_ref() {
             if let Some(def) = info.maps.get(&map_key) {
                 world.boss_actions = parse_boss_actions(def.extras.get("bossaction"));
+                world.no_jump = def.extras.contains_key("nojump");
+                world.no_crouch = def.extras.contains_key("nocrouch");
                 world.apply_mapinfo_fog(&def.extras);
                 world.level.par_time = def.par_seconds.unwrap_or(0);
                 world.level.cluster = def.cluster.unwrap_or(0);
@@ -1396,6 +1400,7 @@ impl Headless {
         if coop > 1 {
             let _ = world.spawn_coop_players(coop)?;
         }
+        world.bot_skill = self.options.bot_skill;
         if self.options.fill_bots && coop > 0 {
             let first = self.options.bot_first_seat.min(coop.saturating_sub(1));
             world.fill_bot_seats(first, coop - 1);
@@ -1788,6 +1793,14 @@ impl Headless {
     /// `first..coop_players` when `fill_bots`, none otherwise. A netplay map
     /// is prepared before `start` (bot seats unknown then), so the client calls
     /// this before the first tic; also used for later maps via `options`.
+    /// Bot difficulty for this session (`room_sim::bot::skill`; `0` = normal).
+    pub fn set_bot_skill(&mut self, level: u8) {
+        self.options.bot_skill = level;
+        if let Some(world) = self.world.as_mut() {
+            world.bot_skill = level;
+        }
+    }
+
     pub fn set_bot_seats(&mut self, fill_bots: bool, first: u8) {
         self.options.fill_bots = fill_bots;
         self.options.bot_first_seat = first;
@@ -1982,6 +1995,16 @@ impl Headless {
         let Some(world) = self.world.as_mut() else {
             return;
         };
+        if world.level.exiting && world.no_exit {
+            // `NO_EXIT` (Battle Royale): exits and secret exits lead nowhere.
+            world.level.exiting = false;
+            world.level.secret_exit = false;
+            world.level.next_map_override = None;
+            world.push_message_kind(
+                room_sim::MessageKind::System,
+                "The exit is sealed - this match stays on this map",
+            );
+        }
         if world.level.exiting {
             world.fire_zscript_world_unloaded();
             room_sim::start_unloading_scripts(world);
@@ -10051,6 +10074,28 @@ actor PlayerPawn : Actor 0
             msgs.iter().any(|m| m.contains("WELCOME TO L.A.")),
             "{msgs:?}"
         );
+    }
+
+    #[test]
+    fn no_exit_rule_keeps_the_match_on_its_map() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut game = Headless::new(GameOptions::default());
+        game.start_custom_map(map, Skill::new(3)).unwrap();
+        let w = game.world_mut().unwrap();
+        w.no_exit = true;
+        w.level.exiting = true;
+        w.level.secret_exit = true;
+        w.level.next_map_override = Some("MAP31".into());
+        game.tick(&[]);
+        assert_eq!(game.state, GameState::Level, "a secret exit leads nowhere");
+        let w = game.world().unwrap();
+        assert!(!w.level.exiting && !w.level.secret_exit);
+        assert!(w.level.next_map_override.is_none());
     }
 
     #[test]

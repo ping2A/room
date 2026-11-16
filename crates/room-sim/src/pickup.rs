@@ -258,7 +258,10 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             return false;
         }
         backpack_fill(world, toucher);
-        world.push_message_kind(crate::world::MessageKind::Pickup, "Picked up a backpack full of ammo!");
+        world.push_message_kind(
+            crate::world::MessageKind::Pickup,
+            "Picked up a backpack full of ammo!",
+        );
     } else if world.classes.get(class).is_some_and(|c| c.is_weapon) {
         // docs/30 W17: weapon stay — each player may take a map weapon once;
         // the actor stays for others. Dropped weapons always vanish.
@@ -450,11 +453,14 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
         world.push_message_kind(crate::world::MessageKind::Pickup, pickup_msg);
     } else if class_name == "medikit" {
         // Vanilla: `GOTMEDINEED` when health was below 25 before the heal.
-        world.push_message_kind(crate::world::MessageKind::Pickup, if medikit_needed {
-            "Picked up a medikit that you REALLY need!"
-        } else {
-            "Picked up a medikit."
-        });
+        world.push_message_kind(
+            crate::world::MessageKind::Pickup,
+            if medikit_needed {
+                "Picked up a medikit that you REALLY need!"
+            } else {
+                "Picked up a medikit."
+            },
+        );
     } else if let Some(msg) = default_pickup_message(&class_name) {
         world.push_message_kind(crate::world::MessageKind::Pickup, msg);
     }
@@ -1089,7 +1095,10 @@ fn pickup_weapon_piece(world: &mut World, toucher: ActorId, item: ActorId, class
                 p.pending_weapon = Some(wcid);
             }
             if !wdef.pickup_message.is_empty() {
-                world.push_message_kind(crate::world::MessageKind::Pickup, wdef.pickup_message.clone());
+                world.push_message_kind(
+                    crate::world::MessageKind::Pickup,
+                    wdef.pickup_message.clone(),
+                );
             }
         }
     }

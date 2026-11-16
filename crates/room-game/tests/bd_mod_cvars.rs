@@ -87,11 +87,16 @@ fn resolve_include(vfs: &Vfs, path: &str) -> Result<String, DecorateError> {
     Err(DecorateError::Message(format!("include not found: {path}")))
 }
 
-
 fn flares_with(decorations_off: bool) -> usize {
     let pk3 = PathBuf::from(std::env::var("ROOM_BRUTALDOOM_PK3").unwrap());
     let iwad = PathBuf::from(std::env::var("ROOM_BD_IWAD").unwrap());
-    let vfs = VfsBuilder::new().mount_path(&iwad).unwrap().mount_path(&pk3).unwrap().build().unwrap();
+    let vfs = VfsBuilder::new()
+        .mount_path(&iwad)
+        .unwrap()
+        .mount_path(&pk3)
+        .unwrap()
+        .build()
+        .unwrap();
     let base = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/room/actors/doom.txt"),
     )
@@ -123,9 +128,14 @@ fn flares_with(decorations_off: bool) -> usize {
     let mut map = load_map(&vfs, "MAP01").expect("MAP01");
     ensure_nodes(&mut map);
     let mut world = World::from_map_with_classes(map, classes, states).expect("world");
-    world.set_mod_cvar("bd_disabledecorations", if decorations_off { "1" } else { "0" });
+    world.set_mod_cvar(
+        "bd_disabledecorations",
+        if decorations_off { "1" } else { "0" },
+    );
     for lump in ["BD_Main"] {
-        let id = vfs.find(lump, Namespace::Global).or_else(|| vfs.find_full(&format!("acs/{lump}.o")));
+        let id = vfs
+            .find(lump, Namespace::Global)
+            .or_else(|| vfs.find_full(&format!("acs/{lump}.o")));
         if let Some(bytes) = id.and_then(|id| vfs.read(id).ok()) {
             let _ = room_sim::push_acs_library(&mut world, &bytes);
         }
@@ -137,7 +147,9 @@ fn flares_with(decorations_off: bool) -> usize {
     let flare = world.classes.find_name("BlueFlareSmallItem").unwrap();
     let mo = world.players[0].as_ref().unwrap().mo.unwrap();
     let p = world.actors.get(mo).unwrap().pos;
-    world.spawn_at(hp, DVec3::new(p.x() + 96.0, p.y(), 0.0), Angle::ZERO).unwrap();
+    world
+        .spawn_at(hp, DVec3::new(p.x() + 96.0, p.y(), 0.0), Angle::ZERO)
+        .unwrap();
     let mut seen = 0;
     for _ in 0..60 {
         world.set_ticcmds(&[TicCmd::default(); 4]);
@@ -146,7 +158,12 @@ fn flares_with(decorations_off: bool) -> usize {
             .thinkers
             .default
             .iter()
-            .filter(|&&id| world.actors.get(id).is_some_and(|a| a.class == flare && !a.destroyed))
+            .filter(|&&id| {
+                world
+                    .actors
+                    .get(id)
+                    .is_some_and(|a| a.class == flare && !a.destroyed)
+            })
             .count();
     }
     seen
@@ -159,5 +176,8 @@ fn disabling_decorations_stops_bonus_flares() {
     let off = flares_with(true);
     eprintln!("flare-tics: decorations on={on} off={off}");
     assert!(on > 20, "decorations on should keep a flare up ({on})");
-    assert!(off < 3, "bd_disabledecorations=1 should stop the flares ({off})");
+    assert!(
+        off < 3,
+        "bd_disabledecorations=1 should stop the flares ({off})"
+    );
 }

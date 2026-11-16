@@ -121,16 +121,38 @@ impl Run {
 
     /// Point heading (and pitch, from eye to `z`) at a world point.
     fn aim(&mut self, x: i32, y: i32, z: i32) {
-        let p = &mut self.s.player;
-        let dx = f64::from(x - p.posx);
-        let dy = f64::from(y - p.posy);
-        let ang = dy.atan2(dx) * 1024.0 / std::f64::consts::PI;
-        p.ang = (ang.round() as i32).rem_euclid(2048) as i16;
-        // Hitscan zvel = (100 - horiz) * 2048 per 16384 XY: z/xy = (100-h)/8.
-        let dist = (dx * dx + dy * dy).sqrt().max(1.0);
-        let slope = f64::from(z - p.posz) / dist;
-        p.horiz = (100.0 - slope * 8.0).round().clamp(0.0, 299.0) as i16;
-        p.horizoff = 0;
+        let (ang, body) = {
+            let p = &mut self.s.player;
+            let dx = f64::from(x - p.posx);
+            let dy = f64::from(y - p.posy);
+            let ang = dy.atan2(dx) * 1024.0 / std::f64::consts::PI;
+            p.ang = (ang.round() as i32).rem_euclid(2048) as i16;
+            // Hitscan zvel = (100 - horiz) * 2048 per 16384 XY: z/xy = (100-h)/8.
+            let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+            // The pistol ray begins at posz + pyoff + 2<<8 after the native
+            // muzzle offset, so solve the pitch from that same point.
+            let firing_z = p.posz.saturating_add(p.pyoff).saturating_add(2 << 8);
+            let slope = f64::from(z - firing_z) / dist;
+            p.horiz = (100.0 - slope * 8.0).round().clamp(0.0, 299.0) as i16;
+            p.horizoff = 0;
+            p.q16_horiz = i32::from(p.horiz).wrapping_shl(16);
+            p.q16_horizoff = 0;
+            // Keep the controlled angle/pitch through the native input pass.
+            p.return_to_center = 0;
+            (p.ang, p.sprite_i)
+        };
+        // Aim selection reads the player body's angle; the diagnostic controls
+        // the player struct directly rather than updating it through input.
+        if let Some(body) = usize::try_from(body).ok() {
+            if let Some(sprite) = self
+                .s
+                .world
+                .as_mut()
+                .and_then(|world| world.sprites.get_mut(body))
+            {
+                sprite.ang = ang;
+            }
+        }
     }
 
     fn dist_to(&self, x: i32, y: i32) -> f64 {
@@ -469,8 +491,14 @@ fn kill_all(map: &str, out: &Path) {
         run.step(DukeInput::default());
     }
     let actortype = run.s.script.as_ref().unwrap().actortype.clone();
+    let only_target = std::env::var("ROOM_ONLY_T")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
     let targets: Vec<usize> = (0..run.s.lists.sprite_stat.len())
         .filter(|&i| {
+            if only_target.is_some_and(|target| target != i) {
+                return false;
+            }
             let st = run.s.lists.sprite_stat[i];
             let sp = run.sprite(i);
             (st == 1 || st == 2)
@@ -502,13 +530,34 @@ fn kill_all(map: &str, out: &Path) {
             .ok()
             .and_then(|sector| w.sectors.get(sector))
             .map_or((-1, -1), |sector| (sector.ceilingz, sector.floorz));
-        let aim_z_offset = [-(24 << 8), 0, 24 << 8]
-            .into_iter()
-            .find(|offset| {
-                let z = sp.z.saturating_add(*offset);
-                z >= target_ceilingz && z <= target_floorz
-            })
-            .unwrap_or(-(24 << 8));
+        let meta = run
+            .s
+            .tile_meta
+            .get(usize::try_from(sp.picnum).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or_default();
+        let target_anchor_z =
+            sp.z.saturating_sub(i32::from(meta.y_offset) * i32::from(sp.yrepeat) * 4);
+        let target_height = (i32::from(meta.height) * i32::from(sp.yrepeat)) << 2;
+        let visible_top = target_anchor_z
+            .saturating_sub(target_height)
+            .max(target_ceilingz);
+        let visible_bottom = target_anchor_z.min(target_floorz);
+        // Hitscan sprites extend upward from their Build Z anchor. Aim at the
+        // upper part of the portion that remains inside the sector's vertical
+        // opening, which avoids placing the ray just below ceiling-mounted
+        // targets when their nominal anchor itself is visible.
+        let aim_z_offset = if visible_top <= visible_bottom {
+            let upper_quarter = target_anchor_z.saturating_sub(target_height.saturating_mul(3) / 4);
+            upper_quarter
+                .clamp(visible_top, visible_bottom)
+                .saturating_sub(sp.z)
+        } else {
+            0
+        };
+        let stabilize_ceiling_target = sp.picnum == 2360
+            && visible_top == target_ceilingz
+            && visible_bottom.saturating_sub(visible_top) <= 16 << 8;
         // Search at several radii and 11.25-degree increments so narrow map
         // geometry does not make a live target appear unreachable.
         let mut placed = false;
@@ -529,22 +578,35 @@ fn kill_all(map: &str, out: &Path) {
                 if sect < 0 {
                     continue;
                 }
-                let fz = w.sectors[sect as usize].floorz;
-                let eye = fz - (40 << 8);
-                if !room_build_engine::geom::cansee(
-                    x,
-                    y,
-                    eye,
-                    sect,
-                    sp.x,
-                    sp.y,
-                    sp.z.saturating_add(aim_z_offset),
-                    sp.sectnum,
-                    &w.sector_z(),
-                    &w.wall_xy(),
-                ) {
+                let sector = &w.sectors[sect as usize];
+                // Most actors stand near the sector floor, but ceiling
+                // rotateguns can be hundreds of units above it. Probe around
+                // the target height first so the diagnostic does not place
+                // Duke below a valid hitscan angle in a tall sector.
+                let eye_candidates = [
+                    sp.z.saturating_add(40 << 8),
+                    sp.z,
+                    sp.z.saturating_sub(40 << 8),
+                    sector.floorz - (40 << 8),
+                ];
+                let Some(eye) = eye_candidates.into_iter().find(|&eye| {
+                    eye >= sector.ceilingz
+                        && eye <= sector.floorz
+                        && room_build_engine::geom::cansee(
+                            x,
+                            y,
+                            eye,
+                            sect,
+                            sp.x,
+                            sp.y,
+                            sp.z.saturating_add(aim_z_offset),
+                            sp.sectnum,
+                            &w.sector_z(),
+                            &w.wall_xy(),
+                        )
+                }) else {
                     continue;
-                }
+                };
                 let p = &mut run.s.player;
                 p.posx = x;
                 p.posy = y;
@@ -575,6 +637,9 @@ fn kill_all(map: &str, out: &Path) {
             continue;
         }
         let start_extra = sp.extra;
+        let start_view = (run.s.player.posx, run.s.player.posy, run.s.player.posz);
+        let start_sector = run.s.player.cursectnum;
+        let mut first_shot_aim = None;
         if std::env::var("ROOM_TRACE_T")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -597,6 +662,7 @@ fn kill_all(map: &str, out: &Path) {
             }
         }
         let mut first_hit = String::new();
+        let mut target_hit_count = 0;
         let mut dead = false;
         for k in 0..240 {
             if !run.alive(t) || run.sprite(t).extra <= 0 {
@@ -604,7 +670,50 @@ fn kill_all(map: &str, out: &Path) {
                 break;
             }
             let cur = run.sprite(t);
+            if stabilize_ceiling_target {
+                {
+                    let p = &mut run.s.player;
+                    p.posx = start_view.0;
+                    p.posy = start_view.1;
+                    p.posz = start_view.2;
+                    p.oposx = start_view.0;
+                    p.oposy = start_view.1;
+                    p.oposz = start_view.2;
+                    p.cursectnum = start_sector;
+                    p.poszv = 0;
+                    p.pyoff = 0;
+                    p.body_xvel = 0;
+                }
+                if let Ok(body) = usize::try_from(run.s.player.sprite_i) {
+                    if run.s.lists.sprite_sect.get(body).copied() != Some(start_sector) {
+                        let _ = run
+                            .s
+                            .lists
+                            .changespritesect(run.s.player.sprite_i, start_sector);
+                    }
+                    if let Some(sprite) = run
+                        .s
+                        .world
+                        .as_mut()
+                        .and_then(|world| world.sprites.get_mut(body))
+                    {
+                        sprite.x = start_view.0;
+                        sprite.y = start_view.1;
+                        sprite.z = start_view.2;
+                        sprite.sectnum = start_sector;
+                    }
+                }
+            }
             run.aim(cur.x, cur.y, cur.z.saturating_add(aim_z_offset));
+            if k == 0 {
+                first_shot_aim = Some((
+                    run.s.player.ang,
+                    run.s.player.horiz,
+                    run.s.player.posz,
+                    cur.z.saturating_add(aim_z_offset),
+                    aim_z_offset,
+                ));
+            }
             run.s.player.extra = 100;
             let wt = std::env::var("ROOM_WATCHT")
                 .ok()
@@ -612,7 +721,7 @@ fn kill_all(map: &str, out: &Path) {
             let before = wt.map(|w| run.s.actor_temps[w].g_t);
             room_build_engine::numeric::krand_log::start();
             run.step(DukeInput {
-                bits: if k % 8 == 0 { FIRE } else { 0 },
+                bits: FIRE,
                 ..DukeInput::default()
             });
             let calls = room_build_engine::numeric::krand_log::drain();
@@ -628,6 +737,16 @@ fn kill_all(map: &str, out: &Path) {
                 }
             }
             for l in room_duke::shoot::take_hit_log() {
+                if std::env::var("ROOM_TRACE_SHOTS")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    == Some(t)
+                {
+                    println!("  #{t} shot trace: {l}");
+                }
+                if l.contains(&format!("-> sprite #{t} ")) {
+                    target_hit_count += 1;
+                }
                 if first_hit.is_empty() {
                     first_hit = l;
                 }
@@ -646,7 +765,7 @@ fn kill_all(map: &str, out: &Path) {
             untouched.push(t);
         }
         println!(
-            "#{t} pic {} stat {} at ({}, {}, {}) sect {} zrange ({}, {}) extra {start_extra} -> {now} dead {dead} | {first_hit}",
+            "#{t} pic {} stat {} at ({}, {}, {}) sect {} zrange ({}, {}) size {}x{} repeat {}x{} cstat {} ang {} player {start_view:?} aim {first_shot_aim:?} extra {start_extra} -> {now} dead {dead} target_hits {target_hit_count} | {first_hit}",
             sp.picnum,
             run.s.lists.sprite_stat.get(t).copied().unwrap_or(-1),
             sp.x,
@@ -654,7 +773,13 @@ fn kill_all(map: &str, out: &Path) {
             sp.z,
             sp.sectnum,
             target_ceilingz,
-            target_floorz
+            target_floorz,
+            meta.width,
+            meta.height,
+            sp.xrepeat,
+            sp.yrepeat,
+            sp.cstat,
+            sp.ang
         );
     }
     println!(

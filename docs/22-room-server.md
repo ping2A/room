@@ -158,10 +158,18 @@ The server becomes the arbitrator and the only sender of tic frames: clients sen
 | `bye` | S→C | `code`, `reason` before close |
 | `result` | C→S | `winner` (seat or null), `time_up`, `standings: [{seat, place, frags, deaths, damage?}]` — sent once by each seat when its sim ends the match |
 
-**Match end, time limit, leaderboard.** Every room has a time limit in minutes
-(`time_limit` on `POST /api/rooms`, clamped 1–180; default
-`--room-time-limit-mins` / `ROOM_TIME_LIMIT_MINS`, 20). `welcome.room.time_limit`
-carries it in seconds, and the deterministic sim ends the match on every seat when it
+**Match end, time limit, leaderboard.** Every room has a time limit
+(`time_limit_secs` on `POST /api/rooms`, clamped 30 s – 180 min; the older
+`time_limit` in minutes still works; default `--room-time-limit-mins` /
+`ROOM_TIME_LIMIT_MINS`, 20 min). In Battle Royale a limit shorter than the
+zone timeline speeds the zone up so it closes before the limit. Bot-fill /
+quick-play rooms start `start_delay_secs` after the first join (5 s – 10 min;
+default `quick_play_timeout_secs`, 60); the lobby's host dialog sets it, and a
+room nobody has started stays open at least 20 min. `bot_skill` (1 easy,
+2 normal, 3 hard, 4 nightmare) sets how bots aim, react and hunt; it reaches
+every seat in `welcome.room.bot_skill` (absent = normal). Bots get callsigns
+picked from the room seed, so every seat shows the same names.
+`welcome.room.time_limit` carries it in seconds, and the deterministic sim ends the match on every seat when it
 runs out (`World.match_over`, `time_up`); mods can end it earlier with
 `game_end_match`. Seats report a `result`. Once more than half the connected seats agree, the
 server sends a `notice` and closes the room `--match-end-grace-secs` later

@@ -56,11 +56,73 @@ fn apply_duke_fall(world: &mut World, player: &mut Player, mo: ActorId) {
     }
 }
 
-/// Duke crouch: hold move-down on the ground (not flying / swimming).
-fn apply_duke_crouch(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
-    if !is_duke_player(world, player) {
+/// GZDoom `P_CrouchMove`: holding move-down lowers the player to half height
+/// over a few tics (eye height follows); letting go stands back up when the
+/// ceiling allows. Flying and swimming use move-down to descend instead.
+const CROUCH_STEP: f64 = 1.0 / 6.0;
+
+fn apply_crouch(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
+    if is_duke_player(world, player) {
+        apply_duke_crouch(world, player, mo, cmd);
         return;
     }
+    let Some(a) = world.actors.get(mo) else {
+        return;
+    };
+    let swimming = crate::physics::actor_waterlevel(world, a) >= 2;
+    let flying = player.fly_tics > 0 || a.flags & crate::class::FLAG_NOGRAVITY != 0;
+    let want = cmd.up_move < 0
+        && !world.no_crouch
+        && !flying
+        && !swimming
+        && !player.frozen
+        && world.math_mode != crate::vanilla::SimMathMode::VanillaFixed;
+    let target = if want { 1.0 } else { 0.0 };
+    if (player.crouch_amount - target).abs() < 1e-9 {
+        return;
+    }
+    let next = if want {
+        (player.crouch_amount + CROUCH_STEP).min(1.0)
+    } else {
+        (player.crouch_amount - CROUCH_STEP).max(0.0)
+    };
+    // Land exactly on the ends (six 1/6 steps leave float dust).
+    let next = if next < 1e-6 {
+        0.0
+    } else if next > 1.0 - 1e-6 {
+        1.0
+    } else {
+        next
+    };
+    let full = world
+        .classes
+        .get(player.cls)
+        .map(|c| c.height)
+        .filter(|h| *h > 0.0)
+        .unwrap_or(56.0);
+    let height = full * (1.0 - 0.5 * next);
+    if next < player.crouch_amount {
+        // Standing up needs headroom.
+        let planes = crate::physics::check_position(world, a, a.pos, Some(mo));
+        if planes.ceiling_z - a.pos.z() < height {
+            return;
+        }
+    }
+    if let Some(a) = world.actors.get_mut(mo) {
+        a.height = height;
+    }
+    player.crouch_amount = next;
+    player.crouching = next > 0.0;
+}
+
+/// Eye height after the GZDoom-style crouch (Duke stance changes
+/// `view_height` itself).
+fn crouched_view_height(player: &Player) -> f64 {
+    player.view_height * (1.0 - 0.5 * player.crouch_amount)
+}
+
+/// Duke crouch: hold move-down on the ground (not flying / swimming).
+fn apply_duke_crouch(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
     let swimming = world
         .actors
         .get(mo)
@@ -296,7 +358,7 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     player.damage_count = (player.damage_count - 1).max(0);
     player.bonus_count = (player.bonus_count - 1).max(0);
     tick_powerups(world, player);
-    apply_duke_crouch(world, player, mo, &cmd);
+    apply_crouch(world, player, mo, &cmd);
     // Yaw / pitch (same turn units as Doom `angleturn`).
     if cmd.yaw != 0 || cmd.pitch != 0 {
         if let Some(a) = world.actors.get_mut(mo) {
@@ -319,7 +381,7 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     }
     // Jump edge while grounded (`JumpZ` impulse → `z_movement`).
     let jump = cmd.buttons.any(Buttons::JUMP);
-    if jump && !player.jump_down && player.on_ground && !player.crouching {
+    if jump && !player.jump_down && player.on_ground && !player.crouching && !world.no_jump {
         if world.try_actor_jump(mo) {
             player.on_ground = false;
             play_player_sound(world, mo, "player/male/jump");
@@ -608,7 +670,7 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
         } else {
             0.0
         };
-        let mut view_z = a.pos.z() + player.view_height + player.view_ofs_z + bob_z;
+        let mut view_z = a.pos.z() + crouched_view_height(player) + player.view_ofs_z + bob_z;
         if let Some(n) = player.pycount {
             let n = (n.wrapping_add(27)) & 2047;
             player.pycount = Some(n);
@@ -3388,6 +3450,149 @@ actor DukePlayer : DoomPlayer
             (w.actors.get(mo).unwrap().height - 40.0).abs() < 0.1,
             "stand height {}",
             w.actors.get(mo).unwrap().height
+        );
+        w.players[0] = Some(player);
+    }
+
+    fn doom_world(ceiling: f64) -> (World, Player, ActorId) {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, ceiling)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mut player = w.players[0].take().unwrap();
+        let mo = player.mo.unwrap();
+        player.on_ground = true;
+        // Like `World::tick`: the thinking slot is out of `players`.
+        w.taken_player = Some((0, mo));
+        (w, player, mo)
+    }
+
+    #[test]
+    fn doom_player_crouches_to_half_height_and_stands_up() {
+        let (mut w, mut player, mo) = doom_world(128.0);
+        let full = w.actors.get(mo).unwrap().height;
+        let stand_shot = crate::hitscan::shoot_origin(&w, mo).unwrap().0.z();
+        player.cmd.up_move = -256;
+        for _ in 0..6 {
+            player_think(&mut w, &mut player);
+        }
+        assert!(player.crouching);
+        assert!((player.crouch_amount - 1.0).abs() < 1e-9);
+        let crouch_shot = crate::hitscan::shoot_origin(&w, mo).unwrap().0.z();
+        assert!(
+            crouch_shot < stand_shot - 10.0,
+            "shots leave from the crouched eye: {stand_shot} -> {crouch_shot}"
+        );
+        let h = w.actors.get(mo).unwrap().height;
+        assert!(
+            (h - full * 0.5).abs() < 0.01,
+            "crouched height {h} of {full}"
+        );
+        let eye = player.view_z - w.actors.get(mo).unwrap().pos.z();
+        assert!(eye < player.view_height * 0.6, "crouched eye {eye}");
+        player.cmd.up_move = 0;
+        for _ in 0..6 {
+            player_think(&mut w, &mut player);
+        }
+        assert!(!player.crouching);
+        assert!((w.actors.get(mo).unwrap().height - full).abs() < 0.01);
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn doom_crouch_stays_down_under_a_low_ceiling_and_obeys_nocrouch() {
+        let (mut w, mut player, mo) = doom_world(128.0);
+        let full = w.actors.get(mo).unwrap().height;
+        player.cmd.up_move = -256;
+        for _ in 0..6 {
+            player_think(&mut w, &mut player);
+        }
+        // Drop the ceiling under standing height: letting go keeps the crouch.
+        let sec = 0; // the single room
+        w.sectors[sec].ceiling_z = full * 0.75;
+        player.cmd.up_move = 0;
+        for _ in 0..6 {
+            player_think(&mut w, &mut player);
+        }
+        assert!(player.crouching, "no headroom to stand");
+        w.sectors[sec].ceiling_z = 128.0;
+        for _ in 0..6 {
+            player_think(&mut w, &mut player);
+        }
+        assert!(!player.crouching);
+
+        w.no_crouch = true;
+        player.cmd.up_move = -256;
+        player_think(&mut w, &mut player);
+        assert!(!player.crouching, "MAPINFO NoCrouch");
+        w.players[0] = Some(player);
+    }
+
+    #[test]
+    fn bot_seats_get_a_callsign_and_humans_keep_theirs() {
+        let (mut w, player, _) = doom_world(128.0);
+        w.players[0] = Some(player);
+        w.taken_player = None;
+        w.rng.set_seed(7);
+        w.set_seat_bot(0, true);
+        let named = String::from_utf8(w.player_names.stored(0).to_vec()).unwrap();
+        assert!(crate::bot::BOT_NAMES.contains(&named.as_str()), "{named}");
+        assert_eq!(w.humans_alive(), 0, "only a bot");
+        w.set_seat_bot(0, false);
+        assert!(
+            w.player_names.stored(0).is_empty(),
+            "back to the fallback name"
+        );
+        assert_eq!(w.humans_alive(), 1);
+        // A session name is never replaced.
+        w.player_names.set(0, "Anthony");
+        w.set_seat_bot(0, true);
+        assert_eq!(w.player_names.stored(0), b"Anthony");
+    }
+
+    #[test]
+    fn countdown_ammo_and_weapon_are_given_back() {
+        let (mut w, player, mo) = doom_world(128.0);
+        w.players[0] = Some(player);
+        w.taken_player = None;
+        let clip = w.classes.find_name("Clip").unwrap();
+        let before = w.inventory.count(mo, clip);
+        assert!(before > 0, "starts with bullets");
+        let ready = w.players[0].as_ref().unwrap().ready_weapon;
+        w.save_player_inventories();
+        // Shots fired during the countdown, and a weapon switch.
+        let _ = w.inventory.take(mo, clip, before - 1);
+        w.players[0].as_mut().unwrap().ready_weapon = w.classes.find_name("Fist");
+        w.save_player_inventories(); // a later save keeps the first copy
+        w.restore_player_inventories();
+        assert_eq!(w.inventory.count(mo, clip), before, "ammo refilled");
+        assert_eq!(w.players[0].as_ref().unwrap().ready_weapon, ready);
+        assert!(w.saved_inventories.is_empty(), "restored once");
+    }
+
+    #[test]
+    fn nojump_map_flag_blocks_jumping() {
+        let (mut w, mut player, mo) = doom_world(128.0);
+        w.no_jump = true;
+        player.cmd.buttons = Buttons(Buttons::JUMP);
+        player_think(&mut w, &mut player);
+        assert!(w.actors.get(mo).unwrap().vel.z() <= 0.0, "NoJump");
+        w.no_jump = false;
+        player.cmd.buttons = Buttons(0);
+        player_think(&mut w, &mut player);
+        player.on_ground = true;
+        player.cmd.buttons = Buttons(Buttons::JUMP);
+        player_think(&mut w, &mut player);
+        assert!(
+            w.actors.get(mo).unwrap().vel.z() > 0.0,
+            "jump allowed by default"
         );
         w.players[0] = Some(player);
     }

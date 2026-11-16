@@ -625,6 +625,10 @@ pub struct World {
     pub squad_dbno: bool,
     /// Dead players stay down instead of respawning with Use (mod rule).
     pub no_player_respawn: bool,
+    /// MAPINFO `NoJump`: jumping is off on this map.
+    pub no_jump: bool,
+    /// MAPINFO `NoCrouch`: crouching is off on this map.
+    pub no_crouch: bool,
     /// Sound zones and their reverb environment IDs (render-side only).
     pub sound_env: crate::sound_env::SoundEnvState,
     /// MAPINFO skill `ArmorFactor` (`SKILLP_ArmorFactor`).
@@ -643,6 +647,15 @@ pub struct World {
     pub match_tics_left: u32,
     /// Bitmask of seats driven by [`crate::bot::run_bot_brains`] (`docs/28` BE8).
     pub bot_seats: u64,
+    /// Bot difficulty for every bot seat ([`crate::bot::skill`]; `0` = normal).
+    pub bot_skill: u8,
+    /// Seats whose display name was picked by [`World::set_seat_bot`].
+    pub bot_named: u64,
+    /// Level exits are ignored (mod rule `NO_EXIT`, e.g. Battle Royale).
+    pub no_exit: bool,
+    /// Inventories saved by [`World::save_player_inventories`]: seat,
+    /// items, ready weapon.
+    pub saved_inventories: Vec<(usize, Vec<crate::inventory::InvItem>, Option<ClassId>)>,
     /// Level time of each player's latest death (standings tie-break).
     pub player_died_at: [Option<u32>; MAX_PLAYERS],
     /// Doom skill 1..=5 (filters map things).
@@ -1937,6 +1950,8 @@ impl World {
             self_damage: true,
             squad_dbno: false,
             no_player_respawn: false,
+            no_jump: false,
+            no_crouch: false,
             sound_env: crate::sound_env::SoundEnvState::default(),
             armor_factor: 1.0,
             damage_types: std::collections::BTreeMap::new(),
@@ -1945,6 +1960,10 @@ impl World {
             match_standings: Vec::new(),
             match_tics_left: 0,
             bot_seats: 0,
+            bot_skill: 0,
+            bot_named: 0,
+            no_exit: false,
+            saved_inventories: Vec::new(),
             player_died_at: [None; MAX_PLAYERS],
             skill: skill.clamp(1, 5),
             fast_monsters: skill >= 5,
@@ -2899,6 +2918,9 @@ impl World {
     }
 
     /// Mark a seat as sim-driven bot (`docs/28` BE8).
+    /// A bot seat with no session name gets a callsign from
+    /// [`crate::bot::BOT_NAMES`], picked from the match seed so every peer
+    /// agrees (names are in the checksum) and each match differs.
     pub fn set_seat_bot(&mut self, seat: u8, bot: bool) {
         let i = usize::from(seat.min(MAX_PLAYERS as u8 - 1));
         if let Some(p) = self.players[i].as_mut() {
@@ -2907,9 +2929,88 @@ impl World {
         let bit = crate::player::seat_bit(usize::from(seat));
         if bot {
             self.bot_seats |= bit;
+            if self.player_names.stored(i).is_empty() {
+                let name = crate::bot::pick_bot_name(self.rng.seed(), i, |n| {
+                    (0..MAX_PLAYERS).any(|o| {
+                        o != i
+                            && self
+                                .player_names
+                                .stored(o)
+                                .eq_ignore_ascii_case(n.as_bytes())
+                    })
+                });
+                self.player_names.set(i, name);
+                self.bot_named |= bit;
+            }
         } else {
             self.bot_seats &= !bit;
+            if self.bot_named & bit != 0 {
+                self.player_names.set(i, "");
+                self.bot_named &= !bit;
+            }
         }
+    }
+
+    /// Save every live player's inventory and ready weapon (seats already
+    /// saved keep their first copy), for [`World::restore_player_inventories`].
+    pub fn save_player_inventories(&mut self) {
+        for seat in 0..MAX_PLAYERS {
+            if self.saved_inventories.iter().any(|(s, _, _)| *s == seat) {
+                continue;
+            }
+            let Some(p) = self.players[seat].as_ref() else {
+                continue;
+            };
+            let Some(mo) = p.mo else {
+                continue;
+            };
+            if p.player_state != crate::player::PlayerState::Live {
+                continue;
+            }
+            let ready = p.ready_weapon;
+            let items = self.inventory.snapshot(mo);
+            self.saved_inventories.push((seat, items, ready));
+        }
+    }
+
+    /// Give every saved player back exactly what was saved (ammo spent and
+    /// weapons switched during a pre-match countdown), then forget it.
+    pub fn restore_player_inventories(&mut self) {
+        for (seat, items, ready) in std::mem::take(&mut self.saved_inventories) {
+            let Some(p) = self.players[seat].as_mut() else {
+                continue;
+            };
+            let Some(mo) = p.mo else {
+                continue;
+            };
+            self.inventory.restore(mo, items);
+            if p.ready_weapon != ready {
+                p.ready_weapon = ready;
+                p.pending_weapon = None;
+                p.pspr_state = None;
+                p.pspr_y = crate::player::WEAPON_BOTTOM;
+            }
+        }
+    }
+
+    /// Live human (non-bot) players with health left.
+    #[must_use]
+    pub fn humans_alive(&self) -> usize {
+        let live = |mo: Option<ActorId>| {
+            mo.and_then(|m| self.actors.get(m))
+                .is_some_and(|a| a.health > 0 && !a.destroyed)
+        };
+        (0..MAX_PLAYERS)
+            .filter(|&s| match self.players[s].as_ref() {
+                Some(p) => {
+                    !p.is_bot && p.player_state == crate::player::PlayerState::Live && live(p.mo)
+                }
+                // The thinking slot is out of `players` during its turn.
+                None => self.taken_player.is_some_and(|(seat, mo)| {
+                    seat == s && self.bot_seats & crate::player::seat_bit(s) == 0 && live(Some(mo))
+                }),
+            })
+            .count()
     }
 
     /// Enable bots on contiguous seats `[first..=last]` (inclusive).
@@ -4749,7 +4850,9 @@ impl World {
         let Some(actor) = self.actors.get(id) else {
             return false;
         };
-        let is_player = self.players.iter().flatten().any(|p| p.mo == Some(id));
+        // The thinking player's slot is taken out during `player_think`.
+        let is_player = self.players.iter().flatten().any(|p| p.mo == Some(id))
+            || self.taken_player.is_some_and(|(_, mo)| mo == id);
         if !is_player && !actor.extra_flags.get_name("CANJUMP") {
             return false;
         }
@@ -6026,7 +6129,12 @@ impl World {
     }
 
     /// Queue a classified HUD message for everyone or one seat.
-    pub fn push_message_to_kind(&mut self, to: MessageTo, kind: MessageKind, text: impl Into<String>) {
+    pub fn push_message_to_kind(
+        &mut self,
+        to: MessageTo,
+        kind: MessageKind,
+        text: impl Into<String>,
+    ) {
         self.messages.push(HudMessage {
             to,
             text: text.into(),
@@ -6721,11 +6829,14 @@ impl World {
                 }
             }
         }
-        self.push_message_kind(MessageKind::System, if on {
-            "Degreelessness Mode On"
-        } else {
-            "Degreelessness Mode Off"
-        });
+        self.push_message_kind(
+            MessageKind::System,
+            if on {
+                "Degreelessness Mode On"
+            } else {
+                "Degreelessness Mode Off"
+            },
+        );
         on
     }
 
@@ -6736,11 +6847,14 @@ impl World {
         };
         player.noclip = !player.noclip;
         let on = player.noclip;
-        self.push_message_kind(MessageKind::System, if on {
-            "No clipping mode ON"
-        } else {
-            "No clipping mode OFF"
-        });
+        self.push_message_kind(
+            MessageKind::System,
+            if on {
+                "No clipping mode ON"
+            } else {
+                "No clipping mode OFF"
+            },
+        );
         on
     }
 
@@ -6748,11 +6862,14 @@ impl World {
     pub fn toggle_freeze(&mut self) -> bool {
         self.level.frozen = !self.level.frozen;
         let on = self.level.frozen;
-        self.push_message_kind(MessageKind::System, if on {
-            "Freeze mode ON"
-        } else {
-            "Freeze mode OFF"
-        });
+        self.push_message_kind(
+            MessageKind::System,
+            if on {
+                "Freeze mode ON"
+            } else {
+                "Freeze mode OFF"
+            },
+        );
         on
     }
 

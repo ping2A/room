@@ -152,6 +152,21 @@ impl InventoryBags {
     pub fn clear(&mut self, owner: ActorId) {
         self.bags.remove(&key(owner));
     }
+
+    /// Copy of everything `owner` carries (newest first).
+    #[must_use]
+    pub fn snapshot(&self, owner: ActorId) -> Vec<InvItem> {
+        self.bags.get(&key(owner)).cloned().unwrap_or_default()
+    }
+
+    /// Replace `owner`'s items with a [`Self::snapshot`].
+    pub fn restore(&mut self, owner: ActorId, items: Vec<InvItem>) {
+        if items.is_empty() {
+            self.bags.remove(&key(owner));
+        } else {
+            self.bags.insert(key(owner), items);
+        }
+    }
 }
 
 /// Give inventory using class defaults for max amount.

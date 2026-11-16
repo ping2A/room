@@ -213,6 +213,9 @@ pub struct ActorConTemps {
     pub pending_player_respawn: Option<(u8, bool, i32)>,
     /// Actor `sound N` commands, drained by the session audio bridge.
     pub pending_actor_sounds: Vec<i16>,
+    /// EDuke32 pitch adjustments: `(source actor or -1 for any source, sound, cents)`.
+    #[serde(default)]
+    pub pending_sound_pitch_adjustments: Vec<(i32, i32, i32)>,
     /// `MUSICANDSFX` loop starts tied to this actor's source ID.
     #[serde(default)]
     pub pending_actor_sounds_loop: Vec<i16>,
@@ -421,6 +424,7 @@ impl Default for ActorConTemps {
             pending_player_reset: false,
             pending_player_respawn: None,
             pending_actor_sounds: Vec::new(),
+            pending_sound_pitch_adjustments: Vec::new(),
             pending_actor_sounds_loop: Vec::new(),
             pending_actor_sounds_once: Vec::new(),
             pending_sound_stops: Vec::new(),

@@ -547,7 +547,8 @@ impl Ctx<'_> {
             )
         };
         let tiles = self.tiles;
-        let pal_table = tiles.pal_table(pal);
+        let palette_variant = tiles.has_palette_variant(picnum, pal, self.clock);
+        let pal_table = (!palette_variant).then(|| tiles.pal_table(pal)).flatten();
         let flat = super::wall_color(picnum, shade);
         let w = self.w as usize;
         if stat & STAT_PARALLAX != 0 {
@@ -555,6 +556,7 @@ impl Ctx<'_> {
             // unshaded: per-sector sky shades show as seams between sectors.
             let column = tiles.sky_column(
                 picnum,
+                pal,
                 self.view.ang,
                 col,
                 self.w,
@@ -564,24 +566,38 @@ impl Ctx<'_> {
             );
             let height = i64::from(self.h.max(1));
             for y in y0..y1 {
-                let p = column.map_or(flat, |(tile, u, sky_horizon)| {
-                    let th = tile.h as i64;
-                    let v = th / 2
-                        + (i64::from(y) - sky_horizon) * 200 / height
-                        + i64::from(ypan) * th / 256;
-                    let p = tile.at(u, v);
-                    if p == room_build::art::TRANSPARENT {
-                        flat
-                    } else {
-                        p
-                    }
-                });
+                let p = tiles
+                    .sample_skybox_at(
+                        picnum,
+                        pal,
+                        self.view.ang,
+                        col,
+                        self.w,
+                        y,
+                        self.h,
+                        self.horizon,
+                    )
+                    .or_else(|| {
+                        column.map(|(tile, u, sky_horizon)| {
+                            let th = tile.h as i64;
+                            let v = th / 2
+                                + (i64::from(y) - sky_horizon) * 200 / height
+                                + i64::from(ypan) * th / 256;
+                            let pixel = tile.at(u, v);
+                            if pixel == room_build::art::TRANSPARENT {
+                                flat
+                            } else {
+                                pixel
+                            }
+                        })
+                    })
+                    .unwrap_or(flat);
                 self.zbuf[y as usize * w + col as usize] = i32::MAX - 1;
                 self.frame.put(col, y, p);
             }
             return;
         }
-        let Some(tile) = tiles.resolve(picnum, self.clock) else {
+        let Some(tile) = tiles.resolve_for_palette(picnum, pal, self.clock) else {
             for y in y0..y1 {
                 self.zbuf[y as usize * w + col as usize] = i32::MAX - 1;
                 self.frame.put(col, y, flat);
@@ -720,7 +736,7 @@ impl Ctx<'_> {
         let shade = self.fog_shade(wall.shade, d, sect);
         let _ = wall_len;
         let tiles = self.tiles;
-        let tile = tiles.resolve(picnum, self.clock);
+        let tile = tiles.resolve_for_palette(picnum, wall.pal, self.clock);
         let (tw, th) = tile.map_or((64, 64), |t| (t.w as i64, t.h as i64));
         // Build: the whole wall spans xrepeat*8 texels; xpanning is in texels.
         let mut u = ((t * i64::from(wall.xrepeat) * 8) >> 16) + i64::from(wall.xpanning);
@@ -735,7 +751,10 @@ impl Ctx<'_> {
         } else {
             super::wall_color(picnum, wall.shade)
         };
-        let pal_table = tiles.pal_table(wall.pal);
+        let palette_variant = tiles.has_palette_variant(picnum, wall.pal, self.clock);
+        let pal_table = (!palette_variant)
+            .then(|| tiles.pal_table(wall.pal))
+            .flatten();
         let shade_row = tiles.shade_row(shade);
         let w = self.w as usize;
         // Build `wallscan`: texel = (z - zref) * yrepeat / 2048, with z linear
@@ -770,7 +789,10 @@ impl Ctx<'_> {
         for m in masked {
             let wall = self.world.walls[m.wall];
             let pic = wall.overpicnum;
-            let (tw, th) = self.tiles.dimensions(pic).unwrap_or((64, 64));
+            let (tw, th) = self
+                .tiles
+                .dimensions_for_palette(pic, wall.pal)
+                .unwrap_or((64, 64));
             let tw = i64::from(tw.max(1));
             let th = i64::from(th.max(1));
             let mut u = ((m.t_q16 * i64::from(wall.xrepeat) * 8) >> 16) + i64::from(wall.xpanning);
@@ -793,16 +815,24 @@ impl Ctx<'_> {
                     v = th - 1 - v.rem_euclid(th);
                 }
                 let v = v.rem_euclid(th) as u32;
-                let Some(p) = self.tiles.sample_at(pic, u, v, self.clock) else {
+                let Some(p) = self
+                    .tiles
+                    .sample_at_for_palette(pic, wall.pal, u, v, self.clock)
+                else {
                     continue;
                 };
                 if p == room_build::art::TRANSPARENT {
                     continue;
                 }
                 let shade = self.fog_shade(wall.shade, i64::from(m.depth), m.sect);
-                let p = self
-                    .tiles
-                    .shade_palette(shade, self.tiles.remap_palette(wall.pal, p));
+                let p = self.tiles.shade_palette(
+                    shade,
+                    if self.tiles.has_palette_variant(pic, wall.pal, self.clock) {
+                        p
+                    } else {
+                        self.tiles.remap_palette(wall.pal, p)
+                    },
+                );
                 let out = self.tiles.composite_layer(
                     self.frame.pixels[idx],
                     p,

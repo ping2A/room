@@ -308,8 +308,11 @@ pub struct Player {
     pub view_ofs_z: f64,
     /// On ground this tic.
     pub on_ground: bool,
-    /// Duke crouch (`up_move` down while grounded).
+    /// Crouched (Duke stance, or any part of a GZDoom-style crouch).
     pub crouching: bool,
+    /// GZDoom-style crouch progress: `0` standing … `1` fully down (half
+    /// height and eye). Duke players use their own stance instead.
+    pub crouch_amount: f64,
     /// Consecutive falling tics (`DukePlayer` long-fall damage).
     pub falling_tics: u32,
     /// Ready weapon inventory class (if any).
@@ -466,6 +469,8 @@ pub struct Player {
     pub bot_detour: u16,
     /// Bot: detour heading (degrees).
     pub bot_detour_dir: f64,
+    /// Bot: consecutive tics it has seen its target (reaction delay).
+    pub bot_seen: u16,
     /// Weapon to restore after a quick kick (`None` = not kicking).
     pub quick_kick_restore: Option<ClassId>,
     /// Consecutive idle tics (no move / fire / use / turn). Resets on input.
@@ -685,6 +690,7 @@ impl Player {
         self.view_height = 41.0;
         self.on_ground = true;
         self.crouching = false;
+        self.crouch_amount = 0.0;
         self.ready_weapon = None;
         self.pending_weapon = None;
         // Off-screen until `P_BringUpWeapon` / Select raise (docs/30 W13).

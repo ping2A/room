@@ -2346,7 +2346,8 @@ actor GibHelper : Actor 9943
         let grunt = classes.find_name("Grunt").unwrap();
         let spawn = |w: &mut World, name: &str, x: f64| {
             let c = classes.find_name(name).unwrap();
-            w.spawn_at(c, DVec3::new(x, 128.0, 0.0), Default::default()).unwrap()
+            w.spawn_at(c, DVec3::new(x, 128.0, 0.0), Default::default())
+                .unwrap()
         };
         // Projectile fired by the player.
         let a = spawn(&mut w, "Grunt", 200.0);

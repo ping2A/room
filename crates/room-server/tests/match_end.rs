@@ -98,7 +98,7 @@ async fn agreed_results_close_the_room_and_reach_the_leaderboard() {
             ..CreateRoomRequest::default()
         })
         .unwrap();
-    assert_eq!(room.settings.time_limit, 7);
+    assert_eq!(room.settings.time_limit_secs, 7 * 60);
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
     let (mut a, seat_a, limit) = join(addr, &room.id, "Ann").await;
     let (mut b, _, _) = join(addr, &room.id, "Bob").await;
@@ -149,7 +149,7 @@ async fn agreed_results_close_the_room_and_reach_the_leaderboard() {
 async fn disagreeing_seats_neither_close_nor_score() {
     let registry = registry(0);
     let room = registry.create_room(CreateRoomRequest::default()).unwrap();
-    assert_eq!(room.settings.time_limit, 15, "node default");
+    assert_eq!(room.settings.time_limit_secs, 15 * 60, "node default");
     let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
     let (mut a, _, _) = join(addr, &room.id, "Ann").await;
     let (mut b, _, _) = join(addr, &room.id, "Bob").await;
@@ -169,22 +169,28 @@ async fn disagreeing_seats_neither_close_nor_score() {
 #[test]
 fn time_limits_are_clamped() {
     let registry = registry(0);
-    let make = |m: Option<u16>| {
+    let make = |mins: Option<u16>, secs: Option<u32>| {
         registry
             .create_room(CreateRoomRequest {
-                time_limit: m,
+                time_limit: mins,
+                time_limit_secs: secs,
                 ..CreateRoomRequest::default()
             })
             .unwrap()
             .settings
-            .time_limit
+            .time_limit_secs
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _g = rt.enter();
-    assert_eq!(make(Some(999)), 180);
-    assert_eq!(make(Some(0)), 15);
-    assert_eq!(make(None), 15);
-    assert_eq!(make(Some(1)), 1);
+    assert_eq!(make(Some(999), None), 180 * 60);
+    assert_eq!(make(Some(0), None), 15 * 60);
+    assert_eq!(make(None, None), 15 * 60);
+    assert_eq!(make(Some(1), None), 60);
+    // Seconds win over minutes and are clamped to 30 s .. 180 min.
+    assert_eq!(make(Some(5), Some(90)), 90);
+    assert_eq!(make(None, Some(5)), 30);
+    assert_eq!(make(None, Some(99_999)), 180 * 60);
+    assert_eq!(make(None, Some(0)), 15 * 60);
 }
 
 async fn http_body(addr: std::net::SocketAddr, line: &str) -> String {
@@ -197,4 +203,78 @@ async fn http_body(addr: std::net::SocketAddr, line: &str) -> String {
     resp.split_once("\r\n\r\n")
         .map(|(_, b)| b.to_owned())
         .unwrap_or(resp)
+}
+
+#[tokio::test]
+async fn quick_play_rooms_start_after_their_own_delay() {
+    let registry = registry(0);
+    let room = registry
+        .create_room(CreateRoomRequest {
+            max_players: 4,
+            fill_bots: true,
+            quick_play: true,
+            start_delay_secs: Some(8),
+            ..CreateRoomRequest::default()
+        })
+        .unwrap();
+    assert_eq!(room.settings.start_delay_secs, 8);
+    let (addr, _server) = bind_ephemeral(registry.clone()).await.unwrap();
+    let (mut a, _, _) = join(addr, &room.id, "Ann").await;
+    let ms = wait_for(&mut a, |m| match m {
+        ControlMsg::Roster {
+            starts_in_ms: Some(ms),
+            ..
+        } => Some(ms),
+        _ => None,
+    })
+    .await;
+    assert!(
+        (6_000..=8_000).contains(&ms),
+        "starts in {ms} ms, not the node's 60 s"
+    );
+}
+
+#[test]
+fn start_delays_are_clamped() {
+    let registry = registry(0);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _g = rt.enter();
+    let make = |s: Option<u32>| {
+        registry
+            .create_room(CreateRoomRequest {
+                start_delay_secs: s,
+                ..CreateRoomRequest::default()
+            })
+            .unwrap()
+            .settings
+            .start_delay_secs
+    };
+    assert_eq!(make(None), 0, "node default");
+    assert_eq!(make(Some(0)), 0, "node default");
+    assert_eq!(make(Some(1)), 5);
+    assert_eq!(make(Some(45)), 45);
+    assert_eq!(make(Some(99_999)), 600);
+}
+
+#[test]
+fn bot_skill_is_stored_and_normal_stays_off_the_wire() {
+    let registry = registry(0);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _g = rt.enter();
+    let make = |s: Option<u8>| {
+        registry
+            .create_room(CreateRoomRequest {
+                bot_skill: s,
+                ..CreateRoomRequest::default()
+            })
+            .unwrap()
+            .settings
+            .bot_skill
+    };
+    assert_eq!(make(None), 0);
+    assert_eq!(make(Some(2)), 0, "normal is the default");
+    assert_eq!(make(Some(1)), 1);
+    assert_eq!(make(Some(3)), 3);
+    assert_eq!(make(Some(4)), 4);
+    assert_eq!(make(Some(9)), 0, "unknown level = normal");
 }

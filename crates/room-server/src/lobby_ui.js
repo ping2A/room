@@ -94,6 +94,21 @@
       .replace(/"/g, "&quot;");
   }
 
+  /** Match length for people: "45 s", "3 min 30 s", "20 min". */
+  function fmtDuration(secs) {
+    const n = Math.max(0, Math.round(Number(secs) || 0));
+    const m = Math.floor(n / 60);
+    const r = n % 60;
+    if (m === 0) return r + " s";
+    return r ? m + " min " + r + " s" : m + " min";
+  }
+
+  /** Room time limit in seconds (older servers send minutes). */
+  function roomLimitSecs(room) {
+    if (room.time_limit_secs) return room.time_limit_secs;
+    return room.time_limit ? room.time_limit * 60 : 0;
+  }
+
   function shortId(id) {
     return id && id.length > 12 ? id.slice(0, 8) + "…" : id || "—";
   }
@@ -544,8 +559,8 @@
       " (" +
       openSeats +
       " free)</span></div>" +
-      (room.time_limit
-        ? '<div class="row"><span class="k">Time limit</span><span>' + escapeHtml(room.time_limit) + " min</span></div>"
+      (roomLimitSecs(room)
+        ? '<div class="row"><span class="k">Time limit</span><span>' + escapeHtml(fmtDuration(roomLimitSecs(room))) + "</span></div>"
         : "") +
       '<div class="row"><span class="k">Status</span><span>' +
       (room.started ? "in progress" : "waiting for players") +
@@ -725,13 +740,56 @@
         '<label class="field"><span>Time limit (minutes)</span><input name="time_limit" type="number" min="1" max="180" value="' +
         escapeHtml(state.config.room_time_limit_mins || 20) +
         '"/></label>' +
+        '<p class="muted time-limit-note" data-royale-time hidden>Battle Royale: under 8 minutes, the zone speeds up so it closes before time runs out.</p>' +
         '<label class="field"><span>Listing</span><select name="visibility"><option value="public">Public — shown on this page</option><option value="private">Private — join by game ID only</option></select></label>' +
         '<div data-custom>' + picker.html + "</div>" +
-        '<label class="field check" data-bots hidden><span><input type="checkbox" name="fill_bots" checked/> Fill empty slots with bots</span>' +
-        '<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0.02em">The match starts ' +
+        '<div class="field start-delay" data-bots hidden>' +
+        '<label class="check"><span><input type="checkbox" name="fill_bots" checked/> Fill empty slots with bots</span></label>' +
+        '<label class="field" data-bot-skill><span>Bot skill</span><select name="bot_skill">' +
+        '<option value="1">Easy — slow to aim, misses often</option>' +
+        '<option value="2" selected>Normal</option>' +
+        '<option value="3">Hard — quick aim, hunts you down</option>' +
+        '<option value="4">Nightmare — near-instant aim</option>' +
+        "</select></label>" +
+        '<label for="host-start-delay"><span>Starts in (seconds)</span></label>' +
+        '<div class="time-limit-row"><input id="host-start-delay" name="start_delay_secs" type="number" min="5" max="600" step="5" value="' +
         escapeHtml(state.config.bot_fill_secs || 60) +
-        " s after the first player joins; bots take the slots nobody filled.</span></label>",
+        '"/><output data-delay-readout></output></div>' +
+        '<div class="time-limit-picks" role="group" aria-label="Quick picks">' +
+        [10, 30, 60, 120]
+          .map((v) => '<button type="button" class="btn small ghost" data-secs="' + v + '">' + fmtDuration(v) + "</button>")
+          .join("") +
+        "</div>" +
+        '<p class="muted time-limit-note" data-delay-note></p></div>',
       onReady: (body) => {
+        // Bot-fill start delay: seconds from the first join to the start.
+        const delay = body.querySelector('input[name="start_delay_secs"]');
+        const delayOut = body.querySelector("[data-delay-readout]");
+        const delayNote = body.querySelector("[data-delay-note]");
+        const fillBox = body.querySelector('input[name="fill_bots"]');
+        const syncDelay = () => {
+          const v = Number(delay.value) || 0;
+          const ok = v >= 5 && v <= 600;
+          delayOut.textContent = ok ? "= " + fmtDuration(v) : "5 s to 10 min";
+          for (const b of body.querySelectorAll("[data-secs]")) {
+            b.setAttribute("aria-pressed", String(Number(b.dataset.secs) === v));
+          }
+          delayNote.textContent = fillBox.checked
+            ? "The match starts " + (ok ? fmtDuration(v) : "…") + " after the first player joins; bots take the slots nobody filled."
+            : "The match starts " + (ok ? fmtDuration(v) : "…") + " after the first player joins.";
+        };
+        delay.addEventListener("input", syncDelay);
+        fillBox.addEventListener("change", () => {
+          show(body.querySelector("[data-bot-skill]"), fillBox.checked);
+        });
+        fillBox.addEventListener("change", syncDelay);
+        for (const b of body.querySelectorAll("[data-secs]")) {
+          b.addEventListener("click", () => {
+            delay.value = b.dataset.secs;
+            syncDelay();
+          });
+        }
+        syncDelay();
         const game = body.querySelector('select[name="game"]');
         const mode = body.querySelector('select[name="mode"]');
         const skill = body.querySelector('select[name="skill"]');
@@ -776,6 +834,7 @@
           const g = preset ? preset.game : game ? game.value : "doom";
           // Sim bots play Battle Royale and Doom deathmatch (they hunt players).
           show(botsRow, g !== "duke3d" && (modName === "royale" || mode.value === "deathmatch"));
+          show(body.querySelector("[data-royale-time]"), g !== "duke3d" && modName === "royale");
         };
         if (modSel) modSel.addEventListener("change", updateBots);
         mode.addEventListener("change", updateBots);
@@ -809,6 +868,8 @@
           max_players: Number(data.max_players) || 2,
           visibility: data.visibility || "public",
           time_limit: Number(data.time_limit) || undefined,
+          start_delay_secs: botGame && data.fill_bots === true ? Number(data.start_delay_secs) || undefined : undefined,
+          bot_skill: botGame && data.fill_bots === true ? Number(data.bot_skill) || undefined : undefined,
           game,
           duke_game_mode: Math.max(0, DUKE_MODE_VALUES.indexOf(data.mode || "coop")),
           duke_friendly_fire: data.mode === "coop" && !!data.duke_friendly_fire,
@@ -830,7 +891,7 @@
         mod: created.settings.mod,
         packs: created.settings.packs || [],
         game: created.settings.game,
-        time_limit: created.settings.time_limit,
+        time_limit_secs: created.settings.time_limit_secs,
         preset: created.settings.preset || "",
         occupied: 0,
         started: false,
@@ -1353,7 +1414,7 @@
         "/" +
         room.max_players +
         " players" +
-        (room.time_limit ? " · " + escapeHtml(room.time_limit) + " min" : "") +
+        (roomLimitSecs(room) ? " · " + escapeHtml(fmtDuration(roomLimitSecs(room))) : "") +
         '</p><p class="id" title="' +
         escapeHtml(room.id) +
         '">' +
@@ -1499,7 +1560,7 @@
             max_players: 8,
             mod: { name: "royale", title: "Battle Royale" },
             game: "doom",
-            time_limit: state.config.room_time_limit_mins || 20,
+            time_limit_secs: (state.config.room_time_limit_mins || 20) * 60,
             occupied: 0,
             started: false,
           },

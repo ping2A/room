@@ -88,6 +88,10 @@ pub struct WelcomeRoom {
     /// Empty seats are sim bots on every client (`GameOptions.fill_bots`, BE8).
     #[serde(default, skip_serializing_if = "is_false")]
     pub fill_bots: bool,
+    /// Bot difficulty: 1 easy, 2 normal, 3 hard, 4 nightmare (`0` = normal;
+    /// left off the wire then, so older clients still accept the welcome).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub bot_skill: u8,
     /// Server content files (PK3 / WAD) every seat mounts after the IWAD, in
     /// order, before the gameplay mod and packs. From the room's preset;
     /// downloaded from `GET /api/content/{file}`.
@@ -488,6 +492,7 @@ mod tests {
             packs: Vec::new(),
             time_limit: 0,
             fill_bots: false,
+            bot_skill: 0,
             content: Vec::new(),
             iwad: None,
             preset: String::new(),
@@ -496,6 +501,10 @@ mod tests {
         assert!(!plain.contains("content") && !plain.contains("iwad") && !plain.contains("preset"));
         assert!(
             !plain.contains("mod") && !plain.contains("time_limit") && !plain.contains("packs")
+        );
+        assert!(
+            !plain.contains("bot_skill"),
+            "normal bots stay off the wire"
         );
         assert_eq!(serde_json::from_str::<WelcomeRoom>(&plain).unwrap(), room);
         room.game_mod = Some(RoomModRef {

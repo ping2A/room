@@ -69,6 +69,11 @@ impl BuildWorld {
             start_ang,
             start_sector,
             mirror_viewer: None,
+            render_sprite_blends: Default::default(),
+            mirror_render_sprites: Default::default(),
+            mirror_render_sprite_blends: Default::default(),
+            render_hud_draws: Default::default(),
+            render_hide_native_weapon: false,
         })
     }
 
