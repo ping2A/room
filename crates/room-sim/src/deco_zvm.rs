@@ -21,6 +21,14 @@ pub struct DecoExprCache {
     float_programs: BTreeMap<String, Zvm>,
 }
 
+/// A copy starts with an empty cache: the programs are recompiled on first
+/// use, with the same results (world snapshots for rollback).
+impl Clone for DecoExprCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 impl DecoExprCache {
     /// Compile (or fetch) and evaluate an integer-suitable expression.
     pub fn eval_i64(
@@ -492,7 +500,10 @@ fn link_i(prog: CompiledProgram) -> Zvm {
     let id_i = vm.natives.register("deco.ident", native_ident);
     let id_c = vm.natives.register("deco.call", native_call);
     let id_x = vm.natives.register("deco.index", native_index);
-    if let Some(f) = vm.program.functions.first_mut() {
+    if let Some(f) = std::sync::Arc::make_mut(&mut vm.program)
+        .functions
+        .first_mut()
+    {
         patch(&mut f.code, N_IDENT, id_i);
         patch(&mut f.code, N_CALL, id_c);
         patch(&mut f.code, N_INDEX, id_x);
@@ -528,7 +539,10 @@ fn link_f(prog: CompiledProgram) -> Zvm {
     let id_fc = vm.natives.register("deco.fcall", native_fcall);
     let id_fr = vm.natives.register("deco.fret", native_fret);
     let id_fm = vm.natives.register("deco.fmod", native_fmod);
-    if let Some(f) = vm.program.functions.first_mut() {
+    if let Some(f) = std::sync::Arc::make_mut(&mut vm.program)
+        .functions
+        .first_mut()
+    {
         patch(&mut f.code, N_IDENT, id_i);
         patch(&mut f.code, N_IDENT_F, id_if);
         patch(&mut f.code, N_INDEX, id_x);

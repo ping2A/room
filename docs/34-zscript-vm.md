@@ -446,7 +446,9 @@ Root causes in `compile.rs` (814 LOC):
 usable base. Gaps:
 - The heap strings are UTF-8 `String`. ZScript strings are **byte strings**,
   and `Wads.ReadLump` plus `CharCodeAt` read binary lumps.
-- `ObjKind` has no float, bool or object arrays, and no actor-proxy objects.
+- `ObjKind` has no float or bool arrays, and no actor-proxy objects.
+  *(2026-11-19: object arrays exist — see "Object arrays and map objects"
+  below.)*
 - Natives receive a register window, but host access goes through
   **thread-locals** (`natives_bd.rs` `HOST_FNS`, plus 11 `thread_local!`
   maps in `room-sim/src/zscript.rs`).
@@ -1172,3 +1174,51 @@ Plus BD-specific integration tests.
 Order: ZS1b → ZS2b → ZS3b → ZS4b → ZS6b. ZS5 (DECORATE expressions) and
 ZS7+ keep their current definitions. `deco_zvm.rs` must move to the new
 `lower.rs` API once ZS2b lands, replacing its private `compile_expr`.
+
+## Object arrays and map objects (2026-11-19)
+
+**Object arrays.** `ObjKind::ArrayA(Vec<ObjHandle>)` holds `Array<T>` of a
+declared class or struct (`Array<Actor>`, `Array<@Line>`, `Actor[]`); the
+collector traces it and heap images save it. Class layouts list object-array
+fields in `ClassLayout::array_a` (program image version 2; version 1 images
+still load), so `new` pre-allocates them as it does `array_i` / `array_s`.
+The compiler knows an array holds objects from its declared element type
+(locals, parameters, class fields, globals such as `level.Lines`) and emits
+natives rather than new opcodes, so the wasm AOT tier needs no change:
+`Array.NewA`, `GetA` (`a[i]` where an object is wanted), `SetA`
+(`a[i] = x`), `PushA` / `FindA` / `InsertA`; `Size`, `Delete` (with a
+count) and `Clear` take every array kind. An object element used as a
+condition tests for null. Method calls on array fields (`self.items.Push`,
+`h.items.Find`) and array fields passed whole (`Sum(h.items)`) go the same
+way. `let h = new("Holder")` now types `h` as `Holder`. Before this,
+`a[i]` of an object array came back null and `Push` stored 0.
+
+**Map objects.** For a program with UZDoom's map structs, the playsim
+builds the level's `Sector`, `Line`, `Side`, `Vertex` and `SecPlane`
+objects once per map (`room-sim` `zscript.rs` `build_map_objects`) and
+publishes a real `LevelLocals` as `level`, with `Sectors`, `Lines`, `Sides`
+and `Vertexes` filled. Fields set: vertices `p`; sectors `sectornum`,
+`special`, `lightlevel`, `centerspot`, `lines`, `floorplane`,
+`ceilingplane` (`Normal`, `D`, `negiC`), `friction`, `movefactor`,
+`gravity`; lines `v1`, `v2`, `delta`, `flags`, `activation`, `special`,
+`args`, `alpha`, `locknumber`, `portalindex`, `frontsector`, `backsector`,
+`sidedef`; sides `sector`, `linedef`. Plane heights, light and flats are
+refreshed once per tic. Actor objects' `CurSector` is the caller's sector
+object; `level.PointInSector` returns the sector object.
+
+Natives (`room-zvm/src/map_natives.rs`): `Sector` / `Line` / `Side` /
+`Vertex.Index()`; `Sector.GetLightLevel` / `SetLightLevel` /
+`ChangeLightLevel` / `SetPlaneLight` (Room has one light per sector, so
+the plane light sets it) / `GetTexture` / `SetTexture` /
+`LowestFloorAt` / `HighestCeilingAt`; `SecPlane.ZatPoint`; the `Line` portal
+queries; `Team.GetPlayerColor` / `GetTextColor` / `GetLogo` answer as no
+team (Room has no TEAMINFO). Changes the playsim must see go through
+`ZsActorOp::SectorLight` / `SectorTexture`; `SetEnvironment…` on a sector
+object reaches that sector.
+
+**Limits.** A script that writes a field directly (`sec.lightlevel = 200`)
+changes only the object: the next tic's refresh puts the playsim's value
+back. `Sector.thinglist`, `Line.BlockingLine`-style actor links, `LineTrace`
+results and `Side` textures are not filled. Float and bool arrays
+(`double bbox[4]`) are still int arrays.
+

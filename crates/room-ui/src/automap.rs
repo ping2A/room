@@ -26,6 +26,10 @@ pub struct AutomapView {
     pub allmap: bool,
     /// Hide linedefs that lack Doom `ML_MAPPED` (explored fog-of-war).
     pub fog: bool,
+    /// `am_textured`: fill the explored sectors with their floor flats, lit
+    /// by the sector light (the shell loads the flats with
+    /// [`crate::PatchCache::ensure_flat`]; [`automap_flats`] lists them).
+    pub textured: bool,
 }
 
 impl Default for AutomapView {
@@ -41,6 +45,7 @@ impl Default for AutomapView {
             angle_deg: 0.0,
             allmap: false,
             fog: true,
+            textured: false,
         }
     }
 }
@@ -93,6 +98,13 @@ const COLOR_SECRET: Rgba = Rgba {
     r: 1.0,
     g: 0.2,
     b: 0.2,
+    a: 1.0,
+};
+/// Lines of other portal groups (UZDoom `PortalColor`, `am_portaloverlay`).
+const COLOR_PORTAL: Rgba = Rgba {
+    r: 0.25,
+    g: 0.25,
+    b: 0.25,
     a: 1.0,
 };
 /// Grid lines.
@@ -150,6 +162,9 @@ pub fn draw_automap_ex2(
             Rgba::new(0.0, 0.0, 0.0, 1.0),
         );
     }
+    if view.textured {
+        draw_sector_flats(map, view, list);
+    }
     draw_grid(view, list);
 
     let pad = 4.0;
@@ -160,12 +175,36 @@ pub fn draw_automap_ex2(
         y1: view.screen_y + view.height + pad,
     };
 
+    // `am_portaloverlay`: on maps with linked portals, lines of the other
+    // portal groups are drawn where they connect to the viewer's group, in
+    // the portal colour (UZDoom `DAutomap::drawWalls`).
+    let groups = &map.setup.portal_groups;
+    let my_group = groups
+        .has_links()
+        .then(|| room_map::portals::sector_at(map, view.center_x, view.center_y))
+        .flatten()
+        .and_then(|s| groups.group_of(s.raw() as usize));
     for (li, line) in map.lines.iter().enumerate() {
         let Some(v1) = map.vertices.get(line.v1.raw() as usize) else {
             continue;
         };
         let Some(v2) = map.vertices.get(line.v2.raw() as usize) else {
             continue;
+        };
+        let (overlay, ox, oy) = match my_group {
+            Some(g) => {
+                let lg = line
+                    .front_sector
+                    .and_then(|s| groups.group_of(s.raw() as usize))
+                    .unwrap_or(0);
+                if lg == g {
+                    (false, 0.0, 0.0)
+                } else {
+                    let (dx, dy) = groups.offset(lg, g);
+                    (true, dx, dy)
+                }
+            }
+            None => (false, 0.0, 0.0),
         };
         if line.automap_style == AML_NOT_MAPPED {
             continue;
@@ -186,13 +225,15 @@ pub fn draw_automap_ex2(
         }
         // UDMF `drawfullheight`: drawn like a solid wall.
         let full = map.udmf_user.line_ext(li) & room_map::udmf::ext::LINE_DRAWFULLHEIGHT != 0;
-        let color = if full && !ml_secret {
+        let color = if overlay {
+            COLOR_PORTAL
+        } else if full && !ml_secret {
             COLOR_ONESIDED
         } else {
             line_color(map, line, ml_secret)
         };
-        let a = project(view, v1.pos.x(), v1.pos.y());
-        let b = project(view, v2.pos.x(), v2.pos.y());
+        let a = project(view, v1.pos.x() + ox, v1.pos.y() + oy);
+        let b = project(view, v2.pos.x() + ox, v2.pos.y() + oy);
         if !clip.segment_visible(a, b) {
             continue;
         }
@@ -207,6 +248,102 @@ pub fn draw_automap_ex2(
     if draw_player {
         draw_player_arrow(view, list);
     }
+}
+
+/// Sectors the textured automap shows: not UDMF `hidden`, and (in play)
+/// with an explored line, unless the whole map is revealed.
+fn shown_sectors(map: &MapGeometry, view: &AutomapView) -> Vec<bool> {
+    let mut shown = vec![!view.fog || view.allmap; map.sectors.len()];
+    if view.fog && !view.allmap {
+        for line in &map.lines {
+            if line.flags & ML_MAPPED == 0 {
+                continue;
+            }
+            for s in [line.front_sector, line.back_sector].into_iter().flatten() {
+                if let Some(v) = shown.get_mut(s.raw() as usize) {
+                    *v = true;
+                }
+            }
+        }
+    }
+    for (i, v) in shown.iter_mut().enumerate() {
+        if map.udmf_user.sector_ext(i) & room_map::udmf::ext::SECTOR_HIDDEN != 0 {
+            *v = false;
+        }
+    }
+    shown
+}
+
+/// Floor flats the textured automap draws (for the shell to load first).
+#[must_use]
+pub fn automap_flats(map: &MapGeometry, view: &AutomapView) -> Vec<String> {
+    if !view.textured {
+        return Vec::new();
+    }
+    let shown = shown_sectors(map, view);
+    let mut names: Vec<String> = map
+        .sectors
+        .iter()
+        .zip(&shown)
+        .filter(|(_, on)| **on)
+        .map(|(s, _)| s.floor_pic.to_ascii_uppercase())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// `am_textured`: each shown sector's floor flat, world-aligned (64 map
+/// units per 64 texels), behind the lines (GZDoom `drawSubsectors`).
+fn draw_sector_flats(map: &MapGeometry, view: &AutomapView, list: &mut UiDrawList) {
+    let shown = shown_sectors(map, view);
+    let mut edges: Vec<Vec<[Vec2; 2]>> = vec![Vec::new(); map.sectors.len()];
+    for line in &map.lines {
+        let (Some(v1), Some(v2)) = (
+            map.vertices.get(line.v1.raw() as usize),
+            map.vertices.get(line.v2.raw() as usize),
+        ) else {
+            continue;
+        };
+        if line.front_sector == line.back_sector {
+            continue;
+        }
+        let e = [
+            project(view, v1.pos.x(), v1.pos.y()),
+            project(view, v2.pos.x(), v2.pos.y()),
+        ];
+        for s in [line.front_sector, line.back_sector].into_iter().flatten() {
+            if let Some(list) = edges.get_mut(s.raw() as usize) {
+                list.push(e);
+            }
+        }
+    }
+    // Virtual pixel → world → texel (`u = x`, `v = −y`), the inverse of `project`.
+    let inv = 1.0 / view.scale.max(1.0e-6);
+    #[allow(clippy::cast_possible_truncation)]
+    let tex = [
+        inv,
+        0.0,
+        view.center_x as f32 - (view.screen_x + view.width * 0.5) * inv,
+        0.0,
+        inv,
+        -(view.center_y as f32) - (view.screen_y + view.height * 0.5) * inv,
+    ];
+    let widget = crate::draw::Rect::new(view.screen_x, view.screen_y, view.width, view.height);
+    list.cmds.push(DrawCmd::Clip { rect: Some(widget) });
+    for (i, sector) in map.sectors.iter().enumerate() {
+        let e = std::mem::take(&mut edges[i]);
+        if !shown[i] || e.len() < 3 {
+            continue;
+        }
+        list.cmds.push(DrawCmd::FlatPoly {
+            edges: e,
+            flat: sector.floor_pic.clone(),
+            tex,
+            light: (f32::from(sector.light) / 255.0).clamp(0.15, 1.0),
+        });
+    }
+    list.cmds.push(DrawCmd::Clip { rect: None });
 }
 
 /// One thing for [`draw_automap_things`].
@@ -414,6 +551,56 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn textured_automap_fills_explored_sectors() {
+        let map = room_testkit::MapBuilder::new()
+            .room("a", room_testkit::rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .room(
+                "b",
+                room_testkit::rect(128.0, 0.0, 256.0, 128.0),
+                0.0,
+                128.0,
+            )
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let mut view = AutomapView {
+            center_x: 128.0,
+            center_y: 64.0,
+            scale: 0.5,
+            textured: true,
+            fog: false,
+            ..AutomapView::default()
+        };
+        let mut list = UiDrawList::new();
+        draw_automap_ex2(&map, &view, &mut list, false, false);
+        let polys: Vec<_> = list
+            .cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::FlatPoly { edges, tex, .. } => Some((edges.len(), *tex)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(polys.len(), map.sectors.len());
+        // The texture map inverts `project`: the view centre is world (128, 64).
+        let (_, t) = polys[0];
+        let c = (160.0, 84.0);
+        assert!((t[0] * c.0 + t[1] * c.1 + t[2] - 128.0).abs() < 1e-3);
+        assert!((t[3] * c.0 + t[4] * c.1 + t[5] + 64.0).abs() < 1e-3);
+        assert!(!automap_flats(&map, &view).is_empty());
+        // In play, nothing explored yet: nothing filled.
+        view.fog = true;
+        let mut list = UiDrawList::new();
+        draw_automap_ex2(&map, &view, &mut list, false, false);
+        assert!(
+            !list
+                .cmds
+                .iter()
+                .any(|c| matches!(c, DrawCmd::FlatPoly { .. }))
+        );
+    }
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
 
@@ -474,6 +661,36 @@ mod tests {
             .filter(|c| matches!(c, DrawCmd::Line { color, .. } if color != &COLOR_PLAYER && color != &COLOR_GRID))
             .count();
         assert_eq!(walls, 0, "AML_NotMapped should hide all {total} lines");
+    }
+
+    #[test]
+    fn linked_portal_groups_are_overlaid_where_they_connect() {
+        let map = room_map::load_udmf_text(
+            "MAP01",
+            &room_testkit::linked_line_portal_rooms(3).textmap(),
+        )
+        .unwrap();
+        let view = AutomapView {
+            center_x: 128.0,
+            center_y: 128.0,
+            allmap: true,
+            fog: false,
+            ..AutomapView::default()
+        };
+        let mut list = UiDrawList::new();
+        draw_automap_ex(&map, &view, &mut list, false);
+        // Room B's east wall (x = 1280) shows 768 units west, at x = 512.
+        let want = project(&view, 512.0, 0.0);
+        let hit = list.cmds.iter().any(|c| match c {
+            DrawCmd::Line { a, b, color, .. } => {
+                *color == COLOR_PORTAL
+                    && [a, b]
+                        .iter()
+                        .any(|p| (p.x - want.x).abs() < 0.5 && (p.y - want.y).abs() < 0.5)
+            }
+            _ => false,
+        });
+        assert!(hit, "room B's wall overlaid next to room A");
     }
 
     #[test]

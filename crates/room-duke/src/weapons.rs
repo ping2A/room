@@ -105,6 +105,17 @@ pub fn apply_pending_weapon(p: &mut Player) -> bool {
     }
 }
 
+/// Switch to an owned weapon slot (as after EDuke32 `EVENT_SELECTWEAPON`
+/// chose it); `false` when the slot is outside Room's weapon table, not
+/// owned, or already current.
+pub fn switch_to_owned_weapon(p: &mut Player, weapon: i16) -> bool {
+    if !p.has_weapon(weapon) || weapon == p.curr_weapon {
+        return false;
+    }
+    switch_weapon(p, weapon);
+    true
+}
+
 fn switch_weapon(p: &mut Player, weapon: i16) {
     p.last_weapon = p.curr_weapon;
     p.curr_weapon = weapon;
@@ -137,11 +148,7 @@ pub fn checkavailweapon(p: &mut Player) -> bool {
         return true;
     }
     let current = p.curr_weapon;
-    if current == KNEE_WEAPON
-        || p.ammo
-            .get(current.max(0) as usize)
-            .is_some_and(|&ammo| ammo > 0)
-    {
+    if current == KNEE_WEAPON || p.weapon_ammo(current) > 0 {
         return false;
     }
 
@@ -187,26 +194,21 @@ pub fn max_ammo_amount(weapon: i16) -> i16 {
 
 /// Chocolate `addammo`.
 pub fn addammo(p: &mut Player, weapon: i16, amount: i16) {
-    let w = weapon as usize;
-    if w >= p.ammo.len() {
+    let Some(max) = p.weapon_max_ammo(weapon) else {
         return;
+    };
+    if let Some(ammo) = p.weapon_ammo_mut(weapon) {
+        *ammo = ammo.saturating_add(amount).min(max);
     }
-    let max = p
-        .max_ammo_amount
-        .get(w)
-        .copied()
-        .unwrap_or_else(|| max_ammo_amount(weapon));
-    p.ammo[w] = p.ammo[w].saturating_add(amount).min(max);
 }
 
 /// Chocolate `addweapon` (demo path always autoswitches).
 pub fn addweapon(p: &mut Player, weapon: i16) {
-    let w = weapon as usize;
-    if w >= p.gotweapon.len() {
+    if p.weapon_max_ammo(weapon).is_none() {
         return;
     }
-    if !p.gotweapon[w] {
-        p.gotweapon[w] = true;
+    if !p.has_weapon(weapon) {
+        p.set_has_weapon(weapon, true);
         if weapon == 6 {
             // SHRINKER also grants GROW
             if p.gotweapon.len() > 11 {
@@ -223,29 +225,22 @@ pub fn addweapon(p: &mut Player, weapon: i16) {
 /// Apply CON `addweapon` (true) or `addammo` (false). Returns `false` when
 /// Chocolate would set `killit_flag = 2` (ammo already full — abort script, keep sprite).
 pub fn con_weapon_op(p: &mut Player, is_addweapon: bool, weapon: i16, ammo: i16) -> bool {
-    let w = weapon as usize;
-    if w >= p.ammo.len() {
+    let Some(max) = p.weapon_max_ammo(weapon) else {
         return true;
-    }
+    };
+    let full = p.weapon_ammo(weapon) >= max;
     if is_addweapon {
-        let had = p.gotweapon[w];
-        if !had {
+        if !p.has_weapon(weapon) {
             addweapon(p, weapon);
-        } else if p.ammo[w] >= p.max_ammo_amount[w] {
+        } else if full {
             return false;
         }
-        addammo(p, weapon, ammo);
-        if p.curr_weapon == KNEE_WEAPON && p.gotweapon[w] {
-            addweapon(p, weapon);
-        }
-    } else {
-        if p.ammo[w] >= p.max_ammo_amount[w] {
-            return false;
-        }
-        addammo(p, weapon, ammo);
-        if p.curr_weapon == KNEE_WEAPON && p.gotweapon[w] {
-            addweapon(p, weapon);
-        }
+    } else if full {
+        return false;
+    }
+    addammo(p, weapon, ammo);
+    if p.curr_weapon == KNEE_WEAPON && p.has_weapon(weapon) {
+        addweapon(p, weapon);
     }
     true
 }

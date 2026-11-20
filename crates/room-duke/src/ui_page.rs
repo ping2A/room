@@ -9,6 +9,9 @@ use room_build_engine::world::{
 };
 
 const BIGALPHANUM: i16 = 2940;
+/// `rotatesprite` orientation bits for translucency and its reversed table.
+const HUD_TRANSLUCENT: i32 = 1;
+const HUD_REVERSE_TRANSLUCENT: i32 = 32;
 const STARTALPHANUM: i16 = 2822;
 const ENDALPHANUM: i16 = 2915;
 const MINIFONT: i16 = 3072;
@@ -44,6 +47,9 @@ impl<'a> UiPage<'a> {
     /// Fill the page with one palette index.
     pub fn clear(&mut self, index: u8) {
         self.frame.pixels.fill(index);
+        if let Some(colors) = self.frame.true_color.as_mut() {
+            colors.fill(0);
+        }
     }
 
     /// Tile width in ART pixels (0 when missing).
@@ -100,7 +106,10 @@ impl<'a> UiPage<'a> {
                 let p = self
                     .tiles
                     .shade_palette(shade, self.tiles.remap_palette(pal, p));
-                self.frame.pixels[(dy * fw + dx) as usize] = p;
+                let index = (dy * fw + dx) as usize;
+                self.frame.pixels[index] = p;
+                self.frame
+                    .set_true_color(index, self.tiles.base_true_color_at(pic, pal, shade, u, v));
             }
         }
     }
@@ -226,16 +235,31 @@ impl<'a> UiPage<'a> {
                 let pixel = self
                     .tiles
                     .shade_palette(shade, self.tiles.remap_palette(palette, pixel));
+                let color = self
+                    .tiles
+                    .base_true_color_at(pic, palette, shade, u as u32, v as u32);
                 let index = (screen_y * fw + screen_x) as usize;
+                let background = self.frame.pixels[index];
                 self.frame.pixels[index] = if no_mask {
                     pixel
                 } else {
-                    self.tiles.composite_hud_pixel(
-                        self.frame.pixels[index],
-                        pixel,
-                        draw.orientation,
-                    )
+                    self.tiles
+                        .composite_hud_pixel(background, pixel, draw.orientation)
                 };
+                // `rotatesprite` translucency (orientation 1, reversed with 32)
+                // blends in true colour too; opaque texels replace the pixel.
+                if !no_mask && draw.orientation & HUD_TRANSLUCENT != 0 {
+                    self.frame.blend_true_color_pixel(
+                        self.tiles,
+                        index,
+                        background,
+                        pixel,
+                        color,
+                        draw.orientation & HUD_REVERSE_TRANSLUCENT != 0,
+                    );
+                } else {
+                    self.frame.set_true_color(index, color);
+                }
             }
         }
     }
@@ -343,144 +367,30 @@ impl<'a> UiPage<'a> {
 
     /// Draw a captured EDuke32 `minitext` quote with its shade and palette.
     pub fn draw_minitext(&mut self, draw: &HudTextDraw) {
-        let mut x = draw.x;
-        let mut palette = draw.palette.clamp(0, i32::from(u8::MAX)) as u8;
-        let shade = draw.shade.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
-        let mut chars = draw.text.bytes().peekable();
-        while let Some(byte) = chars.next() {
-            if byte == b'^' && chars.peek().is_some_and(u8::is_ascii_digit) {
-                let mut color = 0_u16;
-                for _ in 0..3 {
-                    if !chars.peek().is_some_and(u8::is_ascii_digit) {
-                        break;
-                    }
-                    if let Some(digit) = chars.next() {
-                        color = color
-                            .saturating_mul(10)
-                            .saturating_add(u16::from(digit - b'0'));
-                    }
-                }
-                palette = color.min(u16::from(u8::MAX)) as u8;
-                continue;
-            }
-            let byte = byte.to_ascii_uppercase();
-            if byte == b' ' {
-                x += 5;
-                continue;
-            }
-            if (b'!'..=b'~').contains(&byte) {
-                let tile = MINIFONT + i16::from(byte - b'!');
-                self.sprite(x, draw.y, tile, shade, palette, true, false);
-                x += 4;
-            }
-        }
+        // `Menu_Init`: the minifont is uppercased unless all lowercase glyph
+        // tiles (`a`..`z` after the ASCII-order block) are present.
+        let lowercase = (b'a'..=b'z').all(|byte| {
+            self.tiles
+                .dimensions(MINIFONT + i16::from(byte - b'!'))
+                .is_some()
+        });
+        let yline = self.font_line_height(MINIFONT);
+        self.draw_screentext(&minitext_as_screentext(draw, yline, lowercase));
     }
 
     /// Draw EDuke32 `gametext` / `gametextz` using the supplied ASCII-order
     /// font tiles, legacy x coordinate, quote palette escapes and clip window.
     pub fn draw_gametext(&mut self, draw: &HudGameTextDraw) {
-        const FULL16: i32 = 2048;
-        const TOPLEFT: i32 = 16;
-        if draw.zoom == 0 {
-            return;
-        }
-        let Ok(first_tile) = i16::try_from(draw.tile) else {
-            return;
-        };
-        let zoom = f64::from(draw.zoom.unsigned_abs()) / 65536.0;
-        if !zoom.is_finite() || zoom > 4096.0 {
-            return;
-        }
+        let yline = self.font_line_height(STARTALPHANUM);
+        self.draw_screentext(&gametext_as_screentext(draw, yline));
+    }
 
-        let mut palette = draw.palette.clamp(0, i32::from(u8::MAX)) as u8;
-        let mut chars = Vec::new();
-        let mut bytes = draw.text.bytes().peekable();
-        while let Some(byte) = bytes.next() {
-            if byte == b'^' && bytes.peek().is_some_and(u8::is_ascii_digit) {
-                let mut color = 0_u16;
-                for _ in 0..3 {
-                    if !bytes.peek().is_some_and(u8::is_ascii_digit) {
-                        break;
-                    }
-                    if let Some(digit) = bytes.next() {
-                        color = color
-                            .saturating_mul(10)
-                            .saturating_add(u16::from(digit - b'0'));
-                    }
-                }
-                palette = color.min(u16::from(u8::MAX)) as u8;
-                continue;
-            }
-            if byte == b' ' {
-                chars.push((None, 5.0, palette));
-                continue;
-            }
-            if !(b'!'..=b'~').contains(&byte) {
-                break;
-            }
-            let Some(tile) = first_tile.checked_add(i16::from(byte - b'!')) else {
-                break;
-            };
-            let width = if byte.is_ascii_digit() {
-                8.0
-            } else {
-                self.tiles
-                    .dimensions(tile)
-                    .map_or(0.0, |(width, _)| f64::from(width))
-            };
-            chars.push((Some((tile, byte)), width, palette));
-        }
-
-        let text_width = chars.iter().map(|(_, width, _)| width * zoom).sum::<f64>();
-        let full16 = draw.orientation & FULL16 != 0;
-        let coordinate_scale = if full16 { 65536.0 } else { 1.0 };
-        let x = if draw.x == 320 {
-            160.0 - text_width / 2.0
-        } else {
-            f64::from(draw.x / 2)
-        };
-        let y = f64::from(draw.y);
-        let mut left = x;
-        let shade = draw.shade;
-        for (glyph, width, palette) in chars {
-            if let Some((tile, byte)) = glyph {
-                let (tile_width, tile_height) = self
-                    .tiles
-                    .dimensions(tile)
-                    .map_or((width, 8.0), |(tile_width, tile_height)| {
-                        (f64::from(tile_width), f64::from(tile_height))
-                    });
-                let (glyph_x, glyph_y) = if draw.orientation & TOPLEFT != 0 {
-                    (left, y)
-                } else {
-                    (left + tile_width * zoom / 2.0, y + tile_height * zoom / 2.0)
-                };
-                let to_coord = |value: f64| {
-                    (value * coordinate_scale)
-                        .round()
-                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-                };
-                self.rotatesprite(HudSpriteDraw {
-                    x: to_coord(glyph_x),
-                    y: to_coord(glyph_y),
-                    zoom: draw.zoom,
-                    angle: 0,
-                    tile: i32::from(tile),
-                    shade,
-                    palette: i32::from(palette),
-                    orientation: draw.orientation,
-                    clip: draw.clip,
-                    unique_id: 0,
-                });
-                left += if byte.is_ascii_digit() {
-                    8.0 * zoom
-                } else {
-                    width * zoom
-                };
-            } else {
-                left += width * zoom;
-            }
-        }
+    /// EDuke32 sets a menu font's empty-character height to its first glyph
+    /// tile's height (`Menu_Init`), falling back to the static metric.
+    fn font_line_height(&self, first_tile: i16) -> i32 {
+        self.tiles
+            .dimensions(first_tile)
+            .map_or(0, |(_, height)| i32::from(height))
     }
 
     /// Draw EDuke32 `screentext` with the common alignment, ASCII/digit tile,
@@ -779,12 +689,18 @@ impl<'a> UiPage<'a> {
         let block_angle =
             f64::from(draw.block_angle.rem_euclid(2048)) * std::f64::consts::TAU / 2048.0;
         let (block_sin, block_cos) = block_angle.sin_cos();
+        // EDuke32 classic `dorotatesprite`: alpha only applies to a draw that
+        // is not already translucent; above 84 it selects the translucency
+        // table and above 168 the more transparent one (255 is skipped above).
         let mut orientation = draw.orientation;
-        match draw.alpha.clamp(0, 255) {
-            0 => orientation &= !(1 | 32),
-            1..=127 => orientation = (orientation & !32) | 1,
-            128..=254 => orientation |= 1 | 32,
-            _ => return,
+        let alpha = draw.alpha.clamp(0, 255);
+        if orientation & 1 == 0 && alpha > 84 {
+            orientation |= 1;
+            if alpha > 168 {
+                orientation |= 32;
+            } else {
+                orientation &= !32;
+            }
         }
         let character_angle = draw.block_angle.wrapping_add(draw.char_angle);
         let shade = draw.shade;
@@ -997,6 +913,51 @@ mod tests {
     }
 
     #[test]
+    fn gametext_breaks_lines_like_g_screentext() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(1032, 1, 1, vec![55]);
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_gametext(&HudGameTextDraw {
+            tile: 1000,
+            x: 20,
+            y: 10,
+            text: "A\nA".to_owned(),
+            shade: 0,
+            palette: 0,
+            orientation: 16,
+            clip: [0, 0, 319, 199],
+            zoom: 65536,
+        });
+        // Without a loaded STARTALPHANUM tile the blue font's 7-pixel line holds.
+        assert_eq!(frame.pixels[10 * 320 + 10], 55);
+        assert_eq!(frame.pixels[17 * 320 + 10], 55);
+    }
+
+    #[test]
+    fn minitext_uppercases_unless_the_lowercase_minifont_is_loaded() {
+        let upper = MINIFONT + i16::from(b'A' - b'!');
+        let draw = HudTextDraw {
+            x: 5,
+            y: 7,
+            text: "a".to_owned(),
+            shade: 0,
+            palette: 0,
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert(upper, 1, 1, vec![43]);
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_minitext(&draw);
+        assert_eq!(frame.pixels[7 * 320 + 5], 43);
+
+        for byte in b'a'..=b'z' {
+            tiles.insert(MINIFONT + i16::from(byte - b'!'), 1, 1, vec![44]);
+        }
+        let mut frame = SoftFrame::new(320, 200);
+        UiPage::new(&tiles, &mut frame).draw_minitext(&draw);
+        assert_eq!(frame.pixels[7 * 320 + 5], 44);
+    }
+
+    #[test]
     fn digitalnumber_draws_consecutive_digit_tiles_centered_on_x() {
         let mut tiles = SoftTiles::new();
         tiles.insert(500, 1, 1, vec![30]);
@@ -1135,5 +1096,78 @@ mod tests {
         assert_eq!(frame.pixels[1], 91);
         assert_eq!(frame.pixels[2], 92);
         assert_eq!(frame.pixels[6], 93);
+    }
+}
+
+/// EDuke32 CON `gametext` is `G_PrintGameText`: `G_ScreenText` at half the
+/// CON x with the blue font's metrics (5×7 empty character, no extra
+/// spacing), constant-width digits, line breaks and `^` palette escapes,
+/// centered when that x lands on 160, drawn with orientation `2 | o`.
+fn gametext_as_screentext(draw: &HudGameTextDraw, yline: i32) -> HudScreenTextDraw {
+    const FULL16: i32 = 2048;
+    const TEXT_XCENTER: i32 = 2;
+    const TEXT_CONSTWIDTHNUMS: i32 = 1 << 18;
+    const BLUEFONT_EMPTY_WIDTH: i32 = 5;
+    const BLUEFONT_EMPTY_HEIGHT: i32 = 7;
+    let x = draw.x >> 1;
+    let center = if draw.orientation & FULL16 != 0 {
+        x == 160 << 16
+    } else {
+        x == 160
+    };
+    HudScreenTextDraw {
+        tile: draw.tile,
+        x,
+        y: draw.y,
+        zoom: draw.zoom,
+        block_angle: 0,
+        char_angle: 0,
+        text: draw.text.clone(),
+        shade: draw.shade,
+        palette: draw.palette,
+        orientation: draw.orientation | 2,
+        alpha: 0,
+        xspace: BLUEFONT_EMPTY_WIDTH,
+        yline: if yline > 0 {
+            yline
+        } else {
+            BLUEFONT_EMPTY_HEIGHT
+        },
+        xbetween: 0,
+        ybetween: 0,
+        text_flags: TEXT_CONSTWIDTHNUMS | if center { TEXT_XCENTER } else { 0 },
+        clip: draw.clip,
+    }
+}
+
+/// EDuke32 CON `minitext` is `minitext_`: `G_ScreenText` with the minifont
+/// (4×5 empty character, one pixel between glyphs and lines), drawn with
+/// orientation `2 | 8 | 16` at 320×200 coordinates over the whole screen.
+fn minitext_as_screentext(draw: &HudTextDraw, yline: i32, lowercase: bool) -> HudScreenTextDraw {
+    const TEXT_UPPERCASE: i32 = 1 << 13;
+    const MINIFONT_EMPTY_WIDTH: i32 = 4;
+    const MINIFONT_EMPTY_HEIGHT: i32 = 5;
+    HudScreenTextDraw {
+        tile: i32::from(MINIFONT),
+        x: draw.x,
+        y: draw.y,
+        zoom: 65_536,
+        block_angle: 0,
+        char_angle: 0,
+        text: draw.text.clone(),
+        shade: draw.shade,
+        palette: draw.palette,
+        orientation: 2 | 8 | 16,
+        alpha: 0,
+        xspace: MINIFONT_EMPTY_WIDTH,
+        yline: if yline > 0 {
+            yline
+        } else {
+            MINIFONT_EMPTY_HEIGHT
+        },
+        xbetween: 1,
+        ybetween: 1,
+        text_flags: if lowercase { 0 } else { TEXT_UPPERCASE },
+        clip: [0, 0, 319, 199],
     }
 }

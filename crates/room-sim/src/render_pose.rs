@@ -350,3 +350,64 @@ pub fn view_eye(
         .filter(|d| *d > 0.0);
     ((x, y, z), ortho)
 }
+
+/// The frame a model interpolates toward (UZDoom `RenderFrameModels`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelFrameLerp {
+    /// Next state's sprite.
+    pub sprite: String,
+    /// Next state's frame (0 = `A`).
+    pub frame: u8,
+    /// Blend toward it, 0..1.
+    pub inter: f32,
+}
+
+/// UZDoom's model frame interpolation for actor `a`: how far into its state
+/// it is (`frac` = the fraction of the current tic) and which state comes
+/// next. With `doubled` (`MDL_INTERPOLATEDOUBLEDFRAMES`) a frame shown in two
+/// states in a row is blended across both. `None` when nothing to blend.
+#[must_use]
+pub fn model_frame_lerp(
+    world: &crate::world::World,
+    a: &crate::actor::Actor,
+    frac: f64,
+    doubled: bool,
+) -> Option<ModelFrameLerp> {
+    let sid = a.state?;
+    let cur = world.states.get(sid)?;
+    let mut next_id = cur.next?;
+    if next_id == sid || cur.tics <= 0 {
+        return None;
+    }
+    let state_tics = f64::from(cur.tics);
+    let left = f64::from(a.tics);
+    if state_tics < left {
+        return None;
+    }
+    let mut inter = (state_tics - left + frac.clamp(0.0, 1.0)) / state_tics;
+    if doubled {
+        let same = |s: &crate::state::State| s.sprite == cur.sprite && s.frame == cur.frame;
+        if sid.raw() > 0 {
+            let prev = world
+                .states
+                .get(room_core::StateId::from_raw(sid.raw() - 1));
+            if prev.is_some_and(same) {
+                inter = inter / 2.0 + 0.5;
+            }
+        }
+        if world.states.get(next_id).is_some_and(same) {
+            inter /= 2.0;
+            next_id = world.states.get(next_id)?.next?;
+        }
+    }
+    if inter <= 0.0 {
+        return None;
+    }
+    let next = world.states.get(next_id)?;
+    #[allow(clippy::cast_possible_truncation)]
+    Some(ModelFrameLerp {
+        sprite: next.sprite.clone(),
+        frame: next.frame,
+        inter: inter.clamp(0.0, 1.0) as f32,
+    })
+}

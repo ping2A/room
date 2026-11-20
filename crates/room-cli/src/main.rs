@@ -1742,7 +1742,7 @@ fn zscript_wasm(
     }
     if check {
         let mut tiers =
-            room_zvm_wasm::check::Tiers::new(vm.program.clone()).map_err(anyhow::Error::msg)?;
+            room_zvm_wasm::check::Tiers::new((*vm.program).clone()).map_err(anyhow::Error::msg)?;
         tiers
             .call_everything(4, 0x9e37_79b9_7f4a_7c15)
             .map_err(anyhow::Error::msg)?;

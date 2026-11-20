@@ -253,7 +253,8 @@ impl<'a> UdmfLexer<'a> {
 }
 
 /// Per-object custom `user_*` UDMF properties.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct UdmfUserBag {
     /// Integer / bool `user_*` values.
     pub ints: BTreeMap<String, i32>,
@@ -278,6 +279,14 @@ pub struct UdmfUserStore {
     pub sector_ext: Vec<u32>,
     /// Extended thing flags ([`ext`]`::THING_*`), parallel to things.
     pub thing_ext: Vec<u32>,
+}
+
+impl UdmfUserBag {
+    /// No `user_*` fields.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ints.is_empty() && self.fixed.is_empty()
+    }
 }
 
 impl UdmfUserStore {
@@ -327,6 +336,22 @@ pub mod ext {
     pub const SECTOR_HIDDEN: u32 = 32;
     /// Sector `noskywalls`.
     pub const SECTOR_NOSKYWALLS: u32 = 64;
+    /// Sector `portal_floor_blocksound`.
+    pub const SECTOR_PORTAL_FLOOR_BLOCKSOUND: u32 = 128;
+    /// Sector `portal_floor_disabled`.
+    pub const SECTOR_PORTAL_FLOOR_DISABLED: u32 = 256;
+    /// Sector `portal_floor_nopass`.
+    pub const SECTOR_PORTAL_FLOOR_NOPASS: u32 = 512;
+    /// Sector `portal_floor_norender`.
+    pub const SECTOR_PORTAL_FLOOR_NORENDER: u32 = 1024;
+    /// Sector `portal_ceil_blocksound` (the floor bit shifted left by 4).
+    pub const SECTOR_PORTAL_CEIL_BLOCKSOUND: u32 = 2048;
+    /// Sector `portal_ceil_disabled`.
+    pub const SECTOR_PORTAL_CEIL_DISABLED: u32 = 4096;
+    /// Sector `portal_ceil_nopass`.
+    pub const SECTOR_PORTAL_CEIL_NOPASS: u32 = 8192;
+    /// Sector `portal_ceil_norender`.
+    pub const SECTOR_PORTAL_CEIL_NORENDER: u32 = 16384;
     /// Thing `standing` (Strife): stays put.
     pub const THING_STANDING: u32 = 1;
     /// Thing `strifeally`.
@@ -347,50 +372,60 @@ fn ext_bits(fields: &BTreeMap<String, UdmfTok<'_>>, keys: &[(&str, u32)]) -> u32
         .fold(0, |a, (_, b)| a | b)
 }
 
+/// UDMF keys of the extended linedef flags, in [`ext`] bit order.
+pub const LINE_EXT_KEYS: &[(&str, u32)] = &[
+    ("blockuse", ext::LINE_BLOCKUSE),
+    ("passuse", ext::LINE_PASSUSE),
+    ("blocklandmonsters", ext::LINE_BLOCKLANDMONSTERS),
+    ("monsteractivate", ext::LINE_MONSTERACTIVATE),
+    ("jumpover", ext::LINE_JUMPOVER),
+    ("drawfullheight", ext::LINE_DRAWFULLHEIGHT),
+    ("noskywalls", ext::LINE_NOSKYWALLS),
+    ("zoneboundary", ext::LINE_ZONEBOUNDARY),
+];
+
+/// UDMF keys of the extended sector flags (portal plane flags included).
+pub const SECTOR_EXT_KEYS: &[(&str, u32)] = &[
+    ("noattack", ext::SECTOR_NOATTACK),
+    ("norespawn", ext::SECTOR_NORESPAWN),
+    ("hurtmonsters", ext::SECTOR_HURTMONSTERS),
+    ("harminair", ext::SECTOR_HARMINAIR),
+    ("damagehazard", ext::SECTOR_DAMAGEHAZARD),
+    ("hidden", ext::SECTOR_HIDDEN),
+    ("noskywalls", ext::SECTOR_NOSKYWALLS),
+    (
+        "portal_floor_blocksound",
+        ext::SECTOR_PORTAL_FLOOR_BLOCKSOUND,
+    ),
+    ("portal_floor_disabled", ext::SECTOR_PORTAL_FLOOR_DISABLED),
+    ("portal_floor_nopass", ext::SECTOR_PORTAL_FLOOR_NOPASS),
+    ("portal_floor_norender", ext::SECTOR_PORTAL_FLOOR_NORENDER),
+    ("portal_ceil_blocksound", ext::SECTOR_PORTAL_CEIL_BLOCKSOUND),
+    ("portal_ceil_disabled", ext::SECTOR_PORTAL_CEIL_DISABLED),
+    ("portal_ceil_nopass", ext::SECTOR_PORTAL_CEIL_NOPASS),
+    ("portal_ceil_norender", ext::SECTOR_PORTAL_CEIL_NORENDER),
+];
+
+/// UDMF keys of the extended thing flags that are `true` when set
+/// (`coop` / `dm` are inverted into `THING_NOTCOOP` / `THING_NOTDM`).
+pub const THING_EXT_KEYS: &[(&str, u32)] = &[
+    ("standing", ext::THING_STANDING),
+    ("strifeally", ext::THING_STRIFEALLY),
+    ("invisible", ext::THING_INVISIBLE),
+    ("translucent", ext::THING_TRANSLUCENT),
+];
+
 fn line_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
-    use ext::*;
-    ext_bits(
-        fields,
-        &[
-            ("blockuse", LINE_BLOCKUSE),
-            ("passuse", LINE_PASSUSE),
-            ("blocklandmonsters", LINE_BLOCKLANDMONSTERS),
-            ("monsteractivate", LINE_MONSTERACTIVATE),
-            ("jumpover", LINE_JUMPOVER),
-            ("drawfullheight", LINE_DRAWFULLHEIGHT),
-            ("noskywalls", LINE_NOSKYWALLS),
-            ("zoneboundary", LINE_ZONEBOUNDARY),
-        ],
-    )
+    ext_bits(fields, LINE_EXT_KEYS)
 }
 
 fn sector_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
-    use ext::*;
-    ext_bits(
-        fields,
-        &[
-            ("noattack", SECTOR_NOATTACK),
-            ("norespawn", SECTOR_NORESPAWN),
-            ("hurtmonsters", SECTOR_HURTMONSTERS),
-            ("harminair", SECTOR_HARMINAIR),
-            ("damagehazard", SECTOR_DAMAGEHAZARD),
-            ("hidden", SECTOR_HIDDEN),
-            ("noskywalls", SECTOR_NOSKYWALLS),
-        ],
-    )
+    ext_bits(fields, SECTOR_EXT_KEYS)
 }
 
 fn thing_ext_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> u32 {
     use ext::*;
-    let mut v = ext_bits(
-        fields,
-        &[
-            ("standing", THING_STANDING),
-            ("strifeally", THING_STRIFEALLY),
-            ("invisible", THING_INVISIBLE),
-            ("translucent", THING_TRANSLUCENT),
-        ],
-    );
+    let mut v = ext_bits(fields, THING_EXT_KEYS);
     if !bool_field(fields, "coop", true) {
         v |= THING_NOTCOOP;
     }
@@ -441,23 +476,41 @@ pub fn parse_udmf(text: &str) -> Result<UdmfMap, MapError> {
                 let user = collect_user_fields(&fields);
                 match kind.to_ascii_lowercase().as_str() {
                     "thing" => {
-                        map.things.push(thing_from_fields(&fields));
+                        let ext = thing_ext_from_fields(&fields);
+                        map.things.push(RawThing {
+                            ext,
+                            user: user.clone(),
+                            ..thing_from_fields(&fields)
+                        });
                         map.user.things.push(user);
-                        map.user.thing_ext.push(thing_ext_from_fields(&fields));
+                        map.user.thing_ext.push(ext);
                     }
                     "linedef" => {
-                        map.linedefs.push(linedef_from_fields(&fields));
+                        let ext = line_ext_from_fields(&fields);
+                        map.linedefs.push(RawLinedef {
+                            ext,
+                            user: user.clone(),
+                            ..linedef_from_fields(&fields)
+                        });
                         map.user.lines.push(user);
-                        map.user.line_ext.push(line_ext_from_fields(&fields));
+                        map.user.line_ext.push(ext);
                     }
                     "sidedef" => {
-                        map.sidedefs.push(sidedef_from_fields(&fields));
+                        map.sidedefs.push(RawSidedef {
+                            user: user.clone(),
+                            ..sidedef_from_fields(&fields)
+                        });
                         map.user.sides.push(user);
                     }
                     "sector" => {
-                        map.sectors.push(sector_from_fields(&fields));
+                        let ext = sector_ext_from_fields(&fields);
+                        map.sectors.push(RawSector {
+                            ext,
+                            user: user.clone(),
+                            ..sector_from_fields(&fields)
+                        });
                         map.user.sectors.push(user);
-                        map.user.sector_ext.push(sector_ext_from_fields(&fields));
+                        map.user.sector_ext.push(ext);
                     }
                     "vertex" => {
                         let z = |k: &str| match fields.get(k) {
@@ -884,6 +937,8 @@ fn thing_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawThing {
         } else {
             -1.0
         },
+        ext: 0,
+        user: Default::default(),
     }
 }
 
@@ -1026,6 +1081,8 @@ fn linedef_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawLinedef {
             }
             _ => false,
         },
+        ext: 0,
+        user: Default::default(),
     }
 }
 
@@ -1215,6 +1272,7 @@ fn sidedef_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawSidedef {
             .contains_key("alpha")
             .then(|| float_field(fields, "alpha", 1.0) as f32),
         block_rendering: bool_field(fields, "blockrendering", false),
+        user: Default::default(),
     }
 }
 
@@ -1311,6 +1369,8 @@ fn sector_from_fields(fields: &BTreeMap<String, UdmfTok<'_>>) -> RawSector {
         },
         floor_additive: sector_renderstyle_additive(fields),
         ceiling_additive: sector_renderstyle_additive(fields),
+        ext: 0,
+        user: Default::default(),
     }
 }
 

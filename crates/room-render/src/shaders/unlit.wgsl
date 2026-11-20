@@ -120,6 +120,8 @@ struct VsOut {
     @location(5) lm_uv: vec2<f32>,
     @location(6) normal: vec3<f32>,
     @location(7) tangent: vec4<f32>,
+    // Clip-space position again, for screen-space portal sampling.
+    @location(8) ndc: vec4<f32>,
 };
 
 struct FsOutMrt {
@@ -131,6 +133,7 @@ struct FsOutMrt {
 fn vs_main(v: VsIn) -> VsOut {
     var o: VsOut;
     o.clip = view.view_proj * vec4<f32>(v.pos, 1.0);
+    o.ndc = o.clip;
     o.uv = v.uv;
     o.light = v.light;
     o.world_pos = v.pos;
@@ -237,10 +240,18 @@ fn apply_lightmode(sector_light: f32, world_pos: vec3<f32>) -> f32 {
 fn shade(v: VsOut) -> vec4<f32> {
     // All `textureSample` calls must run in uniform control flow (WebGPU / WGSL).
     // Sample before clip/alpha discard and before the clustered-light loop.
-    let texel = textureSample(tex_albedo, samp_albedo, v.uv);
-    let bm = textureSample(tex_bright, samp_albedo, v.uv).rgb;
-    let n_samp = textureSample(tex_normal, samp_albedo, v.uv).xyz;
-    let mr_samp = textureSample(tex_metal_rough, samp_albedo, v.uv);
+    // Portal views (`style.y` 2.0, 2.25 mirrored): the material is the view
+    // drawn from the portal's camera at screen resolution; sample it at
+    // this fragment's screen position.
+    let portal = v.fuzz > 1.9;
+    let ndc = v.ndc.xy / max(abs(v.ndc.w), 1e-6) * sign(v.ndc.w);
+    var suv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    suv.x = select(suv.x, 1.0 - suv.x, v.fuzz > 2.2);
+    let uv = select(v.uv, suv, portal);
+    let texel = textureSample(tex_albedo, samp_albedo, uv);
+    let bm = textureSample(tex_bright, samp_albedo, uv).rgb;
+    let n_samp = textureSample(tex_normal, samp_albedo, uv).xyz;
+    let mr_samp = textureSample(tex_metal_rough, samp_albedo, uv);
     let lm_str = view.lightmap_params.x;
     let lm_fallback = (v.lm_uv.x == 0.0 && v.lm_uv.y == 0.0);
     let lm_uv = select(v.lm_uv, fract(v.world_pos.xy / 256.0), lm_fallback);
@@ -253,6 +264,10 @@ fn shade(v: VsOut) -> vec4<f32> {
         if (s > 1e-3) {
             discard;
         }
+    }
+    if (portal) {
+        // Already lit, fogged and encoded when the view was drawn.
+        return vec4<f32>(texel.rgb, 1.0);
     }
     // Masked midtextures / sprites (`style.y` ≥ 0.45): cut out transparent texels.
     // Solid walls/flats (`style.y` ≈ 0): TEXTUREX holes become opaque black so you

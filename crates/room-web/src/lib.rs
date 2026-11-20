@@ -2401,9 +2401,19 @@ mod browser {
                     ev.prevent_default();
                     return;
                 }
+                if matches!(code.as_str(), "F6" | "F9") && !in_lobby && !typing {
+                    // Net save / load hotkeys, not the browser's.
+                    ev.prevent_default();
+                }
                 if matches!(
                     code.as_str(),
-                    "Space" | "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
+                    "Space"
+                        | "Tab"
+                        | "ArrowUp"
+                        | "ArrowDown"
+                        | "ArrowLeft"
+                        | "ArrowRight"
+                        | "Backspace"
                 ) && !in_lobby
                     && !typing
                 {
@@ -2726,6 +2736,16 @@ mod browser {
     }
 
     fn draw_frame(state: &Shared) {
+        draw_frame_inner(state);
+        // Rollback: the speculative world was only lent for drawing.
+        if let Ok(mut s) = state.try_borrow_mut()
+            && let Mode::Play(play) = &mut s.mode
+        {
+            play.end_rollback_view();
+        }
+    }
+
+    fn draw_frame_inner(state: &Shared) {
         if matches!(state.borrow().mode, Mode::Lobby { .. }) {
             if let Err(e) = promote_lobby_to_play(state) {
                 web_sys::console::error_1(&e);
@@ -2783,6 +2803,8 @@ mod browser {
                 play.last_ms = now;
                 input_hub::drain_into(play);
                 play.tick_play(dt);
+                // Rollback: draw this frame from the copy run ahead.
+                play.begin_rollback_view();
                 // Keep the worklet ring topped up between 35 Hz tics.
                 if let Some(audio) = play.audio.as_ref() {
                     if audio.needs_resume() {
@@ -3424,10 +3446,16 @@ mod browser {
             _ => false,
         };
         s.pass.inverse_colormap = inverse_colormap;
+        // Texture filtering / upscaling CVars reach the play materials.
+        let (aniso, hq) = (s.render_settings.anisotropy, s.render_settings.hq_resize);
+        if let Mode::Play(play) = &mut s.mode {
+            play.materials.anisotropy = aniso;
+            play.materials.set_hq_resize(hq);
+        }
         let mut voxel_uploads = Vec::new();
         let mut particle_uploads = Vec::new();
         let particle_stretch = s.render_settings.particle_fx;
-        let scene: SceneLists = match &mut s.mode {
+        let mut scene: SceneLists = match &mut s.mode {
             Mode::Demo { map, .. } => build_scene_with_sky(map, cam, None, None),
             Mode::Lobby {
                 prepared: Some(play),
@@ -3452,6 +3480,7 @@ mod browser {
                     room_render::apply_dyn_lights(&mut lists);
                 }
                 voxel_uploads = play.append_voxel_poses(&mut lists);
+                play.append_model_poses(&mut lists);
                 play.append_particles(&mut lists, cam, particle_stretch);
                 particle_uploads = play.particle_texture_uploads();
                 lists
@@ -3512,8 +3541,32 @@ mod browser {
             _ => None,
         };
         {
-            let FrameState { gpu, pass, .. } = &mut *s;
+            let FrameState {
+                gpu,
+                pass,
+                mode,
+                config,
+                ..
+            } = &mut *s;
             pass.time += 1.0 / 60.0;
+            if use_materials
+                && !scene.portal_views.is_empty()
+                && let Mode::Play(play) = mode
+            {
+                let size = match rect {
+                    Some([_, _, w, h]) => (w as u32, h as u32),
+                    None => (config.width, config.height),
+                };
+                play.render_portal_views(
+                    gpu,
+                    pass,
+                    cam,
+                    &mut scene,
+                    sprites.as_slice(),
+                    size,
+                    particle_stretch,
+                );
+            }
             pass.prepare(gpu, cam, &scene);
         }
 
@@ -4191,6 +4244,21 @@ mod browser {
                 _ => "null".into(),
             }
         })
+    }
+
+    /// Settings → Network → Rollback: run the game up to `window` tics
+    /// ahead of the confirmed online game with guessed input for the other
+    /// players (`0` = off, max 16). Takes effect at once.
+    #[wasm_bindgen(js_name = roomSetRollback)]
+    pub fn room_set_rollback(window: u32) {
+        crate::play::ROLLBACK_WINDOW.with(|c| c.set(window.min(16)));
+    }
+
+    /// Settings → Network → Prediction: draw your own movement ahead of the
+    /// server (on by default; `?predict=0` turns it off for one visit).
+    #[wasm_bindgen(js_name = roomSetPredict)]
+    pub fn room_set_predict(on: bool) {
+        crate::play::PREDICT_SETTING.with(|c| c.set(Some(on)));
     }
 
     /// The page draws in-game messages (as toasts) and the Tab stats

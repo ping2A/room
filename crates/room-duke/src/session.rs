@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 use crate::con::{
-    ActorConTemps, ConDialect, EdActorMember, EdExecution, EdItemSprayKind, EdSoundMode,
-    EdSpriteListKind, EdStructKind, EdukeStructAccess, EdukeVmError, EdukeVmState, ScriptImage,
+    ActorConTemps, ConDialect, EdActorMember, EdExecution, EdExecutions, EdItemSprayKind,
+    EdSoundMode, EdSpriteListKind, EdStructKind, EdukeStructAccess, EdukeVmError, EdukeVmState,
+    ScriptImage,
 };
 use crate::effectors::{
     init_true_drop_planes, init_warp_elevator_effectors, move_cascade_effectors,
@@ -26,9 +27,10 @@ use crate::explosions::moveexplosions;
 use crate::fta::movefta;
 use crate::moveplayers::{moveplayers, process_player_deaths};
 use crate::player::{
-    DUKE_FRICTION, DUKE_GC, DukeInput, INPUT_FIRE, INPUT_INVENTORY_LEFT, INPUT_INVENTORY_RIGHT,
-    INPUT_INVENTORY_USE, INPUT_OPEN, PHEIGHT, Player, TileZMeta, check_available_inventory,
-    cycle_inventory, processinput_move_with_lists_clipping_eduke, sync_player_sprite,
+    DUKE_FRICTION, DUKE_GC, DukeInput, EXTRA_WEAPON, INPUT_FIRE, INPUT_INVENTORY_LEFT,
+    INPUT_INVENTORY_RIGHT, INPUT_INVENTORY_USE, INPUT_OPEN, INPUT_TURNAROUND, PHEIGHT, Player,
+    TileZMeta, check_available_inventory, cycle_inventory,
+    processinput_move_with_lists_clipping_eduke, sync_player_sprite,
 };
 use crate::prelevel::{ShadeCycler, prelevel_sprites_with_state};
 use crate::shoot::{
@@ -44,7 +46,9 @@ use crate::spawn::{
 use crate::stat::STAT_ACTOR;
 use crate::transports::movetransports;
 use crate::wall_animations::{AnimWall, animate_walls, init_animated_walls, restore_anim_walls};
-use crate::weapons::{apply_pending_weapon, apply_weapon_input};
+use crate::weapons::{
+    INPUT_WEAPON_MASK, INPUT_WEAPON_SHIFT, apply_pending_weapon, apply_weapon_input,
+};
 use crate::weapons_move::moveweapons;
 
 /// One bounded `EVENT_ANIMATESPRITES` pass across every opted-in sprite.
@@ -452,6 +456,9 @@ struct DukeUserDefState {
     /// `windowx*` / `windowy*` predefined gamevars.
     #[serde(skip)]
     window_bounds: [i32; 4],
+    /// Render-only `hudweap` values set before `EVENT_DISPLAYWEAPON` (ED8).
+    #[serde(skip)]
+    hud_weapon: crate::weapon_view::HudWeaponVars,
 }
 
 impl Default for DukeUserDefState {
@@ -470,6 +477,7 @@ impl Default for DukeUserDefState {
             respawn_items: 0,
             respawn_inventory: 0,
             window_bounds: [0, 0, 319, 199],
+            hud_weapon: crate::weapon_view::HudWeaponVars::default(),
         }
     }
 }
@@ -2879,6 +2887,10 @@ pub const DEMO1_PAD_PRE_EXPLODE: &[u32] = &[
     0, // tic1109
 ];
 
+/// `alpha / 255 >= 1/3` and `>= 2/3` in EDuke32's single-precision math.
+const SPRITE_EXT_ALPHA_TRANSLUCENT: u8 = 85;
+const SPRITE_EXT_ALPHA_MORE_TRANSPARENT: u8 = 170;
+
 pub struct DukeSession {
     pub tic: u32,
     pub randomseed: i32,
@@ -2897,6 +2909,11 @@ pub struct DukeSession {
     /// Extra `krand`s immediately before `moveexplosions` (tests — mid-tic TRAND gaps).
     pub pad_pre_explode_override: Option<u32>,
     pub lists: SpriteLists,
+    /// While the per-sprite EDuke32 event loop runs, hooks that return without
+    /// spawns, kills or errors leave `lists` behind `world.lists` (ED9).
+    defer_event_lists_sync: bool,
+    /// `lists` is behind `world.lists` until [`Self::flush_event_lists`].
+    event_lists_stale: bool,
     /// Chocolate's 64-entry FIFO used to retire old footprints and blood pools.
     decal_queue: crate::decal_queue::DukeDecalQueue,
     pub script: Option<ScriptImage>,
@@ -2952,6 +2969,9 @@ pub struct DukeSession {
     /// Sound ids queued by deterministic gameplay actions; presentation drains
     /// these after each tic and resolves them through the GRP's CON sound table.
     pending_sound_ids: Vec<u16>,
+    /// `(player sprite, weapon)` for each shot the native weapon tick fired
+    /// this tic, for EDuke32 EVENT_DOFIRE / PRE- / POSTWEAPONSHOOT.
+    pending_eduke_shots: Vec<(i16, i16)>,
     /// Actor-origin sounds collected from CON `spritesound` actions.
     pending_actor_sound_events: Vec<DukeSoundEvent>,
     /// Audio snapshot of `SoundOwner[id][0]`, indexed by Atomic sound ID.
@@ -2974,6 +2994,85 @@ pub struct DukeSession {
     /// Runtime errors from automatically dispatched EDuke32 tick events.
     pending_eduke_runtime_errors: Vec<String>,
 }
+
+/// A player's EDuke32 weapon definition (`WEAPON{n}_*` gamevars).
+#[derive(Clone, Copy, Debug, Default)]
+struct EdukeWeaponConfig {
+    works_like: i32,
+    flags: i32,
+    clip: i32,
+    reload: i32,
+    fire_delay: i32,
+    total_time: i32,
+    hold_delay: i32,
+    shoots: i32,
+    spawn_time: i32,
+    spawn: i32,
+    shots_per_burst: i32,
+    initial_sound: i32,
+    fire_sound: i32,
+    sound2_time: i32,
+    sound2_sound: i32,
+    reload_sound1: i32,
+    reload_sound2: i32,
+}
+
+/// Whether an EDuke32 session fires the player's current weapon through
+/// the configurable `WEAPONn_*` path ([`DukeSession::run_eduke_configurable_weapons`])
+/// instead of Room's native weapon code: weapons that work like the pistol,
+/// shotgun, chaingun, RPG, shrinker, devastator, freezer, grower or
+/// flamethrower (and Room's extra slot 12). The knee, hand bomb, trip bomb
+/// and remote keep their native code; Atomic sessions always do.
+fn eduke_configurable_weapon(
+    script: Option<&ScriptImage>,
+    vm: Option<&EdukeVmState>,
+    seat: usize,
+    player: &Player,
+) -> bool {
+    if !script.is_some_and(|image| image.dialect == ConDialect::EDuke32) {
+        return false;
+    }
+    let Some(vm) = vm else {
+        return false;
+    };
+    let weapon = player.curr_weapon;
+    if !(0..=EXTRA_WEAPON).contains(&weapon) {
+        return false;
+    }
+    let seat_actor = usize::try_from(player.sprite_i).unwrap_or(0);
+    let works_like = vm
+        .get_variable(eduke_weapon_variable(weapon, "WORKSLIKE"), seat, seat_actor)
+        .unwrap_or(i32::from(weapon));
+    matches!(works_like, 1 | 2 | 3 | 4 | 6 | 7 | 9 | 11 | 12)
+}
+
+/// The `WEAPON{weapon}_{property}` gamevar name, built once per pair.
+fn eduke_weapon_variable(weapon: i16, property: &'static str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<HashMap<(i16, &'static str), &'static str>>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut names = names
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    names
+        .entry((weapon, property))
+        .or_insert_with(|| Box::leak(format!("WEAPON{weapon}_{property}").into_boxed_str()))
+}
+
+// EDuke32 `WEAPON_*` flags (player.h).
+const EDUKE_WEAPON_AUTOMATIC: i32 = 0x4;
+const EDUKE_WEAPON_FIREEVERYOTHER: i32 = 0x8;
+const EDUKE_WEAPON_FIREEVERYTHIRD: i32 = 0x10;
+const EDUKE_WEAPON_RANDOMRESTART: i32 = 0x20;
+const EDUKE_WEAPON_AMMOPERSHOT: i32 = 0x40;
+const EDUKE_WEAPON_NOVISIBLE: i32 = 0x100;
+const EDUKE_WEAPON_CHECKATRELOAD: i32 = 0x400;
+const EDUKE_WEAPON_STANDSTILL: i32 = 0x800;
+const EDUKE_WEAPON_SPAWNTYPE3: i32 = 0x2000;
+const EDUKE_WEAPON_SEMIAUTO: i32 = 0x4000;
+const EDUKE_WEAPON_RELOAD_TIMING: i32 = 0x8000;
+const EDUKE_WEAPON_RESET: i32 = 0x10000;
 
 struct DukeSessionStructAccess<'a> {
     world: &'a mut BuildWorld,
@@ -2998,6 +3097,77 @@ struct DukeSessionStructAccess<'a> {
 }
 
 impl DukeSessionStructAccess<'_> {
+    /// Native enemy shot for a hardcoded weapon tile; `None` when `parent`
+    /// is a player or the tile is not one of the hardcoded enemy weapons.
+    /// Returns the first sprite the shot allocated, or `-1`.
+    /// EDuke32 `Proj_MaybeAddSpread`: `zvel += zRange/2 - krand % zRange`,
+    /// then `ang += angRange/2 - krand % angRange`.
+    fn add_hitscan_spread(&mut self, index: usize, z_range: i32, angle_range: i32) {
+        let Some(sprite) = self.world.sprites.get(index).copied() else {
+            return;
+        };
+        let mut zvel = i32::from(sprite.zvel);
+        let mut angle = i32::from(sprite.ang);
+        if z_range > 0 {
+            zvel += (z_range >> 1) - krand_step(self.randomseed) % z_range;
+        }
+        if angle_range > 0 {
+            angle += (angle_range >> 1) - krand_step(self.randomseed) % angle_range;
+        }
+        let sprite = &mut self.world.sprites[index];
+        sprite.zvel = zvel.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        sprite.ang = (angle & 2047) as i16;
+    }
+
+    fn shoot_hardcoded_enemy(&mut self, parent: i32, tile: i32) -> Option<i32> {
+        let shooter = i16::try_from(parent).ok().filter(|&id| id >= 0)?;
+        let atwith = i16::try_from(tile).ok()?;
+        let is_player = std::iter::once(&*self.player)
+            .chain(self.coop_players.iter())
+            .any(|player| player.sprite_i == shooter);
+        if is_player {
+            return None;
+        }
+        let mut players = Vec::with_capacity(1 + self.coop_players.len());
+        players.push(self.player.clone());
+        players.extend(self.coop_players.iter().cloned());
+        let free_head = self.world.lists.headspritestat.get(MAXSTATUS).copied();
+        let numsectors = usize::try_from(self.world.numsectors)
+            .unwrap_or(0)
+            .min(self.world.sectors.len());
+        let numwalls = usize::try_from(self.world.numwalls)
+            .unwrap_or(0)
+            .min(self.world.walls.len());
+        let world = &mut *self.world;
+        let handled = crate::shoot::shoot_enemy(
+            &mut world.lists,
+            world.sprites.as_mut(),
+            &mut world.sectors[..numsectors],
+            &mut world.walls[..numwalls],
+            self.picnum,
+            self.actor_temps,
+            self.tile_meta,
+            self.script,
+            &players,
+            self.randomseed,
+            shooter,
+            atwith,
+        );
+        if !handled {
+            return None;
+        }
+        Some(
+            free_head
+                .filter(|&head| {
+                    usize::try_from(head)
+                        .ok()
+                        .and_then(|index| self.world.lists.sprite_stat.get(index))
+                        .is_some_and(|&stat| stat != MAXSTATUS as i16)
+                })
+                .map_or(-1, i32::from),
+        )
+    }
+
     fn actor_fire_ray(
         &mut self,
         actor: SpriteT,
@@ -3342,13 +3512,18 @@ impl DukeSessionStructAccess<'_> {
                     kind: EdStructKind::Actor,
                     id: -1,
                 })?;
+                // EDuke32 has ten `t_data` slots; 6–9 live beside Atomic's six.
                 let slot = Self::checked_member_index(
                     EdStructKind::Actor,
                     member,
                     member_index,
-                    temps.g_t.len(),
+                    temps.g_t.len() + temps.t_data_extra.len(),
                 )?;
-                temps.g_t[slot]
+                temps
+                    .g_t
+                    .get(slot)
+                    .copied()
+                    .unwrap_or_else(|| temps.t_data_extra[slot - temps.g_t.len()])
             }
             "htactorstayput" => i32::from(
                 temps
@@ -3556,10 +3731,13 @@ impl DukeSessionStructAccess<'_> {
                     .sprite_blend = value;
             }
             "alpha" => {
+                // EDuke32 stores `value / 255` as a float without a range
+                // check; above 255 the sprite is fully transparent, so clamp
+                // into the byte Room keeps (read-back differs above 255).
                 temps
                     .ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?
                     .sprite_ext
-                    .alpha = Self::narrow(kind, member, value)?;
+                    .alpha = u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX);
             }
             "angoff" => {
                 temps
@@ -3617,8 +3795,16 @@ impl DukeSessionStructAccess<'_> {
             }
             "t_data" | "htg_t" | "g_t" => {
                 let temps = temps.ok_or(EdukeVmError::InvalidStructId { kind, id: -1 })?;
-                let slot = Self::checked_member_index(kind, member, member_index, temps.g_t.len())?;
-                temps.g_t[slot] = value;
+                let slot = Self::checked_member_index(
+                    kind,
+                    member,
+                    member_index,
+                    temps.g_t.len() + temps.t_data_extra.len(),
+                )?;
+                match temps.g_t.get_mut(slot) {
+                    Some(entry) => *entry = value,
+                    None => temps.t_data_extra[slot - temps.g_t.len()] = value,
+                }
             }
             "htactorstayput" => {
                 temps
@@ -3861,6 +4047,7 @@ impl DukeSessionStructAccess<'_> {
             "rotscrnang" => i32::from(player.rotscrnang),
             "orotscrnang" => i32::from(player.previous_rotscrnang),
             "pyoff" => player.pyoff,
+            "visibility" => player.visibility,
             "opyoff" => player.previous_pyoff,
             "pycount" => i32::from(player.pycount),
             "cursectnum" => i32::from(player.cursectnum),
@@ -3925,6 +4112,15 @@ impl DukeSessionStructAccess<'_> {
             "god_mode" => i32::from(player.god_mode),
             "heat_on" => i32::from(player.heat_on),
             "holoduke_on" => i32::from(player.holoduke_on),
+            "ammo" | "ammo_amount" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                i32::from(player.extra_weapon_ammo)
+            }
+            "gotweapon" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                i32::from(player.extra_weapon_got)
+            }
+            "max_ammo_amount" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                i32::from(player.extra_weapon_max_ammo)
+            }
             "ammo" | "ammo_amount" => {
                 let slot =
                     Self::checked_member_index(kind, member, member_index, player.ammo.len())?;
@@ -4025,6 +4221,7 @@ impl DukeSessionStructAccess<'_> {
                 player.previous_rotscrnang = Self::narrow(kind, member, value)?;
             }
             "pyoff" => player.pyoff = value,
+            "visibility" => player.visibility = value,
             "opyoff" => player.previous_pyoff = value,
             "pycount" => player.pycount = Self::narrow(kind, member, value)?,
             "cursectnum" => player.cursectnum = Self::narrow(kind, member, value)?,
@@ -4089,8 +4286,23 @@ impl DukeSessionStructAccess<'_> {
             "spritebridge" => player.sprite_bridge = value != 0,
             "sbs" => player.bridge_sprite = Self::narrow(kind, member, value)?,
             "god_mode" => player.god_mode = value != 0,
-            "heat_on" => player.heat_on = value != 0,
+            "heat_on" => {
+                // EDuke32 `PLAYER_HEAT_ON` runs `P_UpdateScreenPal` on change.
+                if player.heat_on != (value != 0) {
+                    player.game_palette = 0;
+                }
+                player.heat_on = value != 0;
+            }
             "holoduke_on" => player.holoduke_on = Self::narrow(kind, member, value)?,
+            "ammo" | "ammo_amount" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                player.extra_weapon_ammo = Self::narrow(kind, member, value)?;
+            }
+            "gotweapon" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                player.extra_weapon_got = value != 0;
+            }
+            "max_ammo_amount" if member_index == Some(i32::from(EXTRA_WEAPON)) => {
+                player.extra_weapon_max_ammo = Self::narrow(kind, member, value)?;
+            }
             "ammo" | "ammo_amount" => {
                 let slot =
                     Self::checked_member_index(kind, member, member_index, player.ammo.len())?;
@@ -4262,6 +4474,9 @@ fn eduke_projectile_default(
         "spawns" => eduke_script_constant(script, "SMALLSMOKE").unwrap_or(0),
         "bsound" => eduke_script_constant(script, "PIPEBOMB_BOUNCE").unwrap_or(0),
         "extra_rand" => 5,
+        // EDuke32 `C_InitProjectiles`: a defined projectile's shade (the
+        // shooter's muzzle-flash shade) starts at -96.
+        "shade" => -96,
         "tnum" => {
             let has_trail = definitions
                 .get(&tile)
@@ -5084,7 +5299,34 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
     }
 
     fn request_player_restart(&mut self, player: usize) -> Result<bool, EdukeVmError> {
-        Ok(player == 0 && self.coop_players.is_empty())
+        // EDuke32 `VM_ResetPlayer`: a single-player game restarts the map
+        // (and stops the script); in multiplayer the player respawns like
+        // after a death, through the same queued respawn as Atomic's CON
+        // `resetplayer`, and the script carries on.
+        if self.coop_players.is_empty() {
+            return Ok(player == 0);
+        }
+        let seat = if player == 0 {
+            Some(&*self.player)
+        } else {
+            self.coop_players.get(player - 1)
+        }
+        .ok_or(EdukeVmError::InvalidStructId {
+            kind: EdStructKind::Player,
+            id: i32::try_from(player).unwrap_or(i32::MAX),
+        })?;
+        let coop = seat.coop_mode;
+        let Ok(body) = usize::try_from(seat.sprite_i) else {
+            return Ok(false);
+        };
+        let roll = if coop { 0 } else { krand_step(self.randomseed) };
+        if self.actor_temps.len() <= body {
+            self.actor_temps
+                .resize_with(body + 1, ActorConTemps::default);
+        }
+        self.actor_temps[body].pending_player_respawn =
+            Some((u8::try_from(player).unwrap_or(u8::MAX), coop, roll));
+        Ok(false)
     }
 
     fn spawn_item_spray(
@@ -5389,7 +5631,8 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         member: &str,
         member_index: Option<i32>,
     ) -> Result<i32, EdukeVmError> {
-        let member_key = member.to_ascii_lowercase();
+        let member_key_lower = LowerKey::new(member);
+        let member_key = member_key_lower.as_str();
         match kind {
             EdStructKind::Actor => {
                 let index = Self::checked_id(kind, id, MAXSPRITES)?;
@@ -5397,7 +5640,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .world
                     .sprites
                     .get(index)
-                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                    .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?;
                 Self::read_actor(
                     sprite,
                     self.actor_temps.get(index),
@@ -5408,7 +5651,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
             EdStructKind::ThisProjectile => {
                 let index = Self::checked_id(kind, id, MAXSPRITES)?;
                 let temps = self.actor_temps.get(index);
-                Ok(match member_key.as_str() {
+                Ok(match member_key {
                     "bounces" => self
                         .world
                         .sprites
@@ -5441,7 +5684,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 Ok(self
                     .projectile_defs
                     .get(&id)
-                    .and_then(|definition| definition.get(&member_key))
+                    .and_then(|definition| definition.get(member_key))
                     .copied()
                     .unwrap_or_else(|| {
                         eduke_projectile_default(self.script, self.projectile_defs, id, &member_key)
@@ -5467,7 +5710,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .world
                     .sectors
                     .get(index)
-                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                    .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?;
                 Self::read_sector(sector, &member_key)
             }
             EdStructKind::Wall => {
@@ -5479,7 +5722,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .world
                     .walls
                     .get(index)
-                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                    .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?;
                 Self::read_wall(wall, &member_key)
             }
             EdStructKind::Player => {
@@ -5490,8 +5733,11 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 } else {
                     self.coop_players
                         .get(index - 1)
-                        .ok_or(EdukeVmError::InvalidStructId { kind, id })?
+                        .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?
                 };
+                if member_key == "palette" {
+                    return Ok(effective_game_palette(player, &self.world.sectors));
+                }
                 Self::read_player(player, &member_key, member_index)
             }
             EdStructKind::Input => {
@@ -5499,8 +5745,8 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 let input = self
                     .inputs
                     .get(index)
-                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
-                Ok(match member_key.as_str() {
+                    .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?;
+                Ok(match member_key {
                     "fvel" => i32::from(input.fvel),
                     "svel" => i32::from(input.svel),
                     "avel" => i32::from(input.avel),
@@ -5514,11 +5760,11 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 let meta = self
                     .tile_meta
                     .get(index)
-                    .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
+                    .ok_or_else(|| EdukeVmError::InvalidStructId { kind, id })?;
                 Self::tile_data_value(meta, &member_key)
                     .ok_or_else(|| Self::unknown_member(kind, &member_key))
             }
-            EdStructKind::UserDef => Ok(match member_key.as_str() {
+            EdStructKind::UserDef => Ok(match member_key {
                 "vm_sprite" => self.userdef.vm_sprite,
                 "player_skill" => i32::from(*self.skill),
                 "multimode" => {
@@ -5557,7 +5803,8 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         member_index: Option<i32>,
         value: i32,
     ) -> Result<(), EdukeVmError> {
-        let member_key = member.to_ascii_lowercase();
+        let member_key_lower = LowerKey::new(member);
+        let member_key = member_key_lower.as_str();
         match kind {
             EdStructKind::Actor => {
                 let index = Self::checked_id(kind, id, MAXSPRITES)?;
@@ -5612,7 +5859,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .actor_temps
                     .get_mut(index)
                     .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
-                match member_key.as_str() {
+                match member_key {
                     "workslike" => temps.projectile_workslike = value,
                     "bsound" => temps.projectile_bsound = value,
                     "drop" => temps.projectile_drop = value,
@@ -5641,7 +5888,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 self.projectile_defs
                     .entry(id)
                     .or_default()
-                    .insert(member_key, value);
+                    .insert(member_key.to_owned(), value);
                 Ok(())
             }
             EdStructKind::Tspr => {
@@ -5696,7 +5943,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .inputs
                     .get_mut(index)
                     .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
-                match member_key.as_str() {
+                match member_key {
                     "fvel" => input.fvel = Self::narrow(kind, &member_key, value)?,
                     "svel" => input.svel = Self::narrow(kind, &member_key, value)?,
                     "avel" => input.avel = Self::narrow(kind, &member_key, value)?,
@@ -5714,7 +5961,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .ok_or(EdukeVmError::InvalidStructId { kind, id })?;
                 Self::write_tile_data(meta, &member_key, value)
             }
-            EdStructKind::UserDef => match member_key.as_str() {
+            EdStructKind::UserDef => match member_key {
                 "vm_sprite" => {
                     Self::checked_id(kind, value, MAXSPRITES)?;
                     self.userdef.vm_sprite = value;
@@ -5734,7 +5981,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 }
                 "coop" => Err(EdukeVmError::StructMemberValueOutOfRange {
                     kind,
-                    member: member_key,
+                    member: member_key.to_owned(),
                     value,
                 }),
                 "ffire" => {
@@ -5756,7 +6003,7 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 }
                 "player_skill" => Err(EdukeVmError::StructMemberValueOutOfRange {
                     kind,
-                    member: member_key,
+                    member: member_key.to_owned(),
                     value,
                 }),
                 "drawweapon" => {
@@ -6123,7 +6370,9 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         }
         let index = Self::checked_id(EdStructKind::Actor, actor, MAXSPRITES)?;
         self.actor_temps_mut(actor)?;
-        let peers = self.world.sprites.clone();
+        // The faller is a copy, so the untouched array is the peer snapshot
+        // (ED9: this cloned every sprite per CON `fall`).
+        let peers = &self.world.sprites;
         let mut sprite = peers
             .get(index)
             .copied()
@@ -6331,6 +6580,10 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         std::mem::take(self.spawned_actor_ids)
     }
 
+    fn has_spawned_actor_ids(&self) -> bool {
+        !self.spawned_actor_ids.is_empty()
+    }
+
     fn predefined_variable(&mut self, name: &str) -> Option<i32> {
         match name {
             "numsectors" | "NUMSECTORS" => Some(i32::from(self.world.numsectors)),
@@ -6353,6 +6606,13 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                 )
                 .unwrap_or(i32::MAX),
             ),
+            "weapon_xoffset" => Some(self.userdef.hud_weapon.gunposx),
+            "gun_pos" => Some(self.userdef.hud_weapon.gunposy),
+            "looking_arc" => Some(self.userdef.hud_weapon.lookhoriz),
+            "looking_angSR1" => Some(self.userdef.hud_weapon.lookhalfang),
+            "gs" => Some(self.userdef.hud_weapon.shade),
+            "currentweapon" => Some(self.userdef.hud_weapon.cur),
+            "weaponcount" => Some(self.userdef.hud_weapon.count),
             "windowx1" => Some(self.userdef.window_bounds[0]),
             "windowy1" => Some(self.userdef.window_bounds[1]),
             "windowx2" => Some(self.userdef.window_bounds[2]),
@@ -7516,6 +7776,17 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         tile: i32,
         vertical_velocity: Option<i32>,
     ) -> Result<i32, EdukeVmError> {
+        // EDuke32 `A_Shoot` sends tiles without `defineprojectile` to the
+        // hardcoded shooter (`A_ShootHardcoded`): an enemy's FIRELASER, SPIT,
+        // SHOTSPARK1 and the like fly as STAT_PROJECTILE beams or hitscans
+        // rather than spawning as actors. `zshoot`'s explicit vertical speed
+        // has no native override yet, so it keeps the spawn path below.
+        if vertical_velocity.is_none()
+            && !self.projectile_defs.contains_key(&tile)
+            && let Some(shot) = self.shoot_hardcoded_enemy(parent, tile)
+        {
+            return Ok(shot);
+        }
         let projectile = self.projectile_defs.get(&tile).cloned();
         let workslike = projectile
             .as_ref()
@@ -7595,6 +7866,61 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
         } else {
             None
         };
+        if workslike & crate::shoot::PROJECTILE_FLAG_BLOOD != 0
+            && workslike
+                & (crate::shoot::PROJECTILE_FLAG_HITSCAN
+                    | crate::shoot::PROJECTILE_FLAG_RPG
+                    | crate::shoot::PROJECTILE_FLAG_KNEE)
+                == 0
+        {
+            // EDuke32 `PROJECTILE_BLOOD`: Atomic's random wall blood splat,
+            // with the definition's decal (or its own tile) as the splat.
+            let splat = projectile
+                .as_ref()
+                .and_then(|properties| properties.get("decal"))
+                .copied()
+                .filter(|decal| *decal >= 0)
+                .unwrap_or(tile);
+            if let (Ok(shooter), Ok(splat)) = (i16::try_from(parent), i16::try_from(splat)) {
+                let numsectors = usize::try_from(self.world.numsectors)
+                    .unwrap_or(0)
+                    .min(self.world.sectors.len());
+                let numwalls = usize::try_from(self.world.numwalls)
+                    .unwrap_or(0)
+                    .min(self.world.walls.len());
+                let world = &mut *self.world;
+                crate::shoot::shoot_bloodsplat_enemy(
+                    &mut world.lists,
+                    world.sprites.as_mut(),
+                    &world.sectors[..numsectors],
+                    &world.walls[..numwalls],
+                    self.picnum,
+                    self.actor_temps,
+                    self.tile_meta,
+                    Some(self.script),
+                    self.randomseed,
+                    shooter,
+                    splat,
+                );
+            }
+            return Ok(-1);
+        }
+        // EDuke32: firing a defined projectile lights the shooter with
+        // `PROJ_SHADE` unless PROJECTILE_NOSETOWNERSHADE.
+        if projectile.is_some()
+            && workslike & crate::shoot::PROJECTILE_FLAG_NOSETOWNERSHADE == 0
+            && let Some(shooter) = usize::try_from(parent)
+                .ok()
+                .and_then(|index| self.world.sprites.get_mut(index))
+            && shooter.extra >= 0
+        {
+            let shade = projectile
+                .as_ref()
+                .and_then(|properties| properties.get("shade"))
+                .copied()
+                .unwrap_or(-96);
+            shooter.shade = shade.clamp(-128, 127) as i8;
+        }
         let child = self.spawn_actor(parent, tile)?;
         let Ok(index) = usize::try_from(child) else {
             return Ok(child);
@@ -7636,9 +7962,10 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
             if let Some(&cstat) = properties.get("cstat") {
                 actor.cstat = Self::narrow(EdStructKind::Actor, "cstat", cstat)?;
             }
-            if let Some(&shade) = properties.get("shade") {
-                actor.shade = Self::narrow(EdStructKind::Actor, "shade", shade)?;
-            }
+            // EDuke32 `A_ShootCustom` inserts the projectile at shade 0;
+            // `PROJ_SHADE` (default -96) is the shooter's muzzle-flash shade
+            // instead (below).
+            actor.shade = 0;
             if let Some(&palette) = properties.get("pal") {
                 actor.pal = Self::narrow(EdStructKind::Actor, "pal", palette)?;
             }
@@ -7737,6 +8064,15 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                             .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
                             as i16;
                 }
+                // EDuke32 `P_PreFireHitscan`: a player's hitscan spreads by
+                // 256 Z / 32 angle units, except PROJECTILE_ACCURATE, or
+                // PROJECTILE_ACCURATE_AUTOAIM when auto-aim found a target.
+                let accurate = workslike & crate::shoot::PROJECTILE_FLAG_ACCURATE != 0
+                    || (workslike & crate::shoot::PROJECTILE_FLAG_ACCURATE_AUTOAIM != 0
+                        && aimed_solution.is_some());
+                if vertical_velocity.is_none() && !accurate {
+                    self.add_hitscan_spread(index, 256, 32);
+                }
             } else {
                 let height = self
                     .tile_meta
@@ -7746,6 +8082,40 @@ impl EdukeStructAccess for DukeSessionStructAccess<'_> {
                     .z
                     .wrapping_sub((i32::from(source.yrepeat) * height) << 1)
                     .wrapping_sub(3 << 8);
+                // EDuke32 `A_PreFireHitscan`: an actor's hitscan aims its Z at
+                // the closest player, then spreads by 256 Z / 64 angle units
+                // (BOSS1 128) unless PROJECTILE_ACCURATE.
+                if vertical_velocity.is_none() {
+                    let target = std::iter::once(&*self.player)
+                        .chain(self.coop_players.iter())
+                        .min_by_key(|player| {
+                            (i64::from(player.posx) - i64::from(source.x)).abs()
+                                + (i64::from(player.posy) - i64::from(source.y)).abs()
+                        })
+                        .cloned();
+                    if let Some(target) = target {
+                        let distance = (i64::from(target.posx) - i64::from(source.x))
+                            .abs()
+                            .saturating_add((i64::from(target.posy) - i64::from(source.y)).abs())
+                            .max(1);
+                        let zvel = (i64::from(target.posz.wrapping_sub(source.z)) << 8) / distance;
+                        self.world.sprites[index].zvel =
+                            zvel.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+                    }
+                    if workslike & crate::shoot::PROJECTILE_FLAG_ACCURATE == 0 {
+                        let boss1 = self
+                            .script
+                            .labels
+                            .get("BOSS1")
+                            .map_or(2630, |label| label.value);
+                        let angle_range = if i32::from(source.picnum) == boss1 {
+                            128
+                        } else {
+                            64
+                        };
+                        self.add_hitscan_spread(index, 256, angle_range);
+                    }
+                }
             }
             source.ang = self.world.sprites[index].ang;
             self.world.sprites[index].x = source.x;
@@ -7881,6 +8251,53 @@ impl Default for DukeSession {
     }
 }
 
+/// Tiles whose CON actor code EDuke32 runs from `G_MoveMisc` (`STAT_MISC`).
+const EDUKE_MISC_SCRIPT_TILES: [i16; 13] = [
+    1890, // EXPLOSION2
+    2219, // EXPLOSION2BOT
+    1671, // FORCERIPPLE
+    1630, // TRANSPORTERSTAR
+    1261, // TRANSPORTERBEAM
+    2329, // SMALLSMOKE
+    661,  // WATERBUBBLE
+    2270, // BURNING
+    2310, // BURNING2
+    2200, // FECES
+    1656, // SHRINKEREXPLOSION
+    1620, // BLOOD
+    2612, // LASERSITE
+];
+
+/// Tiles whose CON actor code EDuke32 runs from `G_MoveStandables`
+/// (`STAT_STANDABLE`).
+const EDUKE_STANDABLE_SCRIPT_TILES: [i16; 14] = [
+    2333, // FLOORFLAME
+    1240, // FIREBARREL
+    1390, // FIREVASE
+    1238, // EXPLODINGBARREL
+    904,  // WOODENHORSE
+    1026, // HORSEONSIDE
+    1227, // NUKEBARREL
+    1228, // NUKEBARRELDENTED
+    1229, // NUKEBARRELLEAKED
+    921,  // TOILETWATER
+    1062, // RUBBERCAN
+    1250, // STEAM
+    1255, // CEILINGSTEAM
+    662,  // WATERBUBBLEMAKER
+];
+
+/// Whether EDuke32's mover for status list `stat` runs `picnum`'s actor code.
+fn eduke_list_runs_actor_code(stat: i16, picnum: i16) -> bool {
+    match stat {
+        STAT_ACTOR => true,
+        crate::stat::STAT_PROJECTILE => picnum == crate::shoot::SHOTSPARK1,
+        crate::stat::STAT_MISC => EDUKE_MISC_SCRIPT_TILES.contains(&picnum),
+        crate::stat::STAT_STANDABLE => EDUKE_STANDABLE_SCRIPT_TILES.contains(&picnum),
+        _ => false,
+    }
+}
+
 impl DukeSession {
     #[must_use]
     pub fn new() -> Self {
@@ -7895,6 +8312,8 @@ impl DukeSession {
             pad_pre_override: None,
             pad_pre_explode_override: None,
             lists: SpriteLists::new(),
+            defer_event_lists_sync: false,
+            event_lists_stale: false,
             decal_queue: crate::decal_queue::DukeDecalQueue::default(),
             script: None,
             actor_temps: Vec::new(),
@@ -7922,6 +8341,7 @@ impl DukeSession {
             inventory_right_was_down: false,
             trace_fixups: false,
             pending_sound_ids: Vec::new(),
+            pending_eduke_shots: Vec::new(),
             pending_actor_sound_events: Vec::new(),
             active_sound_owners: vec![None; 450],
             level_exit_ready: false,
@@ -8043,6 +8463,11 @@ impl DukeSession {
             return Err(DukeSaveError::InvalidWorld);
         }
 
+        // EDuke32 `G_LoadPlayer`: EVENT_PRELOADGAME runs on the game being
+        // replaced once the save is known to load (its host-side effects such
+        // as `inittimer` persist; its script state is then overwritten).
+        self.run_eduke_local_player_event("EVENT_PRELOADGAME");
+
         let state = save.state;
         let lists = state
             .lists
@@ -8095,7 +8520,10 @@ impl DukeSession {
         self.userdef = state.userdef;
         self.userdef.totalclock = self.tic.wrapping_mul(4) as i32;
         self.projectile_defs = if state.projectile_defs.is_empty() {
-            eduke_projectile_definitions(script)
+            self.script
+                .as_ref()
+                .map(eduke_projectile_definitions)
+                .unwrap_or_default()
         } else {
             state.projectile_defs
         };
@@ -8103,7 +8531,32 @@ impl DukeSession {
         self.pad_pre_override = None;
         self.pad_pre_explode_override = None;
         self.trace_fixups = false;
+        // EDuke32 runs EVENT_LOADGAME on the restored state for the viewed
+        // player (`screenpeek`, seat 0 here).
+        self.run_eduke_local_player_event("EVENT_LOADGAME");
         Ok(())
+    }
+
+    /// Run an EDuke32 event for seat 0 with its player sprite as the actor
+    /// (EDuke32 `VM_OnEvent(event, g_player[screenpeek].ps->i, screenpeek)`).
+    fn run_eduke_local_player_event(&mut self, event: &str) {
+        let has_event = self.world.is_some()
+            && self.script.as_ref().is_some_and(|image| {
+                image.dialect == ConDialect::EDuke32 && image.has_eduke_event(event)
+            });
+        if !has_event {
+            return;
+        }
+        let actor = usize::try_from(self.player.sprite_i).unwrap_or(EDUKE_NO_EVENT_CONTEXT);
+        if let Err(error) = self.execute_eduke_event(
+            event,
+            0,
+            actor,
+            EDUKE_GAME_EVENT_INSTRUCTION_BUDGET,
+            EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+        ) {
+            self.record_eduke_runtime_error(format!("{event}: {error}"));
+        }
     }
 
     /// Encode the current native session into the loaded Atomic `GAME#.SAV`
@@ -10051,6 +10504,7 @@ impl DukeSession {
     #[must_use]
     pub fn render_world(&self) -> Option<BuildWorld> {
         let mut view = self.animated_render_world()?;
+        self.apply_sprite_ext_alpha(&mut view);
         self.hide_first_person_player(&mut view);
         Some(view)
     }
@@ -10080,11 +10534,13 @@ impl DukeSession {
             image.dialect == ConDialect::EDuke32
                 && image.eduke_event_entries.iter().any(|(name, _, _)| {
                     name.eq_ignore_ascii_case("EVENT_ANIMATESPRITES")
+                        || name.eq_ignore_ascii_case("EVENT_DISPLAYSTART")
                         || name.eq_ignore_ascii_case("EVENT_DISPLAYWEAPON")
                         || name.eq_ignore_ascii_case("EVENT_DISPLAYCROSSHAIR")
                         || name.eq_ignore_ascii_case("EVENT_DISPLAYREST")
                 })
         }) else {
+            self.apply_sprite_ext_alpha(&mut view);
             self.hide_first_person_player(&mut view);
             return Ok(Some(view));
         };
@@ -10109,31 +10565,8 @@ impl DukeSession {
         ];
         let mut event_skill = self.skill;
         let mut event_projectile_defs = self.projectile_defs.clone();
-        let (view_x, view_y, view_z, view_ang, view_sector, view_horizon) = {
-            let viewer = self.player_for_seat(player).unwrap_or(&self.player);
-            let (x, y, z, ang, sector) = viewer.remote_camera.unwrap_or((
-                viewer.posx,
-                viewer.posy,
-                viewer.posz,
-                viewer.view_ang(),
-                viewer.cursectnum,
-            ));
-            (x, y, z, ang, sector, viewer.view_horizon())
-        };
-        let visible_sectors = view
-            .build_view(view_x, view_y, view_z, view_ang, view_horizon, view_sector)
-            .visible_sectors;
-        let animated_sprites = view.sprites.clone();
         let num_players =
             i32::try_from(self.player_count().min(crate::con::EDUKE_MAXPLAYERS)).unwrap_or(1);
-        let display_actor = self
-            .player_for_seat(player)
-            .unwrap_or(&self.player)
-            .sprite_i
-            .try_into()
-            .ok();
-        let screenpeek = self.player_for_seat(player).unwrap_or(&self.player);
-        let can_draw_weapon = !screenpeek.over_shoulder_on && screenpeek.remote_camera.is_none();
         let vm_error = self
             .eduke_vm_state_error
             .clone()
@@ -10145,9 +10578,150 @@ impl DukeSession {
             .ok_or(EdukeVmError::RuntimeUnavailable(vm_error))?;
         render_vm.set_num_players(num_players);
         render_vm.set_multimode(num_players);
+        // EDuke32 `G_DisplayRest` fires `EVENT_DISPLAYSTART` once per frame
+        // for the viewing player before `G_DrawRooms` builds the camera, so
+        // its player writes (e.g. a death camera) decide this frame's view.
+        let mut display_start_steps = 0_usize;
+        if image
+            .eduke_event_entries
+            .iter()
+            .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_DISPLAYSTART"))
+        {
+            let actor = self
+                .player_for_seat(player)
+                .and_then(|viewer| usize::try_from(viewer.sprite_i).ok())
+                .unwrap_or(EDUKE_NO_EVENT_CONTEXT);
+            if let Ok(actor_id) = i32::try_from(actor) {
+                event_userdef.vm_sprite = actor_id;
+            }
+            // EDuke32 `P_Dead` keeps the random death roll in `rotscrnang`
+            // every tic; Room derives it when drawing. Expose the same value
+            // so a hook that zeroes it (Brutal's death camera) is a change.
+            let effective_roll = self.effective_screen_roll(player);
+            if let Some(viewer) = if player == 0 {
+                Some(&mut event_player)
+            } else {
+                event_coop_players.get_mut(player - 1)
+            } {
+                viewer.rotscrnang = effective_roll;
+            }
+            let mut inputs = [];
+            let mut spawned_actor_ids = Vec::new();
+            let mut scratch_draws = Vec::new();
+            let mut render_sound_owners = self.active_sound_owners.clone();
+            let mut access = DukeSessionStructAccess {
+                world: &mut event_world,
+                script: image,
+                tile_meta: &mut event_tile_meta,
+                randomseed: &mut event_randomseed,
+                player: &mut event_player,
+                coop_players: &mut event_coop_players,
+                actor_temps: &mut event_actor_temps,
+                picnum: &mut event_picnum,
+                inputs: &mut inputs,
+                userdef: &mut event_userdef,
+                skill: &mut event_skill,
+                tspr: None,
+                projectile_defs: &mut event_projectile_defs,
+                spawned_actor_ids: &mut spawned_actor_ids,
+                decal_queue: None,
+                active_sound_owners: Some(render_sound_owners.as_mut_slice()),
+                hud_draws: Some(&mut scratch_draws),
+                hud_id: 0,
+            };
+            let executions = render_vm.execute_registered_event_hooks_with_access(
+                image,
+                "EVENT_DISPLAYSTART",
+                player,
+                actor,
+                EDUKE_ANIMATE_SPRITES_INSTRUCTION_BUDGET,
+                EDUKE_ANIMATE_SPRITES_STATE_DEPTH_LIMIT,
+                &mut access,
+            )?;
+            display_start_steps = executions.iter().fold(0_usize, |total, execution| {
+                total.saturating_add(execution.steps)
+            });
+            let viewer = if player == 0 {
+                Some(&event_player)
+            } else {
+                event_coop_players.get(player - 1)
+            };
+            if let Some(viewer) = viewer {
+                let real = self.player_for_seat(player).unwrap_or(&self.player);
+                fn changed<T: PartialEq>(new: T, old: T) -> Option<T> {
+                    (new != old).then_some(new)
+                }
+                let camera = room_build_engine::world::RenderCamera {
+                    posz: changed(viewer.posz, real.posz),
+                    oposz: changed(viewer.oposz, real.oposz),
+                    horiz: changed(viewer.horiz, real.horiz),
+                    previous_horiz: changed(viewer.previous_horiz, real.previous_horiz),
+                    horizoff: changed(viewer.horizoff, real.horizoff),
+                    previous_horizoff: changed(viewer.previous_horizoff, real.previous_horizoff),
+                    q16_horiz: changed(viewer.q16_horiz, real.q16_horiz),
+                    previous_q16_horiz: changed(viewer.previous_q16_horiz, real.previous_q16_horiz),
+                    q16_horizoff: changed(viewer.q16_horizoff, real.q16_horizoff),
+                    previous_q16_horizoff: changed(
+                        viewer.previous_q16_horizoff,
+                        real.previous_q16_horizoff,
+                    ),
+                    pyoff: changed(viewer.pyoff, real.pyoff),
+                    previous_pyoff: changed(viewer.previous_pyoff, real.previous_pyoff),
+                    rotscrnang: changed(viewer.rotscrnang, effective_roll),
+                    visibility: changed(viewer.visibility, real.visibility),
+                    previous_rotscrnang: changed(
+                        viewer.previous_rotscrnang,
+                        real.previous_rotscrnang,
+                    ),
+                };
+                view.render_visibility = viewer.visibility.max(0);
+                if camera != room_build_engine::world::RenderCamera::default() {
+                    view.render_camera = Some(camera);
+                }
+            }
+        }
+        let (view_x, view_y, view_z, view_ang, view_sector, view_horizon) = {
+            let viewer = self.player_for_seat(player).unwrap_or(&self.player);
+            let (x, y, z, ang, sector) = viewer.remote_camera.unwrap_or((
+                viewer.posx,
+                viewer.posy,
+                view.render_camera
+                    .and_then(|camera| camera.posz)
+                    .unwrap_or(viewer.posz),
+                viewer.view_ang(),
+                viewer.cursectnum,
+            ));
+            let horizon = view.render_camera.map_or(viewer.view_horizon(), |camera| {
+                camera
+                    .horiz
+                    .unwrap_or(viewer.horiz)
+                    .wrapping_add(camera.horizoff.unwrap_or(viewer.horizoff))
+            });
+            (x, y, z, ang, sector, horizon)
+        };
+        let visible_sectors = view
+            .build_view(view_x, view_y, view_z, view_ang, view_horizon, view_sector)
+            .visible_sectors;
+        let animated_sprites = view.sprites.clone();
+        let display_actor = self
+            .player_for_seat(player)
+            .unwrap_or(&self.player)
+            .sprite_i
+            .try_into()
+            .ok();
+        let screenpeek = self.player_for_seat(player).unwrap_or(&self.player);
+        let screenpeek_body = usize::try_from(screenpeek.sprite_i)
+            .ok()
+            .and_then(|index| self.world.as_ref()?.sprites.get(index).copied());
+        // `P_DisplayWeapon` returns before its event for a third-person view
+        // or a dead player (body palette other than 1 with no health).
+        let can_draw_weapon = !screenpeek.over_shoulder_on
+            && screenpeek.remote_camera.is_none()
+            && screenpeek_body.is_none_or(|body| body.pal == 1 || body.extra > 0);
 
         let sprite_count = view.sprites.len().min(view.lists.sprite_stat.len());
-        let mut remaining_budget = EDUKE_ANIMATE_SPRITES_INSTRUCTION_BUDGET;
+        let mut remaining_budget =
+            EDUKE_ANIMATE_SPRITES_INSTRUCTION_BUDGET.saturating_sub(display_start_steps);
         for index in 0..sprite_count {
             if remaining_budget == 0 {
                 break;
@@ -10338,6 +10912,20 @@ impl DukeSession {
         // order here follows DISPLAYWEAPON, DISPLAYCROSSHAIR, DISPLAYREST;
         // source-registered handlers within each event keep their own order.
         let mut hud_id = 0;
+        if let Some(body) = screenpeek_body {
+            let viewer = self.player_for_seat(player).unwrap_or(&self.player);
+            let works_like = |weapon: i32| {
+                render_vm
+                    .get_variable(&format!("WEAPON{weapon}_WORKSLIKE"), player, 0)
+                    .unwrap_or(weapon)
+            };
+            event_userdef.hud_weapon = crate::weapon_view::eduke_hud_weapon(
+                viewer,
+                i32::from(body.shade),
+                i32::from(body.xrepeat),
+                works_like,
+            );
+        }
         let mut native_weapon_hidden = event_userdef.drawweapon == 0;
         view.render_hide_native_weapon = native_weapon_hidden;
         view.render_hide_native_crosshair = false;
@@ -10416,6 +11004,9 @@ impl DukeSession {
             {
                 native_weapon_hidden = true;
             }
+            if event == "EVENT_DISPLAYWEAPON" {
+                view.render_hud_weapon_draws = view.render_hud_draws.len();
+            }
             if event == "EVENT_DISPLAYCROSSHAIR" {
                 view.render_hide_native_crosshair = true;
                 let tile = render_vm.get_variable("RETURN", player, actor)?;
@@ -10448,6 +11039,7 @@ impl DukeSession {
             }
         }
 
+        self.apply_sprite_ext_alpha(&mut view);
         self.hide_first_person_player(&mut view);
         Ok(Some(view))
     }
@@ -10458,6 +11050,11 @@ impl DukeSession {
         let mut view = self.world.as_ref()?.clone();
         view.render_sprite_blends.clear();
         view.render_hud_draws.clear();
+        view.render_hud_weapon_draws = 0;
+        view.render_camera = None;
+        // EDuke32 `G_DrawRooms`: `g_visibility` comes from the viewer
+        // (`visibility <= 0` disables distance shading).
+        view.render_visibility = self.player.visibility.max(0);
         view.render_hide_native_weapon = false;
         for (index, temps) in self.actor_temps.iter().enumerate() {
             if temps.sprite_blend != 0 {
@@ -10497,6 +11094,59 @@ impl DukeSession {
             }
         }
         Some(view)
+    }
+
+    /// The screen roll a seat's view shows: EDuke32 `P_Dead`'s death roll
+    /// (`dead_flag` plus floor-relative eye height) while dead, else
+    /// `rotscrnang`. Mirrors the renderer's derivation.
+    fn effective_screen_roll(&self, seat: usize) -> i16 {
+        let viewer = self.player_for_seat(seat).unwrap_or(&self.player);
+        if viewer.dead_flag == 0 || viewer.remote_camera.is_some() {
+            return viewer.rotscrnang;
+        }
+        self.world
+            .as_ref()
+            .and_then(|world| world.sectors.get(usize::try_from(viewer.cursectnum).ok()?))
+            .map_or(viewer.rotscrnang, |sector| {
+                (i32::from(viewer.dead_flag)
+                    .wrapping_add(sector.floorz.wrapping_add(viewer.posz) >> 7)
+                    & 2047) as i16
+            })
+    }
+
+    /// EDuke32 classic `drawsprite`: `spriteext[].alpha` (CON 0–255, stored
+    /// as `value / 255`) on a sprite that is not already translucent hides it
+    /// at 1.0, draws it translucent from 1/3 and with the more transparent
+    /// table (`cstat 512`) from 2/3 when no DEF `numalphatables` are loaded.
+    /// Applied after `EVENT_ANIMATESPRITES`, on render copies only (ED7).
+    fn apply_sprite_ext_alpha(&self, view: &mut BuildWorld) {
+        fn apply(sprite: &mut room_build_engine::types::SpriteT, alpha: u8) {
+            if alpha == 0 || sprite.cstat & 2 != 0 {
+                return;
+            }
+            if alpha == u8::MAX {
+                sprite.cstat |= 32768;
+            } else if alpha >= SPRITE_EXT_ALPHA_TRANSLUCENT {
+                sprite.cstat |= 2;
+                if alpha >= SPRITE_EXT_ALPHA_MORE_TRANSPARENT {
+                    sprite.cstat |= 512;
+                } else {
+                    sprite.cstat &= !512;
+                }
+            }
+        }
+        for (index, temps) in self.actor_temps.iter().enumerate() {
+            let alpha = temps.sprite_ext.alpha;
+            if alpha == 0 {
+                continue;
+            }
+            if let Some(sprite) = view.sprites.get_mut(index) {
+                apply(sprite, alpha);
+            }
+            if let Some(sprite) = view.mirror_render_sprites.get_mut(&index) {
+                apply(sprite, alpha);
+            }
+        }
     }
 
     fn hide_first_person_player(&self, view: &mut BuildWorld) {
@@ -10684,7 +11334,7 @@ impl DukeSession {
         actor: usize,
         instruction_budget: usize,
         state_depth_limit: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_eduke_event_with_inputs(
             event,
             player,
@@ -10705,7 +11355,7 @@ impl DukeSession {
         inputs: &mut [DukeInput],
         instruction_budget: usize,
         state_depth_limit: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_eduke_event_with_context(
             event,
             player,
@@ -10727,7 +11377,7 @@ impl DukeSession {
         tspr: &mut DukeTspr,
         instruction_budget: usize,
         state_depth_limit: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_eduke_event_with_context(
             event,
             player,
@@ -10756,7 +11406,7 @@ impl DukeSession {
         tspr: Option<&mut DukeTspr>,
         instruction_budget: usize,
         state_depth_limit: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_eduke_event_with_spawn_depth(
             event,
             player,
@@ -10779,7 +11429,7 @@ impl DukeSession {
         instruction_budget: usize,
         state_depth_limit: usize,
         spawn_depth: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.userdef.vm_sprite = if actor == EDUKE_NO_EVENT_CONTEXT {
             -1
         } else {
@@ -10841,10 +11491,22 @@ impl DukeSession {
                         &mut access,
                     )
                 };
-                self.lists = self
-                    .world
-                    .as_ref()
-                    .map_or_else(SpriteLists::new, |world| world.lists.clone());
+                // In the per-sprite event loop, a top-level hook that spawned,
+                // killed and failed nothing returns at once and the next hook
+                // works on `world.lists`: refresh the mirror once after the loop.
+                let returns_at_once = spawn_depth == 0
+                    && self.defer_event_lists_sync
+                    && spawned_actor_ids.is_empty()
+                    && result.as_ref().is_ok_and(|executions| {
+                        executions
+                            .iter()
+                            .all(|execution| execution.kill_actor_id.is_none())
+                    });
+                if returns_at_once {
+                    self.event_lists_stale = true;
+                } else {
+                    self.sync_lists_from_world();
+                }
                 result
             } else {
                 vm.execute_registered_event_hooks(
@@ -10976,9 +11638,20 @@ impl DukeSession {
         Ok(executions)
     }
 
+    /// Bring `lists` back in step after a deferred per-sprite event loop.
+    fn flush_event_lists(&mut self) {
+        self.defer_event_lists_sync = false;
+        if self.event_lists_stale {
+            self.sync_lists_from_world();
+        }
+    }
+
     /// Native `spawn(BLOODPOOL)` is also routed through the decal FIFO when an
     /// EDuke32 CON hook creates it through the live structure adapter.
     fn queue_spawned_bloodpools(&mut self, spawned_actor_ids: &[i32]) {
+        if spawned_actor_ids.is_empty() {
+            return;
+        }
         let bloodpool_tile = self
             .script
             .as_ref()
@@ -10990,6 +11663,7 @@ impl DukeSession {
         let Some(world) = self.world.as_mut() else {
             return;
         };
+        let mut inserted = false;
         for &sprite_id in spawned_actor_ids {
             let Ok(index) = usize::try_from(sprite_id) else {
                 continue;
@@ -11011,9 +11685,24 @@ impl DukeSession {
             {
                 self.decal_queue
                     .insert(&mut self.lists, world.sprites.as_mut(), queue_id);
+                inserted = true;
             }
         }
-        world.lists.clone_from(&self.lists);
+        // Both callers mirror `world.lists` into `self.lists` just before, so
+        // the copy back only matters when a pool was queued (ED9: this ran
+        // after every per-sprite event, ~200 KB each).
+        if inserted {
+            copy_sprite_lists(&mut world.lists, &self.lists);
+        }
+    }
+
+    /// Mirror the world's sprite lists into `self.lists` (one copy, no temp).
+    fn sync_lists_from_world(&mut self) {
+        self.event_lists_stale = false;
+        match self.world.as_ref() {
+            Some(world) => copy_sprite_lists(&mut self.lists, &world.lists),
+            None => self.lists = SpriteLists::new(),
+        }
     }
 
     fn apply_eduke_killit(&mut self, actor: i32) -> Result<(), EdukeVmError> {
@@ -11025,16 +11714,21 @@ impl DukeSession {
         if status == MAXSTATUS as i16 {
             return Ok(());
         }
-        if status == crate::stat::STAT_ACTOR || status == crate::stat::STAT_MISC {
+        // The reference EDuke32 source (`A_Execute` and event dispatch both
+        // end in `VM_DeleteSprite`) deletes the sprite whatever its status
+        // list; EDukeWiki's older note that only STAT_ACTOR / STAT_MISC are
+        // deleted would leave Brutal Duke's STAT_PROJECTILE sparks in the
+        // sprite table forever. Room keeps player sprites, hiding them.
+        if status == crate::stat::STAT_PLAYER {
+            if let Some(sprite) = world.sprites.get_mut(index) {
+                sprite.xrepeat = 0;
+            }
+        } else {
             let sprite_index = i16::try_from(index).map_err(|_| EdukeVmError::InvalidStructId {
                 kind: EdStructKind::Actor,
                 id: actor,
             })?;
             let _ = world.lists.deletesprite(sprite_index);
-        } else if let Some(sprite) = world.sprites.get_mut(index) {
-            // EDuke32 hides sprites outside STAT_ACTOR/STAT_MISC. Their engine
-            // code later decides whether and when their slot can be reclaimed.
-            sprite.xrepeat = 0;
         }
         self.lists.clone_from(&world.lists);
         Ok(())
@@ -11742,6 +12436,78 @@ impl DukeSession {
         }
     }
 
+    /// EDuke32 `cheatindex_t` order, for EVENT_ACTIVATECHEAT's `RETURN`.
+    const EDUKE_CHEAT_CODES: [&'static str; 27] = [
+        "cornholio",
+        "stuff",
+        "scotty",
+        "coords",
+        "view",
+        "time",
+        "unlock",
+        "cashman",
+        "items",
+        "rate",
+        "skill",
+        "beta",
+        "hyper",
+        "monsters",
+        "",
+        "",
+        "todd",
+        "showmap",
+        "kroz",
+        "allen",
+        "clip",
+        "weapons",
+        "inventory",
+        "keys",
+        "debug",
+        "",
+        "comegetsome",
+    ];
+
+    /// EDuke32 `osdcmd_cheatsinfo` / `G_DoCheats`: EVENT_ACTIVATECHEAT gets
+    /// the cheat's `cheatindex_t` in `RETURN` and may replace it; the cheat
+    /// then applied is the returned one (`None` when it names no cheat).
+    /// Codes outside that table, and non-EDuke32 scripts, pass through.
+    fn run_eduke_activatecheat<'a>(&mut self, code: &'a str) -> Option<&'a str> {
+        let Some(index) = Self::EDUKE_CHEAT_CODES
+            .iter()
+            .position(|&name| !name.is_empty() && name == code)
+        else {
+            return Some(code);
+        };
+        let hooked = self.world.is_some()
+            && self.script.as_ref().is_some_and(|image| {
+                image.dialect == ConDialect::EDuke32 && image.has_eduke_event("EVENT_ACTIVATECHEAT")
+            });
+        let Ok(actor) = usize::try_from(self.player.sprite_i) else {
+            return Some(code);
+        };
+        if !hooked {
+            return Some(code);
+        }
+        let mut inputs = [DukeInput::default()];
+        let mut budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        let returned = self.run_eduke_player_return_event(
+            "EVENT_ACTIVATECHEAT",
+            0,
+            actor,
+            &mut inputs,
+            i32::try_from(index).unwrap_or(-1),
+            &mut budget,
+        )?;
+        if usize::try_from(returned).ok() == Some(index) {
+            return Some(code);
+        }
+        usize::try_from(returned)
+            .ok()
+            .and_then(|returned| Self::EDUKE_CHEAT_CODES.get(returned))
+            .copied()
+            .filter(|name| !name.is_empty())
+    }
+
     /// Mutably access native player state for a seat in Atomic connect order.
     pub fn player_for_seat_mut(&mut self, seat: usize) -> Option<&mut Player> {
         if seat == 0 {
@@ -11751,12 +12517,40 @@ impl DukeSession {
         }
     }
 
+    /// EDuke32 `Menu_Run`: while the native menu is drawn over a game, run
+    /// EVENT_DISPLAYMENU on the live VM state once per drawn frame, for the
+    /// local (screenpeek) player, with `RETURN` = the EDuke32 menu id (`0`
+    /// main, `50` in-game main). Writes persist, as in EDuke32 (Brutal Duke
+    /// ends slow motion there). Returns the final `RETURN`, or `None` when
+    /// no hook is registered or no player sprite exists.
+    pub fn run_eduke_menu_display(&mut self, menu: i32) -> Option<i32> {
+        if !self
+            .script
+            .as_ref()
+            .is_some_and(|image| image.has_eduke_event("EVENT_DISPLAYMENU"))
+        {
+            return None;
+        }
+        let actor = usize::try_from(self.player.sprite_i).ok()?;
+        let mut inputs = vec![DukeInput::default(); self.player_count().max(1)];
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        self.run_eduke_player_return_event(
+            "EVENT_DISPLAYMENU",
+            0,
+            actor,
+            &mut inputs,
+            menu,
+            &mut remaining_budget,
+        )
+    }
+
     /// Apply the Atomic single-player cheats that modify the local player.
     /// Returns a user-facing quote ID when Chocolate would display one.
     pub fn apply_player_cheat(&mut self, code: &str) -> Option<i16> {
         if self.player_count() != 1 {
             return None;
         }
+        let code = self.run_eduke_activatecheat(code)?;
         let quote = match code {
             "cornholio" | "kroz" => {
                 self.player.god_mode = !self.player.god_mode;
@@ -11787,6 +12581,16 @@ impl DukeSession {
                     crate::weapons::addammo(&mut self.player, weapon as i16, i16::MAX);
                 }
                 self.player.ammo[11] = self.player.ammo[11].max(50);
+                // EDuke32 gives every slot below MAX_WEAPONS (13), including
+                // slot 12, capped by its (script-set) capacity.
+                if self
+                    .script
+                    .as_ref()
+                    .is_some_and(|image| image.dialect == ConDialect::EDuke32)
+                {
+                    self.player.extra_weapon_got = true;
+                    crate::weapons::addammo(&mut self.player, EXTRA_WEAPON, i16::MAX);
+                }
                 if code == "stuff" {
                     self.apply_player_inventory_cheat(true);
                     Some(5)
@@ -11902,6 +12706,14 @@ impl DukeSession {
     /// Drain runtime faults from automatically dispatched EDuke32 events.
     /// Shells should forward these to their developer console.
     pub fn take_eduke_runtime_errors(&mut self) -> Vec<String> {
+        let warnings = self
+            .eduke_vm_state
+            .as_mut()
+            .map(EdukeVmState::take_runtime_warnings)
+            .unwrap_or_default();
+        for warning in warnings {
+            self.record_eduke_runtime_error(warning);
+        }
         std::mem::take(&mut self.pending_eduke_runtime_errors)
     }
 
@@ -12310,6 +13122,1392 @@ impl DukeSession {
     /// Run `EVENT_FIRE` for each living seat holding primary fire. A nonzero
     /// `RETURN` suppresses weapon fire for that seat's weapon update while the
     /// original sync bits remain available to the rest of player processing.
+    /// Run one EDuke32 player event with `RETURN` preset to `value` and give
+    /// back the script's `RETURN` (`VM_OnEventWithReturn`); `None` when the
+    /// event errored or the shared budget ran out.
+    fn run_eduke_player_return_event(
+        &mut self,
+        event: &str,
+        seat: usize,
+        actor: usize,
+        inputs: &mut [DukeInput],
+        value: i32,
+        remaining_budget: &mut usize,
+    ) -> Option<i32> {
+        if *remaining_budget == 0 {
+            self.record_eduke_runtime_error(format!(
+                "{event}: per-tic instruction budget exhausted"
+            ));
+            return None;
+        }
+        if let Some(vm) = self.eduke_vm_state.as_mut()
+            && let Err(error) = vm.set_variable("RETURN", seat, actor, value)
+        {
+            self.record_eduke_runtime_error(format!("{event}: {error}"));
+            return None;
+        }
+        match self.execute_eduke_event_with_inputs(
+            event,
+            seat,
+            actor,
+            inputs,
+            *remaining_budget,
+            EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+        ) {
+            Ok(executions) => {
+                let used = executions.iter().fold(0_usize, |total, execution| {
+                    total.saturating_add(execution.steps)
+                });
+                *remaining_budget = remaining_budget.saturating_sub(used);
+                self.eduke_vm_state
+                    .as_ref()
+                    .and_then(|vm| vm.get_variable("RETURN", seat, actor).ok())
+            }
+            Err(error) => {
+                self.record_eduke_runtime_error(format!("{event} player {seat}: {error}"));
+                None
+            }
+        }
+    }
+
+    /// EDuke32 `P_HandleSharedKeys` weapon selection: the key's event
+    /// (`EVENT_WEAPKEY1`..`10`, `EVENT_PREVIOUSWEAPON`, `EVENT_NEXTWEAPON`,
+    /// `EVENT_ALTWEAPON`, `EVENT_LASTWEAPON`) may replace the request (`-1`
+    /// cancels), then `EVENT_SELECTWEAPON` sees the resolved weapon and may
+    /// replace or cancel it. The result is written back to the seat's
+    /// selector field before the native weapon tick consumes it.
+    fn run_eduke_weapon_key_events(&mut self, inputs: &mut [DukeInput]) {
+        const KEY_EVENTS: [&str; 14] = [
+            "EVENT_WEAPKEY1",
+            "EVENT_WEAPKEY2",
+            "EVENT_WEAPKEY3",
+            "EVENT_WEAPKEY4",
+            "EVENT_WEAPKEY5",
+            "EVENT_WEAPKEY6",
+            "EVENT_WEAPKEY7",
+            "EVENT_WEAPKEY8",
+            "EVENT_WEAPKEY9",
+            "EVENT_WEAPKEY10",
+            "EVENT_PREVIOUSWEAPON",
+            "EVENT_NEXTWEAPON",
+            "EVENT_ALTWEAPON",
+            "EVENT_LASTWEAPON",
+        ];
+        let Some(image) = self.script.as_ref() else {
+            return;
+        };
+        if self.world.is_none()
+            || image.dialect != ConDialect::EDuke32
+            || !(KEY_EVENTS
+                .iter()
+                .chain(std::iter::once(&"EVENT_SELECTWEAPON"))
+                .any(|event| image.has_eduke_event(event)))
+        {
+            return;
+        }
+        let actors: Vec<Option<usize>> = std::iter::once(&self.player)
+            .chain(self.coop_players.iter())
+            .map(|player| {
+                (player.sprite_i >= 0)
+                    .then(|| usize::try_from(player.sprite_i).ok())
+                    .flatten()
+            })
+            .collect();
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (seat, actor) in actors.into_iter().enumerate().take(inputs.len()) {
+            let Some(actor) = actor else {
+                continue;
+            };
+            let field = (inputs[seat].bits & INPUT_WEAPON_MASK) >> INPUT_WEAPON_SHIFT;
+            if field == 0 {
+                continue;
+            }
+            let mut weapon_num = i32::try_from(field).unwrap_or(0) - 1;
+            let key_event = usize::try_from(weapon_num)
+                .ok()
+                .and_then(|index| KEY_EVENTS.get(index))
+                .copied();
+            if let Some(event) = key_event
+                && self
+                    .script
+                    .as_ref()
+                    .is_some_and(|image| image.has_eduke_event(event))
+            {
+                let Some(returned) = self.run_eduke_player_return_event(
+                    event,
+                    seat,
+                    actor,
+                    inputs,
+                    weapon_num,
+                    &mut remaining_budget,
+                ) else {
+                    continue;
+                };
+                weapon_num = returned;
+            }
+            let set_field = |input: &mut DukeInput, weapon_num: i32| {
+                let field = u32::try_from(weapon_num + 1)
+                    .ok()
+                    .filter(|&field| field <= INPUT_WEAPON_MASK >> INPUT_WEAPON_SHIFT)
+                    .unwrap_or(0);
+                input.bits = (input.bits & !INPUT_WEAPON_MASK) | (field << INPUT_WEAPON_SHIFT);
+            };
+            set_field(&mut inputs[seat], weapon_num);
+            if weapon_num < 0
+                || !self
+                    .script
+                    .as_ref()
+                    .is_some_and(|image| image.has_eduke_event("EVENT_SELECTWEAPON"))
+            {
+                continue;
+            }
+            // Resolve the request the way the native weapon tick would, on a
+            // copy, to give EVENT_SELECTWEAPON the concrete weapon.
+            let current = if seat == 0 {
+                &self.player
+            } else {
+                &self.coop_players[seat - 1]
+            };
+            // EDuke32 passes a direct key's weapon number to SELECTWEAPON
+            // as is, even when it is the weapon in hand (Brutal toggles the
+            // chaingun/MP5 pair that way); only cycling is resolved first.
+            let resolved = if (0..=9).contains(&weapon_num) {
+                weapon_num
+            } else {
+                let mut probe = current.clone();
+                if !apply_weapon_input(&mut probe, inputs[seat].bits) {
+                    continue;
+                }
+                i32::from(probe.curr_weapon)
+            };
+            let Some(selected) = self.run_eduke_player_return_event(
+                "EVENT_SELECTWEAPON",
+                seat,
+                actor,
+                inputs,
+                resolved,
+                &mut remaining_budget,
+            ) else {
+                continue;
+            };
+            if selected == resolved {
+                continue;
+            }
+            // Cancelled, or replaced by another weapon: the native tick must
+            // not apply the original request.
+            set_field(&mut inputs[seat], -1);
+            if let Ok(weapon) = i16::try_from(selected)
+                && selected >= 0
+            {
+                let player = if seat == 0 {
+                    &mut self.player
+                } else {
+                    &mut self.coop_players[seat - 1]
+                };
+                // Slot 12 (Brutal Duke's MP5) is owned through the extra
+                // weapon fields and fired by `run_eduke_configurable_weapons`.
+                let _ = crate::weapons::switch_to_owned_weapon(player, weapon);
+            }
+        }
+    }
+
+    /// EDuke32 `P_FireWeapon` events for the shots this tic's native weapon
+    /// tick fired: EVENT_DOFIRE, EVENT_PREWEAPONSHOOT, then
+    /// EVENT_POSTWEAPONSHOOT with `RETURN` = the shot's first new sprite
+    /// (`-1` for none). Room's hardcoded weapons have already shot by now,
+    /// so a script cannot cancel the shot here; a non-zero DOFIRE or
+    /// PREWEAPONSHOOT `RETURN` is reported and POSTWEAPONSHOOT is skipped,
+    /// as EDuke32 skips it.
+    fn run_eduke_shot_events(&mut self, inputs: &mut [DukeInput]) {
+        let shots = std::mem::take(&mut self.pending_eduke_shots);
+        if shots.is_empty() || self.world.is_none() {
+            return;
+        }
+        let Some(image) = self.script.as_ref() else {
+            return;
+        };
+        if image.dialect != ConDialect::EDuke32 {
+            return;
+        }
+        let hooked = [
+            "EVENT_DOFIRE",
+            "EVENT_PREWEAPONSHOOT",
+            "EVENT_POSTWEAPONSHOOT",
+        ]
+        .map(|event| image.has_eduke_event(event));
+        if !hooked.iter().any(|&hooked| hooked) {
+            return;
+        }
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (sprite, _weapon) in shots {
+            let Some(seat) = std::iter::once(&self.player)
+                .chain(self.coop_players.iter())
+                .position(|player| player.sprite_i == sprite)
+            else {
+                continue;
+            };
+            let Ok(actor) = usize::try_from(sprite) else {
+                continue;
+            };
+            let mut cancelled = false;
+            for (event, hooked) in [
+                ("EVENT_DOFIRE", hooked[0]),
+                ("EVENT_PREWEAPONSHOOT", hooked[1]),
+            ] {
+                if !hooked || cancelled {
+                    continue;
+                }
+                match self.run_eduke_player_return_event(
+                    event,
+                    seat,
+                    actor,
+                    inputs,
+                    0,
+                    &mut remaining_budget,
+                ) {
+                    Some(0) => {}
+                    Some(_) => {
+                        cancelled = true;
+                        self.record_eduke_runtime_error(format!(
+                            "{event}: RETURN cancels the shot in EDuke32, but Room's \
+                             hardcoded weapon already fired"
+                        ));
+                    }
+                    None => cancelled = true,
+                }
+            }
+            if !cancelled && hooked[2] {
+                let _ = self.run_eduke_player_return_event(
+                    "EVENT_POSTWEAPONSHOOT",
+                    seat,
+                    actor,
+                    inputs,
+                    -1,
+                    &mut remaining_budget,
+                );
+            }
+        }
+    }
+
+    /// Run `f` against the live VM host (`DukeSessionStructAccess`) outside
+    /// a script, as EDuke32's engine calls `A_Shoot`, `A_Spawn` and
+    /// `A_PlaySound` directly. Afterwards the sprite lists are synced, blood
+    /// pools queued, and EVENT_EGS/EVENT_SPAWN dispatched for each sprite
+    /// the call created. `None` when no world or script is loaded.
+    fn with_eduke_host<R>(
+        &mut self,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+        f: impl FnOnce(&mut DukeSessionStructAccess<'_>) -> Result<R, EdukeVmError>,
+    ) -> Option<R> {
+        let mut spawned_actor_ids = Vec::new();
+        let result = {
+            let image = self.script.as_ref()?;
+            let world = self.world.as_mut()?;
+            let mut access = DukeSessionStructAccess {
+                world,
+                script: image,
+                tile_meta: &mut self.tile_meta,
+                randomseed: &mut self.randomseed,
+                player: &mut self.player,
+                coop_players: &mut self.coop_players,
+                actor_temps: &mut self.actor_temps,
+                picnum: &mut self.picnum,
+                inputs: &mut *inputs,
+                userdef: &mut self.userdef,
+                skill: &mut self.skill,
+                tspr: None,
+                projectile_defs: &mut self.projectile_defs,
+                spawned_actor_ids: &mut spawned_actor_ids,
+                decal_queue: Some(&mut self.decal_queue),
+                active_sound_owners: Some(self.active_sound_owners.as_mut_slice()),
+                hud_draws: None,
+                hud_id: 0,
+            };
+            f(&mut access)
+        };
+        self.sync_lists_from_world();
+        self.queue_spawned_bloodpools(&spawned_actor_ids);
+        self.dispatch_eduke_spawn_events(&spawned_actor_ids, inputs, remaining_budget);
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.record_eduke_runtime_error(format!("engine call: {error}"));
+                None
+            }
+        }
+    }
+
+    /// EVENT_EGS then EVENT_SPAWN for sprites the engine (not a script)
+    /// created this tic, as EDuke32's `A_Spawn` runs them.
+    fn dispatch_eduke_spawn_events(
+        &mut self,
+        spawned_actor_ids: &[i32],
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        for &spawned_id in spawned_actor_ids {
+            let Ok(spawned_actor) = usize::try_from(spawned_id) else {
+                continue;
+            };
+            let player = self.eduke_closest_player(spawned_actor);
+            for event in ["EVENT_EGS", "EVENT_SPAWN"] {
+                if !self
+                    .script
+                    .as_ref()
+                    .is_some_and(|image| image.has_eduke_event(event))
+                {
+                    continue;
+                }
+                if *remaining_budget == 0 {
+                    self.record_eduke_runtime_error(format!(
+                        "{event}: per-tic instruction budget exhausted"
+                    ));
+                    return;
+                }
+                match self.execute_eduke_event_with_spawn_depth(
+                    event,
+                    player,
+                    spawned_actor,
+                    inputs,
+                    None,
+                    *remaining_budget,
+                    EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+                    1,
+                ) {
+                    Ok(executions) => {
+                        let used = executions.iter().fold(0_usize, |total, execution| {
+                            total.saturating_add(execution.steps)
+                        });
+                        *remaining_budget = remaining_budget.saturating_sub(used);
+                    }
+                    Err(error) => {
+                        self.record_eduke_runtime_error(format!("{event}: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Chocolate `cheatkeys`: the turn-around key (sync bit 28) starts a
+    /// quick 180° turn when none is running. EDuke32 first runs
+    /// EVENT_TURNAROUND for the seat with `RETURN` 0; a non-zero `RETURN`
+    /// keeps the player facing ahead (Brutal Duke makes the key reload).
+    /// `processinput` then turns the body 128 units a tic.
+    fn run_quick_turn_requests(&mut self, inputs: &mut [DukeInput]) {
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for seat in 0..self.player_count().min(inputs.len()) {
+            let down = inputs[seat].bits & INPUT_TURNAROUND != 0;
+            let Some(player) = self.player_for_seat_mut(seat) else {
+                continue;
+            };
+            let pressed = down && !player.turnaround_was_down;
+            player.turnaround_was_down = down;
+            if !pressed || player.one_eighty_count != 0 {
+                continue;
+            }
+            let actor = usize::try_from(player.sprite_i).ok();
+            let cancelled = match actor {
+                Some(actor) => {
+                    self.eduke_engine_event(
+                        seat,
+                        actor,
+                        "EVENT_TURNAROUND",
+                        0,
+                        inputs,
+                        &mut remaining_budget,
+                    ) != 0
+                }
+                None => false,
+            };
+            if !cancelled && let Some(player) = self.player_for_seat_mut(seat) {
+                player.one_eighty_count = -1024;
+            }
+        }
+    }
+
+    /// EDuke32 `A_DamageWall` / `Sect_DamageFloor` / `Sect_DamageCeiling`
+    /// for the surface hits the native weapon code deferred this tic
+    /// ([`crate::weapons_move::SurfaceDamage`]). A `damageeventtile` wall,
+    /// floor or ceiling first runs EVENT_DAMAGEWALL / EVENT_DAMAGEFLOOR /
+    /// EVENT_DAMAGECEILING for the hitting sprite with `RETURN` = the wall or
+    /// sector; a negative `RETURN` cancels the damage. Floors and ceilings
+    /// then run the global EVENT_DAMAGEHPLANE with `RETURN` =
+    /// `131072 + sector` (floor) or `65536 + sector` (ceiling); a negative
+    /// `RETURN` cancels the ceiling effect. The surviving wall and ceiling
+    /// hits apply Chocolate's `checkhitwall` / `checkhitceiling` effects.
+    /// The events run after the native weapon pass instead of at the moment
+    /// of impact.
+    fn run_eduke_surface_damage_events(&mut self, inputs: &mut [DukeInput]) {
+        use crate::weapons_move::{SurfaceDamage, eduke_damage_event_tile, eduke_event_hooked};
+        let pending = crate::weapons_move::take_pending_surface_damage();
+        if pending.is_empty() {
+            return;
+        }
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for damage in pending {
+            let source_i = match damage {
+                SurfaceDamage::Wall { source_i, .. }
+                | SurfaceDamage::Floor { source_i, .. }
+                | SurfaceDamage::Ceiling { source_i, .. } => source_i,
+            };
+            let actor = usize::try_from(source_i).ok();
+            let script = self.script.as_ref();
+            let (event, target, flagged) = match damage {
+                SurfaceDamage::Wall { wall, .. } => {
+                    let flagged = self
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.walls.get(wall))
+                        .is_some_and(|wall| {
+                            eduke_damage_event_tile(script, wall.picnum)
+                                || eduke_damage_event_tile(script, wall.overpicnum)
+                        });
+                    (
+                        "EVENT_DAMAGEWALL",
+                        i32::try_from(wall).unwrap_or(-1),
+                        flagged,
+                    )
+                }
+                SurfaceDamage::Floor { sector, .. } => {
+                    let flagged = self
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.sectors.get(usize::try_from(sector).ok()?))
+                        .is_some_and(|sector| eduke_damage_event_tile(script, sector.floorpicnum));
+                    ("EVENT_DAMAGEFLOOR", i32::from(sector), flagged)
+                }
+                SurfaceDamage::Ceiling { sector, .. } => {
+                    let flagged = self
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.sectors.get(usize::try_from(sector).ok()?))
+                        .is_some_and(|sector| {
+                            eduke_damage_event_tile(script, sector.ceilingpicnum)
+                        });
+                    ("EVENT_DAMAGECEILING", i32::from(sector), flagged)
+                }
+            };
+            if flagged
+                && eduke_event_hooked(script, event)
+                && let Some(actor) = actor
+            {
+                let seat = self.eduke_closest_player(actor);
+                let result = self.run_eduke_player_return_event(
+                    event,
+                    seat,
+                    actor,
+                    inputs,
+                    target,
+                    &mut remaining_budget,
+                );
+                if result.is_none_or(|value| value < 0) {
+                    continue;
+                }
+            }
+            let plane_base = match damage {
+                SurfaceDamage::Wall { .. } => None,
+                SurfaceDamage::Floor { .. } => Some(131_072),
+                SurfaceDamage::Ceiling { .. } => Some(65_536),
+            };
+            if let Some(base) = plane_base
+                && eduke_event_hooked(self.script.as_ref(), "EVENT_DAMAGEHPLANE")
+            {
+                let value = self.run_eduke_global_return_event("EVENT_DAMAGEHPLANE", base + target);
+                if matches!(damage, SurfaceDamage::Ceiling { .. })
+                    && value.is_none_or(|value| value < 0)
+                {
+                    continue;
+                }
+            }
+            self.apply_deferred_surface_damage(damage);
+        }
+    }
+
+    fn apply_deferred_surface_damage(&mut self, damage: crate::weapons_move::SurfaceDamage) {
+        use crate::weapons_move::SurfaceDamage;
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let numsectors = world.numsectors as usize;
+        let numwalls = world.numwalls as usize;
+        let (sounds, source_i): (Vec<i16>, i16) = match damage {
+            SurfaceDamage::Wall {
+                source,
+                source_i,
+                atwith,
+                wall,
+                hit,
+                hit_sector,
+            } => (
+                crate::weapons_move::apply_checkhitwall_unchecked(
+                    &mut self.lists,
+                    world.sprites.as_mut(),
+                    &world.sectors[..numsectors],
+                    &mut world.walls[..numwalls],
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    &mut self.randomseed,
+                    source,
+                    source_i,
+                    atwith,
+                    wall,
+                    hit[0],
+                    hit[1],
+                    hit[2],
+                    hit_sector,
+                    self.script.as_ref(),
+                ),
+                source_i,
+            ),
+            SurfaceDamage::Ceiling {
+                source_i,
+                sector,
+                owner,
+            } => {
+                let mut sounds = Vec::new();
+                crate::shoot::check_hit_ceiling_unchecked(
+                    &mut self.lists,
+                    world.sprites.as_mut(),
+                    &mut world.sectors[..numsectors],
+                    &world.walls[..numwalls],
+                    &mut self.picnum,
+                    &mut self.actor_temps,
+                    self.script.as_ref(),
+                    &mut self.randomseed,
+                    sector,
+                    owner,
+                    &mut sounds,
+                );
+                (
+                    sounds
+                        .into_iter()
+                        .map(|sound| i16::try_from(sound).unwrap_or_default())
+                        .collect(),
+                    source_i,
+                )
+            }
+            SurfaceDamage::Floor { .. } => return,
+        };
+        copy_sprite_lists(&mut world.lists, &self.lists);
+        if let Ok(index) = usize::try_from(source_i)
+            && !sounds.is_empty()
+        {
+            if self.actor_temps.len() <= index {
+                self.actor_temps
+                    .resize_with(index + 1, ActorConTemps::default);
+            }
+            self.actor_temps[index].pending_actor_sounds.extend(sounds);
+        }
+    }
+
+    /// Run a global (`THISACTOR` −1) event with `RETURN` preset to `value`;
+    /// the final `RETURN`, or `None` when it failed.
+    fn run_eduke_global_return_event(&mut self, event: &str, value: i32) -> Option<i32> {
+        if let Some(vm) = self.eduke_vm_state.as_mut()
+            && let Err(error) = vm.set_variable("RETURN", 0, 0, value)
+        {
+            self.record_eduke_runtime_error(format!("{event}: {error}"));
+            return None;
+        }
+        match self.execute_eduke_event(
+            event,
+            EDUKE_NO_EVENT_CONTEXT,
+            EDUKE_NO_EVENT_CONTEXT,
+            EDUKE_GAME_EVENT_INSTRUCTION_BUDGET,
+            EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
+        ) {
+            Ok(_) => self
+                .eduke_vm_state
+                .as_ref()
+                .and_then(|vm| vm.get_variable("RETURN", 0, 0).ok()),
+            Err(error) => {
+                self.record_eduke_runtime_error(format!("{event}: {error}"));
+                None
+            }
+        }
+    }
+
+    /// A player's `WEAPON{n}_*` gamevars, as EDuke32's `PWEAPON` reads them.
+    fn eduke_weapon_config(
+        &self,
+        seat: usize,
+        actor: usize,
+        weapon: i16,
+    ) -> Option<EdukeWeaponConfig> {
+        let vm = self.eduke_vm_state.as_ref()?;
+        let read = |property: &'static str| {
+            vm.get_variable(eduke_weapon_variable(weapon, property), seat, actor)
+                .unwrap_or(0)
+        };
+        Some(EdukeWeaponConfig {
+            works_like: read("WORKSLIKE"),
+            flags: read("FLAGS"),
+            clip: read("CLIP"),
+            reload: read("RELOAD"),
+            fire_delay: read("FIREDELAY"),
+            total_time: read("TOTALTIME"),
+            hold_delay: read("HOLDDELAY"),
+            shoots: read("SHOOTS"),
+            spawn_time: read("SPAWNTIME"),
+            spawn: read("SPAWN"),
+            shots_per_burst: read("SHOTSPERBURST"),
+            initial_sound: read("INITIALSOUND"),
+            fire_sound: read("FIRESOUND"),
+            sound2_time: read("SOUND2TIME"),
+            sound2_sound: read("SOUND2SOUND"),
+            reload_sound1: read("RELOADSOUND1"),
+            reload_sound2: read("RELOADSOUND2"),
+        })
+    }
+
+    /// EDuke32's configurable weapon path for slot 12 (`FLAMETHROWER_WEAPON`,
+    /// which Atomic lacks and Room's native weapon code does not run): the
+    /// basic branch of `P_ProcessWeapon` and `P_FireWeapon`, driven by the
+    /// player's `WEAPON12_*` gamevars. Room's native tick has already
+    /// lowered/raised `weapon_pos` and run EVENT_FIRE (`fire_blocked`).
+    /// Hand-bomb, remote and trip-bomb `WORKSLIKE` values have no port yet.
+    fn run_eduke_configurable_weapons(&mut self, inputs: &mut [DukeInput], fire_blocked: &[bool]) {
+        if self.world.is_none()
+            || self.eduke_vm_state.is_none()
+            || !self
+                .script
+                .as_ref()
+                .is_some_and(|image| image.dialect == ConDialect::EDuke32)
+        {
+            return;
+        }
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for seat in 0..self.player_count().min(inputs.len()) {
+            let Some(player) = self.player_for_seat(seat) else {
+                continue;
+            };
+            if player.extra <= 0
+                || !eduke_configurable_weapon(
+                    self.script.as_ref(),
+                    self.eduke_vm_state.as_ref(),
+                    seat,
+                    player,
+                )
+            {
+                continue;
+            }
+            let Ok(actor) = usize::try_from(player.sprite_i) else {
+                continue;
+            };
+            self.process_eduke_configurable_weapon(
+                seat,
+                actor,
+                inputs,
+                fire_blocked.get(seat).copied().unwrap_or(false),
+                &mut remaining_budget,
+            );
+        }
+    }
+
+    fn process_eduke_configurable_weapon(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        inputs: &mut [DukeInput],
+        fire_blocked: bool,
+        remaining_budget: &mut usize,
+    ) {
+        const KNEE: i32 = 0;
+        const DEVISTATOR: i32 = 7;
+        const FLAMETHROWER: i32 = 12;
+        let Some(weapon) = self.player_for_seat(seat).map(|player| player.curr_weapon) else {
+            return;
+        };
+        let Some(config) = self.eduke_weapon_config(seat, actor, weapon) else {
+            return;
+        };
+        let knee = config.works_like == KNEE;
+        self.run_eduke_burst_delay(seat, actor, weapon, &config, inputs, remaining_budget);
+        let shrunk = self
+            .world
+            .as_ref()
+            .and_then(|world| world.sprites.get(actor))
+            .is_some_and(|sprite| sprite.yrepeat < 32);
+        let fire_bit = inputs
+            .get(seat)
+            .is_some_and(|input| input.bits & INPUT_FIRE != 0);
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        if player.rapid_fire_hold {
+            if fire_bit {
+                return;
+            }
+            player.rapid_fire_hold = false;
+        }
+        let mut fire_held = fire_bit;
+        let mut start_firing = false;
+        if shrunk || player.tip_timer != 0 || player.access_incs != 0 {
+            fire_held = false;
+        } else if fire_held
+            && player.kickback_pic == 0
+            && player.fist_incs == 0
+            && player.last_weapon == -1
+            && player.weapon_pos == 0
+            && !fire_blocked
+        {
+            start_firing = knee || player.weapon_ammo(weapon) > 0;
+            if start_firing && config.works_like == DEVISTATOR {
+                player.hbomb_hold_delay = i16::from(player.hbomb_hold_delay == 0);
+            }
+        }
+        let underwater = start_firing
+            && config.works_like == FLAMETHROWER
+            && self.player_in_underwater_sector(seat);
+        if start_firing && config.initial_sound > 0 && !underwater {
+            self.play_eduke_engine_sound(actor, config.initial_sound, inputs, remaining_budget);
+        }
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        if !start_firing && player.kickback_pic == 0 {
+            return;
+        }
+
+        player.kickback_pic = player.kickback_pic.saturating_add(1);
+        let kickback = i32::from(player.kickback_pic);
+        let switched = if config.flags & EDUKE_WEAPON_CHECKATRELOAD != 0 {
+            kickback >= config.reload && crate::weapons::checkavailweapon(player)
+        } else {
+            !knee && kickback >= config.fire_delay && crate::weapons::checkavailweapon(player)
+        };
+        if switched {
+            // EDuke32 goes on with the new weapon's `PWEAPON` values; the
+            // switch has just reset its kickback, so nothing else would run.
+            return;
+        }
+        if config.flags & EDUKE_WEAPON_STANDSTILL != 0 && kickback < config.fire_delay + 1 {
+            player.posz = player.oposz;
+            player.poszv = 0;
+        }
+        if kickback == config.sound2_time && config.sound2_sound > 0 {
+            self.play_eduke_engine_sound(actor, config.sound2_sound, inputs, remaining_budget);
+        }
+        if kickback == config.spawn_time
+            && !(start_firing
+                && config.flags & (EDUKE_WEAPON_FIREEVERYTHIRD | EDUKE_WEAPON_FIREEVERYOTHER) != 0)
+        {
+            self.eduke_weapon_spawn(actor, &config, inputs, remaining_budget);
+        }
+
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        let kickback = i32::from(player.kickback_pic);
+        let has_ammo = knee || player.weapon_ammo(weapon) > 0;
+        if kickback >= config.total_time {
+            let ammo = i32::from(player.weapon_ammo(weapon));
+            if player.reloading == 1
+                || (config.reload > config.total_time
+                    && ammo > 0
+                    && config.clip != 0
+                    && ammo % config.clip == 0)
+            {
+                let reload_time = config.reload - config.total_time;
+                player.reloading = 1;
+                if kickback != config.total_time {
+                    let timing = config.flags & EDUKE_WEAPON_RELOAD_TIMING != 0;
+                    if kickback == config.total_time + 1 {
+                        if config.reload_sound1 > 0 {
+                            self.play_eduke_engine_sound(
+                                actor,
+                                config.reload_sound1,
+                                inputs,
+                                remaining_budget,
+                            );
+                        }
+                    } else if (!timing && kickback == config.reload - reload_time / 3)
+                        || (timing && kickback == config.reload - reload_time + 4)
+                    {
+                        if config.reload_sound2 > 0 {
+                            self.play_eduke_engine_sound(
+                                actor,
+                                config.reload_sound2,
+                                inputs,
+                                remaining_budget,
+                            );
+                        }
+                    } else if kickback >= config.reload {
+                        player.kickback_pic = 0;
+                        player.reloading = 0;
+                    }
+                }
+            } else {
+                let restart = config.flags & EDUKE_WEAPON_AUTOMATIC != 0 && has_ammo && fire_held;
+                let frame = if !restart {
+                    0
+                } else if config.flags & EDUKE_WEAPON_RANDOMRESTART != 0 {
+                    1 + (krand_step(&mut self.randomseed) & 3) as i16
+                } else {
+                    1
+                };
+                if let Some(player) = self.player_for_seat_mut(seat) {
+                    player.kickback_pic = frame;
+                    if config.flags & EDUKE_WEAPON_RESET != 0 && has_ammo {
+                        player.kickback_pic = i16::from(fire_held);
+                    }
+                }
+            }
+        }
+
+        let Some(player) = self.player_for_seat(seat) else {
+            return;
+        };
+        let kickback = i32::from(player.kickback_pic);
+        let has_ammo = knee || player.weapon_ammo(weapon) > 0;
+        if kickback < config.fire_delay || kickback >= config.total_time || !has_ammo {
+            return;
+        }
+        let every_other = config.flags & EDUKE_WEAPON_FIREEVERYOTHER != 0;
+        if config.flags & EDUKE_WEAPON_AUTOMATIC == 0 {
+            if kickback == config.fire_delay {
+                self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+            }
+            return;
+        }
+        if config.flags & EDUKE_WEAPON_SEMIAUTO != 0 {
+            if every_other {
+                self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+                self.eduke_weapon_spawn(actor, &config, inputs, remaining_budget);
+            } else if kickback == config.fire_delay {
+                self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+            }
+            return;
+        }
+        if config.flags & EDUKE_WEAPON_FIREEVERYTHIRD != 0 {
+            if kickback % 3 == 0 {
+                self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+                self.eduke_weapon_spawn(actor, &config, inputs, remaining_budget);
+            }
+        } else if every_other {
+            self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+            self.eduke_weapon_spawn(actor, &config, inputs, remaining_budget);
+        } else if kickback == config.fire_delay {
+            self.fire_eduke_weapon(seat, actor, &config, inputs, remaining_budget);
+        }
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        if config.flags & EDUKE_WEAPON_RESET != 0 {
+            if !fire_held {
+                player.kickback_pic = i16::try_from(config.total_time).unwrap_or(i16::MAX);
+            }
+            let has_ammo = knee || player.weapon_ammo(weapon) > 0;
+            if i32::from(player.kickback_pic) > config.total_time - config.hold_delay && has_ammo {
+                player.kickback_pic = i16::from(fire_held);
+            }
+        }
+    }
+
+    /// EDuke32 `P_FireWeapon` for a configurable weapon: EVENT_DOFIRE may
+    /// cancel, then one round is spent, FIRESOUND plays, and each shot of
+    /// the burst runs EVENT_PREWEAPONSHOOT (non-zero `RETURN` skips it),
+    /// `A_Shoot` with `SHOOTS`, and EVENT_POSTWEAPONSHOOT with `RETURN` = the
+    /// new shot sprite.
+    fn fire_eduke_weapon(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        config: &EdukeWeaponConfig,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        let Some(weapon) = self.player_for_seat(seat).map(|player| player.curr_weapon) else {
+            return;
+        };
+        if self.eduke_engine_event(seat, actor, "EVENT_DOFIRE", 0, inputs, remaining_budget) != 0 {
+            return;
+        }
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        if player.weapon_pos != 0 {
+            return;
+        }
+        if config.works_like != 0
+            && let Some(ammo) = player.weapon_ammo_mut(weapon)
+        {
+            *ammo = ammo.saturating_sub(1);
+        }
+        if config.works_like == 12 && self.player_in_underwater_sector(seat) {
+            return;
+        }
+        if let Some(player) = self.player_for_seat_mut(seat) {
+            player.eduke_round_blood_spawned = false;
+        }
+        if config.fire_sound > 0 {
+            self.play_eduke_engine_sound(actor, config.fire_sound, inputs, remaining_budget);
+        }
+        self.eduke_weapon_shot(seat, actor, config, inputs, remaining_budget);
+        for _ in 1..config.shots_per_burst {
+            if config.flags & EDUKE_WEAPON_FIREEVERYOTHER != 0 {
+                // The devastator's delayed burst: the remaining rounds fire
+                // every other tic from `run_eduke_burst_delay`.
+                if let Some(player) = self.player_for_seat_mut(seat) {
+                    player.eduke_burst_delay =
+                        i16::try_from(config.shots_per_burst << 1).unwrap_or(i16::MAX);
+                }
+                continue;
+            }
+            if config.flags & EDUKE_WEAPON_AMMOPERSHOT != 0 && config.works_like != 0 {
+                let Some(ammo) = self
+                    .player_for_seat_mut(seat)
+                    .and_then(|player| player.weapon_ammo_mut(weapon))
+                else {
+                    break;
+                };
+                if *ammo <= 0 {
+                    break;
+                }
+                *ammo -= 1;
+            }
+            self.eduke_weapon_shot(seat, actor, config, inputs, remaining_budget);
+        }
+        if config.flags & EDUKE_WEAPON_NOVISIBLE == 0
+            && let Some(player) = self.player_for_seat_mut(seat)
+        {
+            player.visibility = 0;
+        }
+    }
+
+    fn eduke_weapon_shot(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        config: &EdukeWeaponConfig,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        if self.eduke_engine_event(
+            seat,
+            actor,
+            "EVENT_PREWEAPONSHOOT",
+            0,
+            inputs,
+            remaining_budget,
+        ) != 0
+        {
+            return;
+        }
+        let shot = self.eduke_weapon_shoot(seat, actor, config, inputs, remaining_budget);
+        let _ = self.eduke_engine_event(
+            seat,
+            actor,
+            "EVENT_POSTWEAPONSHOOT",
+            shot,
+            inputs,
+            remaining_budget,
+        );
+    }
+
+    /// EDuke32's WEAPON_FIREEVERYOTHER burst (`t_data[7]` in the
+    /// reference): every second tic while the countdown runs, one more round
+    /// (with ammo per shot) and its PRE/POSTWEAPONSHOOT events.
+    fn run_eduke_burst_delay(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        weapon: i16,
+        config: &EdukeWeaponConfig,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        let Some(player) = self.player_for_seat_mut(seat) else {
+            return;
+        };
+        if player.eduke_burst_delay == 0 {
+            return;
+        }
+        player.eduke_burst_delay -= 1;
+        if player.last_weapon != -1
+            || player.eduke_burst_delay == 0
+            || player.eduke_burst_delay & 1 != 0
+        {
+            return;
+        }
+        if config.flags & EDUKE_WEAPON_AMMOPERSHOT != 0 {
+            match player.weapon_ammo_mut(weapon) {
+                Some(ammo) if *ammo > 0 => *ammo -= 1,
+                _ => {
+                    player.eduke_burst_delay = 0;
+                    let _ = crate::weapons::checkavailweapon(player);
+                    return;
+                }
+            }
+        }
+        self.eduke_weapon_shot(seat, actor, config, inputs, remaining_budget);
+    }
+
+    fn player_in_underwater_sector(&self, seat: usize) -> bool {
+        let Some(player) = self.player_for_seat(seat) else {
+            return false;
+        };
+        self.world
+            .as_ref()
+            .and_then(|world| world.sectors.get(usize::try_from(player.cursectnum).ok()?))
+            .is_some_and(|sector| sector.lotag == 2)
+    }
+
+    /// EDuke32 `A_Shoot` from a player's configurable weapon. A tile with a
+    /// `defineprojectile` uses the VM host's projectile code; Atomic's
+    /// hardcoded player shots (SHOTSPARK1 / SHOTGUN / CHAINGUN hitscans, RPG
+    /// or the devastator's small rockets, SHRINKER, GROWSPARK, FREEZEBLAST)
+    /// use Room's native shooters, with bullet switch hits applied at once;
+    /// any other tile spawns as an actor. Returns the shot sprite, or -1.
+    fn eduke_weapon_shoot(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        config: &EdukeWeaponConfig,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) -> i32 {
+        let tile = config.shoots;
+        let parent = i32::try_from(actor).unwrap_or(-1);
+        let label = |name: &str| {
+            self.script
+                .as_ref()
+                .and_then(|image| image.labels.get(name))
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value)
+        };
+        let is = |name: &str, fallback: i32| label(name).unwrap_or(fallback) == tile;
+        let native = !self.projectile_defs.contains_key(&tile)
+            && (is("SHOTSPARK1", 2595)
+                || is("SHOTGUN", 28)
+                || is("CHAINGUN", 29)
+                || is("RPG", 2605)
+                || is("SHRINKER", 25)
+                || is("GROWSPARK", 2448)
+                || is("FREEZEBLAST", 1641));
+        if !native {
+            return self
+                .with_eduke_host(inputs, remaining_budget, |host| {
+                    host.shoot_actor(parent, tile, None)
+                })
+                .unwrap_or(-1);
+        }
+        let Some(player) = self.player_for_seat(seat).cloned() else {
+            return -1;
+        };
+        let Some(world) = self.world.as_mut() else {
+            return -1;
+        };
+        let numsectors = world.numsectors as usize;
+        let numwalls = world.numwalls as usize;
+        let script = self.script.as_ref();
+        let actortype: &[u8] = script.map_or(&[], |image| image.actortype.as_slice());
+        let atwith = i16::try_from(tile).unwrap_or(0);
+        let mut switch_hits = Vec::new();
+        let shot = if is("RPG", 2605) && config.works_like == 7 {
+            crate::shoot::spawn_devastator_projectile(
+                &player,
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..numsectors],
+                &world.walls[..numwalls],
+                &mut self.actor_temps,
+                &mut self.picnum,
+                &self.tile_meta,
+                script,
+                actortype,
+                &mut self.randomseed,
+            )
+        } else if is("RPG", 2605) {
+            crate::shoot::shoot_rpg_player(
+                &player,
+                atwith,
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..numsectors],
+                &world.walls[..numwalls],
+                &mut self.actor_temps,
+                &mut self.picnum,
+                &self.tile_meta,
+                script,
+                actortype,
+                &mut self.randomseed,
+            )
+        } else if is("FREEZEBLAST", 1641) {
+            crate::shoot::shoot_freezeblast_player(
+                &player,
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..numsectors],
+                &world.walls[..numwalls],
+                &mut self.actor_temps,
+                &mut self.picnum,
+                &self.tile_meta,
+                script,
+                actortype,
+                &mut self.randomseed,
+            )
+        } else if is("SHRINKER", 25) || is("GROWSPARK", 2448) {
+            crate::shoot::shoot_shrink_grow_player(
+                &player,
+                is("GROWSPARK", 2448),
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..numsectors],
+                &world.walls[..numwalls],
+                &mut self.actor_temps,
+                &mut self.picnum,
+                &self.tile_meta,
+                script,
+                actortype,
+                &mut self.randomseed,
+            )
+        } else {
+            let spawn_blood = !is("CHAINGUN", 29) && !player.eduke_round_blood_spawned;
+            let hit_enemy = crate::shoot::shoot_shotgun_player(
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &mut world.sectors[..numsectors],
+                &mut world.walls[..numwalls],
+                &mut self.picnum,
+                &mut self.actor_temps,
+                &self.tile_meta,
+                script,
+                actortype,
+                &mut self.randomseed,
+                &player,
+                player.sprite_i,
+                atwith,
+                spawn_blood,
+                &mut self.pending_sound_ids,
+                &mut switch_hits,
+            );
+            if hit_enemy && let Some(player) = self.player_for_seat_mut(seat) {
+                player.eduke_round_blood_spawned = true;
+            }
+            -1
+        };
+        for (_, wall, sprite) in switch_hits {
+            let Some(mut player) = self.player_for_seat(seat).cloned() else {
+                break;
+            };
+            let Some(world) = self.world.as_mut() else {
+                break;
+            };
+            let activated = crate::interactions::hit_switch_target(
+                world,
+                &mut self.sector_motions,
+                &mut self.wall_motions,
+                &mut self.cyclers,
+                wall,
+                sprite,
+                &mut self.level_exit_ready,
+                &mut player,
+                &mut self.anim_wall_tags,
+                self.monsters_off,
+                self.script
+                    .as_ref()
+                    .map_or(&[], |script| script.actortype.as_slice()),
+                &mut self.actor_temps,
+                &mut self.picnum,
+                self.script.as_ref(),
+            )
+            .is_some();
+            if let Some(slot) = self.player_for_seat_mut(seat) {
+                *slot = player;
+            }
+            if activated
+                && let Some(id) = self
+                    .script
+                    .as_ref()
+                    .and_then(|script| script.labels.get("SWITCH_ON"))
+                    .and_then(|label| u16::try_from(label.value).ok())
+            {
+                self.pending_sound_ids.push(id);
+            }
+        }
+        if let Some(world) = self.world.as_mut() {
+            copy_sprite_lists(&mut world.lists, &self.lists);
+        }
+        i32::from(shot)
+    }
+
+    /// EDuke32 `P_DoWeaponSpawn`: `SPAWN` (casings) at the player; with
+    /// SPAWNTYPE3 it is thrown backwards like a chaingun shell.
+    fn eduke_weapon_spawn(
+        &mut self,
+        actor: usize,
+        config: &EdukeWeaponConfig,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        if config.spawn <= 0 {
+            return;
+        }
+        // Atomic's casings: `spawn()` places them from the player's view
+        // (Room's native `spawn_player_shell`); SPAWNTYPE3 is the chaingun's
+        // higher, faster ejection.
+        let label = |name: &str, fallback: i32| {
+            self.script
+                .as_ref()
+                .and_then(|image| image.labels.get(name))
+                .filter(|label| !label.is_ptr)
+                .map_or(fallback, |label| label.value)
+        };
+        let shell = label("SHELL", 2533);
+        let shotgun_shell = label("SHOTGUNSHELL", 2535);
+        if (config.spawn == shell || config.spawn == shotgun_shell)
+            && !self.projectile_defs.contains_key(&config.spawn)
+            && let Some(player) = std::iter::once(&self.player)
+                .chain(self.coop_players.iter())
+                .find(|player| usize::try_from(player.sprite_i).ok() == Some(actor))
+                .cloned()
+            && let Some(world) = self.world.as_mut()
+        {
+            let (height, xvel) = if config.flags & EDUKE_WEAPON_SPAWNTYPE3 != 0 {
+                (6, 52)
+            } else if config.spawn == shotgun_shell {
+                (6, 20)
+            } else {
+                (3, 20)
+            };
+            let numsectors = world.numsectors as usize;
+            let numwalls = world.numwalls as usize;
+            let _ = crate::shoot::spawn_player_shell(
+                &player,
+                &mut self.lists,
+                world.sprites.as_mut(),
+                &world.sectors[..numsectors],
+                &world.walls[..numwalls],
+                &mut self.picnum,
+                &mut self.actor_temps,
+                &mut self.randomseed,
+                i16::try_from(config.spawn).unwrap_or(0),
+                height,
+                xvel,
+            );
+            copy_sprite_lists(&mut world.lists, &self.lists);
+            return;
+        }
+        let parent = i32::try_from(actor).unwrap_or(-1);
+        let tile = config.spawn;
+        let Some(child) = self.with_eduke_host(inputs, remaining_budget, |host| {
+            host.spawn_actor(parent, tile)
+        }) else {
+            return;
+        };
+        if config.flags & EDUKE_WEAPON_SPAWNTYPE3 != 0
+            && let Some(sprite) = usize::try_from(child)
+                .ok()
+                .and_then(|index| self.world.as_mut()?.sprites.get_mut(index))
+        {
+            sprite.ang = (sprite.ang + 1024) & 2047;
+            sprite.xvel = sprite.xvel.wrapping_add(32);
+            sprite.z = sprite.z.wrapping_add(3 << 8);
+        }
+    }
+
+    fn play_eduke_engine_sound(
+        &mut self,
+        actor: usize,
+        sound: i32,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) {
+        let actor = i32::try_from(actor).unwrap_or(-1);
+        let _ = self.with_eduke_host(inputs, remaining_budget, |host| {
+            host.play_sound(actor, sound, EdSoundMode::Actor)
+        });
+    }
+
+    /// Run an engine-raised player event with `RETURN` preset to `value`;
+    /// returns the final `RETURN` (`value` when no hook exists, `1` — cancel —
+    /// when the hook failed).
+    fn eduke_engine_event(
+        &mut self,
+        seat: usize,
+        actor: usize,
+        event: &str,
+        value: i32,
+        inputs: &mut [DukeInput],
+        remaining_budget: &mut usize,
+    ) -> i32 {
+        if !self
+            .script
+            .as_ref()
+            .is_some_and(|image| image.has_eduke_event(event))
+        {
+            return value;
+        }
+        self.run_eduke_player_return_event(event, seat, actor, inputs, value, remaining_budget)
+            .unwrap_or(1)
+    }
+
+    /// EDuke32 `P_IncurDamage`: EVENT_INCURDAMAGE runs every tic for each
+    /// living player. While it runs, the player sprite's `extra` shows this
+    /// tic's pending hit already taken (as EDuke32 scripts see it before
+    /// armor); the script's own changes are kept. A non-zero `RETURN` skips
+    /// this tic's armor absorption.
+    fn run_eduke_incurdamage_events(&mut self, inputs: &mut [DukeInput]) {
+        if self.world.is_none()
+            || !self.script.as_ref().is_some_and(|image| {
+                image.dialect == ConDialect::EDuke32 && image.has_eduke_event("EVENT_INCURDAMAGE")
+            })
+        {
+            return;
+        }
+        let sprites: Vec<i16> = std::iter::once(&self.player)
+            .chain(self.coop_players.iter())
+            .map(|player| player.sprite_i)
+            .collect();
+        let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        for (seat, sprite) in sprites.into_iter().enumerate().take(inputs.len()) {
+            let Ok(actor) = usize::try_from(sprite) else {
+                continue;
+            };
+            let pending_hit = self
+                .actor_temps
+                .get(actor)
+                .map_or(-1, |temps| temps.hit_extra);
+            let Some(body) = self
+                .world
+                .as_mut()
+                .and_then(|world| world.sprites.get_mut(actor))
+            else {
+                continue;
+            };
+            let shown_hit = pending_hit.max(0);
+            if body.extra.saturating_sub(shown_hit) <= 0 {
+                continue;
+            }
+            body.extra = body.extra.saturating_sub(shown_hit);
+            let returned = self.run_eduke_player_return_event(
+                "EVENT_INCURDAMAGE",
+                seat,
+                actor,
+                inputs,
+                0,
+                &mut remaining_budget,
+            );
+            if let Some(body) = self
+                .world
+                .as_mut()
+                .and_then(|world| world.sprites.get_mut(actor))
+            {
+                body.extra = body.extra.saturating_add(shown_hit);
+            }
+            if returned.is_some_and(|value| value != 0) {
+                let player = if seat == 0 {
+                    &mut self.player
+                } else {
+                    &mut self.coop_players[seat - 1]
+                };
+                player.eduke_skip_incur_damage = true;
+            }
+        }
+    }
+
     fn run_eduke_fire_events(&mut self, inputs: &mut [DukeInput]) -> Vec<bool> {
         let mut blocked = vec![false; inputs.len()];
         if self.world.is_none()
@@ -12384,6 +14582,12 @@ impl DukeSession {
     /// sprite without SFLAG_NOEVENTS. Freeze sprite ids for the phase so
     /// spawns/removals made by a hook take effect on the next phase.
     fn run_eduke_sprite_event(&mut self, event: &str) {
+        self.run_eduke_sprite_event_with_inputs(event, &mut []);
+    }
+
+    /// [`Self::run_eduke_sprite_event`] with the tic's sync inputs, which
+    /// EDuke32 exposes to `getinput` / `setinput` (`g_player[].input`).
+    fn run_eduke_sprite_event_with_inputs(&mut self, event: &str, inputs: &mut [DukeInput]) {
         let has_event = self.script.as_ref().is_some_and(|image| {
             image.dialect == ConDialect::EDuke32
                 && image
@@ -12420,6 +14624,7 @@ impl DukeSession {
         };
 
         let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        self.defer_event_lists_sync = true;
         for (ordinal, actor) in actors.iter().copied().enumerate() {
             if remaining_budget == 0 {
                 if ordinal < actors.len() {
@@ -12430,10 +14635,11 @@ impl DukeSession {
                 break;
             }
             let player = self.eduke_closest_player(actor);
-            match self.execute_eduke_event(
+            match self.execute_eduke_event_with_inputs(
                 event,
                 player,
                 actor,
+                inputs,
                 remaining_budget,
                 EDUKE_GAME_EVENT_STATE_DEPTH_LIMIT,
             ) {
@@ -12444,16 +14650,27 @@ impl DukeSession {
                     remaining_budget = remaining_budget.saturating_sub(used);
                 }
                 Err(error) => {
+                    // EDuke32 logs a VM error and moves on; only the shared
+                    // budget running out stops the remaining sprites.
+                    let exhausted = matches!(error, EdukeVmError::InstructionBudgetExceeded { .. });
                     self.record_eduke_runtime_error(format!("{event} actor {actor}: {error}"));
-                    break;
+                    if exhausted {
+                        break;
+                    }
                 }
             }
         }
+        self.flush_event_lists();
     }
 
     /// Run each active EDuke32 actor's compiled `actor` / `useractor` body
     /// once before the native `moveactors` pass. The CON body updates the same
     /// actor temporaries and sprite fields consumed by that pass.
+    ///
+    /// Besides `STAT_ACTOR`, EDuke32 runs actor code (`A_Execute`) for
+    /// `SHOTSPARK1` in `G_MoveWeapons`, a fixed tile set in `G_MoveMisc`, and
+    /// another in `G_MoveStandables`; those bodies carry the effects'
+    /// `killit` (Brutal Duke's sparks and smoke otherwise fill the sprite table).
     fn run_eduke_actor_scripts(&mut self, inputs: &mut [DukeInput]) {
         let mut remaining_budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
         self.run_eduke_damage_events(inputs, &mut remaining_budget);
@@ -12473,7 +14690,7 @@ impl DukeSession {
                 .iter()
                 .enumerate()
                 .filter_map(|(actor, sprite)| {
-                    (self.lists.sprite_stat[actor] == STAT_ACTOR)
+                    eduke_list_runs_actor_code(self.lists.sprite_stat[actor], sprite.picnum)
                         .then(|| image.eduke_actor_entries.get(&sprite.picnum).copied())
                         .flatten()
                         .map(|entry| (actor, entry))
@@ -12488,6 +14705,26 @@ impl DukeSession {
                 );
                 break;
             }
+            // An earlier actor's code may have deleted this one this tic.
+            if self.lists.sprite_stat.get(actor) == Some(&(MAXSTATUS as i16)) {
+                continue;
+            }
+            // EDuke32 `A_Execute`: `VM_UpdateAnim` before the body; the
+            // native movers apply `VM_Move` (the Atomic `execute` they call
+            // returns before its own frame tick for EDuke32 images).
+            if let (Some(image), Some(world)) = (self.script.as_ref(), self.world.as_mut()) {
+                if self.actor_temps.len() <= actor {
+                    self.actor_temps
+                        .resize_with(actor + 1, ActorConTemps::default);
+                }
+                if let Some(sprite) = world.sprites.get_mut(actor) {
+                    crate::con::eduke_update_anim(
+                        &image.script,
+                        &mut self.actor_temps[actor],
+                        &mut sprite.lotag,
+                    );
+                }
+            }
             let player = self.eduke_closest_player(actor);
             match self.execute_eduke_actor_entry(actor, entry, player, inputs, remaining_budget) {
                 Ok((execution, spawned_actor_ids)) => {
@@ -12498,13 +14735,22 @@ impl DukeSession {
                         inputs,
                         &mut remaining_budget,
                     ) {
+                        let exhausted =
+                            matches!(error, EdukeVmError::InstructionBudgetExceeded { .. });
                         self.record_eduke_runtime_error(format!("EDuke32 actor {actor}: {error}"));
-                        break;
+                        if exhausted {
+                            break;
+                        }
                     }
                 }
                 Err(error) => {
+                    // One actor's VM error must not skip every later actor
+                    // this tic (EDuke32 logs it and continues).
+                    let exhausted = matches!(error, EdukeVmError::InstructionBudgetExceeded { .. });
                     self.record_eduke_runtime_error(format!("EDuke32 actor {actor}: {error}"));
-                    break;
+                    if exhausted {
+                        break;
+                    }
                 }
             }
         }
@@ -12548,16 +14794,40 @@ impl DukeSession {
                         .and_then(|tile| self.tile_meta.get(tile))
                         .map_or(0, |meta| meta.game_flags);
                     let effective_flags = tile_flags ^ temp.hit_flags as u32;
+                    // EDuke32 runs the hooks with the damaging sprite
+                    // (projectile, bullet spark, explosion) as THISACTOR;
+                    // sites that do not record it fall back to the owner.
+                    let source = if temp.hit_source >= 0 {
+                        temp.hit_source
+                    } else {
+                        temp.hit_owner
+                    };
                     (active
                         && temp.hit_extra >= 0
                         && effective_flags & EDUKE_SFLAG_DAMAGEEVENT != 0)
-                        .then_some((actor, temp.hit_owner))
+                        .then_some((actor, source, temp.hit_radius))
                 })
                 .collect::<Vec<_>>()
         };
 
-        for (target, source_id) in targets {
+        for (target, source_id, payload) in targets {
             let source = usize::try_from(source_id).unwrap_or(EDUKE_NO_EVENT_CONTEXT);
+            if let Some(temp) = self.actor_temps.get_mut(target) {
+                temp.hit_source = -1;
+                temp.hit_radius = crate::con::direct_hit_payload();
+            }
+            // `userdef.return 0` is RETURN; `return 1`..`5` are EDuke32's
+            // `ud.returnvar`: `{radius, dmg1..dmg4}` for radius damage, `-1`
+            // in the first slot for a direct hit.
+            let set_payload = |values: &mut [i32; 16]| {
+                *values = [0; 16];
+                values[0] = i32::try_from(target).unwrap_or(i32::MAX);
+                if payload[0] >= 0 {
+                    values[1..6].copy_from_slice(&payload);
+                } else {
+                    values[1] = -1;
+                }
+            };
             let target_id = i32::try_from(target).unwrap_or(i32::MAX);
             let mut cancel = false;
             if has_damage_event {
@@ -12576,9 +14846,7 @@ impl DukeSession {
                     ));
                     break;
                 }
-                self.userdef.return_values = [0; 16];
-                self.userdef.return_values[0] = target_id;
-                self.userdef.return_values[1] = -1;
+                set_payload(&mut self.userdef.return_values);
 
                 match self.execute_eduke_event_with_inputs(
                     "EVENT_DAMAGESPRITE",
@@ -12633,9 +14901,7 @@ impl DukeSession {
                     ));
                     break;
                 }
-                self.userdef.return_values = [0; 16];
-                self.userdef.return_values[0] = target_id;
-                self.userdef.return_values[1] = -1;
+                set_payload(&mut self.userdef.return_values);
                 match self.execute_eduke_event_with_inputs(
                     "EVENT_POSTDAMAGESPRITE",
                     EDUKE_NO_EVENT_CONTEXT,
@@ -12726,10 +14992,7 @@ impl DukeSession {
                 &mut access,
             )
         };
-        self.lists = self
-            .world
-            .as_ref()
-            .map_or_else(SpriteLists::new, |world| world.lists.clone());
+        self.sync_lists_from_world();
         self.queue_spawned_bloodpools(&spawned_actor_ids);
         result.map(|execution| (execution, spawned_actor_ids))
     }
@@ -12946,8 +15209,11 @@ impl DukeSession {
             self.run_eduke_global_event("EVENT_PREWORLD");
         }
         self.run_eduke_sprite_event("EVENT_PREGAME");
+        self.run_eduke_weapon_key_events(&mut sync_inputs);
+        self.run_quick_turn_requests(&mut sync_inputs);
         self.run_eduke_processinput_events(&mut sync_inputs);
         let fire_blocked_seats = self.run_eduke_fire_events(&mut sync_inputs);
+        self.run_eduke_incurdamage_events(&mut sync_inputs);
         input = sync_inputs.first().copied().unwrap_or_default();
         // Chocolate: `movedummyplayers()` right after `global_random = TRAND`.
         if let Some(world) = self.world.as_mut() {
@@ -13542,7 +15808,7 @@ impl DukeSession {
             }
             let mut pending_switch_hits = Vec::<(i16, Option<i16>, Option<i16>)>::new();
             macro_rules! tick_weapon_input {
-                ($player:expr, $seat_input:expr) => {{
+                ($player:expr, $seat_input:expr, $seat:expr) => {{
                     let player: &mut Player = $player;
                     let input: DukeInput = $seat_input;
                     let selected_by_input = apply_weapon_input(player, input.bits);
@@ -13561,6 +15827,7 @@ impl DukeSession {
                         }
                     }
                     let weapon_before = player.curr_weapon;
+                    let ammo_before = player.ammo;
                     let kickback_before = player.kickback_pic;
                     let devastator_ammo_before = player.ammo[7];
                     let pipebomb_ammo_before = player.ammo[5];
@@ -13570,7 +15837,14 @@ impl DukeSession {
                         .map(|s| s.actortype.as_slice())
                         .unwrap_or(&[]);
                     let mut knee_hit = None;
+                    let configurable = eduke_configurable_weapon(
+                        self.script.as_ref(),
+                        self.eduke_vm_state.as_ref(),
+                        $seat,
+                        player,
+                    );
                     match player.curr_weapon {
+                        _ if configurable => process_unimplemented_weapon(player),
                         0 => {
                             knee_hit = process_weapons_knee(
                                 player,
@@ -13776,6 +16050,17 @@ impl DukeSession {
                     if kickback_before > 0 && player.kickback_pic == 0 {
                         let _ = apply_pending_weapon(player);
                     }
+                    // Each round the weapon tick consumed is one EDuke32
+                    // `P_FireWeapon` (the knee has no ammunition).
+                    if let Some(index) = usize::try_from(weapon_before)
+                        .ok()
+                        .filter(|&index| index > 0 && index < player.ammo.len())
+                    {
+                        let shots = ammo_before[index].saturating_sub(player.ammo[index]).max(0);
+                        for _ in 0..shots {
+                            self.pending_eduke_shots.push((player.sprite_i, weapon_before));
+                        }
+                    }
                     let fired = match weapon_before {
                         0 => knee_hit.is_some(),
                         1 | 3 => false, // pistol/chaingun enqueue sound before their hitscan
@@ -13849,7 +16134,7 @@ impl DukeSession {
             if fire_blocked_seats.first().copied().unwrap_or(false) {
                 weapon_input.bits &= !INPUT_FIRE;
             }
-            tick_weapon_input!(&mut self.player, weapon_input);
+            tick_weapon_input!(&mut self.player, weapon_input, 0);
             activate_bullet_switches!(&mut self.player);
             let open_down = input.bits & INPUT_OPEN != 0;
             if input.bits & (INPUT_OPEN | (1 << 31)) == 0 {
@@ -14019,7 +16304,7 @@ impl DukeSession {
                 if fire_blocked_seats.get(seat + 1).copied().unwrap_or(false) {
                     weapon_input.bits &= !INPUT_FIRE;
                 }
-                tick_weapon_input!(&mut *player, weapon_input);
+                tick_weapon_input!(&mut *player, weapon_input, seat + 1);
                 activate_bullet_switches!(&mut *player);
                 let sector_special = crate::interactions::handle_sector_special(
                     world,
@@ -14289,6 +16574,12 @@ impl DukeSession {
             }
             world.lists = self.lists.clone();
         }
+        self.run_eduke_configurable_weapons(&mut sync_inputs, &fire_blocked_seats);
+        self.run_eduke_shot_events(&mut sync_inputs);
+        self.run_eduke_surface_damage_events(&mut sync_inputs);
+        for player in std::iter::once(&mut self.player).chain(self.coop_players.iter_mut()) {
+            player.eduke_skip_incur_damage = false;
+        }
         self.run_eduke_actor_scripts(&mut sync_inputs);
         let mut resetplayer_seats_this_tic = Vec::new();
         if let (Some(script), Some(world)) = (self.script.as_ref(), self.world.as_mut()) {
@@ -14467,6 +16758,8 @@ impl DukeSession {
                 player.extra_extra8 = 0;
                 player.jetpack_on = 0;
                 player.heat_on = false;
+                // EDuke32 `resetplayer` ends with `P_UpdateScreenPal`.
+                player.game_palette = 0;
                 player.inventory_icon = 0;
                 player.inventory_use_was_down = false;
                 player.inventory_left_was_down = false;
@@ -14480,6 +16773,7 @@ impl DukeSession {
                 player.custom_exit_sound = -1;
                 player.end_of_game = false;
                 player.quick_kick = 0;
+                player.one_eighty_count = 0;
                 player.knee_incs = 0;
                 player.actorsqu = -1;
                 player.inventory_display_timer = 0;
@@ -59513,7 +61807,8 @@ impl DukeSession {
             );
         }
         self.run_eduke_resetplayer_events_for_seats(&resetplayer_seats_this_tic);
-        self.run_eduke_sprite_event("EVENT_GAME");
+        let mut game_event_inputs = inputs.to_vec();
+        self.run_eduke_sprite_event_with_inputs("EVENT_GAME", &mut game_event_inputs);
         if self.world.is_some() {
             self.run_eduke_global_event("EVENT_WORLD");
         }
@@ -59589,6 +61884,9 @@ impl DukeSession {
             return None;
         }
         self.level_exit_ready = false;
+        // `ud.eog` is the end-of-game request this exit honours; `advance`
+        // clears the player's flag once it has routed it.
+        let end_of_game = self.player.end_of_game;
         let transition = self
             .campaign
             .as_mut()
@@ -59598,7 +61896,7 @@ impl DukeSession {
             globals.level = Some(i32::from(campaign.level));
             globals.from_bonus = Some(i32::from(campaign.from_bonus));
             globals.secretlevel = Some(i32::from(self.player.secret_level));
-            globals.eog = Some(i32::from(self.player.end_of_game));
+            globals.eog = Some(i32::from(end_of_game));
         }
         transition
     }
@@ -59737,6 +62035,8 @@ fn tick_player_inventory(
         player.heat_amount -= 1;
         if player.heat_amount == 0 {
             player.heat_on = false;
+            // EDuke32 `P_ProcessInput`: goggles running out update the palette.
+            player.game_palette = 0;
             check_available_inventory(player);
             queue_player_sound(script, "NITEVISION_ONOFF", player, actor_temps);
         }
@@ -59997,6 +62297,8 @@ fn apply_player_inventory_input(
             }
             5 if player.heat_amount > 0 => {
                 player.heat_on = !player.heat_on;
+                // EDuke32 `SK_NIGHTVISION` → `P_UpdateScreenPal`.
+                player.game_palette = 0;
                 player.inventory_icon = 5;
                 set_player_quote(player, if player.heat_on { 106 } else { 107 });
                 queue_player_sound(script, "NITEVISION_ONOFF", player, actor_temps);
@@ -61923,7 +64225,7 @@ mod tests {
     }
 
     #[test]
-    fn eduke_killit_frees_actor_and_misc_sprites_but_hides_other_statuses() {
+    fn eduke_killit_deletes_sprites_on_every_status_list_but_player() {
         let image = crate::con::compile_with_options(
             b"var should_not_run 0\nappendevent EVENT_GAME\nkillit\nset should_not_run 1\nendevent\n",
             &mut crate::con::NullIncludes,
@@ -61941,7 +64243,8 @@ mod tests {
         let actor = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
         let misc = world.lists.insertsprite(0, crate::stat::STAT_MISC) as usize;
         let standable = world.lists.insertsprite(0, crate::stat::STAT_STANDABLE) as usize;
-        for index in [actor, misc, standable] {
+        let player = world.lists.insertsprite(0, crate::stat::STAT_PLAYER) as usize;
+        for index in [actor, misc, standable, player] {
             world.sprites[index] = SpriteT {
                 sectnum: 0,
                 xrepeat: 16,
@@ -61952,7 +64255,7 @@ mod tests {
         session.lists = world.lists.clone();
         session.world = Some(world);
 
-        for index in [actor, misc, standable] {
+        for index in [actor, misc, standable, player] {
             session
                 .execute_eduke_event("EVENT_GAME", 0, index, 8, 4)
                 .expect("killit should apply through the live session adapter");
@@ -61961,11 +64264,9 @@ mod tests {
         let world = session.world.as_ref().expect("live world");
         assert_eq!(world.lists.sprite_stat[actor], MAXSTATUS as i16);
         assert_eq!(world.lists.sprite_stat[misc], MAXSTATUS as i16);
-        assert_eq!(
-            world.lists.sprite_stat[standable],
-            crate::stat::STAT_STANDABLE
-        );
-        assert_eq!(world.sprites[standable].xrepeat, 0);
+        assert_eq!(world.lists.sprite_stat[standable], MAXSTATUS as i16);
+        assert_eq!(world.lists.sprite_stat[player], crate::stat::STAT_PLAYER);
+        assert_eq!(world.sprites[player].xrepeat, 0);
         assert_eq!(
             session
                 .eduke_vm_state
@@ -62577,6 +64878,47 @@ mod tests {
     }
 
     #[test]
+    fn eduke_resetplayer_in_coop_respawns_that_seat_and_continues() {
+        let image = crate::con::compile_with_options(
+            b"var after 0 0\nappendevent EVENT_GAME\nresetplayer\nset after 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        session.world = Some(BuildWorld::new());
+        session.player.sprite_i = 20;
+        session.coop_players = (21..=22)
+            .map(|sprite_i| Player {
+                sprite_i,
+                coop_mode: true,
+                ..Player::default()
+            })
+            .collect();
+        session
+            .execute_eduke_event("EVENT_GAME", 2, 22, 128, 8)
+            .expect("resetplayer in co-op queues a respawn");
+        assert_eq!(
+            session.actor_temps[22].pending_player_respawn,
+            Some((2, true, 0))
+        );
+        assert!(!session.actor_temps[20].pending_player_reset);
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("after", 0, 0),
+            Ok(1)
+        );
+    }
+
+    #[test]
     fn eduke_player_reset_hooks_run_for_each_seat_and_respawn() {
         let image = crate::con::compile_with_options(
             b"gamevar reset_seats 0 1\ngamevar inventory_seats 0 1\ngamevar resetplayer_seats 0 1\nvar last_reset_player 0 0\nvar last_reset_actor 0 0\nappendevent EVENT_RESETWEAPONS\nadd reset_seats 1\nset last_reset_player THISPLAYER\nset last_reset_actor THISACTOR\nendevent\nappendevent EVENT_RESETINVENTORY\nadd inventory_seats 1\nendevent\nappendevent EVENT_RESETPLAYER\nadd resetplayer_seats 1\nset last_reset_player THISPLAYER\nset last_reset_actor THISACTOR\nendevent\n",
@@ -62666,6 +65008,691 @@ mod tests {
     }
 
     #[test]
+    fn eduke_weapon_key_and_select_events_rewrite_the_weapon_request() {
+        // Key 3 (shotgun, weapon 2) is remapped to the pistol by
+        // EVENT_WEAPKEY3; EVENT_SELECTWEAPON records what it sees and can
+        // cancel a selection with -1.
+        let image = crate::con::compile_with_options(
+            b"var key_seen -9 0\nvar select_seen -9 0\nvar cancel 0 0\nappendevent EVENT_WEAPKEY3\nset key_seen RETURN\nset RETURN 1\nendevent\nappendevent EVENT_SELECTWEAPON\nset select_seen RETURN\nifvare cancel 1 set RETURN -1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        let ready = |session: &mut DukeSession| {
+            session.player.curr_weapon = crate::weapons::KNEE_WEAPON;
+            session.player.weapon_pos = 0;
+            session.player.kickback_pic = 0;
+            for weapon in [
+                crate::weapons::PISTOL_WEAPON,
+                crate::weapons::SHOTGUN_WEAPON,
+            ] {
+                session.player.gotweapon[weapon as usize] = true;
+                session.player.ammo[weapon as usize] = 5;
+            }
+        };
+        let key3 = DukeInput {
+            bits: 3 << INPUT_WEAPON_SHIFT,
+            ..DukeInput::default()
+        };
+
+        ready(&mut session);
+        session.tick(key3);
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("key_seen", 0, 0), Ok(2));
+        assert_eq!(vm.get_variable("select_seen", 0, 0), Ok(1));
+        assert_eq!(session.player.curr_weapon, crate::weapons::PISTOL_WEAPON);
+
+        ready(&mut session);
+        session
+            .eduke_vm_state
+            .as_mut()
+            .unwrap()
+            .set_variable("cancel", 0, 0, 1)
+            .unwrap();
+        session.tick(key3);
+        assert_eq!(session.player.curr_weapon, crate::weapons::KNEE_WEAPON);
+    }
+
+    #[test]
+    fn eduke_shot_events_follow_each_round_the_weapon_fires() {
+        let image = crate::con::compile_with_options(
+            b"var dofire 0 0\nvar post 0 0\nvar post_weapon -1 0\nappendevent EVENT_DOFIRE\nadd dofire 1\nendevent\nappendevent EVENT_POSTWEAPONSHOOT\nadd post 1\ngetplayer[THISACTOR].curr_weapon post_weapon\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        session.player.curr_weapon = crate::weapons::PISTOL_WEAPON;
+        session.player.weapon_pos = 0;
+        session.player.last_weapon = -1;
+        session.player.ammo[crate::weapons::PISTOL_WEAPON as usize] = 5;
+
+        session.tick(DukeInput::default());
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("dofire", 0, 0),
+            Ok(0)
+        );
+        // EDuke32's configurable pistol fires on FIREDELAY (kickback 2).
+        for _ in 0..2 {
+            session.tick(DukeInput {
+                bits: INPUT_FIRE,
+                ..DukeInput::default()
+            });
+        }
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(
+            session.player.ammo[crate::weapons::PISTOL_WEAPON as usize],
+            4
+        );
+        assert_eq!(vm.get_variable("dofire", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("post", 0, 0), Ok(1));
+        assert_eq!(
+            vm.get_variable("post_weapon", 0, 0),
+            Ok(i32::from(crate::weapons::PISTOL_WEAPON))
+        );
+    }
+
+    fn slot12_weapon_session(block_dofire: i32, flags: i32) -> DukeSession {
+        let image = crate::con::compile_with_options(
+            b"var dofire 0 0\nvar post 0 0\nvar post_ammo -1 0\nvar block 0 0\nappendevent EVENT_DOFIRE\nadd dofire 1\nset RETURN block\nendevent\nappendevent EVENT_POSTWEAPONSHOOT\nadd post 1\ngetp[THISACTOR].ammo_amount 12 post_ammo\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        session.player.curr_weapon = EXTRA_WEAPON;
+        session.player.weapon_pos = 0;
+        session.player.last_weapon = -1;
+        session.player.extra_weapon_got = true;
+        session.player.extra_weapon_max_ammo = 50;
+        session.player.extra_weapon_ammo = 10;
+        let actor = usize::try_from(session.player.sprite_i).unwrap();
+        let vm = session.eduke_vm_state.as_mut().unwrap();
+        for (name, value) in [
+            ("WEAPON12_WORKSLIKE", 1),
+            ("WEAPON12_FLAGS", flags),
+            ("WEAPON12_FIREDELAY", 1),
+            ("WEAPON12_TOTALTIME", 4),
+            ("WEAPON12_SHOTSPERBURST", 1),
+            ("WEAPON12_SHOOTS", 0),
+            ("WEAPON12_SPAWN", 0),
+            ("block", block_dofire),
+        ] {
+            vm.set_variable(name, 0, actor, value).unwrap();
+        }
+        session
+    }
+
+    #[test]
+    fn slot12_weapon_follows_its_weapon12_gamevars() {
+        let mut session = slot12_weapon_session(0, 0);
+        let fire = DukeInput {
+            bits: INPUT_FIRE,
+            ..DukeInput::default()
+        };
+        // FIREDELAY 1 / TOTALTIME 4: a shot on kickback 1, then three idle
+        // tics and a reset before the held trigger fires again.
+        let mut kickbacks = Vec::new();
+        for _ in 0..6 {
+            session.tick(fire);
+            kickbacks.push(session.player.kickback_pic);
+        }
+        assert_eq!(kickbacks, [1, 2, 3, 0, 1, 2]);
+        assert_eq!(session.player.extra_weapon_ammo, 8);
+        assert_eq!(session.player.visibility, 0);
+        let actor = usize::try_from(session.player.sprite_i).unwrap();
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("dofire", 0, actor), Ok(2));
+        assert_eq!(vm.get_variable("post", 0, actor), Ok(2));
+        // Struct access reaches slot 12 (ammo already spent for the shot).
+        assert_eq!(vm.get_variable("post_ammo", 0, actor), Ok(8));
+        assert_eq!(session.player.curr_weapon, EXTRA_WEAPON);
+    }
+
+    #[test]
+    fn slot12_dofire_return_cancels_the_round_and_automatic_restarts() {
+        let fire = DukeInput {
+            bits: INPUT_FIRE,
+            ..DukeInput::default()
+        };
+        let mut cancelled = slot12_weapon_session(1, 0);
+        for _ in 0..3 {
+            cancelled.tick(fire);
+        }
+        assert_eq!(cancelled.player.extra_weapon_ammo, 10);
+        let actor = usize::try_from(cancelled.player.sprite_i).unwrap();
+        assert_eq!(
+            cancelled
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("post", 0, actor),
+            Ok(0)
+        );
+
+        // WEAPON_AUTOMATIC: a held trigger restarts at kickback 1.
+        let mut automatic = slot12_weapon_session(0, EDUKE_WEAPON_AUTOMATIC);
+        let mut kickbacks = Vec::new();
+        for _ in 0..6 {
+            automatic.tick(fire);
+            kickbacks.push(automatic.player.kickback_pic);
+        }
+        assert_eq!(kickbacks, [1, 2, 3, 1, 2, 3]);
+        assert_eq!(automatic.player.extra_weapon_ammo, 8);
+
+        // Out of ammunition, P_CheckWeapon switches away on the next round.
+        let mut empty = slot12_weapon_session(0, 0);
+        empty.player.extra_weapon_ammo = 1;
+        empty.player.gotweapon[crate::weapons::PISTOL_WEAPON as usize] = true;
+        empty.player.ammo[crate::weapons::PISTOL_WEAPON as usize] = 5;
+        for _ in 0..3 {
+            empty.tick(fire);
+        }
+        assert_eq!(empty.player.extra_weapon_ammo, 0);
+        assert_ne!(empty.player.curr_weapon, EXTRA_WEAPON);
+    }
+
+    fn quick_turn_session(script: Option<&[u8]>) -> DukeSession {
+        let mut session = DukeSession::new();
+        if let Some(source) = script {
+            let image = crate::con::compile_with_options(
+                source,
+                &mut crate::con::NullIncludes,
+                crate::con::ConCompileOptions {
+                    dialect: ConDialect::EDuke32,
+                },
+            );
+            assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+            session
+                .try_load_script(image)
+                .expect("EDuke32 runtime state");
+        }
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        session
+    }
+
+    #[test]
+    fn turn_around_key_turns_the_player_half_a_circle_over_eight_tics() {
+        let mut session = quick_turn_session(None);
+        session.player.ang = 256;
+        let turn = DukeInput {
+            bits: INPUT_TURNAROUND,
+            ..DukeInput::default()
+        };
+        session.tick(turn);
+        assert_eq!(session.player.ang, 256 + 128);
+        assert_eq!(session.player.one_eighty_count, -1024 + 128);
+        // Holding the key does not restart the turn.
+        for _ in 0..7 {
+            session.tick(turn);
+        }
+        assert_eq!(session.player.one_eighty_count, 0);
+        assert_eq!(i32::from(session.player.ang) & 2047, 256 + 1024);
+        session.tick(turn);
+        assert_eq!(session.player.one_eighty_count, 0);
+        // A fresh press starts another turn.
+        session.tick(DukeInput::default());
+        session.tick(turn);
+        assert_eq!(session.player.one_eighty_count, -1024 + 128);
+    }
+
+    #[test]
+    fn eduke_turnaround_return_keeps_the_player_facing_ahead() {
+        let mut session = quick_turn_session(Some(
+            b"var turns 0 0\nappendevent EVENT_TURNAROUND\nadd turns 1\nset RETURN 1\nendevent\n",
+        ));
+        session.player.ang = 512;
+        session.tick(DukeInput {
+            bits: INPUT_TURNAROUND,
+            ..DukeInput::default()
+        });
+        assert_eq!(session.player.ang, 512);
+        assert_eq!(session.player.one_eighty_count, 0);
+        let actor = usize::try_from(session.player.sprite_i).unwrap();
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("turns", 0, actor),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn eduke_displaymenu_runs_on_live_state_with_the_menu_id() {
+        let mut session = quick_turn_session(Some(
+            b"var seen -1 0\nappendevent EVENT_DISPLAYMENU\nset seen RETURN\nset RETURN 7\nendevent\n",
+        ));
+        assert_eq!(session.run_eduke_menu_display(50), Some(7));
+        let actor = usize::try_from(session.player.sprite_i).unwrap();
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("seen", 0, actor),
+            Ok(50)
+        );
+        // Without a hook nothing runs.
+        let mut plain = quick_turn_session(Some(b"var x 0 0\n"));
+        assert_eq!(plain.run_eduke_menu_display(50), None);
+    }
+
+    #[test]
+    fn eduke_surface_damage_events_run_and_can_cancel_the_hit() {
+        let image = crate::con::compile_with_options(
+            b"define WALLTILE 50\ndamageeventtile WALLTILE\nvar wall_hit -1 0\nvar wall_actor -1 0\nvar plane -1 0\nvar planes 0 0\nappendevent EVENT_DAMAGEWALL\nset wall_hit RETURN\nset wall_actor THISACTOR\nset RETURN -1\nendevent\nappendevent EVENT_DAMAGEHPLANE\nset plane RETURN\nadd planes 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.sectors.push(SectorT {
+            wallptr: 0,
+            wallnum: 4,
+            ceilingz: -(64 << 8),
+            floorz: 0,
+            ..SectorT::default()
+        });
+        for (index, (x, y)) in [(0, 0), (2048, 0), (2048, 2048), (0, 2048)]
+            .into_iter()
+            .enumerate()
+        {
+            world.walls.push(WallT {
+                x,
+                y,
+                point2: ((index + 1) % 4) as i16,
+                nextsector: -1,
+                nextwall: -1,
+                picnum: if index == 1 { 50 } else { 0 },
+                ..WallT::default()
+            });
+        }
+        world.numsectors = 1;
+        world.numwalls = 4;
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        let _ = crate::weapons_move::take_pending_surface_damage();
+        let shooter = session.player.sprite_i;
+        let source = session.world.as_ref().unwrap().sprites[shooter as usize];
+        {
+            let world = session.world.as_mut().unwrap();
+            // A hit on the plain wall applies at once; the flagged one waits.
+            for wall in [0, 1] {
+                let _ = crate::weapons_move::apply_checkhitwall(
+                    &mut session.lists,
+                    world.sprites.as_mut(),
+                    &world.sectors[..1],
+                    &mut world.walls[..4],
+                    &mut session.picnum,
+                    &mut session.actor_temps,
+                    &mut session.randomseed,
+                    source,
+                    shooter,
+                    -1,
+                    wall,
+                    1024,
+                    1024,
+                    -(32 << 8),
+                    0,
+                    session.script.as_ref(),
+                );
+            }
+            crate::weapons_move::queue_floor_damage(
+                session.script.as_ref(),
+                &world.sectors[..1],
+                shooter,
+                0,
+            );
+        }
+        let mut inputs = vec![DukeInput::default()];
+        session.run_eduke_surface_damage_events(&mut inputs);
+        assert!(crate::weapons_move::take_pending_surface_damage().is_empty());
+        let actor = usize::try_from(shooter).unwrap();
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("wall_hit", 0, actor), Ok(1));
+        assert_eq!(
+            vm.get_variable("wall_actor", 0, actor),
+            Ok(i32::from(shooter))
+        );
+        // Only the floor hit reached EVENT_DAMAGEHPLANE (131072 + sector 0).
+        assert_eq!(vm.get_variable("plane", 0, actor), Ok(131_072));
+        assert_eq!(vm.get_variable("planes", 0, actor), Ok(1));
+
+        // Atomic sessions never defer.
+        let world = session.world.as_mut().unwrap();
+        let _ = crate::weapons_move::apply_checkhitwall(
+            &mut session.lists,
+            world.sprites.as_mut(),
+            &world.sectors[..1],
+            &mut world.walls[..4],
+            &mut session.picnum,
+            &mut session.actor_temps,
+            &mut session.randomseed,
+            source,
+            shooter,
+            -1,
+            1,
+            1024,
+            1024,
+            0,
+            0,
+            None,
+        );
+        assert!(crate::weapons_move::take_pending_surface_damage().is_empty());
+    }
+
+    #[test]
+    fn eduke_pistol_follows_weapon1_gamevars_and_dofire_can_cancel_it() {
+        let fire = DukeInput {
+            bits: INPUT_FIRE,
+            ..DukeInput::default()
+        };
+        let run = |block: i32| {
+            let mut session = quick_turn_session(Some(
+                b"var block 0 0\nvar post 0 0\nappendevent EVENT_DOFIRE\nset RETURN block\nendevent\nappendevent EVENT_POSTWEAPONSHOOT\nadd post 1\nendevent\n",
+            ));
+            session.player.curr_weapon = 1;
+            session.player.gotweapon[1] = true;
+            session.player.ammo[1] = 20;
+            session.player.weapon_pos = 0;
+            session.player.last_weapon = -1;
+            session.player.kickback_pic = 0;
+            let actor = usize::try_from(session.player.sprite_i).unwrap();
+            let vm = session.eduke_vm_state.as_mut().unwrap();
+            for (name, value) in [
+                ("WEAPON1_CLIP", 0),
+                ("WEAPON1_TOTALTIME", 8),
+                ("block", block),
+            ] {
+                vm.set_variable(name, 0, actor, value).unwrap();
+            }
+            let mut kickbacks = Vec::new();
+            for _ in 0..9 {
+                session.tick(fire);
+                kickbacks.push(session.player.kickback_pic);
+            }
+            let post = session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("post", 0, actor);
+            (kickbacks, session.player.ammo[1], post)
+        };
+        // FIREDELAY 2 (Atomic default) with the script's TOTALTIME 8: one
+        // round per eight-tic cycle, then the held trigger starts the next.
+        let (kickbacks, ammo, post) = run(0);
+        assert_eq!(kickbacks, [1, 2, 3, 4, 5, 6, 7, 0, 1]);
+        assert_eq!(ammo, 19);
+        assert_eq!(post, Ok(1));
+        // A non-zero EVENT_DOFIRE RETURN keeps the round and skips the shot.
+        let (_, ammo, post) = run(1);
+        assert_eq!(ammo, 20);
+        assert_eq!(post, Ok(0));
+    }
+
+    #[test]
+    fn eduke_endofgame_counts_down_then_routes_to_the_episode_end() {
+        let mut session = quick_turn_session(Some(
+            b"var done 0 0\nappendevent EVENT_GAME\nife done 0\n{\nendofgame 4\nset done 1\n}\nendevent\n",
+        ));
+        session.campaign = crate::campaign::DukeCampaignProgress::new(0, 3);
+        let mut transition = None;
+        for _ in 0..12 {
+            session.tick(DukeInput::default());
+            if let Some(next) = session.take_campaign_exit_request() {
+                transition = Some(next);
+                break;
+            }
+        }
+        assert_eq!(
+            transition,
+            Some(crate::campaign::DukeCampaignTransition::EndGame)
+        );
+        assert!(!session.player.end_of_game);
+    }
+
+    #[test]
+    fn select_weapon_sees_a_direct_key_for_the_weapon_in_hand() {
+        let image = crate::con::compile_with_options(
+            b"appendevent EVENT_SELECTWEAPON\nife RETURN 3 set RETURN 12\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        session.player.gotweapon[3] = true;
+        session.player.ammo[3] = 50;
+        session.player.curr_weapon = 3;
+        session.player.weapon_pos = 0;
+        session.player.last_weapon = -1;
+        session.player.extra_weapon_got = true;
+        session.player.extra_weapon_ammo = 20;
+        // Key 4 (chaingun) while holding the chaingun: Brutal's MP5 toggle.
+        session.tick(DukeInput {
+            bits: 4 << crate::weapons::INPUT_WEAPON_SHIFT,
+            ..DukeInput::default()
+        });
+        assert_eq!(session.player.curr_weapon, EXTRA_WEAPON);
+    }
+
+    #[test]
+    fn slot12_struct_access_and_selection_use_the_extra_fields() {
+        let mut player = Player::default();
+        assert!(!crate::weapons::switch_to_owned_weapon(
+            &mut player,
+            EXTRA_WEAPON
+        ));
+        player.extra_weapon_max_ammo = 30;
+        assert!(crate::weapons::con_weapon_op(
+            &mut player,
+            true,
+            EXTRA_WEAPON,
+            40
+        ));
+        assert!(player.extra_weapon_got);
+        assert_eq!(player.curr_weapon, EXTRA_WEAPON);
+        assert_eq!(player.extra_weapon_ammo, 30);
+        // Full: `addammo` aborts like Chocolate's killit_flag 2.
+        assert!(!crate::weapons::con_weapon_op(
+            &mut player,
+            false,
+            EXTRA_WEAPON,
+            5
+        ));
+        assert!(!crate::weapons::checkavailweapon(&mut player));
+        assert_eq!(player.ammo.len(), 12);
+    }
+
+    #[test]
+    fn eduke_incurdamage_sees_the_pending_hit_and_can_skip_armor() {
+        let image = crate::con::compile_with_options(
+            b"var seen 0 0\nvar seen_extra 0 0\nvar block 0 0\nappendevent EVENT_INCURDAMAGE\nadd seen 1\ngetactor[THISACTOR].extra seen_extra\nset RETURN block\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let health_after_hit = |block: i32| {
+            let mut session = DukeSession::new();
+            session
+                .try_load_script(image.clone())
+                .expect("EDuke32 runtime state");
+            let mut world = BuildWorld::new();
+            world.numsectors = 1;
+            world.sectors.push(SectorT {
+                ceilingz: -4096,
+                floorz: 0,
+                ..SectorT::default()
+            });
+            world.start = [1024, 1024, 0];
+            world.start_sector = 0;
+            session.set_world_with_skill(world, 2);
+            session
+                .eduke_vm_state
+                .as_mut()
+                .unwrap()
+                .set_variable("block", 0, 0, block)
+                .unwrap();
+            let body = usize::try_from(session.player.sprite_i).unwrap();
+            session.player.shield_amount = 100;
+            session.player.extra = 100;
+            session.player.last_extra = 100;
+            session.world.as_mut().unwrap().sprites[body].extra = 100;
+            if session.actor_temps.len() <= body {
+                session
+                    .actor_temps
+                    .resize_with(body + 1, ActorConTemps::default);
+            }
+            let temps = &mut session.actor_temps[body];
+            temps.hit_extra = 10;
+            temps.hit_picnum = 1;
+            temps.hit_owner = -1;
+            session.tick(DukeInput::default());
+            let vm = session.eduke_vm_state.as_ref().unwrap();
+            assert_eq!(vm.get_variable("seen", 0, 0), Ok(1));
+            assert_eq!(vm.get_variable("seen_extra", 0, 0), Ok(90));
+            session.player.extra
+        };
+        assert!(health_after_hit(0) > 90, "armor absorbs part of the hit");
+        assert_eq!(health_after_hit(1), 90, "RETURN skips armor");
+    }
+
+    #[test]
+    fn eduke_activatecheat_sees_and_can_replace_the_cheat_index() {
+        let image = crate::con::compile_with_options(
+            b"var seen -1 0\nappendevent EVENT_ACTIVATECHEAT\nset seen RETURN\nifvare RETURN 23 set RETURN 21\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 runtime state");
+        let mut world = BuildWorld::new();
+        world.numsectors = 1;
+        world.sectors.push(SectorT {
+            ceilingz: -4096,
+            floorz: 0,
+            ..SectorT::default()
+        });
+        world.start = [1024, 1024, 0];
+        world.start_sector = 0;
+        session.set_world_with_skill(world, 2);
+        session.player.got_access = 0;
+        session.player.gotweapon = [false; 12];
+
+        // "keys" is CHEAT_KEYS (23); the script turns it into CHEAT_WEAPONS.
+        let _ = session.apply_player_cheat("keys");
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("seen", 0, 0),
+            Ok(23)
+        );
+        assert_eq!(session.player.got_access, 0);
+        assert!(session.player.gotweapon[crate::weapons::SHOTGUN_WEAPON as usize]);
+
+        let _ = session.apply_player_cheat("stuff");
+        assert_eq!(
+            session
+                .eduke_vm_state
+                .as_ref()
+                .unwrap()
+                .get_variable("seen", 0, 0),
+            Ok(1)
+        );
+    }
+
+    #[test]
     fn eduke_fire_event_can_suppress_weapon_fire_without_erasing_input() {
         let image = crate::con::compile_with_options(
             b"var block_fire 1 0\nvar fire_events 0 0\nvar fire_player 0 0\nvar fire_actor 0 0\nvar fire_initial_return 0 0\nappendevent EVENT_FIRE\nadd fire_events 1\nset fire_player THISPLAYER\nset fire_actor THISACTOR\nset fire_initial_return RETURN\nset RETURN block_fire\nendevent\n",
@@ -62728,6 +65755,13 @@ mod tests {
         let vm = session.eduke_vm_state.as_ref().unwrap();
         assert_eq!(vm.get_variable("fire_events", 0, 0), Ok(2));
         assert_eq!(vm.get_variable("fire_initial_return", 0, 0), Ok(0));
+        // EDuke32's configurable pistol starts its kickback here and fires
+        // on FIREDELAY (the next tic).
+        assert_eq!(session.player.kickback_pic, 1);
+        session.tick(DukeInput {
+            bits: INPUT_FIRE,
+            ..DukeInput::default()
+        });
         assert_eq!(session.player.kickback_pic, 2);
         assert_eq!(
             session.player.ammo[crate::weapons::PISTOL_WEAPON as usize],
@@ -63300,7 +66334,11 @@ mod tests {
         assert_eq!(projectile.yrepeat, 8);
         assert_eq!(projectile.clipdist, 12);
         assert_eq!(projectile.cstat, 257);
-        assert_eq!(projectile.shade, -22);
+        // EDuke32 spawns the projectile at shade 0 and gives the shooter
+        // the definition's shade (its muzzle flash): the later NOCLIP_TILE
+        // shot has none declared, so the shooter ends at the -96 default.
+        assert_eq!(projectile.shade, 0);
+        assert_eq!(world.sprites[parent].shade, -96);
         assert_eq!(projectile.pal, 6);
         assert_eq!(projectile.extra, 3);
         assert_eq!(projectile.yvel, 7);
@@ -63484,10 +66522,17 @@ mod tests {
             })
             .count();
         assert_eq!(bubbles, 1);
+        // EDuke32 `Proj_InsertShotspark`: the impact is a SHOTSPARK1 tagged
+        // with the projectile tile, and the hit is a SHOTSPARK1 hit.
+        assert_eq!(world.sprites[fired].picnum, crate::shoot::SHOTSPARK1);
+        assert_eq!(world.sprites[fired].yvel, 9_000);
         assert_eq!(
-            session.actor_temps[target].hit_picnum, 9_000,
+            session.actor_temps[target].hit_picnum,
+            crate::shoot::SHOTSPARK1,
             "fired id={fired} sprite={:?}, target id={target} sprite={:?}, target temps={:?}",
-            world.sprites[fired], world.sprites[target], session.actor_temps[target]
+            world.sprites[fired],
+            world.sprites[target],
+            session.actor_temps[target]
         );
         assert_eq!(session.actor_temps[target].hit_extra, 12);
         assert_eq!(session.coop_players[0].horiz, old_horiz.wrapping_add(32));
@@ -64305,6 +67350,124 @@ mod tests {
     }
 
     #[test]
+    fn eduke_damage_events_see_the_blast_sprite_and_its_radius_payload() {
+        let image = crate::con::compile_with_options(
+            b"define TARGET 9001\ndamageeventtile TARGET\nvar dmg_source -1 0\nvar dmg_radius -9 0\nvar dmg_band -9 0\nvar post_radius -9 0\nappendevent EVENT_GAME\nhitradius 640 5 10 20 40\nendevent\nappendevent EVENT_DAMAGESPRITE\nset dmg_source THISACTOR\ngetuserdef[].return 1 dmg_radius\ngetuserdef[].return 4 dmg_band\nendevent\nappendevent EVENT_POSTDAMAGESPRITE\ngetuserdef[].return 1 post_radius\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session.set_tile_meta(vec![TileZMeta::default(); 9002]);
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        let (source, target) = {
+            let world = session.world.as_mut().unwrap();
+            world.numsectors = 1;
+            world.sectors.push(SectorT::default());
+            let source = world.lists.insertsprite(0, crate::stat::STAT_ACTOR);
+            let target = world.lists.insertsprite(0, crate::stat::STAT_DEFAULT);
+            world.sprites[source as usize].extra = 20;
+            world.sprites[source as usize].sectnum = 0;
+            world.sprites[source as usize].picnum = 9000;
+            world.sprites[source as usize].owner = 77;
+            world.sprites[target as usize].extra = 100;
+            world.sprites[target as usize].sectnum = 0;
+            world.sprites[target as usize].picnum = 9001;
+            world.sprites[target as usize].cstat = 257;
+            world.sprites[target as usize].x = 100;
+            (source as usize, target as usize)
+        };
+        session
+            .execute_eduke_event("EVENT_GAME", 0, source, 128, 8)
+            .expect("blast event applies through the live adapter");
+        assert_eq!(session.actor_temps[target].hit_source, source as i16);
+        let mut inputs = vec![DukeInput::default()];
+        let mut budget = EDUKE_GAME_EVENT_INSTRUCTION_BUDGET;
+        session.run_eduke_damage_events(&mut inputs, &mut budget);
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        // THISACTOR is the exploding sprite, not its owner (77).
+        assert_eq!(vm.get_variable("dmg_source", 0, 0), Ok(source as i32));
+        // `return 1` = blast radius, `return 4` = the third band (dmg3).
+        assert_eq!(vm.get_variable("dmg_radius", 0, 0), Ok(640));
+        assert_eq!(vm.get_variable("dmg_band", 0, 0), Ok(20));
+        assert_eq!(vm.get_variable("post_radius", 0, 0), Ok(640));
+        assert_eq!(session.actor_temps[target].hit_source, -1);
+    }
+
+    #[test]
+    fn eduke_defined_projectile_sets_the_shooter_shade_unless_nosetownershade() {
+        let run = |workslike: i32| {
+            let source = format!(
+                "define SHOT 9000\ndefineprojectile SHOT PROJ_WORKSLIKE {workslike}\ndefineprojectile SHOT PROJ_VEL 300\nappendevent EVENT_GAME\neshoot SHOT\nendevent\n"
+            );
+            let image = crate::con::compile_with_options(
+                source.as_bytes(),
+                &mut crate::con::NullIncludes,
+                crate::con::ConCompileOptions {
+                    dialect: ConDialect::EDuke32,
+                },
+            );
+            assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+            let mut session = DukeSession::new();
+            session
+                .try_load_script(image)
+                .expect("EDuke32 script declarations");
+            session.world = Some(BuildWorld::new());
+            let shooter = {
+                let world = session.world.as_mut().unwrap();
+                world.numsectors = 1;
+                world.sectors.push(SectorT::default());
+                let shooter = world.lists.insertsprite(0, crate::stat::STAT_ACTOR) as usize;
+                world.sprites[shooter].sectnum = 0;
+                world.sprites[shooter].picnum = 9001;
+                world.sprites[shooter].shade = 5;
+                world.sprites[shooter].extra = 10;
+                shooter
+            };
+            session
+                .execute_eduke_event("EVENT_GAME", 0, shooter, 256, 8)
+                .expect("eshoot runs");
+            session.world.as_ref().unwrap().sprites[shooter].shade
+        };
+        // PROJECTILE_RPG | NOAIM: the default -96 muzzle flash.
+        assert_eq!(run(2 | 4096), -96);
+        // ... unless PROJECTILE_NOSETOWNERSHADE.
+        assert_eq!(
+            run(2 | 4096 | crate::shoot::PROJECTILE_FLAG_NOSETOWNERSHADE),
+            5
+        );
+    }
+
+    #[test]
+    fn eduke_actorvar_operand_reads_another_actors_variable() {
+        let image = crate::con::compile_with_options(
+            b"var flag 0 2\nvar out -1 0\nvar cmp 0 0\nappendevent EVENT_GAME\nsetactorvar[5].flag 7\nset out actorvar[5].flag\nife actorvar[5].flag 7 set cmp 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut session = DukeSession::new();
+        session
+            .try_load_script(image)
+            .expect("EDuke32 script declarations");
+        session.world = Some(BuildWorld::new());
+        session
+            .execute_eduke_event("EVENT_GAME", 0, 1, 128, 8)
+            .expect("event runs");
+        let vm = session.eduke_vm_state.as_ref().unwrap();
+        assert_eq!(vm.get_variable("out", 0, 1), Ok(7));
+        assert_eq!(vm.get_variable("cmp", 0, 1), Ok(1));
+        assert_eq!(vm.get_variable("flag", 0, 1), Ok(0));
+    }
+
+    #[test]
     fn eduke_pkick_queues_player_action_and_skips_aplayer_sources() {
         let image = crate::con::compile_with_options(
             b"appendevent EVENT_GAME\npkick\nendevent\n",
@@ -64563,7 +67726,7 @@ mod tests {
     }
 
     #[test]
-    fn eduke_actor_alpha_checks_the_documented_byte_range() {
+    fn eduke_actor_alpha_clamps_out_of_range_writes_like_the_float_store() {
         let mut world = BuildWorld::new();
         let script = ScriptImage::default();
         let mut tile_meta = Vec::new();
@@ -64605,15 +67768,19 @@ mod tests {
         access
             .set_member(EdStructKind::Actor, 7, "alpha", None, 255)
             .expect("maximum EDuke32 alpha is valid");
-        assert!(matches!(
-            access.set_member(EdStructKind::Actor, 7, "alpha", None, 256),
-            Err(EdukeVmError::StructMemberValueOutOfRange { .. })
-        ));
+        // EDuke32 stores `value / 255` as a float without a range check:
+        // writes above 255 stay fully transparent and below 0 opaque.
+        access
+            .set_member(EdStructKind::Actor, 7, "alpha", None, 260)
+            .expect("EDuke32 accepts any alpha value");
         assert_eq!(
             access.get_member(EdStructKind::Actor, 7, "alpha", None),
             Ok(255)
         );
-        assert_eq!(actor_temps[7].sprite_ext.alpha, 255);
+        access
+            .set_member(EdStructKind::Actor, 7, "alpha", None, -5)
+            .expect("EDuke32 accepts any alpha value");
+        assert_eq!(actor_temps[7].sprite_ext.alpha, 0);
     }
 
     #[test]
@@ -65483,6 +68650,8 @@ mod tests {
             sectnum: 0,
             xrepeat: 32,
             yrepeat: 32,
+            // A living player: `P_DisplayWeapon` skips its event for a dead one.
+            extra: 100,
             ..SpriteT::default()
         };
         session.player.sprite_i = actor as i16;
@@ -65815,5 +68984,89 @@ mod tests {
         assert_eq!(s.tic_rate(), 30);
         s.tick(DukeInput::default());
         assert_eq!(s.tic, 1);
+    }
+}
+
+/// Copy every Build sprite list in place: a single pass over ~200 KB, where
+/// `*dst = src.clone()` builds a temporary and moves it (two copies).
+fn copy_sprite_lists(dst: &mut SpriteLists, src: &SpriteLists) {
+    let SpriteLists {
+        headspritesect,
+        headspritestat,
+        prevspritesect,
+        nextspritesect,
+        prevspritestat,
+        nextspritestat,
+        sprite_sect,
+        sprite_stat,
+    } = src;
+    dst.headspritesect = *headspritesect;
+    dst.headspritestat = *headspritestat;
+    dst.prevspritesect = *prevspritesect;
+    dst.nextspritesect = *nextspritesect;
+    dst.prevspritestat = *prevspritestat;
+    dst.nextspritestat = *nextspritestat;
+    dst.sprite_sect = *sprite_sect;
+    dst.sprite_stat = *sprite_stat;
+}
+
+/// ASCII-lowercased structure member name, kept on the stack for the short
+/// names CON uses (ED9: one heap string per `get*` / `set*` access before).
+enum LowerKey<'a> {
+    /// Already lowercase (the common case): no copy at all.
+    Borrowed(&'a str),
+    Inline([u8; 32], usize),
+    Heap(String),
+}
+
+impl<'a> LowerKey<'a> {
+    fn new(name: &'a str) -> Self {
+        if !name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Self::Borrowed(name)
+        } else if name.len() <= 32 {
+            let mut bytes = [0u8; 32];
+            for (out, byte) in bytes.iter_mut().zip(name.bytes()) {
+                *out = byte.to_ascii_lowercase();
+            }
+            Self::Inline(bytes, name.len())
+        } else {
+            Self::Heap(name.to_ascii_lowercase())
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            // Lowercasing ASCII bytes keeps UTF-8 valid at the same length.
+            Self::Inline(bytes, len) => std::str::from_utf8(&bytes[..*len]).unwrap_or_default(),
+            Self::Borrowed(name) => name,
+            Self::Heap(name) => name,
+        }
+    }
+}
+
+/// EDuke32 `DukePlayer_t::palette` as `P_UpdateScreenPal` leaves it: an
+/// explicit CON game palette, else SLIMEPAL (2) for heat vision or a
+/// FLOORSLIME ceiling, WATERPAL (1) underwater, BASEPAL (0) otherwise. Room
+/// derives the environment palette when drawing; this keeps `getp .palette`
+/// in step with what is shown.
+fn effective_game_palette(player: &Player, sectors: &[SectorT]) -> i32 {
+    if player.game_palette != 0 {
+        return player.game_palette;
+    }
+    if player.heat_on {
+        return 2;
+    }
+    let Some(sector) = usize::try_from(player.cursectnum)
+        .ok()
+        .and_then(|index| sectors.get(index))
+    else {
+        return 0;
+    };
+    if (200..=202).contains(&sector.ceilingpicnum) {
+        2
+    } else if sector.lotag == 2 {
+        1
+    } else {
+        0
     }
 }

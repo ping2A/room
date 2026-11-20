@@ -162,6 +162,9 @@ pub struct ScriptImage {
     pub eduke_program: EdukeProgram,
     /// EDuke32 event names and program instruction entry positions in source order.
     pub eduke_event_entries: Vec<(String, usize, bool)>,
+    /// Uppercased event name → positions in `eduke_event_entries`, in source
+    /// order. Kept in step by [`ScriptImage::push_eduke_event_entry`].
+    pub eduke_event_index: BTreeMap<String, Vec<usize>>,
     /// EDuke32 actor tiles and their compiled VM body entry positions.
     pub eduke_actor_entries: BTreeMap<i16, usize>,
     /// EDuke32 state names and program instruction entry positions in source order.
@@ -216,6 +219,36 @@ pub struct ScriptImage {
 }
 
 impl ScriptImage {
+    /// Register one EDuke32 event hook entry (source order).
+    pub fn push_eduke_event_entry(&mut self, name: String, entry: usize, appended: bool) {
+        self.eduke_event_index
+            .entry(name.to_ascii_uppercase())
+            .or_default()
+            .push(self.eduke_event_entries.len());
+        self.eduke_event_entries.push((name, entry, appended));
+    }
+
+    /// Positions in `eduke_event_entries` of the hooks for `event`, compared
+    /// case-insensitively, in source order.
+    #[must_use]
+    pub fn eduke_event_hooks(&self, event: &str) -> &[usize] {
+        if let Some(hooks) = self.eduke_event_index.get(event) {
+            return hooks;
+        }
+        if event.bytes().any(|byte| byte.is_ascii_lowercase())
+            && let Some(hooks) = self.eduke_event_index.get(&event.to_ascii_uppercase())
+        {
+            return hooks;
+        }
+        &[]
+    }
+
+    /// Whether any hook is registered for `event` (case-insensitive).
+    #[must_use]
+    pub fn has_eduke_event(&self, event: &str) -> bool {
+        !self.eduke_event_hooks(event).is_empty()
+    }
+
     /// Empty image with `script[0]` reserved.
     #[must_use]
     pub fn new() -> Self {
@@ -229,6 +262,7 @@ impl ScriptImage {
             eduke_events: Vec::new(),
             eduke_program: EdukeProgram::default(),
             eduke_event_entries: Vec::new(),
+            eduke_event_index: BTreeMap::new(),
             eduke_actor_entries: BTreeMap::new(),
             eduke_state_entries: Vec::new(),
             eduke_projectiles: Vec::new(),
@@ -542,6 +576,20 @@ fn compile_into(cx: &mut Cx<'_>, src: &[u8], includes: &mut dyn IncludeResolver)
             break;
         }
     }
+}
+
+/// EDuke32 `break` outside a switch or loop leaves the current body. In an
+/// event block it jumps to that block's end, and `appendevent` / `onevent`
+/// chaining retargets it to the next block (`C_FillEventBreakStackWithJump`),
+/// so later handlers of the same event still run; in a state or actor it
+/// returns from that body.
+fn emit_eduke_body_break(cx: &mut Cx<'_>) {
+    let instruction = if cx.parsing_event && !cx.parsing_state && cx.parsing_actor.is_none() {
+        EdInstruction::EndEvent
+    } else {
+        EdInstruction::Return
+    };
+    cx.img.eduke_program.instructions.push(instruction);
 }
 
 fn in_body(cx: &Cx<'_>) -> bool {
@@ -1020,7 +1068,7 @@ fn parse_eduke_vm_command(
     includes: &mut dyn IncludeResolver,
     command: &str,
 ) -> bool {
-    let command = command.to_ascii_lowercase();
+    let command = eduke_legacy_alias(&command.to_ascii_lowercase());
     if command == "state" && !in_body(cx) {
         if let Some(name) = lx.next_token() {
             begin_eduke_state_fragment(cx, name, EdStateFragmentKind::Define, false);
@@ -1105,8 +1153,8 @@ fn parse_eduke_vm_command(
             initial_value: "0".to_owned(),
             flags: Vec::new(),
         });
-        let counter = EdLValue::Variable(counter_name.clone());
-        let limit = EdLValue::Variable(limit_name.clone());
+        let counter = EdLValue::Variable(counter_name.clone().into());
+        let limit = EdLValue::Variable(limit_name.clone().into());
         cx.img
             .eduke_program
             .instructions
@@ -1126,9 +1174,9 @@ fn parse_eduke_vm_command(
             .eduke_program
             .instructions
             .push(EdInstruction::JumpIf {
-                left: EdOperand::Variable(counter_name.clone()),
+                left: EdOperand::Variable(counter_name.clone().into()),
                 comparison: EdComparison::GreaterEqual,
-                right: EdOperand::Variable(limit_name),
+                right: EdOperand::Variable(limit_name.into()),
                 target: 0,
             });
         cx.img
@@ -1136,7 +1184,7 @@ fn parse_eduke_vm_command(
             .instructions
             .push(EdInstruction::Assign {
                 target: iterator.clone(),
-                value: EdOperand::Variable(counter_name),
+                value: EdOperand::Variable(counter_name.into()),
             });
         cx.eduke_break_stack.push(Vec::new());
         compile_eduke_body(cx, lx, includes, fields.get(3..).unwrap_or_default());
@@ -1241,7 +1289,7 @@ fn parse_eduke_vm_command(
             cx.img
                 .eduke_program
                 .instructions
-                .push(EdInstruction::CallState { name });
+                .push(EdInstruction::CallState { name: name.into() });
         } else {
             cx.record_error();
             cx.emit_eduke_noop();
@@ -1323,12 +1371,7 @@ fn parse_eduke_vm_command(
                 .push(EdInstruction::Jump { target: 0 });
             breaks.push(jump);
         } else {
-            // EDuke32 `break` also exits the current actor/state/event body;
-            // outside a CON loop that is a return from this VM invocation.
-            cx.img
-                .eduke_program
-                .instructions
-                .push(EdInstruction::Return);
+            emit_eduke_body_break(cx);
         }
         return true;
     }
@@ -1647,7 +1690,10 @@ fn compile_eduke_nested_condition(
     includes: &mut dyn IncludeResolver,
     fields: &[String],
 ) -> bool {
-    let Some(command) = fields.first().map(|field| field.to_ascii_lowercase()) else {
+    let Some(command) = fields
+        .first()
+        .map(|field| eduke_legacy_alias(&field.to_ascii_lowercase()))
+    else {
         return false;
     };
     let operands = &fields[1..];
@@ -1815,7 +1861,7 @@ fn eduke_builtin_condition(
         ),
         "ifmultiplayer" => (
             0,
-            EdOperand::Variable("MULTIMODE".to_owned()),
+            EdOperand::Variable("MULTIMODE".into()),
             EdComparison::Greater,
             EdOperand::Immediate(1),
         ),
@@ -2083,7 +2129,13 @@ fn compile_eduke_body(
             compile_eduke_field_sequence(cx, inline_body);
         }
     } else if !inline_body.is_empty() {
-        compile_eduke_field_sequence(cx, inline_body);
+        // An inline condition (`ife a 0 ife b 0` with the inner body on the
+        // next line or in a brace block) needs the lexer for that body:
+        // EDuke32 treats the whole inner `if` as the outer one's single
+        // statement (Brutal Duke's `ak_finish_reload`).
+        if !compile_eduke_nested_condition(cx, lx, includes, inline_body) {
+            compile_eduke_field_sequence(cx, inline_body);
+        }
     } else {
         skip_eduke_comments(cx, lx, includes);
         if peek_eduke_token(lx).is_some_and(|token| token == "{") {
@@ -2222,7 +2274,7 @@ fn inline_command_end(img: &ScriptImage, fields: &[String], start: usize) -> usi
     if token == "{" {
         return inline_brace_end(fields, start).map_or(fields.len(), |close| close + 1);
     }
-    let command = token.to_ascii_lowercase();
+    let command = eduke_legacy_alias(&token.to_ascii_lowercase());
     if command == "killit" {
         return start + 1;
     }
@@ -2502,7 +2554,10 @@ fn patch_eduke_breaks(cx: &mut Cx<'_>, target: usize) {
 }
 
 fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
-    let Some(command) = fields.first().map(|field| field.to_ascii_lowercase()) else {
+    let Some(command) = fields
+        .first()
+        .map(|field| eduke_legacy_alias(&field.to_ascii_lowercase()))
+    else {
         return;
     };
     cx.eduke_command_head.clone_from(&command);
@@ -3158,7 +3213,7 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
         {
             let variable_form = command.ends_with("var");
             let tile = if variable_form {
-                EdOperand::Variable(operands[0].clone())
+                EdOperand::Variable(operands[0].clone().into())
             } else {
                 eduke_operand(cx.img, &operands[0])
             };
@@ -3306,10 +3361,7 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                     .push(EdInstruction::Jump { target: 0 });
                 breaks.push(jump);
             } else {
-                cx.img
-                    .eduke_program
-                    .instructions
-                    .push(EdInstruction::Return);
+                emit_eduke_body_break(cx);
             }
         }
         "return" if operands.is_empty() => cx
@@ -3337,7 +3389,7 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                 .eduke_program
                 .instructions
                 .push(EdInstruction::CallState {
-                    name: operands[0].clone(),
+                    name: operands[0].clone().into(),
                 })
         }
         "exit" if operands.is_empty() => cx
@@ -3389,7 +3441,7 @@ fn compile_eduke_fields(cx: &mut Cx<'_>, fields: &[String]) {
                 .eduke_program
                 .instructions
                 .push(EdInstruction::CallState {
-                    name: operands[0].clone(),
+                    name: operands[0].clone().into(),
                 })
         }
         "nullop" if operands.is_empty() => cx.emit_eduke_noop(),
@@ -3766,6 +3818,23 @@ fn eduke_operand(img: &ScriptImage, token: &str) -> EdOperand {
     if let Some(value) = eduke_constant(img, token) {
         return EdOperand::Immediate(value);
     }
+    // EDuke32 `actorvar[id].name` / `playervar[id].name` operands.
+    let lower = token.to_ascii_lowercase();
+    for (prefix, scope, kind) in [
+        ("actorvar", EdVariableScope::Actor, EdStructKind::Actor),
+        ("playervar", EdVariableScope::Player, EdStructKind::Player),
+    ] {
+        if lower.starts_with(prefix)
+            && token[prefix.len()..].starts_with('[')
+            && let Some((id, name)) = parse_eduke_member_path(img, &token[prefix.len()..], kind)
+        {
+            return EdOperand::ScopedVariable {
+                scope,
+                name,
+                id: Box::new(id),
+            };
+        }
+    }
     if let Some((name, index)) = token.split_once('[').and_then(|(name, rest)| {
         rest.strip_suffix(']')
             .map(|index| (name.to_owned(), index.to_owned()))
@@ -3775,7 +3844,7 @@ fn eduke_operand(img: &ScriptImage, token: &str) -> EdOperand {
             index: Box::new(eduke_operand(img, &index)),
         };
     }
-    EdOperand::Variable(token.to_owned())
+    EdOperand::Variable(token.into())
 }
 
 fn eduke_pointer_value(img: &ScriptImage, token: &str) -> Option<i32> {
@@ -3959,7 +4028,7 @@ fn eduke_condition(img: &ScriptImage, operands: &[String]) -> (EdOperand, EdOper
 }
 
 fn eduke_inline_command_token(token: &str) -> bool {
-    let command = token.to_ascii_lowercase();
+    let command = eduke_legacy_alias(&token.to_ascii_lowercase());
     eduke_comparison(&command).is_some()
         || eduke_while_comparison(&command).is_some()
         || eduke_struct_command(&command).is_some()
@@ -4037,7 +4106,7 @@ fn eduke_inline_command_token(token: &str) -> bool {
 }
 
 fn eduke_statement_head(token: &str) -> bool {
-    let command = token.to_ascii_lowercase();
+    let command = eduke_legacy_alias(&token.to_ascii_lowercase());
     keyword_index(&command).is_some()
         || eduke_comparison(&command).is_some()
         || eduke_while_comparison(&command).is_some()
@@ -4188,7 +4257,7 @@ fn eduke_lvalue(img: &ScriptImage, token: &str) -> EdLValue {
             index: Box::new(eduke_operand(img, &index)),
         }
     } else {
-        EdLValue::Variable(token.to_owned())
+        EdLValue::Variable(token.into())
     }
 }
 
@@ -4228,6 +4297,27 @@ fn eduke_constant(img: &ScriptImage, token: &str) -> Option<i32> {
             "ENEMYSTAYPUT" => Some(2),
             _ => None,
         })
+}
+
+/// EDuke32's legacy gamevar arithmetic spellings (`setvar`, `addvarvar`,
+/// `shiftvarl`…) compile as their modern forms (`set`, `add`, `shiftl`…):
+/// both take a target variable and a constant or variable operand.
+fn eduke_legacy_alias(command: &str) -> String {
+    let modern = match command {
+        "setvar" | "setvarvar" => "set",
+        "addvar" | "addvarvar" => "add",
+        "subvar" | "subvarvar" => "sub",
+        "mulvar" | "mulvarvar" => "mul",
+        "divvar" | "divvarvar" => "div",
+        "modvar" | "modvarvar" => "mod",
+        "andvar" | "andvarvar" => "and",
+        "orvar" | "orvarvar" => "or",
+        "xorvar" | "xorvarvar" => "xor",
+        "shiftvarl" | "shiftvarvarl" => "shiftl",
+        "shiftvarr" | "shiftvarvarr" => "shiftr",
+        _ => command,
+    };
+    modern.to_owned()
 }
 
 fn eduke_comparison(command: &str) -> Option<EdComparison> {
@@ -4431,8 +4521,7 @@ fn parse_eduke_directive(cx: &mut Cx<'_>, lx: &mut Lexer<'_>, directive: &str) -
                 appended: directive == "appendevent",
             });
             cx.img
-                .eduke_event_entries
-                .push((name, entry, directive == "appendevent"));
+                .push_eduke_event_entry(name, entry, directive == "appendevent");
             cx.parsing_event = true;
         }
         "defineprojectile" => {
@@ -5234,6 +5323,18 @@ fn find_label<'a>(img: &'a ScriptImage, name: &str) -> Option<&'a Label> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn legacy_var_arithmetic_spellings_compile_as_modern_forms() {
+        let img = compile_with_options(
+            b"var a 0 0\nvar b 3 0\nappendevent EVENT_GAME\nsetvar a 5\naddvarvar a b\nmulvar a 2\nshiftvarr a 1\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(img.errors, 0, "errors={:?}", img.eduke_error_heads);
+    }
 
     #[test]
     fn define_chain() {

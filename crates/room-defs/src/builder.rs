@@ -405,11 +405,7 @@ impl<'a> DefinitionsBuilder<'a> {
         // MODELDEF: additive; later definition for the same actor replaces.
         if let Some(text) = self.read_all_text("MODELDEF") {
             match parse_modeldef(&text) {
-                Ok(m) => {
-                    for (k, v) in m.by_actor {
-                        defs.modeldefs.by_actor.insert(k, v);
-                    }
-                }
+                Ok(m) => defs.modeldefs.extend(m),
                 Err(e) => defs.warnings.push(format!("MODELDEF: {e}")),
             }
         }

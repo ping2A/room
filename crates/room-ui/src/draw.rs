@@ -162,6 +162,20 @@ pub enum DrawCmd {
         /// Visible area.
         rect: Option<Rect>,
     },
+    /// Area filled with a repeating flat (textured automap, `am_textured`):
+    /// the even-odd interior of `edges`, each pixel sampling the flat at
+    /// `tex` × its virtual position (`u = t0·x + t1·y + t2`,
+    /// `v = t3·x + t4·y + t5`, in texels).
+    FlatPoly {
+        /// Outline segments, virtual pixels (any order; holes allowed).
+        edges: Vec<[Vec2; 2]>,
+        /// Flat name ([`crate::PatchCache::ensure_flat`]).
+        flat: String,
+        /// Virtual position → texel affine map.
+        tex: [f32; 6],
+        /// Brightness 0–1.
+        light: f32,
+    },
     /// Coloured line segment (automap).
     Line {
         /// Start.

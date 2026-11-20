@@ -5,7 +5,8 @@
 use crate::program::{ClassLayout, CompiledFunction, CompiledProgram, FuncParam};
 
 const MAGIC: &[u8; 4] = b"ZVMP";
-const VERSION: u32 = 1;
+/// 2: classes carry `array_a` (object-array fields). 1 is still read.
+const VERSION: u32 = 2;
 
 struct W(Vec<u8>);
 
@@ -138,6 +139,10 @@ impl CompiledProgram {
             for x in &c.array_s {
                 w.u16(*x);
             }
+            w.len(c.array_a.len());
+            for x in &c.array_a {
+                w.u16(*x);
+            }
             w.len(c.fields.len());
             for (k, (bank, idx)) in &c.fields {
                 w.str(k);
@@ -174,7 +179,7 @@ impl CompiledProgram {
             return Err("not a ZVM program image".into());
         }
         let version = r.u32()?;
-        if version != VERSION {
+        if version != VERSION && version != 1 {
             return Err(format!(
                 "ZVM program image version {version}, expected {VERSION}"
             ));
@@ -228,6 +233,11 @@ impl CompiledProgram {
             }
             for _ in 0..r.len()? {
                 c.array_s.push(r.u16()?);
+            }
+            if version >= 2 {
+                for _ in 0..r.len()? {
+                    c.array_a.push(r.u16()?);
+                }
             }
             for _ in 0..r.len()? {
                 let k = r.str()?;

@@ -323,7 +323,11 @@ impl CvarStore {
         reg_b(self, "r_outlines", false);
         reg_b(self, "r_hitflash", false);
         // UZ12: draw the local player where its unreleased netplay input puts it.
-        reg_b(self, "cl_predict", false);
+        // On by default: it only moves the drawn view, never the world.
+        reg_b(self, "cl_predict", true);
+        // Rollback play in Doom netplay: run up to N tics ahead of the
+        // confirmed game with guessed remote input (0 = off, max 16).
+        reg_i(self, "cl_rollback", 0);
         // UZ4: UZDoom's alternative HUD (`shared_hud.cpp` names and defaults).
         reg_b(self, "hud_althud", false);
         reg_f(self, "hud_scalefactor", 1.0);
@@ -420,6 +424,11 @@ impl CvarStore {
         reg_b(self, "snd_reverb", true);
         reg_b(self, "snd_waterreverb", true);
         reg_i(self, "gl_texture_filter_anisotropic", 1);
+        reg_b(self, "am_textured", false);
+        reg_i(self, "gl_texture_hqresizemode", 0);
+        reg_i(self, "gl_texture_hqresizemult", 2);
+        reg_i(self, "gl_texture_hqresize_maxinputsize", 512);
+        reg_i(self, "gl_texture_hqresize_targets", 15);
         reg_b(self, "r_gpuprofile", false);
     }
 

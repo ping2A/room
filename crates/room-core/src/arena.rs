@@ -60,13 +60,14 @@ impl<T> Handle<T> {
     }
 }
 
+#[derive(Clone)]
 struct Slot<T> {
     generation: u32,
     value: Option<T>,
 }
 
 /// Dense generational store. Freed indices are reused with a bumped generation.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     free: Vec<u32>,

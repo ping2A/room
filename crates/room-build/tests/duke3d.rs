@@ -368,7 +368,7 @@ fn moving_sectors_become_polyobjects_with_scripts() {
             n += map
                 .setup
                 .portals
-                .sectors
+                .build_links
                 .iter()
                 .filter(|p| p.kind == room_map::PORTAL_KIND_WATER && p.target != p.sector)
                 .count();

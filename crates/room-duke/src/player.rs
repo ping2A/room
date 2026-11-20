@@ -28,6 +28,8 @@ pub const INPUT_AUTO_AIM: u32 = 1 << 6;
 pub const INPUT_INVENTORY_USE: u32 = 1 << 30;
 pub const INPUT_INVENTORY_LEFT: u32 = 1 << 20;
 pub const INPUT_INVENTORY_RIGHT: u32 = 1 << 27;
+/// Chocolate `sync.bits` bit 28: `gamefunc_TurnAround` (quick 180° turn).
+pub const INPUT_TURNAROUND: u32 = 1 << 28;
 
 /// Chocolate `CLIPMASK0`.
 pub const CLIPMASK0: u32 = (1 << 16) + 1;
@@ -322,6 +324,10 @@ pub struct Player {
     /// EDuke32 `player.palette` full-screen palette/lookup identifier.
     #[serde(default)]
     pub game_palette: i32,
+    /// EDuke32 `player.visibility`: the view's global Build visibility
+    /// (`ud.const_visibility`, 512, by default).
+    #[serde(default = "default_visibility")]
+    pub visibility: i32,
     /// EDuke32 `hudpal`, palette used for first-person HUD sprites.
     #[serde(default)]
     pub hud_palette: u8,
@@ -489,6 +495,35 @@ pub struct Player {
     /// True while a lethal Freezer hit holds APLAYER in Atomic's PFROZEN state.
     #[serde(default)]
     pub freezer_frozen: bool,
+    /// EDuke32's 13th weapon slot (`FLAMETHROWER_WEAPON`, 12), used by mods
+    /// such as Brutal Duke for an extra gun. Atomic has no such slot, so it
+    /// lives beside the 12-entry arrays: ammo, owned, max ammo.
+    #[serde(default)]
+    pub extra_weapon_ammo: i16,
+    /// Chocolate `one_eighty_count`: −1024 when a quick turn starts, then
+    /// +128 per tic (the body turns 128 units a tic) until it reaches 0.
+    #[serde(default)]
+    pub one_eighty_count: i16,
+    /// Turn-around key state from the previous tic (an edge starts a turn).
+    #[serde(default)]
+    pub turnaround_was_down: bool,
+    /// EDuke32 `WEAPON_FIREEVERYOTHER` burst countdown (the reference keeps
+    /// it in the player actor's `t_data[7]`): the remaining rounds fire every
+    /// other tic.
+    #[serde(default)]
+    pub eduke_burst_delay: i16,
+    /// The current configurable-weapon round already spawned floor blood
+    /// (Room's native shotgun spawns it for the first enemy hit only).
+    #[serde(skip)]
+    pub eduke_round_blood_spawned: bool,
+    #[serde(default)]
+    pub extra_weapon_got: bool,
+    #[serde(default)]
+    pub extra_weapon_max_ammo: i16,
+    /// Set for one tic when EDuke32 EVENT_INCURDAMAGE returned non-zero:
+    /// `P_IncurDamage` then skips armor absorption. Never saved.
+    #[serde(skip)]
+    pub eduke_skip_incur_damage: bool,
     /// Remaining Atomic `THAWTIME` tics, including the action-frame boundary.
     #[serde(default)]
     pub freezer_tics: u16,
@@ -546,6 +581,13 @@ fn default_auto_aim() -> i16 {
     2
 }
 
+fn default_visibility() -> i32 {
+    DEFAULT_VISIBILITY
+}
+
+/// EDuke32 `ud.const_visibility` default (and Build's `visibility`).
+pub const DEFAULT_VISIBILITY: i32 = 512;
+
 fn default_horiz() -> i16 {
     100
 }
@@ -564,6 +606,71 @@ fn default_q16_horiz() -> i32 {
 
 fn default_shield_amount() -> i16 {
     100
+}
+
+/// EDuke32 weapon slot 12 (`FLAMETHROWER_WEAPON`), Room's extra slot.
+pub const EXTRA_WEAPON: i16 = 12;
+
+impl Player {
+    /// Ammo for any EDuke32 weapon slot 0..=12 (0 outside).
+    #[must_use]
+    pub fn weapon_ammo(&self, weapon: i16) -> i16 {
+        if weapon == EXTRA_WEAPON {
+            return self.extra_weapon_ammo;
+        }
+        usize::try_from(weapon)
+            .ok()
+            .and_then(|index| self.ammo.get(index))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Mutable ammo for EDuke32 weapon slot `weapon` (0..=12).
+    pub fn weapon_ammo_mut(&mut self, weapon: i16) -> Option<&mut i16> {
+        if weapon == EXTRA_WEAPON {
+            return Some(&mut self.extra_weapon_ammo);
+        }
+        usize::try_from(weapon)
+            .ok()
+            .and_then(|index| self.ammo.get_mut(index))
+    }
+
+    /// Capacity of EDuke32 weapon slot `weapon` (0..=12), `None` outside.
+    #[must_use]
+    pub fn weapon_max_ammo(&self, weapon: i16) -> Option<i16> {
+        if weapon == EXTRA_WEAPON {
+            return Some(self.extra_weapon_max_ammo);
+        }
+        usize::try_from(weapon)
+            .ok()
+            .and_then(|index| self.max_ammo_amount.get(index))
+            .copied()
+    }
+
+    /// Mark EDuke32 weapon slot `weapon` (0..=12) owned or not.
+    pub fn set_has_weapon(&mut self, weapon: i16, owned: bool) {
+        if weapon == EXTRA_WEAPON {
+            self.extra_weapon_got = owned;
+        } else if let Some(slot) = usize::try_from(weapon)
+            .ok()
+            .and_then(|index| self.gotweapon.get_mut(index))
+        {
+            *slot = owned;
+        }
+    }
+
+    /// Whether the player owns EDuke32 weapon slot `weapon` (0..=12).
+    #[must_use]
+    pub fn has_weapon(&self, weapon: i16) -> bool {
+        if weapon == EXTRA_WEAPON {
+            return self.extra_weapon_got;
+        }
+        usize::try_from(weapon)
+            .ok()
+            .and_then(|index| self.gotweapon.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 fn default_max_ammo_amounts() -> [i16; 12] {
@@ -647,6 +754,7 @@ impl Default for Player {
             holoduke_on: -1,
             heat_on: false,
             game_palette: 0,
+            visibility: default_visibility(),
             hud_palette: 0,
             palette_lookup: 0,
             palette_flash: [0; 3],
@@ -718,6 +826,14 @@ impl Default for Player {
             on_ground: true,
             dead_flag: 0,
             freezer_frozen: false,
+            extra_weapon_ammo: 0,
+            one_eighty_count: 0,
+            turnaround_was_down: false,
+            eduke_burst_delay: 0,
+            eduke_round_blood_spawned: false,
+            extra_weapon_got: false,
+            extra_weapon_max_ammo: 0,
+            eduke_skip_incur_damage: false,
             freezer_tics: 0,
             freezer_palette: 0,
             death_processed: false,
@@ -1044,6 +1160,14 @@ pub(crate) fn processinput_move_with_lists_clipping_eduke(
     p.oposx = p.posx;
     p.oposy = p.posy;
     p.oposz = p.posz;
+
+    // Chocolate `processinput`: a quick turn adds 128 a tic (left unmasked
+    // like the reference; the `avel` turn below masks it again).
+    if p.one_eighty_count < 0 {
+        p.one_eighty_count += 128;
+        p.ang = p.ang.wrapping_add(128);
+        p.q16_ang = i32::from(p.ang) << 16;
+    }
 
     if sync.avel != 0 {
         // Chocolate: `tempang = avel<<1`; underwater lotag 2 → `(tempang-(tempang>>3))*ksgn(doubvel)`.

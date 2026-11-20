@@ -461,7 +461,15 @@ pub fn typed_native_vector_result(name: &str) -> Option<u8> {
         | "actor.vec2angle"
         | "texman.getscaledsize"
         | "texman.getscaledoffset" => Some(2),
+        "levellocals.vec2diff"
+        | "levellocals.vec2offset"
+        | "levellocals.getdisplacement"
+        | "sector.getportaldisplacement" => Some(2),
         "actor.vec3to" | "actor.vec3offset" | "actor.vec2offsetz" | "actor.vec3angle" => Some(3),
+        "levellocals.vec3diff"
+        | "levellocals.vec3offset"
+        | "levellocals.vec2offsetz"
+        | "actor.posrelative" => Some(3),
         "quat.fromangles" | "quat.axisangle" | "quat.slerp" | "quat.nlerp" => Some(4),
         _ => None,
     }

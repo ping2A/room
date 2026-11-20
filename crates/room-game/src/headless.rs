@@ -76,6 +76,10 @@ impl Default for Skill {
     }
 }
 
+/// A net intermission moves on by itself after this many lockstep tics
+/// (30 s) even if not every seat pressed use or fire.
+pub const INTERMISSION_VOTE_TIMEOUT_TICS: u32 = 35 * 30;
+
 /// Startup options for a headless session.
 #[derive(Clone, Debug, Default)]
 pub struct GameOptions {
@@ -198,6 +202,8 @@ pub struct Headless {
     /// Every seat is ready: the shell should go on to the next map. Set on the
     /// same tic on every peer, since it comes from the lockstep commands.
     intermission_advance: bool,
+    /// Lockstep tics spent in the current intermission vote.
+    intermission_vote_tics: u32,
     /// A net save / load the host asked for this tic (UZ12).
     net_save_request: Option<NetSaveRequest>,
     /// Map kept for title → start / intermission → restart.
@@ -570,6 +576,7 @@ impl Headless {
             intermission_voters: 0,
             intermission_prev: Vec::new(),
             intermission_advance: false,
+            intermission_vote_tics: 0,
             net_save_request: None,
             pending_map: None,
             sounds: None,
@@ -1205,7 +1212,13 @@ impl Headless {
             .and_then(|p| p.as_ref())
             .and_then(|p| p.camera.or(p.mo))
             .map(room_sim::sound_source_token);
-        let events = world.drain_sound_events();
+        let mut events = world.drain_sound_events();
+        let listener = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.camera.or(p.mo));
+        room_sim::portal::relocate_sounds_for_listener(world, &mut events, listener);
         let Some(sounds) = self.sounds.as_mut() else {
             return Vec::new();
         };
@@ -1856,9 +1869,187 @@ impl Headless {
         }
         let all = (0..self.intermission_voters)
             .all(|s| self.intermission_ready & room_sim::seat_bit(s) != 0);
-        if all {
+        // Someone away from the keyboard (or a seat that dropped and now
+        // sends neutral commands) must not hold everyone on the tally
+        // screen: the vote ends by itself after a while. Counted in lockstep
+        // tics, so every peer moves on together.
+        self.intermission_vote_tics = self.intermission_vote_tics.saturating_add(1);
+        if all || self.intermission_vote_tics >= INTERMISSION_VOTE_TIMEOUT_TICS {
             self.intermission_advance = true;
         }
+    }
+
+    /// Tics left before the intermission vote ends by itself.
+    #[must_use]
+    pub fn intermission_auto_advance_in(&self) -> u32 {
+        INTERMISSION_VOTE_TIMEOUT_TICS.saturating_sub(self.intermission_vote_tics)
+    }
+
+    /// Swap the game's world with `other` (rollback: draw a speculative copy
+    /// for one frame, then swap the real world back). Never tick or save
+    /// while a copy is swapped in.
+    pub fn swap_world(&mut self, other: &mut Option<World>) {
+        std::mem::swap(&mut self.world, other);
+    }
+
+    /// Rollback play is possible here: a level is running and nothing the
+    /// tic depends on lives outside the copyable [`World`] (no WASM mods,
+    /// native mods or CON events, no WASM play modules). ZScript mods are
+    /// fine: the VM is copied with the world.
+    #[must_use]
+    pub fn can_speculate(&self) -> bool {
+        self.state == GameState::Level
+            && self.mods.is_none()
+            && self.native_mods.is_empty()
+            && self.conevt.is_none()
+            && self.world.as_ref().is_some_and(World::can_snapshot)
+    }
+
+    /// Rollback: a copy of the world run through `frames` (oldest first,
+    /// one command per seat) the way [`Self::tick`] runs a level tic. The
+    /// game itself is untouched; sounds and messages of the copy are thrown
+    /// away with it. Stops early at a level exit. `None` when
+    /// [`Self::can_speculate`] is false.
+    #[must_use]
+    pub fn speculate(&self, frames: &[Vec<TicCmd>]) -> Option<World> {
+        self.speculate_inner(frames, None).map(|(world, _)| world)
+    }
+
+    /// [`Self::speculate`], also returning the sounds `seat`'s own body
+    /// started in the newest frame, so rollback can play your shot at once
+    /// (see [`Self::drain_audio_for_predicted`]).
+    #[must_use]
+    pub fn speculate_with_own_sounds(
+        &self,
+        frames: &[Vec<TicCmd>],
+        seat: u8,
+    ) -> Option<(World, Vec<room_sim::SimSoundEvent>)> {
+        self.speculate_inner(frames, Some(seat))
+    }
+
+    fn speculate_inner(
+        &self,
+        frames: &[Vec<TicCmd>],
+        capture_seat: Option<u8>,
+    ) -> Option<(World, Vec<room_sim::SimSoundEvent>)> {
+        if !self.can_speculate() {
+            return None;
+        }
+        let mut world = self.world.as_ref()?.snapshot()?;
+        let mut own = Vec::new();
+        let count = frames.len();
+        for (k, cmds) in frames.iter().enumerate() {
+            let mut full = [TicCmd::default(); MAX_PLAYERS];
+            for (slot, c) in full.iter_mut().zip(cmds) {
+                *slot = *c;
+                // Net save requests never reach the playsim.
+                slot.buttons.0 &= !(Buttons::NETSAVE | Buttons::NETLOAD);
+                if c.buttons.0 & (Buttons::NETSAVE | Buttons::NETLOAD) != 0 {
+                    slot.weapon_select = 0;
+                }
+            }
+            let newest = k + 1 == count;
+            if newest && capture_seat.is_some() {
+                world.sound_events.clear();
+            }
+            world.set_ticcmds(&full);
+            world.tick();
+            if newest && let Some(seat) = capture_seat {
+                let token = world
+                    .players
+                    .get(usize::from(seat))
+                    .and_then(|p| p.as_ref())
+                    .and_then(|p| p.mo)
+                    .map(room_sim::sound_source_token);
+                own = world
+                    .sound_events
+                    .iter()
+                    .filter(|e| token.is_some() && e.source_id == token)
+                    .cloned()
+                    .collect();
+            }
+            if world.level.exiting {
+                break;
+            }
+        }
+        Some((world, own))
+    }
+
+    /// Rollback: turn sounds taken from a speculative copy into mixer events
+    /// for the local `seat`.
+    pub fn translate_sounds_for(
+        &mut self,
+        vfs: &Vfs,
+        events: &[room_sim::SimSoundEvent],
+        seat: u8,
+    ) -> Vec<SoundEvent> {
+        let Some(world) = self.world.as_ref() else {
+            return Vec::new();
+        };
+        let maptime = world.level.maptime;
+        let local_source = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.camera.or(p.mo))
+            .map(room_sim::sound_source_token);
+        let Some(sounds) = self.sounds.as_mut() else {
+            return Vec::new();
+        };
+        let filter = crate::sound::ListenerFilter {
+            seat: Some(seat),
+            local_source,
+        };
+        let mut events = events.to_vec();
+        let listener = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.camera.or(p.mo));
+        room_sim::portal::relocate_sounds_for_listener(world, &mut events, listener);
+        sounds.translate_for(vfs, &events, maptime, &filter)
+    }
+
+    /// [`Self::drain_audio_for`], minus the local body's sounds that rollback
+    /// already played early: `predicted` holds `(maptime, sound name)` of
+    /// those; matches for this tic are dropped (and used up), older entries
+    /// are forgotten (a guess that never happened).
+    pub fn drain_audio_for_predicted(
+        &mut self,
+        vfs: &Vfs,
+        seat: u8,
+        predicted: &mut std::collections::VecDeque<(u32, String)>,
+    ) -> Vec<SoundEvent> {
+        if let Some(world) = self.world.as_mut()
+            && !predicted.is_empty()
+        {
+            let now = world.level.maptime;
+            while predicted.front().is_some_and(|(t, _)| *t < now) {
+                predicted.pop_front();
+            }
+            let token = world
+                .players
+                .get(usize::from(seat))
+                .and_then(|p| p.as_ref())
+                .and_then(|p| p.mo)
+                .map(room_sim::sound_source_token);
+            world.sound_events.retain(|e| {
+                if token.is_none() || e.source_id != token {
+                    return true;
+                }
+                match predicted
+                    .iter()
+                    .position(|(t, name)| *t == now && name.eq_ignore_ascii_case(&e.name))
+                {
+                    Some(i) => {
+                        predicted.remove(i);
+                        false
+                    }
+                    None => true,
+                }
+            });
+        }
+        self.drain_audio_for(vfs, seat)
     }
 
     /// The host's net save / load request from the last tic (consumed). Every
@@ -1868,7 +2059,8 @@ impl Headless {
         self.net_save_request.take()
     }
 
-    /// Every seat has voted ready since the intermission began (consumed).
+    /// Every seat has voted ready since the intermission began, or the vote
+    /// timed out ([`INTERMISSION_VOTE_TIMEOUT_TICS`]) (consumed).
     pub fn take_intermission_advance(&mut self) -> bool {
         std::mem::take(&mut self.intermission_advance)
     }
@@ -2066,6 +2258,7 @@ impl Headless {
             self.intermission_voters = 0;
             self.intermission_prev.clear();
             self.intermission_advance = false;
+            self.intermission_vote_tics = 0;
         }
         if let Some(demo) = &mut self.demo {
             demo.record_tic(world, &full[..cmds.len().clamp(1, MAX_PLAYERS)]);
@@ -25667,6 +25860,35 @@ actor PlayerPawn : Actor 0
         assert_eq!(game.intermission_votes(), (3, 3));
         assert!(game.take_intermission_advance());
         assert!(!game.take_intermission_advance(), "consumed");
+    }
+
+    #[test]
+    fn an_idle_seat_cannot_hold_the_intermission_forever() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut game = Headless::new(GameOptions {
+            skill: Skill::new(3),
+            rng_seed: 1,
+            coop_players: 2,
+            ..Default::default()
+        });
+        game.start_custom_map(map, Skill::new(3)).unwrap();
+        game.world_mut().unwrap().level.exiting = true;
+        let idle = [TicCmd::default(); 2];
+        game.tick(&idle);
+        assert_eq!(game.state, GameState::Intermission);
+        game.tick(&idle);
+        let left = game.intermission_auto_advance_in();
+        for _ in 1..left {
+            game.tick(&idle);
+            assert!(!game.take_intermission_advance());
+        }
+        game.tick(&idle);
+        assert!(game.take_intermission_advance(), "timed out");
     }
 
     #[test]

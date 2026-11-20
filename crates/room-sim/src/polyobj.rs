@@ -44,6 +44,9 @@ pub struct PolyobjDynamic {
     pub door: Option<PolyDoor>,
     /// A door that opened for good (negative delay) never moves again.
     pub blocked: bool,
+    /// UZDoom `bHasPortals`: 0 none, 1 passable portal lines, 2 linked
+    /// portal lines (no rotation).
+    pub portals: u8,
 }
 
 /// `Polyobj_DoorSwing` / `DoorSlide` bookkeeping (GZDoom `DPolyDoor`).
@@ -187,6 +190,11 @@ pub fn init_polyobjs(world: &mut World) {
             }
             refresh_line_geom(map, &s.lines);
             link_lines(map, &s.lines);
+            // UZDoom spawns polyobjects before it finalizes portals: the
+            // portals see the polyobject at its start spot.
+            if room_map::portals::poly_portal_kind(map, &s.lines) != 0 {
+                room_map::portals::update_poly_portals(map, &s.lines);
+            }
         }
         let start_spot = spawn.unwrap_or_else(|| poly_center(world, &s.vertices));
         let center = start_spot;
@@ -203,7 +211,9 @@ pub fn init_polyobjs(world: &mut World) {
                     })
             })
             .collect();
+        let portals = room_map::portals::poly_portal_kind(&world.map, &s.lines);
         world.polyobjs.push(PolyobjDynamic {
+            portals,
             id: s.id,
             vertices: s.vertices,
             offsets,
@@ -269,12 +279,17 @@ fn start_motion(world: &mut World, id: i32, motion: PolyMotion, override_busy: b
     if !override_busy && (po.motion.is_some() || po.blocked) {
         return 0;
     }
+    // UZDoom `EV_RotatePoly`: linked polyportals cannot rotate.
+    if po.portals == 2 && matches!(motion, PolyMotion::Rotate { .. }) {
+        return 0;
+    }
     po.motion = Some(motion);
     po.door = None;
     po.blocked = false;
     if mirror != 0 && mirror != id {
         if let Some(m) = find_poly_mut(world, mirror) {
-            if override_busy || (m.motion.is_none() && !m.blocked) {
+            let refuse = m.portals == 2 && matches!(motion, PolyMotion::Rotate { .. });
+            if !refuse && (override_busy || (m.motion.is_none() && !m.blocked)) {
                 m.motion = Some(mirror_motion(motion));
                 m.door = None;
                 m.blocked = false;
@@ -487,6 +502,10 @@ fn start_door(world: &mut World, id: i32, open: PolyMotionResume, delay: i32) ->
             continue;
         };
         if po.motion.is_some() || po.blocked {
+            break;
+        }
+        // `EV_OpenPolyDoor`: no swinging doors with linked portals.
+        if po.portals == 2 && matches!(leg, PolyMotionResume::Rotate { .. }) {
             break;
         }
         po.motion = Some(leg.into_motion());
@@ -851,6 +870,7 @@ fn place_poly(world: &mut World, index: usize) {
         })
         .collect();
     let lines = po.lines.clone();
+    let portals = po.portals;
     let map = Arc::make_mut(&mut world.map);
     unlink_lines(map, &lines);
     for (vid, p) in placed {
@@ -860,6 +880,9 @@ fn place_poly(world: &mut World, index: usize) {
     }
     refresh_line_geom(map, &lines);
     link_lines(map, &lines);
+    if portals != 0 {
+        room_map::portals::update_poly_portals(map, &lines);
+    }
 }
 
 /// Blockmap cells covered by the bounding box of `line`.
@@ -986,6 +1009,8 @@ mod tests {
                 automap_style: 0,
                 clip_midtex: false,
                 wrap_midtex: false,
+                ext: 0,
+                user: Default::default(),
             })
             .collect();
         let sidedefs = (0u16..4)
@@ -1023,6 +1048,7 @@ mod tests {
                 no_decals: false,
                 alpha: None,
                 block_rendering: false,
+                user: Default::default(),
             })
             .collect();
         let sectors = vec![RawSector {
@@ -1073,6 +1099,8 @@ mod tests {
             ceiling_alpha: 1.0,
             floor_additive: false,
             ceiling_additive: false,
+            ext: 0,
+            user: Default::default(),
         }];
         let things = vec![
             RawThing {
@@ -1117,6 +1145,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
             RawThing {
                 tid: 0,
@@ -1160,6 +1190,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
             RawThing {
                 tid: 0,
@@ -1203,6 +1235,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
         ];
         link_geometry(
@@ -1254,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn polyobj_move_stops_on_solid_blocker() {
+    fn polyobj_move_shoves_a_free_blocker_out_of_the_way() {
         let mut map = poly_square_map();
         apply_nodes(&mut map);
         let ir = room_decorate::parse_decorate(
@@ -1274,12 +1308,16 @@ actor Blocker : Actor 9001
         let mut w = World::from_map_with_classes(map, classes, states).unwrap();
         let blk = w.classes.find_doomednum(9001).unwrap();
         // East of relocated poly (right edge ~128); Move east will collide.
-        w.spawn_at(
-            blk,
-            room_core::DVec3::new(140.0, 32.0, 0.0),
-            room_core::Angle::ZERO,
-        )
-        .unwrap();
+        // In the open the blocker is shoved aside (GZDoom thrusts things a
+        // polyobject runs into) and the move completes; a blocker that
+        // cannot move stops it (door tests below).
+        let blocker = w
+            .spawn_at(
+                blk,
+                room_core::DVec3::new(140.0, 32.0, 0.0),
+                room_core::Angle::ZERO,
+            )
+            .unwrap();
         assert!(!w.polyobjs[0].crush);
         let v0 = w.polyobjs[0].vertices[0];
         let x0 = w.map.vertices[v0.raw() as usize].pos.x();
@@ -1290,13 +1328,11 @@ actor Blocker : Actor 9001
         for _ in 0..64 {
             tick_polyobjs(&mut w);
         }
-        assert!(w.polyobjs[0].motion.is_some(), "blocked poly keeps trying");
+        assert!(w.polyobjs[0].motion.is_none(), "move finished");
         let x1 = w.map.vertices[v0.raw() as usize].pos.x();
-        assert!(
-            (x1 - x0).abs() < 32.0,
-            "should not travel full 64u into blocker: Δ={}",
-            x1 - x0
-        );
+        assert!((x1 - x0 - 64.0).abs() < 1e-6, "full 64u: Δ={}", x1 - x0);
+        let bx = w.actors.get(blocker).unwrap().pos.x();
+        assert!(bx > 140.0 + 32.0, "blocker shoved east, now at {bx}");
     }
 
     #[test]
@@ -1452,6 +1488,37 @@ actor Blocker : Actor 9001
         assert_eq!(
             execute_special(&mut w, num::POLYOBJ_DOOR_SWING, &args, None, None),
             0
+        );
+    }
+
+    #[test]
+    fn linked_polyportals_slide_but_never_turn() {
+        let mut map = poly_square_map();
+        apply_nodes(&mut map);
+        let mut w = World::from_map(map).unwrap();
+        assert_eq!(w.polyobjs[0].portals, 0);
+        w.polyobjs[0].portals = 2;
+        let rot = execute_special(
+            &mut w,
+            num::POLYOBJ_ROTATE_LEFT,
+            &[7, 64, 64, 0, 0],
+            None,
+            None,
+        );
+        assert_eq!(rot, 0);
+        assert_eq!(
+            execute_special(
+                &mut w,
+                num::POLYOBJ_DOOR_SWING,
+                &[7, 16, 64, 35, 0],
+                None,
+                None
+            ),
+            0
+        );
+        assert_eq!(
+            execute_special(&mut w, num::POLYOBJ_MOVE, &[7, 8, 0, 32, 0], None, None),
+            1
         );
     }
 

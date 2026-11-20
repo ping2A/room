@@ -68,6 +68,12 @@ pub fn title_frame(data: &[u8]) -> Result<AnmFrame, BuildError> {
     })
 }
 
+/// The file's 256-colour RGB palette (EDuke32 `ANIM_GetPalette`), without
+/// decoding any frame.
+pub fn palette(data: &[u8]) -> Result<[u8; 768], BuildError> {
+    Ok(Anm::load(data)?.rgb)
+}
+
 /// Every still up to the last frame before a ring delta.
 pub fn decode_stills(data: &[u8]) -> Result<AnmAnim, BuildError> {
     let anim = Anm::load(data)?;
@@ -335,6 +341,7 @@ mod tests {
         assert_eq!(frame.height, 1);
         assert_eq!(&frame.indices[..3], &[10, 20, 30]);
         assert_eq!(&frame.rgb[10 * 3..10 * 3 + 3], &[0, 0, 200]);
+        assert_eq!(palette(&tiny_anm()).unwrap(), frame.rgb);
         assert_eq!(&frame.rgb[20 * 3..20 * 3 + 3], &[0, 200, 0]);
         assert_eq!(&frame.rgb[30 * 3..30 * 3 + 3], &[200, 0, 0]);
         let stills = decode_stills(&tiny_anm()).unwrap();

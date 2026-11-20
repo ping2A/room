@@ -53,6 +53,66 @@ fn sin(a: i32) -> i32 {
     sincos_q14(a & 2047).0
 }
 
+/// EDuke32 `hudweap`, filled by `P_DisplayWeapon` just before
+/// `EVENT_DISPLAYWEAPON` and exposed as the `weapon_xoffset`, `gun_pos`,
+/// `looking_arc`, `looking_angSR1`, `gs`, `currentweapon` and `weaponcount`
+/// system gamevars.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HudWeaponVars {
+    /// `weaponX` (`weapon_xoffset`).
+    pub gunposx: i32,
+    /// `weaponYOffset` (`gun_pos`).
+    pub gunposy: i32,
+    /// `weaponY` (`looking_arc`).
+    pub lookhoriz: i32,
+    /// `look_ang >> 1` (`looking_angSR1`).
+    pub lookhalfang: i32,
+    /// Weapon shade (`gs`).
+    pub shade: i32,
+    /// WorksLike of the drawn weapon (`currentweapon`).
+    pub cur: i32,
+    /// `kickback_pic` (`weaponcount`).
+    pub count: i32,
+}
+
+/// `P_DisplayWeapon`'s `hudweap` values for `p`, whose body sprite has
+/// `body_shade` and `body_xrepeat`; `works_like` maps an inventory weapon to
+/// its WorksLike class (`PWEAPON(..., WorksLike)`). With `ud.weaponsway` on
+/// (the default) the sway and bob offsets apply.
+#[must_use]
+pub fn eduke_hud_weapon(
+    p: &Player,
+    body_shade: i32,
+    body_xrepeat: i32,
+    works_like: impl Fn(i32) -> i32,
+) -> HudWeaponVars {
+    let weapon_pos = i32::from(p.weapon_pos);
+    let mut gunposx = 160 - 90;
+    let mut gunposy = 80 - weapon_pos * weapon_pos;
+    gunposx -= sin((p.weapon_sway >> 1) + 512) / (1024 + 512);
+    gunposy -= if body_xrepeat < 32 {
+        (sin(p.weapon_sway << 2) >> 9).abs()
+    } else {
+        (sin(p.weapon_sway >> 1) >> 10).abs()
+    };
+    gunposx -= 58 + i32::from(p.weapon_ang);
+    gunposy -= i32::from(p.hard_landing) << 3;
+    let slot = if p.last_weapon >= 0 {
+        p.last_weapon
+    } else {
+        p.curr_weapon
+    };
+    HudWeaponVars {
+        gunposx,
+        gunposy,
+        lookhoriz: i32::from(p.look_ang).abs() / 9,
+        lookhalfang: i32::from(p.look_ang) >> 1,
+        shade: body_shade.min(24),
+        cur: works_like(i32::from(slot)),
+        count: i32::from(p.kickback_pic),
+    }
+}
+
 /// Chocolate `displayweapon` (Atomic) for `player`.
 #[must_use]
 pub fn display_weapon(p: &Player, env: &WeaponViewEnv) -> Vec<WeaponDraw> {

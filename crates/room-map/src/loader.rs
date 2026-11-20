@@ -14,6 +14,24 @@ use crate::udmf::parse_udmf;
 use md5::{Digest, Md5};
 use room_vfs::{LumpId, Namespace, Vfs};
 
+/// Load a UDMF map straight from TEXTMAP text (tests, editors).
+pub fn load_udmf_text(name: &str, text: &str) -> Result<MapGeometry, MapError> {
+    let udmf = parse_udmf(text)?;
+    let mut geom = link_geometry_at(
+        name,
+        MapFormat::Udmf,
+        udmf.vertex_pos,
+        udmf.linedefs,
+        udmf.sidedefs,
+        udmf.sectors,
+        udmf.things,
+        [0; 16],
+    );
+    geom.udmf_user = udmf.user;
+    crate::portals::apply_udmf_plane_flags(&mut geom.setup.portals, &geom.udmf_user);
+    Ok(geom)
+}
+
 /// Load a named map marker from `vfs` (Doom, Hexen, or UDMF).
 pub fn load_map(vfs: &Vfs, name: &str) -> Result<MapGeometry, MapError> {
     let marker = vfs
@@ -49,6 +67,7 @@ pub fn load_map(vfs: &Vfs, name: &str) -> Result<MapGeometry, MapError> {
             md5,
         );
         geom.udmf_user = udmf.user;
+        crate::portals::apply_udmf_plane_flags(&mut geom.setup.portals, &geom.udmf_user);
         if let Some((_, data)) = lumps
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case("BEHAVIOR"))

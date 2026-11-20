@@ -41,7 +41,12 @@ pub fn room_actions() -> BTreeSet<String> {
 #[must_use]
 pub fn room_flags() -> BTreeSet<String> {
     let mut names = quoted_names_in_fn(CLASS_RS, "is_known_flag");
-    names.extend(room_sim::UZDOOM_FLAGS.iter().map(|name| (*name).to_owned()));
+    names.extend(
+        room_sim::UZDOOM_FLAGS
+            .iter()
+            .filter(|name| !name.starts_with('<'))
+            .map(|name| (*name).to_owned()),
+    );
     names
 }
 

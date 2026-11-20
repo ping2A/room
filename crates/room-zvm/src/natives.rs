@@ -71,6 +71,9 @@ pub enum ZsLevelOp {
 ///
 /// The VM cannot borrow the world while a script is running, so `A_Look`,
 /// `LineAttack`, and the other fight natives append one of these and return.
+/// Heap class id of sector references made by `level.PointInSector`.
+const SECTOR_POINT_CLASS: u32 = u32::MAX - 7;
+
 #[derive(Clone, Debug)]
 pub enum ZsActorOp {
     /// `A_Look`.
@@ -181,14 +184,36 @@ pub enum ZsActorOp {
     },
     /// `FindFloorCeiling`: keep the actor between the floor and the ceiling.
     FitSector,
-    /// `Sector.SetEnvironmentID(id)` / `Sector.SetEnvironment(name)` on the
-    /// caller's `CurSector` (Room's ZScript has no free sector objects; the
-    /// call is applied to the sector the calling actor stands in).
+    /// `Sector.SetEnvironmentID(id)` / `Sector.SetEnvironment(name)`. On a
+    /// sector from `level.PointInSector(pos)` it acts on the sector at that
+    /// point; on any other sector reference (`CurSector`) on the sector the
+    /// calling actor stands in.
     SetEnvironment {
+        /// Map point of the sector, when it came from `PointInSector`.
+        at: Option<(f64, f64)>,
+        /// The sector, when the receiver is a map `Sector` object.
+        sector: Option<u32>,
         /// Environment ID (`id1 << 8 | id2`), when set by number.
         id: Option<u16>,
         /// REVERBS name, when set by name.
         name: Option<String>,
+    },
+    /// `Sector.SetLightLevel` / `ChangeLightLevel` / `SetPlaneLight` on a
+    /// map `Sector`.
+    SectorLight {
+        /// Sector index.
+        sector: u32,
+        /// New light level (0–255).
+        level: i32,
+    },
+    /// `Sector.SetTexture(plane, tex)` on a map `Sector`.
+    SectorTexture {
+        /// Sector index.
+        sector: u32,
+        /// Ceiling (else floor).
+        ceiling: bool,
+        /// Flat name.
+        name: String,
     },
     /// `RestoreDamage`: put the class's damage value back on the actor.
     RestoreDamage,
@@ -282,7 +307,7 @@ pub enum ZsActorOp {
 }
 
 /// Named native table (stable BTreeMap iteration).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NativeTable {
     by_name: BTreeMap<String, (u32, NativeFn)>,
     by_id: Vec<(String, NativeFn)>,
@@ -387,6 +412,8 @@ impl NativeTable {
         let _ = play_natives::register_bd_natives(&mut t);
         crate::world_natives::register(&mut t);
         crate::uz3_natives::register(&mut t);
+        crate::portal_natives::register(&mut t);
+        crate::map_natives::register(&mut t);
         t
     }
 }
@@ -724,6 +751,14 @@ mod play_natives {
         pub consoleplayer: i32,
         /// Lowercase hexadecimal MD5 for the active map's gameplay lumps.
         pub level_checksum: String,
+        /// Linked-portal groups of the map (`LevelLocals.GetPortalGroupCount`).
+        pub portal_group_count: i32,
+        /// The level's portals, for the portal natives.
+        pub portals: std::sync::Arc<crate::portal_natives::ZsPortalInfo>,
+        /// Position of the actor the running call is for (`CurSector`).
+        pub caller_pos: Option<[f64; 3]>,
+        /// The level's `Sector` / `Line` / `Side` / `Vertex` objects.
+        pub map_objects: crate::map_natives::ZsMapObjects,
         /// `gamestate` (`0` = `GS_LEVEL`).
         pub gamestate: i32,
         /// In-memory lumps for `Wads.*`, keyed by name. Index is `BTreeMap` order.
@@ -822,6 +857,10 @@ mod play_natives {
                 skill: 3,
                 consoleplayer: 0,
                 level_checksum: String::new(),
+                portal_group_count: 1,
+                portals: std::sync::Arc::default(),
+                caller_pos: None,
+                map_objects: crate::map_natives::ZsMapObjects::default(),
                 gamestate: 0,
                 wads: BTreeMap::new(),
                 grants: Vec::new(),
@@ -1122,6 +1161,12 @@ mod play_natives {
         add("Array.InsertS", array_insert_s);
         add("Array.NewI", array_new_i);
         add("Array.NewS", array_new_s);
+        add("Array.NewA", array_new_a);
+        add("Array.GetA", array_get_a);
+        add("Array.SetA", array_set_a);
+        add("Array.PushA", array_push_a);
+        add("Array.FindA", array_find_a);
+        add("Array.InsertA", array_insert_a);
         add("Array.PushS", array_push_s);
         add("Array.FindS", array_find_s);
         add("String.CharCodeAt", string_char_code_at);
@@ -1187,11 +1232,11 @@ mod play_natives {
         add("InputGridChars.ByteAt", actor_false);
         add("OptionValues.GetValue", actor_false);
         add("actor.DropInventory", actor_false);
+        add("levellocals.PointInSector", level_point_in_sector);
         for name in [
             "CreateActorIterator",
             "CreateLineIdIterator",
             "CreateSectorTagIterator",
-            "PointInSector",
             "pickplayerstart",
             "pickdeathmatchstart",
         ] {
@@ -1947,6 +1992,7 @@ mod play_natives {
         add("Wads.FindLump", wad_find_lump);
         add("Wads.FindLumpFullName", wad_find_lump);
         add("LevelLocals.GetChecksum", level_checksum);
+        add("LevelLocals.GetPortalGroupCount", portal_group_count);
         // Room is not Zandronum — BD takes GZDoom branches (docs/33 §7).
         add("ZandroCompat.IsZandronum", stub_zero);
         add("System.IsZandronum", stub_zero);
@@ -4117,7 +4163,11 @@ mod play_natives {
         regs: &mut NativeRegs<'_>,
     ) -> Result<(), Trap> {
         let id = regs.i.first().copied().unwrap_or(0);
+        let at = sector_point(ctx, regs);
+        let sector = map_sector(ctx, regs);
         ctx.play.actor_ops.push(super::ZsActorOp::SetEnvironment {
+            at,
+            sector,
             id: Some(u16::try_from(id & 0xFFFF).unwrap_or(0)),
             name: None,
         });
@@ -4129,11 +4179,65 @@ mod play_natives {
             .heap
             .str(regs.s.first().copied().unwrap_or_default())
             .to_owned();
+        let at = sector_point(ctx, regs);
+        let sector = map_sector(ctx, regs);
         ctx.play.actor_ops.push(super::ZsActorOp::SetEnvironment {
+            at,
+            sector,
             id: None,
             name: Some(name),
         });
         Ok(())
+    }
+
+    /// `level.PointInSector(pos)`: a sector reference that remembers the
+    /// point, so `SetEnvironment…` on it reaches that sector.
+    /// Sector index of a map `Sector` object receiver.
+    fn map_sector(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>) -> Option<u32> {
+        let h = regs.a.first().copied()?;
+        ctx.play.map_objects.sector_of(h).map(|s| s as u32)
+    }
+
+    fn level_point_in_sector(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let x = regs.f.first().copied().unwrap_or(0.0);
+        let y = regs.f.get(1).copied().unwrap_or(0.0);
+        // The map's own `Sector` object when the playsim published them.
+        if !ctx.play.map_objects.sectors.is_empty() {
+            if let Some(h) = ctx
+                .play
+                .portals
+                .sector_at(x, y)
+                .and_then(|s| ctx.play.map_objects.sectors.get(s).copied())
+            {
+                if let Some(slot) = regs.a.first_mut() {
+                    *slot = h;
+                }
+                return Ok(());
+            }
+        }
+        let h = ctx.heap.new_object_f(super::SECTOR_POINT_CLASS, 4, 2, 2, 2);
+        if let Some(crate::heap::ObjKind::Object { fields_f, .. }) = ctx.heap.get_mut(h) {
+            fields_f[0] = x;
+            fields_f[1] = y;
+        }
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
+    /// The point a `PointInSector` sector reference (the receiver) was made
+    /// for, if it is one.
+    fn sector_point(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>) -> Option<(f64, f64)> {
+        let h = regs.a.first().copied()?;
+        match ctx.heap.get(h)? {
+            crate::heap::ObjKind::Object {
+                class_id: super::SECTOR_POINT_CLASS,
+                fields_f,
+                ..
+            } => Some((fields_f.first().copied()?, fields_f.get(1).copied()?)),
+            _ => None,
+        }
     }
 
     fn sector_ceiling(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -4583,6 +4687,7 @@ mod play_natives {
         let n = match ctx.heap.get(h) {
             Some(ObjKind::ArrayI(v)) => v.len() as i64,
             Some(ObjKind::ArrayS(v)) => v.len() as i64,
+            Some(ObjKind::ArrayA(v)) => v.len() as i64,
             _ => 0,
         };
         if let Some(slot) = regs.i.first_mut() {
@@ -4619,6 +4724,10 @@ mod play_natives {
                 items.clear();
                 Ok(())
             }
+            Some(ObjKind::ArrayA(items)) => {
+                items.clear();
+                Ok(())
+            }
             _ => Err(Trap::Native("Array.Clear: not an Array".into())),
         }
     }
@@ -4639,6 +4748,15 @@ mod play_natives {
                 }
                 Ok(())
             }
+            Some(ObjKind::ArrayA(items)) => {
+                // `Delete(index, count = 1)`.
+                let count = regs.i.get(1).copied().unwrap_or(1).max(1) as usize;
+                if idx < items.len() {
+                    let end = idx.saturating_add(count).min(items.len());
+                    items.drain(idx..end);
+                }
+                Ok(())
+            }
             _ => Err(Trap::Native("Array.Delete: not an Array".into())),
         }
     }
@@ -4649,6 +4767,114 @@ mod play_natives {
             *slot = h;
         }
         Ok(())
+    }
+
+    fn array_new_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = ctx.heap.new_array_a();
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
+    /// `arr[i]` of an object array (null past the end, as an unset slot).
+    fn array_get_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let idx = regs.i.first().copied().unwrap_or(0);
+        let v = match ctx.heap.get(h) {
+            Some(ObjKind::ArrayA(items)) => {
+                if idx < 0 || idx as usize >= items.len() {
+                    return Err(Trap::ArrayOob {
+                        func: "Array.Get".into(),
+                        line: 0,
+                    });
+                }
+                items[idx as usize]
+            }
+            None => {
+                return Err(Trap::NullDeref {
+                    func: "Array.Get".into(),
+                    line: 0,
+                });
+            }
+            _ => ObjHandle::NULL,
+        };
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = v;
+        }
+        Ok(())
+    }
+
+    /// `arr[i] = v` of an object array.
+    fn array_set_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let v = regs.a.get(1).copied().unwrap_or(ObjHandle::NULL);
+        let idx = regs.i.first().copied().unwrap_or(0);
+        match ctx.heap.get_mut(h) {
+            Some(ObjKind::ArrayA(items)) => {
+                if idx < 0 || idx as usize >= items.len() {
+                    return Err(Trap::ArrayOob {
+                        func: "Array.Set".into(),
+                        line: 0,
+                    });
+                }
+                items[idx as usize] = v;
+                Ok(())
+            }
+            None => Err(Trap::NullDeref {
+                func: "Array.Set".into(),
+                line: 0,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// `arr.Push(v)`: returns the new element's index.
+    fn array_push_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let v = regs.a.get(1).copied().unwrap_or(ObjHandle::NULL);
+        let n = match ctx.heap.get_mut(h) {
+            Some(ObjKind::ArrayA(items)) => {
+                items.push(v);
+                items.len() as i64 - 1
+            }
+            _ => return Err(Trap::Native("Array.Push: not an object array".into())),
+        };
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = n;
+        }
+        Ok(())
+    }
+
+    /// `arr.Find(v)`: index of `v`, or `Size()` when absent.
+    fn array_find_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let v = regs.a.get(1).copied().unwrap_or(ObjHandle::NULL);
+        let k = match ctx.heap.get(h) {
+            Some(ObjKind::ArrayA(items)) => {
+                items.iter().position(|x| *x == v).unwrap_or(items.len())
+            }
+            _ => 0,
+        };
+        if let Some(slot) = regs.i.first_mut() {
+            *slot = k as i64;
+        }
+        Ok(())
+    }
+
+    /// `arr.Insert(index, v)`.
+    fn array_insert_a(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+        let v = regs.a.get(1).copied().unwrap_or(ObjHandle::NULL);
+        let idx = regs.i.first().copied().unwrap_or(0).max(0) as usize;
+        match ctx.heap.get_mut(h) {
+            Some(ObjKind::ArrayA(items)) => {
+                let at = idx.min(items.len());
+                items.insert(at, v);
+                Ok(())
+            }
+            _ => Err(Trap::Native("Array.Insert: not an object array".into())),
+        }
     }
 
     fn array_new_s(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -5130,6 +5356,13 @@ mod play_natives {
                     *slot = ctx.play.wp_nochange;
                 }
             }
+            // `level`: the published `LevelLocals` object (its `Sectors`,
+            // `Lines`, … are the map objects).
+            "level" if !ctx.play.map_objects.level.is_null() => {
+                if let Some(slot) = regs.a.first_mut() {
+                    *slot = ctx.play.map_objects.level;
+                }
+            }
             "playeringame" => {
                 let idx = regs.i.first().copied().unwrap_or(0);
                 write_num(regs, if idx == 0 { 1.0 } else { 0.0 });
@@ -5330,6 +5563,12 @@ mod play_natives {
 
     fn level_yes(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         write_num(regs, 1.0);
+        Ok(())
+    }
+
+    /// `LevelLocals.GetPortalGroupCount()`.
+    fn portal_group_count(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        write_num(regs, f64::from(ctx.play.portal_group_count));
         Ok(())
     }
 

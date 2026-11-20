@@ -26,8 +26,8 @@ pub use frame::{MAX_FRAME, encode_frame, try_decode_frame};
 #[cfg(not(target_arch = "wasm32"))]
 pub use http_signal::HttpSignalBus;
 pub use lobby::{
-    ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, Ready, Reject, Start, Welcome,
-    validate_hello,
+    ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, Ping, Pong, Ready, Reject, Start,
+    Welcome, delay_for_rtts, validate_hello,
 };
 #[cfg(all(feature = "noise", not(target_arch = "wasm32")))]
 pub use noise_wrap::{NOISE_PATTERN, NoiseKeys, NoiseTransport};
@@ -338,9 +338,23 @@ pub struct LockstepSession {
     buffer: BTreeMap<(u32, PeerId), NetTicCmd>,
     /// Last checksum reported per peer for a tic.
     checksums: BTreeMap<(u32, PeerId), u64>,
+    /// Tics whose checksums every peer reported and agreed on.
+    verified_checksums: u32,
+    /// Recently sent local commands, oldest first, for
+    /// [`Self::rebroadcast_recent`] after a lost packet.
+    sent_local: VecDeque<(TimedCmd, Option<(u32, u64)>)>,
+    /// Each peer's command in the last released frame (rollback guesses
+    /// that a peer keeps doing what it did).
+    last_released: BTreeMap<PeerId, NetTicCmd>,
+    /// Rollback window (`0` = blocking lockstep), see
+    /// [`Self::set_rollback_window`].
+    rollback_window: u32,
     /// Bounded non-simulation packets received alongside lockstep commands.
     auxiliary_packets: VecDeque<(PeerId, Vec<u8>)>,
 }
+
+/// Tics a reported checksum is kept while waiting for every peer's report.
+pub const CHECKSUM_WINDOW: u32 = 128;
 
 impl LockstepSession {
     /// New session. `peers` must include `local`.
@@ -358,6 +372,10 @@ impl LockstepSession {
             local_tic: 0,
             buffer: BTreeMap::new(),
             checksums: BTreeMap::new(),
+            verified_checksums: 0,
+            sent_local: VecDeque::new(),
+            last_released: BTreeMap::new(),
+            rollback_window: 0,
             auxiliary_packets: VecDeque::new(),
         }
     }
@@ -391,6 +409,68 @@ impl LockstepSession {
             .collect()
     }
 
+    /// Rollback play: local commands may run up to `window` tics ahead of
+    /// the next released frame. Widens the resend window to match.
+    pub fn set_rollback_window(&mut self, window: u32) {
+        self.rollback_window = window;
+    }
+
+    /// How many tics the newest local command runs ahead of the next frame
+    /// to release (`0` = nothing pending). Rollback play stops submitting
+    /// new commands once this reaches its window.
+    #[must_use]
+    pub fn local_lead(&self) -> u32 {
+        self.local_tic
+            .saturating_add(self.delay)
+            .saturating_sub(self.next_tic)
+    }
+
+    /// Rollback: the frames from [`Self::next_tic`] up to the newest local
+    /// command, oldest first. Commands already received are used as they
+    /// are; a peer whose command has not arrived is guessed to repeat its
+    /// newest earlier command (received or released). The second value per
+    /// frame says whether every command in it is real.
+    #[must_use]
+    pub fn speculative_frames(&self) -> Vec<(BTreeMap<PeerId, NetTicCmd>, bool)> {
+        let end = self.local_tic.saturating_add(self.delay);
+        self.speculative_frames_with(end, |_| None)
+    }
+
+    /// [`Self::speculative_frames`] up to `end` (exclusive), for clients
+    /// whose own commands are not in the session buffer (web protocol v2
+    /// sends them to the server instead): `local(tic)` supplies the local
+    /// seat's command for a tic not in a frame yet.
+    #[must_use]
+    pub fn speculative_frames_with(
+        &self,
+        end: u32,
+        local: impl Fn(u32) -> Option<NetTicCmd>,
+    ) -> Vec<(BTreeMap<PeerId, NetTicCmd>, bool)> {
+        let mut latest = self.last_released.clone();
+        (self.next_tic..end)
+            .map(|tic| {
+                let mut known = true;
+                let mut frame = BTreeMap::new();
+                for &p in &self.peers {
+                    let real = self
+                        .buffer
+                        .get(&(tic, p))
+                        .copied()
+                        .or_else(|| (p == self.local).then(|| local(tic)).flatten());
+                    let cmd = if let Some(cmd) = real {
+                        latest.insert(p, cmd);
+                        cmd
+                    } else {
+                        known = false;
+                        latest.get(&p).copied().unwrap_or_default()
+                    };
+                    frame.insert(p, cmd);
+                }
+                (frame, known)
+            })
+            .collect()
+    }
+
     /// Submit local input for the current local tic (stored at `local_tic + delay`).
     pub fn submit_local(&mut self, cmd: NetTicCmd) -> TimedCmd {
         let tic = self.local_tic.saturating_add(self.delay);
@@ -401,7 +481,47 @@ impl LockstepSession {
             cmd,
         };
         self.buffer.insert((t.tic, t.peer), t.cmd);
+        if self.sent_local.len() >= self.resend_depth() {
+            self.sent_local.pop_front();
+        }
+        self.sent_local.push_back((t, None));
         t
+    }
+
+    /// How many recent local commands [`Self::rebroadcast_recent`] resends.
+    /// A peer still waiting on one of ours is at most `2 × delay + 1` tics
+    /// behind our newest command (it blocks us `delay` tics later).
+    fn resend_depth(&self) -> usize {
+        // With rollback a peer can also run up to the window ahead before
+        // it stalls, and we can be a window ahead of it.
+        let ahead = self.delay.saturating_add(self.rollback_window);
+        usize::try_from(ahead.saturating_mul(2).saturating_add(4))
+            .unwrap_or(usize::MAX)
+            .clamp(8, 64)
+    }
+
+    /// Resend every recently submitted local command, oldest first, the
+    /// each with the checksum it was reported with ([`Self::report_checksum`]
+    /// for the local peer right after [`Self::submit_local`]); `checksum`
+    /// stands in for the newest one's. Call while stalled: on a lossy transport (UDP)
+    /// a dropped command would otherwise leave a peer waiting forever, since
+    /// [`Self::broadcast`] only ever sends the newest one.
+    pub fn rebroadcast_recent<T: Transport + ?Sized>(
+        &self,
+        transport: &mut T,
+        checksum: Option<(u32, u64)>,
+    ) {
+        let count = self.sent_local.len();
+        for (index, (timed, sent)) in self.sent_local.iter().enumerate() {
+            // Each command goes out again with the checksum it first
+            // carried, so a dropped report is recovered too.
+            let checksum = if index + 1 == count {
+                checksum.or(*sent)
+            } else {
+                *sent
+            };
+            self.broadcast_with_checksum(transport, timed, checksum);
+        }
     }
 
     /// Ingest a remote (or replayed) timed command.
@@ -466,7 +586,10 @@ impl LockstepSession {
                 if let Some((tic, checksum)) = decode_checksum_extension(&bytes) {
                     self.report_checksum(tic, t.peer, checksum);
                 }
-                self.push_remote(t);
+                // Resent commands for tics already released are stale.
+                if t.tic >= self.next_tic {
+                    self.push_remote(t);
+                }
             } else if bytes.len() > AUX_PACKET_MAGIC.len()
                 && bytes.len() <= AUX_PACKET_MAGIC.len() + MAX_AUX_PACKET_LEN
                 && bytes.starts_with(AUX_PACKET_MAGIC)
@@ -496,10 +619,15 @@ impl LockstepSession {
                 frame.insert(p, cmd);
             }
         }
+        for (&p, &cmd) in &frame {
+            self.last_released.insert(p, cmd);
+        }
         self.next_tic = self.next_tic.saturating_add(1);
         let next_tic = self.next_tic;
+        // Peers report a tic's checksum alongside a later cmd, so keep a
+        // window wide enough for any input delay and a few late packets.
         self.checksums
-            .retain(|(tic, _), _| tic.saturating_add(1) >= next_tic);
+            .retain(|(tic, _), _| tic.saturating_add(CHECKSUM_WINDOW) >= next_tic);
         Some(frame)
     }
 
@@ -522,6 +650,11 @@ impl LockstepSession {
 
     /// Record a world checksum for desync detection.
     pub fn report_checksum(&mut self, tic: u32, peer: PeerId, checksum: u64) {
+        if peer == self.local
+            && let Some((_, sent)) = self.sent_local.back_mut()
+        {
+            *sent = Some((tic, checksum));
+        }
         self.checksums.insert((tic, peer), checksum);
     }
 
@@ -553,6 +686,35 @@ impl LockstepSession {
         self.peers
             .iter()
             .all(|peer| self.checksums.contains_key(&(tic, *peer)))
+    }
+
+    /// Compare every tic that all peers have reported, oldest first, and
+    /// forget it (a tic that disagrees is reported once). Call after each [`Self::try_advance`]:
+    /// unlike [`Self::check_desync`] on the tic just released, this also
+    /// catches checksums that arrived a few tics late.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Desync`] for the first tic where two peers disagree.
+    pub fn check_complete_desyncs(&mut self) -> Result<(), NetError> {
+        let tics: BTreeSet<u32> = self.checksums.keys().map(|(tic, _)| *tic).collect();
+        for tic in tics {
+            if !self.checksums_complete(tic) {
+                continue;
+            }
+            let result = self.check_desync(tic);
+            // Forget the tic either way so one desync is reported once.
+            self.checksums.retain(|(t, _), _| *t != tic);
+            result?;
+            self.verified_checksums = self.verified_checksums.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Tics verified by [`Self::check_complete_desyncs`] so far.
+    #[must_use]
+    pub fn verified_checksums(&self) -> u32 {
+        self.verified_checksums
     }
 }
 
@@ -691,6 +853,144 @@ mod tests {
         assert!(matches!(
             s.check_desync(5),
             Err(NetError::Desync { tic: 5 })
+        ));
+    }
+
+    #[test]
+    fn speculative_frames_guess_missing_peers_from_their_last_command() {
+        let (p0, p1) = (PeerId(0), PeerId(1));
+        let mut s = LockstepSession::new(p0, [p0, p1], 1);
+        let walk = |f| NetTicCmd {
+            forward_move: f,
+            ..NetTicCmd::default()
+        };
+        s.push_remote(TimedCmd {
+            tic: 0,
+            peer: p0,
+            cmd: walk(1),
+        });
+        s.push_remote(TimedCmd {
+            tic: 0,
+            peer: p1,
+            cmd: walk(9),
+        });
+        assert!(s.try_advance().is_some());
+        // Local runs three tics ahead; peer 1 has sent only tic 1.
+        for f in [2, 3, 4] {
+            let _ = s.submit_local(walk(f));
+        }
+        s.push_remote(TimedCmd {
+            tic: 1,
+            peer: p1,
+            cmd: walk(7),
+        });
+        assert_eq!(s.local_lead(), 3);
+        let spec = s.speculative_frames();
+        assert_eq!(spec.len(), 3, "tics 1..=3");
+        assert_eq!(spec[0].0[&p0].forward_move, 2);
+        assert_eq!(spec[0].0[&p1].forward_move, 7);
+        assert!(spec[0].1, "tic 1 is all real");
+        assert_eq!(spec[1].0[&p1].forward_move, 7, "guess: newest known");
+        assert!(!spec[1].1);
+        assert_eq!(spec[2].0[&p0].forward_move, 4);
+    }
+
+    #[test]
+    fn speculative_frames_with_take_our_commands_from_outside_the_buffer() {
+        // Web v2: our commands go to the server, not into the session.
+        let (p0, p1) = (PeerId(0), PeerId(1));
+        let mut s = LockstepSession::new(p1, [p0, p1], 0);
+        let walk = |f| NetTicCmd {
+            forward_move: f,
+            ..NetTicCmd::default()
+        };
+        for p in [p0, p1] {
+            s.push_remote(TimedCmd {
+                tic: 0,
+                peer: p,
+                cmd: walk(1),
+            });
+        }
+        assert!(s.try_advance().is_some());
+        // The server's frame for tic 1 is here; tics 2 and 3 only exist as
+        // our own sent commands.
+        s.push_remote(TimedCmd {
+            tic: 1,
+            peer: p0,
+            cmd: walk(5),
+        });
+        s.push_remote(TimedCmd {
+            tic: 1,
+            peer: p1,
+            cmd: walk(6),
+        });
+        let ours = |tic: u32| (tic >= 2).then(|| walk(10 + i16::try_from(tic).unwrap()));
+        let spec = s.speculative_frames_with(4, ours);
+        assert_eq!(spec.len(), 3);
+        assert!(spec[0].1);
+        assert_eq!(spec[0].0[&p1].forward_move, 6, "the frame wins");
+        assert_eq!(spec[1].0[&p1].forward_move, 12, "our sent command");
+        assert_eq!(spec[1].0[&p0].forward_move, 5, "guess: p0 keeps going");
+        assert!(!spec[1].1);
+        assert_eq!(spec[2].0[&p1].forward_move, 13);
+    }
+
+    #[test]
+    fn rebroadcast_recovers_a_dropped_command() {
+        let (p0, p1) = (PeerId(0), PeerId(1));
+        let mut mesh = LoopbackMesh::new([p0, p1]);
+        let mut s0 = LockstepSession::new(p0, [p0, p1], 1);
+        let mut s1 = LockstepSession::new(p1, [p0, p1], 1);
+        for s in [&mut s0, &mut s1] {
+            for p in [p0, p1] {
+                s.push_remote(TimedCmd {
+                    tic: 0,
+                    peer: p,
+                    cmd: NetTicCmd::default(),
+                });
+            }
+        }
+        // Peer 0's command for tic 1 is lost on the wire.
+        let _lost = s0.submit_local(NetTicCmd {
+            forward_move: 5,
+            ..NetTicCmd::default()
+        });
+        let m1 = s1.submit_local(NetTicCmd::default());
+        s1.broadcast(&mut mesh.endpoint_mut(p1), &m1);
+        s0.recv(&mut mesh.endpoint_mut(p0));
+        assert!(s0.try_advance().is_some());
+        assert!(s1.try_advance().is_some());
+        assert!(s1.try_advance().is_none(), "tic 1 waits on peer 0");
+        s0.rebroadcast_recent(&mut mesh.endpoint_mut(p0), None);
+        s1.recv(&mut mesh.endpoint_mut(p1));
+        let f1 = s1.try_advance().expect("tic 1 after resend");
+        assert_eq!(f1[&p0].forward_move, 5);
+        // A second resend of the released tic is ignored, not buffered.
+        s0.rebroadcast_recent(&mut mesh.endpoint_mut(p0), None);
+        s1.recv(&mut mesh.endpoint_mut(p1));
+        assert!(s1.buffer.keys().all(|(tic, _)| *tic >= s1.next_tic()));
+    }
+
+    #[test]
+    fn late_checksums_are_still_compared() {
+        let (p0, p1) = (PeerId(0), PeerId(1));
+        let mut s = LockstepSession::new(p0, [p0, p1], 1);
+        s.report_checksum(0, p0, 7);
+        // Release a few tics before the remote report for tic 0 lands.
+        for tic in 0..4 {
+            s.buffer.insert((tic, p0), NetTicCmd::default());
+            s.buffer.insert((tic, p1), NetTicCmd::default());
+            assert!(s.try_advance().is_some());
+            s.check_complete_desyncs().expect("nothing complete yet");
+        }
+        s.report_checksum(0, p1, 7);
+        s.check_complete_desyncs().expect("agree");
+        assert_eq!(s.verified_checksums(), 1);
+        s.report_checksum(35, p0, 1);
+        s.report_checksum(35, p1, 2);
+        assert!(matches!(
+            s.check_complete_desyncs(),
+            Err(NetError::Desync { tic: 35 })
         ));
     }
 

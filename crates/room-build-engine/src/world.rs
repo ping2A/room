@@ -234,11 +234,48 @@ pub struct BuildWorld {
     /// presentation state attached to the render-world copy, never the game
     /// world used by the playsim.
     pub render_hud_draws: Vec<HudDrawCommand>,
+    /// Viewer camera fields an EDuke32 `EVENT_DISPLAYSTART` hook set for this
+    /// frame (render copy only; the playsim never sees them).
+    pub render_camera: Option<RenderCamera>,
+    /// Global Build visibility for this view (`g_visibility`; 512 default,
+    /// 0 = no distance shading). Render-only.
+    pub render_visibility: i32,
+    /// How many leading `render_hud_draws` came from the weapon display
+    /// (`EVENT_DISPLAYWEAPON`); EDuke32 draws those under the status bar.
+    pub render_hud_weapon_draws: usize,
     /// A nonzero `EVENT_DISPLAYWEAPON` return suppresses the native weapon
     /// layer for this view.
     pub render_hide_native_weapon: bool,
     /// An `EVENT_DISPLAYCROSSHAIR` hook owns crosshair rendering for this view.
     pub render_hide_native_crosshair: bool,
+}
+
+/// Player camera fields an EDuke32 per-frame `EVENT_DISPLAYSTART` changed
+/// for one rendered frame (`None` = untouched, keep the interpolated value).
+/// Brutal Duke's death camera writes these.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderCamera {
+    /// Eye Z and its previous value.
+    pub posz: Option<i32>,
+    pub oposz: Option<i32>,
+    /// Low-precision horizon, offset and previous values.
+    pub horiz: Option<i16>,
+    pub previous_horiz: Option<i16>,
+    pub horizoff: Option<i16>,
+    pub previous_horizoff: Option<i16>,
+    /// 16.16 horizon, offset and previous values.
+    pub q16_horiz: Option<i32>,
+    pub previous_q16_horiz: Option<i32>,
+    pub q16_horizoff: Option<i32>,
+    pub previous_q16_horizoff: Option<i32>,
+    /// View bob and previous value.
+    pub pyoff: Option<i32>,
+    pub previous_pyoff: Option<i32>,
+    /// Screen roll and previous value.
+    pub rotscrnang: Option<i16>,
+    pub previous_rotscrnang: Option<i16>,
+    /// The viewer's global visibility (EDuke32 `g_visibility` source).
+    pub visibility: Option<i32>,
 }
 
 /// One EDuke32 CON `rotatesprite` command captured for the software HUD pass.
@@ -423,6 +460,9 @@ impl BuildWorld {
             mirror_render_sprites: BTreeMap::new(),
             mirror_render_sprite_blends: BTreeMap::new(),
             render_hud_draws: Vec::new(),
+            render_hud_weapon_draws: 0,
+            render_visibility: 512,
+            render_camera: None,
             render_hide_native_weapon: false,
             render_hide_native_crosshair: false,
         }

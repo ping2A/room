@@ -25,8 +25,8 @@ mod deco_zvm;
 mod flags;
 mod render_pose;
 pub use render_pose::{
-    PIXEL_STRETCH, SpritePose, SpriteView, casts_sprite_shadow, isometric_sprite, sprite_pose,
-    sprite_view, view_eye,
+    ModelFrameLerp, PIXEL_STRETCH, SpritePose, SpriteView, casts_sprite_shadow, isometric_sprite,
+    model_frame_lerp, sprite_pose, sprite_view, view_eye,
 };
 pub mod fx_events;
 mod hitscan;
@@ -44,6 +44,9 @@ mod pickup;
 mod player;
 mod player_names;
 mod polyobj;
+pub mod portal;
+#[cfg(test)]
+mod portal_tests;
 pub mod powerups;
 #[cfg(test)]
 mod props_tests;
@@ -52,6 +55,7 @@ mod script_host;
 pub mod script_mods;
 mod sector_specials;
 mod sight;
+mod sight_portal;
 mod sndseq;
 pub mod sound_env;
 mod special_names;

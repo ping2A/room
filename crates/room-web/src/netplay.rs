@@ -1129,6 +1129,8 @@ pub struct NetPlay {
     /// Submitted cmd awaiting a full frame (rebroadcast until advance).
     pending: Option<TimedCmd>,
     frames_since_rebroadcast: u32,
+    /// Host net save / load riding in the next local command: `(load, slot)`.
+    net_save_cmd: Option<(bool, u8)>,
     /// Frames spent waiting on remotes for the current pending tic.
     frames_waiting: u32,
     /// Seats that left the relay mid-match.
@@ -1174,6 +1176,7 @@ impl NetPlay {
             frames_since_ready_bcast: 0,
             pending: None,
             frames_since_rebroadcast: 0,
+            net_save_cmd: None,
             frames_waiting: 0,
             gone_peers: BTreeSet::new(),
             peer_names: r.peer_names,
@@ -1320,7 +1323,7 @@ impl NetPlay {
             *mouse_pitch = 0;
             *weapon = 0;
             let bits = build_ticcmd(&sample);
-            let local_cmd = NetTicCmd {
+            let mut local_cmd = NetTicCmd {
                 buttons: bits.buttons,
                 pitch: bits.pitch,
                 yaw: bits.yaw,
@@ -1330,6 +1333,7 @@ impl NetPlay {
                 up_move: bits.up_move,
                 weapon_select: bits.weapon_select,
             };
+            self.apply_net_save_cmd(&mut local_cmd);
             let msg = self.session.submit_local(local_cmd);
             // v2: one TIC_CMD to the server (peer fan-out is server-side).
             // Always uplink even if `peers()` is empty/mis-sized.
@@ -1361,7 +1365,8 @@ impl NetPlay {
                         &room_net::encode_timed_cmd(msg),
                     );
                 } else {
-                    self.session.broadcast(&mut self.transport, msg);
+                    // Peer mesh may drop packets: resend the recent window.
+                    self.session.rebroadcast_recent(&mut self.transport, None);
                 }
             }
             self.frames_since_rebroadcast = 0;
@@ -1514,7 +1519,7 @@ impl NetPlay {
             *mouse_pitch = 0;
             *weapon = 0;
             let bits = build_ticcmd(&sample);
-            let cmd = NetTicCmd {
+            let mut cmd = NetTicCmd {
                 buttons: bits.buttons,
                 pitch: bits.pitch,
                 yaw: bits.yaw,
@@ -1524,6 +1529,10 @@ impl NetPlay {
                 up_move: bits.up_move,
                 weapon_select: bits.weapon_select,
             };
+            if let Some((load, slot)) = self.net_save_cmd.take() {
+                cmd.buttons |= net_save_bits(load);
+                cmd.weapon_select = slot;
+            }
             t.send_tic_cmd(self.next_send_tic, &cmd);
             if !self.spectator {
                 if self.sent_cmds.len() >= 128 {
@@ -1542,6 +1551,77 @@ impl NetPlay {
             sent += 1;
         }
         true
+    }
+
+    /// Queue a net save (`load = false`) or load for slot `slot` in the next
+    /// local command. Only the host (seat 0) may; every peer then saves or
+    /// loads its own copy on the same tic (desktop `Buttons::NETSAVE`).
+    ///
+    /// # Errors
+    ///
+    /// Not the host, or watching.
+    pub fn request_net_save(&mut self, load: bool, slot: u8) -> Result<(), &'static str> {
+        if self.spectator {
+            return Err("Spectators can't save a net game");
+        }
+        if self.session.local() != PeerId(0) {
+            return Err("Only the host can save or load a net game");
+        }
+        self.net_save_cmd = Some((load, slot));
+        Ok(())
+    }
+
+    fn apply_net_save_cmd(&mut self, cmd: &mut NetTicCmd) {
+        if let Some((load, slot)) = self.net_save_cmd.take() {
+            cmd.buttons |= net_save_bits(load);
+            cmd.weapon_select = slot;
+        }
+    }
+
+    /// v2: after a frame is simulated, report `World::checksum` every
+    /// [`CHECKSUM_INTERVAL`] tics so the server can catch a desync.
+    /// `world_checksum` runs only when one is due.
+    pub fn report_world_checksum(&mut self, world_checksum: impl FnOnce() -> Option<u64>) {
+        if self.spectator {
+            return;
+        }
+        let tic = self.session.next_tic();
+        if tic == 0 || tic % CHECKSUM_INTERVAL != 0 {
+            return;
+        }
+        let CoopSocket::V2(t) = &mut self.transport else {
+            return;
+        };
+        if let Some(value) = world_checksum() {
+            t.send_checksum(tic, value);
+        }
+    }
+
+    /// First tic the server reported a desync at (v2), if any.
+    pub fn desync_tic(&self) -> Option<u32> {
+        match &self.transport {
+            CoopSocket::V2(t) => t.desync_tic(),
+            _ => None,
+        }
+    }
+
+    /// Rollback (v2): the frames from the next one to simulate up to our
+    /// newest sent command (at most `window`), each with every seat's
+    /// command: real where a frame or our own command has it, else the
+    /// seat's newest known command repeated. Empty for spectators and the
+    /// legacy relay.
+    pub fn rollback_frames(&self, window: u32) -> Vec<Vec<TicCmd>> {
+        if self.spectator || !self.transport.is_v2() {
+            return Vec::new();
+        }
+        let start = self.session.next_tic();
+        let end = self.next_send_tic.min(start.saturating_add(window));
+        let local: BTreeMap<u32, NetTicCmd> = self.sent_cmds.iter().copied().collect();
+        self.session
+            .speculative_frames_with(end, |tic| local.get(&tic).copied())
+            .into_iter()
+            .map(|(frame, _)| frame_to_cmds(frame, self.peer_count))
+            .collect()
     }
 
     /// v2: the next frame's commands if it has arrived. Detects our own
@@ -1596,6 +1676,12 @@ impl NetPlay {
     /// The playout wanted a frame that has not arrived.
     pub fn on_stall(&mut self, now: f64) {
         self.clock.on_stall(now);
+    }
+
+    /// Tic our next command will be sent for (one past our newest).
+    #[must_use]
+    pub fn next_send_tic(&self) -> u32 {
+        self.next_send_tic
     }
 
     /// Next tic the sim will run.
@@ -1794,6 +1880,8 @@ impl NetPlay {
                                 rng_seed: h.rng_seed,
                                 map: h.map.clone(),
                                 skill: h.skill,
+                                deathmatch: 0,
+                                bots: 0,
                             });
                             uplink(&mut self.transport, local, &welcome.encode());
                             uplink(
@@ -1802,6 +1890,7 @@ impl NetPlay {
                                 &LobbyMsg::Start(Start {
                                     rng_seed: h.rng_seed,
                                     names: Vec::new(),
+                                    delay: None,
                                 })
                                 .encode(),
                             );
@@ -1865,6 +1954,7 @@ impl NetPlay {
                     &LobbyMsg::Start(Start {
                         rng_seed: h.rng_seed,
                         names: Vec::new(),
+                        delay: None,
                     })
                     .encode(),
                 );
@@ -1944,6 +2034,17 @@ fn frame_to_cmds(
 }
 
 /// Packet-server uplink: one send fans out to every other seat.
+fn net_save_bits(load: bool) -> u32 {
+    if load {
+        Buttons::NETLOAD
+    } else {
+        Buttons::NETSAVE
+    }
+}
+
+/// Tics between world checksum reports (once a second at 35 Hz).
+pub const CHECKSUM_INTERVAL: u32 = 35;
+
 fn uplink(transport: &mut CoopSocket, local: PeerId, bytes: &[u8]) {
     if transport.is_v2() {
         // v2 stamps seat server-side; peer arg is ignored by WsV2Transport::send.

@@ -3,9 +3,13 @@
 //! Bot seats get a fresh [`crate::player::TicCmd`] each tic inside the sim
 //! (before `player_think`), so lockstep peers agree without sending cmds.
 //!
-//! Goals, in order: get back inside the battle royale zone; with only fists,
-//! fetch the nearest weapon lying on the map; chase an enemy in sight (or
-//! close); else head for the zone centre. Movement probes the way ahead
+//! Who counts as an enemy follows the game: in deathmatch and battle royale
+//! the other players (not squad mates); in co-op and survival the monsters,
+//! never a team mate. Goals, in order: get back inside the battle royale
+//! zone; with only fists, fetch the nearest weapon lying on the map; chase an
+//! enemy in sight (or close); in co-op stay near the nearest human; else
+//! head for the zone centre or roam. A dead bot respawns after a moment when
+//! the game allows it, and a blocked bot presses use (doors, lifts) in co-op. Movement probes the way ahead
 //! ([`crate::physics::check_position`]) and takes the open heading closest
 //! to the goal; a bot that barely moves for a moment takes a detour, so it
 //! never runs on the spot against a wall. Fists only swing at melee range.
@@ -15,6 +19,7 @@
 //! bot seats get callsigns from [`BOT_NAMES`] picked by the match seed.
 
 use crate::actor::{Actor, ActorId};
+use crate::class::{FLAG_COUNTKILL, FLAG_FRIENDLY, FLAG_ISMONSTER, FLAG_SHOOTABLE};
 use crate::player::{Buttons, MAX_PLAYERS, PlayerState, TicCmd};
 use crate::sight::check_sight;
 use crate::world::World;
@@ -180,6 +185,12 @@ const MELEE: f64 = 80.0;
 const WEAPON_RANGE: f64 = 2400.0;
 /// Enemies this close are chased even out of sight.
 const CHASE_BLIND: f64 = 768.0;
+/// Co-op bots ignore monsters farther than this.
+const MONSTER_RANGE: f64 = 2048.0;
+/// Co-op bots walk back to a player once farther than this.
+const ESCORT_NEAR: f64 = 192.0;
+/// [`crate::player::Player::team`] for no squad.
+const UNTEAMED: u8 = 255;
 
 /// Fill [`World::players`][`crate::player::Player::cmd`] for every bot seat.
 pub fn run_bot_brains(world: &mut World) {
@@ -200,6 +211,15 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
     let Some(player) = world.players[seat].as_ref() else {
         return cmd;
     };
+    if player.player_state == PlayerState::Dead {
+        // Press use about a second and a half after dying (the time is
+        // spread by seat so bots don't all respawn on the same tic).
+        let wait = world.level.maptime.wrapping_add(seat as u32 * 11) % 52;
+        if wait == 0 && !world.no_player_respawn {
+            cmd.buttons = Buttons(Buttons::USE);
+        }
+        return cmd;
+    }
     if player.player_state != PlayerState::Live {
         return cmd;
     }
@@ -266,6 +286,7 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
         }
         if !on_target {
             let want = dmath::atan2(dy, dx).to_degrees();
+            let coop = !pvp(world);
             let p = world.players[seat].as_mut().unwrap();
             if was_walking && moved < STUCK_SPEED {
                 p.bot_stuck = p.bot_stuck.saturating_add(1);
@@ -275,6 +296,11 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
             let stuck = p.bot_stuck >= STUCK_TICS;
             if stuck {
                 p.bot_stuck = 0;
+            }
+            // Co-op maps are full of doors and lifts in the way: try use
+            // before turning away. (PvP arenas keep the classic brain.)
+            if stuck && coop {
+                cmd.buttons = Buttons(cmd.buttons.0 | Buttons::USE);
             }
             let detouring = p.bot_detour > 0;
             let detour_dir = p.bot_detour_dir;
@@ -346,7 +372,7 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
                 _ => true,
             };
             if aimed && seen_for > tune.reaction && (melee_only || trigger) {
-                cmd.buttons = Buttons(Buttons::ATTACK);
+                cmd.buttons = Buttons(cmd.buttons.0 | Buttons::ATTACK);
             }
         }
     }
@@ -400,6 +426,15 @@ fn bot_goal_xy(
         && (ex - px).powi(2) + (ey - py).powi(2) < chase_blind * chase_blind
     {
         return Some((ex, ey));
+    }
+    if !pvp(world)
+        && let Some((hx, hy, d2)) = nearest_human(world, seat, a)
+    {
+        // Co-op: keep up with the players rather than wander off alone.
+        if d2 > ESCORT_NEAR * ESCORT_NEAR {
+            return Some((hx, hy));
+        }
+        return None;
     }
     if let Some((cx, cy, _)) = zone {
         // Roam around the centre rather than all piling onto one point.
@@ -460,7 +495,21 @@ fn passable(world: &World, a: &Actor, mo: ActorId, heading: f64, dist: f64) -> b
     r.ok && r.floor_z - a.pos.z() <= STEP && r.ceiling_z - r.floor_z >= a.height
 }
 
+/// Player-versus-player rules: deathmatch, or a battle royale zone game.
+fn pvp(world: &World) -> bool {
+    world.deathmatch || !world.mod_zones.is_empty()
+}
+
 fn nearest_enemy(world: &World, seat: usize, self_mo: ActorId) -> Option<ActorId> {
+    if pvp(world) {
+        nearest_enemy_player(world, seat, self_mo)
+    } else {
+        nearest_monster(world, self_mo)
+    }
+}
+
+fn nearest_enemy_player(world: &World, seat: usize, self_mo: ActorId) -> Option<ActorId> {
+    let my_team = world.players[seat].as_ref().map_or(UNTEAMED, |p| p.team);
     let mut best: Option<(f64, ActorId)> = None;
     for (other, p) in world.players.iter().enumerate() {
         if other == seat {
@@ -468,6 +517,11 @@ fn nearest_enemy(world: &World, seat: usize, self_mo: ActorId) -> Option<ActorId
         }
         let Some(p) = p else { continue };
         if p.player_state != PlayerState::Live {
+            continue;
+        }
+        // Squad mates are friends (when the rules protect them, as damage
+        // does).
+        if !world.team_damage && my_team != UNTEAMED && p.team == my_team {
             continue;
         }
         let Some(mo) = p.mo else { continue };
@@ -486,6 +540,56 @@ fn nearest_enemy(world: &World, seat: usize, self_mo: ActorId) -> Option<ActorId
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// Nearest live, hostile monster within [`MONSTER_RANGE`] (co-op / survival).
+fn nearest_monster(world: &World, self_mo: ActorId) -> Option<ActorId> {
+    let me = world.actors.get(self_mo)?;
+    let (px, py) = (me.pos.x(), me.pos.y());
+    let mut best: Option<(f64, ActorId)> = None;
+    for &id in &world.thinkers.default {
+        let Some(m) = world.actors.get(id) else {
+            continue;
+        };
+        if m.destroyed
+            || m.health <= 0
+            || m.flags & (FLAG_ISMONSTER | FLAG_COUNTKILL) == 0
+            || m.flags & FLAG_SHOOTABLE == 0
+            || m.flags & FLAG_FRIENDLY != 0
+            || id == self_mo
+        {
+            continue;
+        }
+        let (dx, dy) = (m.pos.x() - px, m.pos.y() - py);
+        let d = dx * dx + dy * dy;
+        if d > MONSTER_RANGE * MONSTER_RANGE {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Nearest live human player's `(x, y, distance²)`.
+fn nearest_human(world: &World, seat: usize, a: &Actor) -> Option<(f64, f64, f64)> {
+    let mut best: Option<(f64, f64, f64)> = None;
+    for (other, p) in world.players.iter().enumerate() {
+        let Some(p) = p else { continue };
+        if other == seat || p.is_bot || p.player_state != PlayerState::Live {
+            continue;
+        }
+        let Some(h) = p.mo.and_then(|mo| world.actors.get(mo)) else {
+            continue;
+        };
+        let (dx, dy) = (h.pos.x() - a.pos.x(), h.pos.y() - a.pos.y());
+        let d = dx * dx + dy * dy;
+        if best.is_none_or(|(_, _, bd)| d < bd) {
+            best = Some((h.pos.x(), h.pos.y(), d));
+        }
+    }
+    best
 }
 
 fn dist2(world: &World, a: ActorId, b: ActorId) -> f64 {
@@ -520,6 +624,85 @@ fn yaw_toward_deg(from_deg: f64, want_deg: f64, per_tic: f64) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ClassRegistry, StateTable};
+    use room_decorate::parse_decorate;
+    use room_nodebuild::apply_nodes;
+    use room_testkit::{MapBuilder, rect};
+    use std::sync::Arc;
+
+    /// Human at seat 0, bot at seat 1, one zombieman across the room.
+    fn coop_world(deathmatch: bool) -> World {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 512.0), 0.0, 128.0)
+            .player_start(64.0, 256.0, 0)
+            .thing(2, 128.0, 256.0, 0)
+            .thing(3004, 900.0, 256.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+        w.deathmatch = deathmatch;
+        let _ = w.spawn_coop_players(2).unwrap();
+        w.fill_bot_seats(1, 1);
+        w
+    }
+
+    #[test]
+    fn coop_bots_fight_monsters_not_players() {
+        let w = coop_world(false);
+        let bot = w.players[1].as_ref().unwrap().mo.unwrap();
+        let human = w.players[0].as_ref().unwrap().mo.unwrap();
+        let target = nearest_enemy(&w, 1, bot).expect("a monster");
+        assert_ne!(target, human, "co-op bot must not hunt its team mate");
+        assert_eq!(
+            w.classes
+                .get(w.actors.get(target).unwrap().class)
+                .unwrap()
+                .name,
+            "ZombieMan"
+        );
+        // Deathmatch keeps the player-versus-player brain.
+        let w = coop_world(true);
+        assert_eq!(nearest_enemy(&w, 1, bot), Some(human));
+    }
+
+    #[test]
+    fn dead_bots_respawn_and_coop_bots_follow_the_players() {
+        let mut w = coop_world(false);
+        // Kill the monster so only escorting is left.
+        for &id in &w.thinkers.default.clone() {
+            if let Some(a) = w.actors.get_mut(id)
+                && a.flags & FLAG_COUNTKILL != 0
+            {
+                a.health = 0;
+                a.destroyed = true;
+            }
+        }
+        let human = w.players[0].as_ref().unwrap().mo.unwrap();
+        // Human far away: the bot heads for them.
+        w.actors.get_mut(human).unwrap().pos = DVec3::new(900.0, 400.0, 0.0);
+        let bot = w.players[1].as_ref().unwrap().mo.unwrap();
+        let a = w.actors.get(bot).unwrap().clone();
+        let goal = bot_goal_xy(&w, 1, bot, &a, true, None, None, CHASE_BLIND);
+        assert_eq!(goal, Some((900.0, 400.0)));
+        // Right next to them: stay put.
+        w.actors.get_mut(human).unwrap().pos = DVec3::new(a.pos.x() + 64.0, a.pos.y(), 0.0);
+        assert_eq!(
+            bot_goal_xy(&w, 1, bot, &a, true, None, None, CHASE_BLIND),
+            None
+        );
+        // A dead bot presses use within a couple of seconds.
+        w.players[1].as_mut().unwrap().player_state = PlayerState::Dead;
+        let pressed = (0..60).any(|t| {
+            w.level.maptime = t;
+            build_cmd(&mut w, 1).buttons.any(Buttons::USE)
+        });
+        assert!(pressed, "dead bot never asked to respawn");
+    }
 
     #[test]
     fn bot_names_are_valid_distinct_and_vary_by_match() {

@@ -72,6 +72,40 @@ pub struct ZscriptRuntime {
     actor_gen: BTreeMap<u32, u32>,
     /// `(class id, field)` → `(bank, slot)` with parents walked.
     field_cache: std::cell::RefCell<BTreeMap<(u32, &'static str), Option<(u8, usize)>>>,
+    /// Map (MD5, portal revision) the published portal snapshot is for.
+    portal_key: Option<([u8; 16], u32)>,
+    /// Point → sector over a copy of the map's nodes, per map.
+    portal_lookup: Option<([u8; 16], room_zvm::SectorLookup)>,
+    /// Map the published `level.Sectors` / `Lines` objects are for.
+    map_objects_key: Option<[u8; 16]>,
+    /// Tic the map objects were last refreshed on.
+    map_objects_tic: Option<u32>,
+}
+
+/// Copy for world snapshots (rollback), VM included (its compiled program
+/// is shared, its heap copied).
+impl Clone for ZscriptRuntime {
+    fn clone(&self) -> Self {
+        Self {
+            program: self.program.clone(),
+            vm: self.vm.clone(),
+            actor_fields: self.actor_fields.clone(),
+            begun_play: self.begun_play.clone(),
+            event_handlers: self.event_handlers.clone(),
+            handler_objs: self.handler_objs.clone(),
+            modify_objs: self.modify_objs.clone(),
+            actor_proxies: self.actor_proxies.clone(),
+            event_actor_proxies: self.event_actor_proxies.clone(),
+            target_sentinel: self.target_sentinel.clone(),
+            map_handlers_active: self.map_handlers_active.clone(),
+            actor_gen: self.actor_gen.clone(),
+            field_cache: self.field_cache.clone(),
+            portal_key: self.portal_key,
+            portal_lookup: self.portal_lookup.clone(),
+            map_objects_key: self.map_objects_key,
+            map_objects_tic: self.map_objects_tic,
+        }
+    }
 }
 
 /// Native actor fields mirrored into a script object around a call.
@@ -140,6 +174,9 @@ impl ZscriptRuntime {
             .collect();
         self.vm = Some(vm);
         self.program = Some(Arc::clone(&program));
+        self.map_objects_key = None;
+        self.map_objects_tic = None;
+        self.portal_key = None;
         self.actor_fields.clear();
         self.begun_play.clear();
         self.handler_objs.clear();
@@ -491,6 +528,84 @@ impl ZscriptRuntime {
         play.skill = i32::from(skill);
         play.consoleplayer = consoleplayer;
         play.gamestate = gamestate;
+    }
+
+    /// Publish the map's portals for the portal natives (and the group
+    /// count). Rebuilt when the map or its portals change.
+    pub fn set_portals(&mut self, map: &room_map::MapGeometry) {
+        self.set_portal_group_count(map.setup.portal_groups.size.max(1));
+        let key = (map.md5, map.setup.portals.revision);
+        if self.portal_key == Some(key) || self.vm.is_none() {
+            return;
+        }
+        self.portal_key = Some(key);
+        let info = portal_info(map, &mut self.portal_lookup);
+        if let Some(play) = self.play_mut() {
+            play.portals = Arc::new(info);
+        }
+    }
+
+    /// Whether [`Self::sync_map_objects`] has anything to do for this map
+    /// and tic.
+    pub(crate) fn map_objects_due(&self, md5: [u8; 16], tic: u32) -> bool {
+        self.vm.is_some()
+            && (self.map_objects_key != Some(md5)
+                || (self.map_objects_tic != Some(tic)
+                    && self
+                        .vm
+                        .as_ref()
+                        .is_some_and(|vm| !vm.play.map_objects.sectors.is_empty())))
+    }
+
+    /// Build the level's `Sector` / `Line` / `Side` / `Vertex` objects (once
+    /// per map) and refresh what moves (plane heights, light, flats; once
+    /// per tic). Needs a program with UZDoom's map structs.
+    pub(crate) fn sync_map_objects(&mut self, m: &MapSync<'_>) {
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        if self.map_objects_key != Some(m.map.md5) {
+            self.map_objects_key = Some(m.map.md5);
+            self.map_objects_tic = None;
+            vm.play.map_objects = build_map_objects(vm, m.map);
+        }
+        if vm.play.map_objects.sectors.is_empty() || self.map_objects_tic == Some(m.tic) {
+            return;
+        }
+        self.map_objects_tic = Some(m.tic);
+        refresh_map_objects(vm, m);
+    }
+
+    /// Point the actor object `h`'s `CurSector` at the map `Sector` object
+    /// of `sector`.
+    pub(crate) fn set_cur_sector(&mut self, h: ObjHandle, sector: Option<usize>) {
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        let Some(sec) = sector.and_then(|s| vm.play.map_objects.sectors.get(s).copied()) else {
+            return;
+        };
+        if let Some((1, slot)) = walk_field(vm, h, "cursector") {
+            if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(h) {
+                if let Some(v) = fields_a.get_mut(slot) {
+                    *v = sec;
+                }
+            }
+        }
+    }
+
+    /// Position of the actor the next call is for (`CurSector`).
+    pub fn set_caller_pos(&mut self, pos: Option<[f64; 3]>) {
+        if let Some(play) = self.play_mut() {
+            play.caller_pos = pos;
+        }
+    }
+
+    /// Publish the map's linked-portal group count (`GetPortalGroupCount`).
+    pub fn set_portal_group_count(&mut self, n: usize) {
+        if let Some(play) = self.play_mut() {
+            play.portal_group_count = i32::try_from(n).unwrap_or(i32::MAX);
+        }
     }
 
     /// Publish the active map's MD5 for `LevelLocals.GetChecksum`.
@@ -1643,6 +1758,396 @@ fn event_actor_proxy(
     set_typed_int_field(vm, actor, "bISMONSTER", i64::from(info.is_monster));
     set_typed_string_field(vm, actor, "ClassName", &info.class_name);
     actor
+}
+
+/// What [`ZscriptRuntime::sync_map_objects`] reads from the playsim.
+pub(crate) struct MapSync<'a> {
+    pub map: &'a room_map::MapGeometry,
+    /// `[floor, ceiling]` plane of each sector.
+    pub planes: Vec<[room_zvm::ZsPlane; 2]>,
+    /// Light level of each sector.
+    pub light: Vec<i32>,
+    /// `[floor, ceiling]` flat of each sector.
+    pub flats: Vec<[String; 2]>,
+    pub tic: u32,
+}
+
+fn set_obj_int(vm: &mut Zvm, h: ObjHandle, name: &str, v: i64) {
+    if let Some((0, slot)) = walk_field(vm, h, name)
+        && let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(h)
+        && let Some(x) = fields_i.get_mut(slot)
+    {
+        *x = v;
+    }
+}
+
+fn set_obj_ref(vm: &mut Zvm, h: ObjHandle, name: &str, v: ObjHandle) {
+    if let Some((1, slot)) = walk_field(vm, h, name)
+        && let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(h)
+        && let Some(x) = fields_a.get_mut(slot)
+    {
+        *x = v;
+    }
+}
+
+fn set_obj_floats(vm: &mut Zvm, h: ObjHandle, name: &str, v: &[f64]) {
+    if let Some((3, slot)) = walk_field(vm, h, name)
+        && let Some(ObjKind::Object { fields_f, .. }) = vm.heap.get_mut(h)
+    {
+        for (i, x) in v.iter().enumerate() {
+            if let Some(f) = fields_f.get_mut(slot + i) {
+                *f = *x;
+            }
+        }
+    }
+}
+
+/// The array object in field `name` of `h`.
+fn obj_array(vm: &Zvm, h: ObjHandle, name: &str) -> Option<ObjHandle> {
+    let (1, slot) = walk_field(vm, h, name)? else {
+        return None;
+    };
+    match vm.heap.get(h)? {
+        ObjKind::Object { fields_a, .. } => fields_a.get(slot).copied(),
+        _ => None,
+    }
+}
+
+fn fill_obj_array(vm: &mut Zvm, h: ObjHandle, name: &str, items: &[ObjHandle]) {
+    if let Some(arr) = obj_array(vm, h, name)
+        && let Some(ObjKind::ArrayA(v)) = vm.heap.get_mut(arr)
+    {
+        v.clear();
+        v.extend_from_slice(items);
+    }
+}
+
+fn fill_int_array(vm: &mut Zvm, h: ObjHandle, name: &str, items: &[i64]) {
+    if let Some(arr) = obj_array(vm, h, name)
+        && let Some(ObjKind::ArrayI(v)) = vm.heap.get_mut(arr)
+    {
+        v.clear();
+        v.extend_from_slice(items);
+    }
+}
+
+/// UZDoom `secplane_t` fields for `z = z0 + gx·x + gy·y`: `Normal`, `D`,
+/// `negiC` (so `ZatPoint = (D + N·p)·negiC`).
+fn plane_fields(p: room_zvm::ZsPlane, ceiling: bool) -> ([f64; 3], f64, f64) {
+    let len = (p.gx * p.gx + p.gy * p.gy + 1.0).sqrt();
+    if ceiling {
+        ([p.gx / len, p.gy / len, -1.0 / len], p.z0 / len, len)
+    } else {
+        ([-p.gx / len, -p.gy / len, 1.0 / len], -p.z0 / len, -len)
+    }
+}
+
+/// The level's map objects in the VM heap, from the map's static data.
+fn build_map_objects(vm: &mut Zvm, map: &room_map::MapGeometry) -> room_zvm::ZsMapObjects {
+    use room_zvm::ZsMapKind;
+    let mut out = room_zvm::ZsMapObjects::default();
+    let class = |vm: &Zvm, n: &str| {
+        vm.program
+            .classes
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(n))
+            .map(|i| i as u32)
+    };
+    let (Some(c_sector), Some(c_line), Some(c_side), Some(c_vertex)) = (
+        class(vm, "Sector"),
+        class(vm, "Line"),
+        class(vm, "Side"),
+        class(vm, "Vertex"),
+    ) else {
+        return out;
+    };
+    let c_plane = class(vm, "SecPlane");
+    for (i, v) in map.vertices.iter().enumerate() {
+        let h = vm.new_object_of(c_vertex);
+        set_obj_floats(vm, h, "p", &[v.pos.x(), v.pos.y()]);
+        out.index.insert(h, (ZsMapKind::Vertex, i as u32));
+        out.vertices.push(h);
+    }
+    for (i, sec) in map.sectors.iter().enumerate() {
+        let h = vm.new_object_of(c_sector);
+        set_obj_int(vm, h, "sectornum", i as i64);
+        set_obj_int(vm, h, "special", i64::from(sec.special));
+        set_obj_int(vm, h, "lightlevel", i64::from(sec.light));
+        set_obj_floats(vm, h, "friction", &[0.90625]);
+        set_obj_floats(vm, h, "movefactor", &[0.03125]);
+        set_obj_floats(vm, h, "gravity", &[1.0]);
+        // `centerspot`: middle of the sector's bounding box.
+        let mut bb = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for &lid in &sec.lines {
+            if let Some(l) = map.lines.get(lid.raw() as usize) {
+                for vid in [l.v1, l.v2] {
+                    if let Some(v) = map.vertices.get(vid.raw() as usize) {
+                        bb[0] = bb[0].min(v.pos.x());
+                        bb[1] = bb[1].min(v.pos.y());
+                        bb[2] = bb[2].max(v.pos.x());
+                        bb[3] = bb[3].max(v.pos.y());
+                    }
+                }
+            }
+        }
+        if bb[0] <= bb[2] {
+            set_obj_floats(
+                vm,
+                h,
+                "centerspot",
+                &[(bb[0] + bb[2]) * 0.5, (bb[1] + bb[3]) * 0.5],
+            );
+        }
+        let mut planes = [ObjHandle::NULL; 2];
+        for (p, field) in [(0u8, "floorplane"), (1u8, "ceilingplane")] {
+            if let Some(ph) = c_plane.map(|c| vm.new_object_of(c)) {
+                set_obj_ref(vm, h, field, ph);
+                out.index.insert(ph, (ZsMapKind::Plane(p), i as u32));
+                planes[usize::from(p)] = ph;
+            }
+        }
+        out.index.insert(h, (ZsMapKind::Sector, i as u32));
+        out.sectors.push(h);
+        let _ = planes;
+    }
+    for (i, side) in map.sides.iter().enumerate() {
+        let h = vm.new_object_of(c_side);
+        if let Some(&s) = out.sectors.get(side.sector.raw() as usize) {
+            set_obj_ref(vm, h, "sector", s);
+        }
+        out.index.insert(h, (ZsMapKind::Side, i as u32));
+        out.sides.push(h);
+    }
+    let portal_of: BTreeMap<u32, usize> = map
+        .setup
+        .portals
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(k, p)| (p.line.raw(), k))
+        .collect();
+    for (i, line) in map.lines.iter().enumerate() {
+        let h = vm.new_object_of(c_line);
+        out.index.insert(h, (ZsMapKind::Line, i as u32));
+        out.lines.push(h);
+        if let Some(&v) = out.vertices.get(line.v1.raw() as usize) {
+            set_obj_ref(vm, h, "v1", v);
+        }
+        if let Some(&v) = out.vertices.get(line.v2.raw() as usize) {
+            set_obj_ref(vm, h, "v2", v);
+        }
+        set_obj_floats(vm, h, "delta", &[line.delta.x(), line.delta.y()]);
+        set_obj_int(vm, h, "flags", i64::from(line.flags as u16));
+        set_obj_int(vm, h, "activation", i64::from(line.activation));
+        set_obj_int(vm, h, "special", i64::from(line.special));
+        set_obj_int(vm, h, "locknumber", i64::from(line.lock_number));
+        set_obj_floats(vm, h, "alpha", &[f64::from(line.mid_alpha)]);
+        let portal = portal_of
+            .get(&(i as u32))
+            .map_or(i64::from(u32::MAX), |&k| k as i64);
+        set_obj_int(vm, h, "portalindex", portal);
+        fill_int_array(vm, h, "args", &line.args.map(i64::from));
+        if let Some(s) = line
+            .front_sector
+            .and_then(|s| out.sectors.get(s.raw() as usize))
+        {
+            set_obj_ref(vm, h, "frontsector", *s);
+        }
+        if let Some(s) = line
+            .back_sector
+            .and_then(|s| out.sectors.get(s.raw() as usize))
+        {
+            set_obj_ref(vm, h, "backsector", *s);
+        }
+        let sides: Vec<ObjHandle> = line
+            .sides
+            .iter()
+            .map(|s| {
+                s.and_then(|s| out.sides.get(s.raw() as usize).copied())
+                    .unwrap_or(ObjHandle::NULL)
+            })
+            .collect();
+        fill_obj_array(vm, h, "sidedef", &sides);
+        for s in line.sides.iter().flatten() {
+            if let Some(&sh) = out.sides.get(s.raw() as usize) {
+                set_obj_ref(vm, sh, "linedef", h);
+            }
+        }
+    }
+    for (i, sec) in map.sectors.iter().enumerate() {
+        let lines: Vec<ObjHandle> = sec
+            .lines
+            .iter()
+            .filter_map(|l| out.lines.get(l.raw() as usize).copied())
+            .collect();
+        let h = out.sectors[i];
+        fill_obj_array(vm, h, "lines", &lines);
+    }
+    if let Some(level) = vm.new_object("LevelLocals") {
+        let (s, l, d, v) = (
+            out.sectors.clone(),
+            out.lines.clone(),
+            out.sides.clone(),
+            out.vertices.clone(),
+        );
+        fill_obj_array(vm, level, "sectors", &s);
+        fill_obj_array(vm, level, "lines", &l);
+        fill_obj_array(vm, level, "sides", &d);
+        fill_obj_array(vm, level, "vertexes", &v);
+        out.level = level;
+    }
+    out.planes = vec![[room_zvm::ZsPlane::default(); 2]; map.sectors.len()];
+    out.light = map.sectors.iter().map(|s| i32::from(s.light)).collect();
+    out.flats = map
+        .sectors
+        .iter()
+        .map(|s| [s.floor_pic.clone(), s.ceiling_pic.clone()])
+        .collect();
+    out
+}
+
+/// Plane heights, light and flats of the map objects, from the playsim.
+fn refresh_map_objects(vm: &mut Zvm, m: &MapSync<'_>) {
+    let n = vm.play.map_objects.sectors.len();
+    for i in 0..n {
+        let h = vm.play.map_objects.sectors[i];
+        let light = m.light.get(i).copied().unwrap_or(0);
+        set_obj_int(vm, h, "lightlevel", i64::from(light));
+        let planes = m.planes.get(i).copied().unwrap_or_default();
+        for (p, field) in [(0usize, "floorplane"), (1usize, "ceilingplane")] {
+            let Some(ph) = obj_ref(vm, h, field) else {
+                continue;
+            };
+            let (normal, d, negic) = plane_fields(planes[p], p == 1);
+            set_obj_floats(vm, ph, "normal", &normal);
+            set_obj_floats(vm, ph, "d", &[d]);
+            set_obj_floats(vm, ph, "negic", &[negic]);
+        }
+    }
+    let mo = &mut vm.play.map_objects;
+    mo.planes.clone_from(&m.planes);
+    mo.light.clone_from(&m.light);
+    mo.flats.clone_from(&m.flats);
+}
+
+fn obj_ref(vm: &Zvm, h: ObjHandle, name: &str) -> Option<ObjHandle> {
+    let (1, slot) = walk_field(vm, h, name)? else {
+        return None;
+    };
+    match vm.heap.get(h)? {
+        ObjKind::Object { fields_a, .. } => fields_a.get(slot).copied().filter(|x| !x.is_null()),
+        _ => None,
+    }
+}
+
+/// The level's portals as the ZScript natives see them.
+fn portal_info(
+    map: &room_map::MapGeometry,
+    lookup_cache: &mut Option<([u8; 16], room_zvm::SectorLookup)>,
+) -> room_zvm::ZsPortalInfo {
+    use room_map::portals::{
+        PLANEF_BLOCKSOUND, PLANEF_DISABLED, PLANEF_NOPASS, PLANEF_NORENDER, PLANEF_OBSTRUCTED,
+        PORTF_INTERACTIVE, PORTS_LINKEDPORTAL,
+    };
+    let t = &map.setup.portals;
+    let g = &map.setup.portal_groups;
+    let any = g.has_links() || !t.lines.is_empty() || t.sectors.len() > 2;
+    let lookup = match lookup_cache {
+        Some((md5, l)) if *md5 == map.md5 => l.clone(),
+        _ => {
+            let snap = Arc::new(map.clone());
+            let l = room_zvm::SectorLookup(Arc::new(move |x: f64, y: f64| {
+                room_nodebuild::point_in_sector(&snap, x, y)
+                    .or_else(|| room_nodebuild::point_in_sector_vanilla(&snap, x, y))
+                    .map(|s| s.raw() as usize)
+            }));
+            *lookup_cache = Some((map.md5, l.clone()));
+            l
+        }
+    };
+    // No portals: only the point lookup (`PointInSector`, `CurSector`).
+    if !any {
+        return room_zvm::ZsPortalInfo {
+            group_count: g.size.max(1),
+            lookup: Some(lookup),
+            ..room_zvm::ZsPortalInfo::default()
+        };
+    }
+    let planes = (0..map.sectors.len())
+        .map(|s| {
+            [0usize, 1].map(|plane| {
+                let p = t.plane_portal(s, plane);
+                let flags = t.flags(s, plane);
+                let linked = t.plane_is_linked(s, plane);
+                let blocked_static = |mask: u16| !linked || flags & mask != 0;
+                room_zvm::ZsPlanePortal {
+                    kind: p.map_or(0, |p| i32::from(p.kind)),
+                    plane_z: t.plane_z(s, plane),
+                    displacement: t.plane_displacement(s, plane),
+                    opposite_group: p
+                        .filter(|p| p.kind == PORTS_LINKEDPORTAL)
+                        .and_then(|p| p.destination)
+                        .and_then(|d| g.group_of(d.raw() as usize))
+                        .map_or(0, |v| i32::try_from(v).unwrap_or(0)),
+                    linked,
+                    blocks: [
+                        // `PortalBlocksView` is only ever true on linked planes.
+                        linked
+                            && flags & (PLANEF_NORENDER | PLANEF_DISABLED | PLANEF_OBSTRUCTED) != 0,
+                        blocked_static(
+                            PLANEF_NORENDER | PLANEF_NOPASS | PLANEF_DISABLED | PLANEF_OBSTRUCTED,
+                        ),
+                        blocked_static(PLANEF_NOPASS | PLANEF_DISABLED | PLANEF_OBSTRUCTED),
+                        blocked_static(PLANEF_BLOCKSOUND | PLANEF_DISABLED | PLANEF_OBSTRUCTED),
+                    ],
+                }
+            })
+        })
+        .collect();
+    let vpos = |v: room_core::VertexId| {
+        map.vertices
+            .get(v.raw() as usize)
+            .map_or((0.0, 0.0), |v| (v.pos.x(), v.pos.y()))
+    };
+    let lines = t
+        .lines
+        .iter()
+        .filter_map(|p| {
+            let target = p.target?;
+            let src = map.lines.get(p.line.raw() as usize)?;
+            let dst = map.lines.get(target.raw() as usize)?;
+            Some(room_zvm::ZsLinePortal {
+                v1: vpos(src.v1),
+                v2: vpos(src.v2),
+                dest_v2: vpos(dst.v2),
+                displacement: p.displacement,
+                sin_rot: p.sin_rot,
+                cos_rot: p.cos_rot,
+                linked: p.is_linked(),
+                interactive: p.flags & PORTF_INTERACTIVE != 0,
+            })
+        })
+        .collect();
+    let line_info = (0..map.lines.len())
+        .map(|i| {
+            t.line(room_core::LineId::from_raw(i as u32))
+                .map(|p| room_zvm::ZsLineInfo {
+                    destination: p.target.map(|l| l.raw()),
+                    flags: p.flags,
+                    align: p.align,
+                    visible: p.flags & room_map::portals::PORTF_VISIBLE != 0,
+                })
+        })
+        .collect();
+    room_zvm::ZsPortalInfo {
+        group_count: g.size.max(1),
+        disp: g.disp.clone(),
+        sector_group: g.sector_group.clone(),
+        planes,
+        lines,
+        line_info,
+        lookup: Some(lookup),
+    }
 }
 
 #[cfg(test)]

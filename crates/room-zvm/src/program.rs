@@ -185,6 +185,9 @@ pub struct ClassLayout {
     pub array_i: Vec<u16>,
     /// `Array<string>` field indices in the object bank.
     pub array_s: Vec<u16>,
+    /// Object-array field indices in the object bank (`Array<Actor>`,
+    /// `Array<@Line>`).
+    pub array_a: Vec<u16>,
     /// Field name → (bank, index). bank: 0=i 1=a 2=s 3=f (vectors: first component)
     pub fields: BTreeMap<String, (u8, u16)>,
 }

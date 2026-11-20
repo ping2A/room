@@ -1,6 +1,12 @@
 //! Raw Doom/Hexen map records before geometry linking.
 
+use crate::udmf::UdmfUserBag;
 use serde::{Deserialize, Serialize};
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
 
 /// Doom/Hexen vertex (integer map units).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +78,12 @@ pub struct RawLinedef {
     pub clip_midtex: bool,
     /// UDMF `wrapmidtex` — mid textures wrap vertically.
     pub wrap_midtex: bool,
+    /// UDMF booleans with no raw slot ([`crate::udmf::ext`] bits).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ext: u32,
+    /// UDMF `user_*` custom fields.
+    #[serde(skip_serializing_if = "UdmfUserBag::is_empty")]
+    pub user: UdmfUserBag,
 }
 
 /// Sidedef.
@@ -146,6 +158,9 @@ pub struct RawSidedef {
     /// UDMF `blockrendering` (`WALLF_BLOCKRENDERING`): nothing behind this
     /// side is drawn when seen through it (a two-sided line rendered as solid).
     pub block_rendering: bool,
+    /// UDMF `user_*` custom fields.
+    #[serde(skip_serializing_if = "UdmfUserBag::is_empty")]
+    pub user: UdmfUserBag,
 }
 
 /// Sector.
@@ -246,6 +261,12 @@ pub struct RawSector {
     pub floor_additive: bool,
     /// UDMF `renderstyle` Add/Additive → ceiling additive blend.
     pub ceiling_additive: bool,
+    /// UDMF booleans with no raw slot ([`crate::udmf::ext`] bits).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ext: u32,
+    /// UDMF `user_*` custom fields.
+    #[serde(skip_serializing_if = "UdmfUserBag::is_empty")]
+    pub user: UdmfUserBag,
 }
 
 /// Thing / mapthing.
@@ -334,6 +355,12 @@ pub struct RawThing {
     pub jump_z: f64,
     /// UDMF `attackzoffset` (`-1.0` = unset).
     pub attack_z_offset: f64,
+    /// UDMF booleans with no raw slot ([`crate::udmf::ext`] bits).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ext: u32,
+    /// UDMF `user_*` custom fields.
+    #[serde(skip_serializing_if = "UdmfUserBag::is_empty")]
+    pub user: UdmfUserBag,
 }
 
 impl Default for RawThing {
@@ -380,6 +407,8 @@ impl Default for RawThing {
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: UdmfUserBag::default(),
         }
     }
 }

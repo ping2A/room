@@ -96,6 +96,8 @@ pub struct UnlitPass {
     view_bgl: wgpu::BindGroupLayout,
     mat_bgl: wgpu::BindGroupLayout,
     mat_bind: wgpu::BindGroup,
+    /// The default (white) material, for ranges whose texture is missing.
+    default_mat_bind: wgpu::BindGroup,
     /// `draw_ranges` material bind groups keyed by (albedo, brightmap,
     /// sampler) GPU identity: building ~1.7k bind groups per frame (one per
     /// material range) dominated web frame time.
@@ -817,6 +819,7 @@ impl UnlitPass {
             lightmap_samp,
             view_bgl,
             mat_bgl,
+            default_mat_bind: mat_bind.clone(),
             mat_bind,
             mat_bind_cache: std::collections::HashMap::new(),
             _default_tex: default_tex,
@@ -1188,7 +1191,7 @@ impl UnlitPass {
         pass.set_pipeline(&self.stencil_mask_pipeline);
         pass.set_stencil_reference(stencil_ref);
         pass.set_bind_group(0, &self.view_bind, &[]);
-        pass.set_bind_group(1, &self.mat_bind, &[]);
+        pass.set_bind_group(1, &self.default_mat_bind, &[]);
         pass.set_vertex_buffer(0, self.wall_buf.slice(..));
         for r in mask {
             if r.count == 0 {
@@ -1208,7 +1211,7 @@ impl UnlitPass {
         pass.set_pipeline(&self.stencil_equal_pipeline);
         pass.set_stencil_reference(stencil_ref);
         pass.set_bind_group(0, &self.view_bind, &[]);
-        pass.set_bind_group(1, &self.mat_bind, &[]);
+        pass.set_bind_group(1, &self.default_mat_bind, &[]);
         if !scene.opaque_walls.is_empty() {
             pass.set_vertex_buffer(0, self.wall_buf.slice(..));
             pass.draw(0..scene.opaque_walls.len() as u32, 0..1);
@@ -1223,7 +1226,7 @@ impl UnlitPass {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, scene: &SceneLists) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.view_bind, &[]);
-        pass.set_bind_group(1, &self.mat_bind, &[]);
+        pass.set_bind_group(1, &self.default_mat_bind, &[]);
         if !scene.opaque_walls.is_empty() {
             pass.set_vertex_buffer(0, self.wall_buf.slice(..));
             #[allow(clippy::cast_possible_truncation)]
@@ -1233,7 +1236,7 @@ impl UnlitPass {
         if !scene.flats.is_empty() {
             pass.set_pipeline(&self.flats_pipeline);
             pass.set_bind_group(0, &self.view_bind, &[]);
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             pass.set_vertex_buffer(0, self.flat_buf.slice(..));
             #[allow(clippy::cast_possible_truncation)]
             let n = scene.flats.len() as u32;
@@ -1249,7 +1252,7 @@ impl UnlitPass {
         if !scene.sprites.is_empty() {
             pass.set_pipeline(&self.opaque_sprite_pipeline);
             pass.set_bind_group(0, &self.view_bind, &[]);
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             pass.set_vertex_buffer(0, self.sprite_buf.slice(..));
             #[allow(clippy::cast_possible_truncation)]
             let n = scene.sprites.len() as u32;
@@ -1258,7 +1261,7 @@ impl UnlitPass {
         if !scene.translucent_walls.is_empty() {
             pass.set_pipeline(&self.sprite_pipeline);
             pass.set_bind_group(0, &self.view_bind, &[]);
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             pass.set_vertex_buffer(0, self.wall_buf.slice(..));
             let base = self.translucent_wall_base;
             #[allow(clippy::cast_possible_truncation)]
@@ -1268,7 +1271,7 @@ impl UnlitPass {
         if !scene.translucent_flats.is_empty() {
             pass.set_pipeline(&self.sprite_pipeline);
             pass.set_bind_group(0, &self.view_bind, &[]);
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             pass.set_vertex_buffer(0, self.flat_buf.slice(..));
             let base = self.translucent_flat_base;
             #[allow(clippy::cast_possible_truncation)]
@@ -1290,7 +1293,7 @@ impl UnlitPass {
         if !scene.sky_ranges.is_empty() {
             self.draw_ranges(gpu, pass, &scene.sky_ranges, catalog, vfs);
         } else if scene.sky_texture.is_empty() {
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             #[allow(clippy::cast_possible_truncation)]
             let n = scene.sky_parts.len() as u32;
             pass.draw(0..n, 0..1);
@@ -1335,7 +1338,7 @@ impl UnlitPass {
             pass.set_pipeline(&self.sky_bg_pipeline);
             self.draw_sky(gpu, pass, scene, catalog, vfs);
             pass.set_pipeline(&self.sky_mask_pipeline);
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             pass.set_vertex_buffer(0, self.sky_wall_buf.slice(..));
             #[allow(clippy::cast_possible_truncation)]
             let n = scene.sky_walls.len() as u32;
@@ -1359,7 +1362,7 @@ impl UnlitPass {
             pass.set_bind_group(0, &self.view_bind, &[]);
             pass.set_vertex_buffer(0, self.sprite_buf.slice(..));
             if self.sprite_ranges.is_empty() {
-                pass.set_bind_group(1, &self.mat_bind, &[]);
+                pass.set_bind_group(1, &self.default_mat_bind, &[]);
                 #[allow(clippy::cast_possible_truncation)]
                 let n = scene.sprites.len() as u32;
                 pass.draw(0..n, 0..1);
@@ -1451,7 +1454,7 @@ impl UnlitPass {
         vfs: &Vfs,
     ) {
         if ranges.is_empty() {
-            pass.set_bind_group(1, &self.mat_bind, &[]);
+            pass.set_bind_group(1, &self.default_mat_bind, &[]);
             return;
         }
         for r in ranges {
@@ -1465,7 +1468,7 @@ impl UnlitPass {
             let Some(id) = catalog.get_or_upload(&gpu.device, &gpu.queue, vfs, &r.name) else {
                 // Still draw with the pass default albedo (solid white) so missing
                 // monster/item sprites stay visible instead of silently vanishing.
-                pass.set_bind_group(1, &self.mat_bind, &[]);
+                pass.set_bind_group(1, &self.default_mat_bind, &[]);
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };
@@ -1473,7 +1476,7 @@ impl UnlitPass {
                 .as_deref()
                 .and_then(|bm| catalog.get_or_upload(&gpu.device, &gpu.queue, vfs, bm));
             let Some(samp) = catalog.sampler.as_ref() else {
-                pass.set_bind_group(1, &self.mat_bind, &[]);
+                pass.set_bind_group(1, &self.default_mat_bind, &[]);
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };
@@ -1484,7 +1487,7 @@ impl UnlitPass {
                         .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
                 })
             }) else {
-                pass.set_bind_group(1, &self.mat_bind, &[]);
+                pass.set_bind_group(1, &self.default_mat_bind, &[]);
                 pass.draw(r.start..r.start + r.count, 0..1);
                 continue;
             };

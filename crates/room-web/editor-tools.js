@@ -57,6 +57,60 @@ export const HEXEN_LINE_SPECIALS = {
   246: "Elevator_MoveToFloor", 247: "Elevator_LowerToNearest", 248: "HealThing", 249: "Door_CloseWaitOpen",
   250: "Floor_Donut", 251: "FloorAndCeiling_LowerRaise", 252: "Ceiling_RaiseToNearest",
   253: "Ceiling_LowerToLowest", 254: "Ceiling_LowerToFloor", 255: "Ceiling_CrushRaiseAndStaySilA",
+  156: "Line_SetPortal", 301: "Line_QuickPortal",
+};
+
+const LINE_PORTAL_TYPES = { 0: "Visual", 1: "Teleport", 2: "Interactive", 3: "Linked (static)" };
+const PLANE_ANCHOR = { 0: "Absolute", 1: "Floor", 2: "Ceiling" };
+const SECTOR_PORTAL_TYPES = { 0: "Linked", 1: "Copy", 2: "Skybox (Eternity)", 3: "Plane", 4: "Horizon", 5: "Copy to line", 6: "Interactive (Eternity)" };
+const SECTOR_PORTAL_PLANES = { 0: "Floor", 1: "Ceiling", 2: "Both" };
+
+/**
+ * Named arguments of the specials the editor explains (portals, polyobjects,
+ * line ids): `num → [[label, options?] ×5]`; `null` = unused.
+ */
+export const SPECIAL_ARGS = {
+  1: [["Polyobject id"], ["Mirror poly"], ["Sound"], null, null],
+  2: [["Polyobject id"], ["Speed"], ["Angle (byte)"], null, null],
+  3: [["Polyobject id"], ["Speed"], ["Angle (byte)"], null, null],
+  4: [["Polyobject id"], ["Speed"], ["Angle (byte)"], ["Distance"], null],
+  5: [["Polyobject id"], ["Order"], ["Mirror poly"], ["Sound"], null],
+  6: [["Polyobject id"], ["Speed"], ["Angle (byte)"], ["Distance ×8"], null],
+  7: [["Polyobject id"], ["Speed"], ["Angle (byte)"], ["Delay (tics)"], null],
+  8: [["Polyobject id"], ["Speed"], ["Angle (byte)"], ["Distance"], ["Delay (tics)"]],
+  9: [null, null, null, null, null],
+  57: [["Sector tag"], ["Type", SECTOR_PORTAL_TYPES], ["Plane", SECTOR_PORTAL_PLANES], ["Misc (line id / offset)"], ["Alpha (0–255)"]],
+  107: [["Source line id"], ["Destination line id"], null, null, null],
+  121: [["Line id"], ["More flags"], null, null, ["Line id ×256"]],
+  156: [["Destination line id"], ["This line id"], ["Type", LINE_PORTAL_TYPES], ["Plane anchor", PLANE_ANCHOR], null],
+  182: [["Group (0 = all)"], null, null, null, null],
+  301: [["Non-interactive (1)"], null, null, null, null],
+};
+
+/** Extended UDMF flags carried in `ext` (Room's `udmf::ext` bits). */
+export const LINE_EXT_FLAGS = [[1, "Block use"], [2, "Pass use"], [4, "Block land monsters"], [8, "Monster activate"],
+  [16, "Jump over"], [32, "Draw full height"], [64, "No sky walls"], [128, "Sound zone boundary"]];
+export const SECTOR_EXT_FLAGS = [[1, "No attack"], [2, "No respawn"], [4, "Hurt monsters"], [8, "Harm in air"],
+  [16, "Damage hazard"], [32, "Hidden (automap)"], [64, "No sky walls"]];
+export const SECTOR_PORTAL_FLAGS = {
+  floor: [[256, "Disabled"], [1024, "Don't render"], [512, "No passing"], [128, "Block sound"]],
+  ceiling: [[4096, "Disabled"], [16384, "Don't render"], [8192, "No passing"], [2048, "Block sound"]],
+};
+export const THING_EXT_FLAGS = [[1, "Standing"], [2, "Strife ally"], [4, "Invisible"], [8, "Translucent"],
+  [16, "Not in co-op"], [32, "Not in deathmatch"]];
+
+/** What a map-setup thing reads from its fields. */
+export const THING_TYPE_HINTS = {
+  9077: "Upper stack: pairs with the 9078 lower stack of the same TID; arg0 = plane alpha.",
+  9078: "Lower stack: pairs with the 9077 upper stack of the same TID; arg0 = plane alpha.",
+  9080: "Sky viewpoint: sky planes are drawn from here. TID 0 = the default skybox; sky pickers select others by TID.",
+  9081: "Sky picker: arg0 = sky viewpoint TID (0 = plain sky), arg1 = 1 ceiling only / 2 floor only.",
+  9083: "Skybox camera (compat): sky viewpoint for maps from older ports.",
+  5006: "Skybox camera (Eternity): sky viewpoint used by Eternity skybox portals.",
+  9300: "Polyobject anchor: angle = polyobject id; the shape is moved to the start spot.",
+  9301: "Polyobject start spot: angle = polyobject id.",
+  9302: "Polyobject start spot (crushing): angle = polyobject id.",
+  9303: "Polyobject start spot (harmful): angle = polyobject id.",
 };
 
 export function install(ctx) {
@@ -444,6 +498,29 @@ export function install(ctx) {
     const orphanS = d.sidedefs.length - [...usedSides].filter((s) => s !== NO_SIDE && s < ns).length;
     const orphanV = nv - [...usedV].filter((v) => v < nv).length;
     if (orphanS > 0 || orphanV > 0) add("info", `${orphanV} unused vertices, ${orphanS} unused sidedefs`, "vertices", [], () => ctx.compact(), { fixLabel: "Clean up" });
+
+    // Portals (as the engine linked them on the last sync).
+    const rep = S.portals;
+    if (rep) {
+      for (const p of rep.lines) {
+        if (p.target == null && p.kind !== "horizon" && p.kind !== "mirror") {
+          add("warn", `Line ${p.line}: ${p.kind} portal has no destination line`, "lines", p.line);
+        }
+      }
+      d.linedefs.forEach((l, i) => {
+        if ((l.special === 156 || l.special === 301) && !rep.lines.some((p) => p.line === i)) {
+          add("warn", `Line ${i}: ${HEXEN_LINE_SPECIALS[l.special]} made no portal — check the line ids`, "lines", i);
+        }
+      });
+      for (const w of rep.warnings) {
+        const m = /(sector|line)(?: portal)? (\d+)/i.exec(w);
+        const mode = m && m[1].toLowerCase() === "line" ? "lines" : "sectors";
+        add("warn", `Portal: ${w}`, mode, m && !/portal/i.test(m[0]) ? Number(m[2]) : []);
+      }
+      for (const po of rep.polyobjects) {
+        if (po.portal_lines.length) add("info", `Polyobject ${po.id} carries ${po.portal_lines.length} portal line(s) — they move with it`, "lines", po.portal_lines);
+      }
+    }
     return out;
   }
 
@@ -877,5 +954,5 @@ export function install(ctx) {
     return false;
   }
 
-  return { onKey, toggleChecker, openComposer, transform, autoAlignSelection, copy: copySelection, paste: () => clip && paste(pastePoint(false)) };
+  return { onKey, toggleChecker, openComposer, transform, autoAlignSelection, show, copy: copySelection, paste: () => clip && paste(pastePoint(false)) };
 }

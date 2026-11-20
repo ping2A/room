@@ -11,7 +11,9 @@ use crate::geom::{MapFormat, MapGeometry, link_geometry};
 use crate::raw::{RawLinedef, RawSector, RawSidedef, RawThing, RawVertex};
 use crate::reject::build_reject;
 use crate::spac;
-use crate::udmf::parse_udmf;
+use crate::udmf::{
+    LINE_EXT_KEYS, SECTOR_EXT_KEYS, THING_EXT_KEYS, UdmfUserBag, UdmfUserStore, ext, parse_udmf,
+};
 use md5::{Digest, Md5};
 use room_vfs::{Namespace, Vfs};
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,8 @@ impl Default for RawLinedef {
             automap_style: 0,
             clip_midtex: false,
             wrap_midtex: false,
+            ext: 0,
+            user: UdmfUserBag::default(),
         }
     }
 }
@@ -91,6 +95,7 @@ impl Default for RawSidedef {
             no_decals: false,
             alpha: None,
             block_rendering: false,
+            user: UdmfUserBag::default(),
         }
     }
 }
@@ -145,6 +150,8 @@ impl Default for RawSector {
             ceiling_alpha: 1.0,
             floor_additive: false,
             ceiling_additive: false,
+            ext: 0,
+            user: UdmfUserBag::default(),
         }
     }
 }
@@ -349,7 +356,24 @@ impl RawMap {
         geom.blockmap = build_blockmap(&geom.vertices, &geom.lines);
         geom.reject = Some(build_reject(&geom.lines, geom.sectors.len()));
         geom.behavior.clone_from(&self.behavior);
+        geom.udmf_user = self.user_store();
+        crate::portals::apply_udmf_plane_flags(&mut geom.setup.portals, &geom.udmf_user);
         Ok(geom)
+    }
+
+    /// Per-object UDMF ext flags and `user_*` bags as the parallel store
+    /// [`MapGeometry::udmf_user`] expects.
+    #[must_use]
+    pub fn user_store(&self) -> UdmfUserStore {
+        UdmfUserStore {
+            lines: self.linedefs.iter().map(|l| l.user.clone()).collect(),
+            sides: self.sidedefs.iter().map(|s| s.user.clone()).collect(),
+            sectors: self.sectors.iter().map(|s| s.user.clone()).collect(),
+            things: self.things.iter().map(|t| t.user.clone()).collect(),
+            line_ext: self.linedefs.iter().map(|l| l.ext).collect(),
+            sector_ext: self.sectors.iter().map(|s| s.ext).collect(),
+            thing_ext: self.things.iter().map(|t| t.ext).collect(),
+        }
     }
 
     /// Marker + map lumps in WAD order for [`Self::format`].
@@ -552,6 +576,19 @@ impl Block<'_> {
             self.string(k, v);
         }
     }
+    fn ext(&mut self, keys: &[(&str, u32)], v: u32) {
+        for (k, bit) in keys {
+            self.flag(k, v & bit != 0);
+        }
+    }
+    fn user(&mut self, bag: &UdmfUserBag) {
+        for (k, v) in &bag.ints {
+            self.int(k, i64::from(*v));
+        }
+        for (k, v) in &bag.fixed {
+            self.float(k, f64::from(*v) / 65536.0);
+        }
+    }
     fn ids(&mut self, v: &[i32]) {
         if !v.is_empty() {
             let list: Vec<String> = v.iter().map(i32::to_string).collect();
@@ -589,8 +626,6 @@ pub fn write_textmap(map: &RawMap) -> String {
             ("skill5", f & 4 != 0),
             ("ambush", f & 8 != 0),
             ("single", f & 16 == 0),
-            ("coop", true),
-            ("dm", true),
             ("dormant", f & 32 != 0),
             ("friend", f & 128 != 0),
             ("countsecret", t.count_secret),
@@ -653,6 +688,12 @@ pub fn write_textmap(map: &RawMap) -> String {
             }
         }
         b.string_nz("species", &t.species);
+        // Explicit, since readers differ on the UDMF default of `coop` / `dm`.
+        for (k, bit) in [("coop", ext::THING_NOTCOOP), ("dm", ext::THING_NOTDM)] {
+            let _ = writeln!(b.out, "{k} = {};", t.ext & bit == 0);
+        }
+        b.ext(THING_EXT_KEYS, t.ext);
+        b.user(&t.user);
         out.push_str("}\n\n");
     }
     for v in &map.vertices {
@@ -731,6 +772,14 @@ pub fn write_textmap(map: &RawMap) -> String {
         b.int_nz("health", i64::from(l.health));
         b.int_nz("healthgroup", i64::from(l.health_group));
         b.int_nz("automapstyle", i64::from(l.automap_style));
+        // `monsteractivate` also lives in `flags` (0x2000, what the playsim reads).
+        let line_ext = if l.flags & 0x2000 != 0 {
+            l.ext | ext::LINE_MONSTERACTIVATE
+        } else {
+            l.ext
+        };
+        b.ext(LINE_EXT_KEYS, line_ext);
+        b.user(&l.user);
         out.push_str("}\n\n");
     }
     for s in &map.sidedefs {
@@ -797,6 +846,7 @@ pub fn write_textmap(map: &RawMap) -> String {
         if let Some(a) = s.alpha {
             b.float("alpha", f64::from(a));
         }
+        b.user(&s.user);
         out.push_str("}\n\n");
     }
     for s in &map.sectors {
@@ -878,6 +928,8 @@ pub fn write_textmap(map: &RawMap) -> String {
         if s.floor_additive || s.ceiling_additive {
             b.string("renderstyle", "add");
         }
+        b.ext(SECTOR_EXT_KEYS, s.ext);
+        b.user(&s.user);
         out.push_str("}\n\n");
     }
     out
@@ -973,6 +1025,45 @@ mod tests {
         assert_eq!(back.linedefs[0].special, 80);
         assert_eq!(back.things[0].health, 300);
         assert_eq!(back.things[0].flags & 7, 7);
+    }
+
+    #[test]
+    fn udmf_roundtrip_keeps_ext_flags_and_user_fields() {
+        use crate::udmf::ext;
+        let mut map = square();
+        map.format = MapFormat::Udmf;
+        map.linedefs[1].ext = ext::LINE_BLOCKUSE | ext::LINE_ZONEBOUNDARY;
+        map.linedefs[1].user.ints.insert("user_score".into(), 42);
+        map.sidedefs[2]
+            .user
+            .fixed
+            .insert("user_scale".into(), 0x18000);
+        map.sectors[0].ext = ext::SECTOR_NOATTACK | ext::SECTOR_PORTAL_CEIL_NORENDER;
+        map.sectors[0].user.ints.insert("user_wet".into(), 1);
+        map.things[0].ext = ext::THING_STANDING | ext::THING_NOTDM;
+        let text = write_textmap(&map);
+        assert!(text.contains("zoneboundary = true;"));
+        assert!(text.contains("portal_ceil_norender = true;"));
+        assert!(text.contains("dm = false;"));
+        assert!(text.contains("coop = true;"));
+        let back = reload(&map);
+        assert_eq!(back.linedefs[1].ext, map.linedefs[1].ext);
+        assert_eq!(back.linedefs[1].user, map.linedefs[1].user);
+        assert_eq!(back.sidedefs[2].user, map.sidedefs[2].user);
+        assert_eq!(back.sectors[0].ext, map.sectors[0].ext);
+        assert_eq!(back.sectors[0].user, map.sectors[0].user);
+        assert_eq!(back.things[0].ext, map.things[0].ext);
+        let geom = back.to_geometry().unwrap();
+        assert_eq!(geom.udmf_user.line_ext(1), map.linedefs[1].ext);
+        assert_eq!(geom.udmf_user.lines[1].ints.get("user_score"), Some(&42));
+        assert_eq!(geom.udmf_user.thing_ext(0), map.things[0].ext);
+        let json = serde_json::to_string(&back).unwrap();
+        let again: RawMap = serde_json::from_str(&json).unwrap();
+        assert_eq!(again.sectors[0].ext, map.sectors[0].ext);
+        assert_eq!(again.linedefs[1].user, map.linedefs[1].user);
+        // Default records stay out of the editor JSON.
+        assert_eq!(json.matches("\"user\"").count(), 3);
+        assert_eq!(json.matches("\"ext\"").count(), 3);
     }
 
     #[test]

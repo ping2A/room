@@ -34,6 +34,11 @@ pub struct MaterialCatalog {
     pub anisotropy: u16,
     /// Anisotropy the current [`Self::sampler`] was built with.
     sampler_anisotropy: u16,
+    /// Texture upscaling (`gl_texture_hqresize*`).
+    hq_resize: crate::hq_resize::HqResize,
+    /// Names [`Self::get_or_upload`] loaded from the VFS (re-uploaded when
+    /// the upscaling setting changes).
+    loaded: BTreeMap<String, TextureId>,
 }
 
 /// Optional GLDEFS material maps (paths / lump names).
@@ -75,6 +80,8 @@ impl MaterialCatalog {
             sampler: None,
             anisotropy: 1,
             sampler_anisotropy: 1,
+            hq_resize: crate::hq_resize::HqResize::default(),
+            loaded: BTreeMap::new(),
         }
     }
 
@@ -263,6 +270,36 @@ impl MaterialCatalog {
         Some(id)
     }
 
+    /// Use a render target's colour texture as material `name` (portal
+    /// views): no copy, the target must have `TEXTURE_BINDING`.
+    pub fn upsert_target(
+        &mut self,
+        name: &str,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Option<TextureId> {
+        let key = normalize(name);
+        if key.is_empty() || width == 0 || height == 0 {
+            return None;
+        }
+        let id = match self.by_name.get(&key).copied() {
+            Some(id) => id,
+            None => self.textures.alloc_id(),
+        };
+        self.textures.register(crate::texture::TextureEntry {
+            id,
+            width,
+            height,
+            kind: crate::texture::TextureFormatKind::Rgba,
+            gpu: Some(texture.clone()),
+            view: Some(view.clone()),
+        });
+        self.by_name.insert(key, id);
+        Some(id)
+    }
+
     /// Copy a GPU texture onto `name` (camera canvases; no CPU readback).
     pub fn upsert_copy(
         &mut self,
@@ -301,11 +338,29 @@ impl MaterialCatalog {
             return Some(*id);
         }
         let image = self.source_image(vfs, &key)?;
-        let id = self
-            .textures
-            .upload_image(device, queue, &image, self.playpal.as_ref());
-        self.by_name.insert(key, id);
+        let hq = (self.hq_resize.mode != 0).then(|| (self.hq_resize, hq_target(vfs, &key)));
+        let id =
+            self.textures
+                .upload_image_scaled(device, queue, &image, self.playpal.as_ref(), hq);
+        self.by_name.insert(key.clone(), id);
+        self.loaded.insert(key, id);
         Some(id)
+    }
+
+    /// Change texture upscaling. Images already loaded from the VFS are
+    /// dropped and load again, upscaled, the next time they are drawn
+    /// (textures made with [`Self::upsert_rgba`] stay).
+    pub fn set_hq_resize(&mut self, hq: crate::hq_resize::HqResize) {
+        if hq == self.hq_resize {
+            return;
+        }
+        self.hq_resize = hq;
+        for (name, id) in std::mem::take(&mut self.loaded) {
+            if self.by_name.get(&name) == Some(&id) {
+                self.by_name.remove(&name);
+            }
+            self.textures.remove(id);
+        }
     }
 
     /// CPU RGBA8 preview of a wall texture, flat, patch or sprite (editor
@@ -326,6 +381,11 @@ impl MaterialCatalog {
         }
         if let Some((sky, top)) = crate::sky::parse_sky_cap_name(&key) {
             return self.sky_cap_image(vfs, sky, top);
+        }
+        if let Some((base, color)) = crate::player_colors::parse_player_color_name(&key) {
+            let mut image = self.source_image(vfs, base)?;
+            crate::player_colors::recolor_player(&mut image, color);
+            return Some(image);
         }
         load_tx_image(vfs, &key)
             .or_else(|| self.compose_texturex(vfs, &key))
@@ -686,15 +746,35 @@ fn load_tx_image(vfs: &Vfs, name: &str) -> Option<Image> {
     decode_image(&vfs.read(lump).ok()?).ok()
 }
 
+/// Which `gl_texture_hqresize_targets` bit a material name belongs to.
+fn hq_target(vfs: &Vfs, name: &str) -> u8 {
+    use crate::hq_resize::{TARGET_SKINS, TARGET_SPRITES, TARGET_TEXTURES};
+    if name.contains('/') {
+        TARGET_SKINS
+    } else if vfs.find(name, Namespace::Sprites).is_some() {
+        TARGET_SPRITES
+    } else {
+        TARGET_TEXTURES
+    }
+}
+
 fn load_named_image(vfs: &Vfs, name: &str) -> Option<Image> {
     // Prefer sprites / TX_ / patches / flats, then global.
+    // MODELDEF skins are paths (`models/imp/imp.png`): the full path, else
+    // its file name without the extension.
+    let stem = name
+        .contains('/')
+        .then(|| name.rsplit('/').next().unwrap_or(name))
+        .map(|f| f.split('.').next().unwrap_or(f));
     let lump = vfs
         .find(name, Namespace::Sprites)
         .or_else(|| vfs.find(name, Namespace::NewTextures))
         .or_else(|| vfs.find(name, Namespace::Patches))
         .or_else(|| vfs.find(name, Namespace::Flats))
         .or_else(|| vfs.find(name, Namespace::Global))
-        .or_else(|| vfs.find_any_ns(name))?;
+        .or_else(|| vfs.find_any_ns(name))
+        .or_else(|| stem.and_then(|_| vfs.find_full(name)))
+        .or_else(|| stem.and_then(|s| vfs.find_any_ns(s)))?;
     let data = vfs.read(lump).ok()?;
     if let Ok(img) = decode_image(&data) {
         return Some(img);

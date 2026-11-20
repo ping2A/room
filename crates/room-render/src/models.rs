@@ -6,9 +6,11 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use thiserror::Error;
 
-const MD2_IDENT: i32 = 0x3250_4449; // "IDP2" little-endian
+/// MD2 magic (`IDP2`).
+pub const MD2_IDENT: i32 = 0x3250_4449; // "IDP2" little-endian
 const MD2_VERSION: i32 = 8;
-const MD3_IDENT: i32 = 0x3350_4449; // "IDP3" little-endian
+/// MD3 magic (`IDP3`).
+pub const MD3_IDENT: i32 = 0x3350_4449; // "IDP3" little-endian
 const MD3_VERSION: i32 = 15;
 const MD3_XYZ_SCALE: f32 = 1.0 / 64.0;
 const IQM_MAGIC: &[u8; 16] = b"INTERQUAKEMODEL\0";

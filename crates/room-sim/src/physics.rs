@@ -224,9 +224,8 @@ fn line_blocks(
         .map
         .setup
         .portals
-        .lines
-        .iter()
-        .any(|p| p.line == lid && p.is_traversable())
+        .line(lid)
+        .is_some_and(|p| p.is_traversable())
     {
         return false;
     }
@@ -310,12 +309,122 @@ fn dist_point_to_seg(p: DVec2, a: DVec2, b: DVec2) -> f64 {
 /// Solid thing flag (`MF_SOLID`).
 const FLAG_SOLID: u64 = 1 << 0;
 
-/// `P_CheckPosition` subset: solid lines + solid things.
+/// How a position check treats portals (`FMultiBlockLinesIterator` stand-in).
+#[derive(Clone, Default)]
+struct PortalCheck {
+    /// Portal lines whose back (the empty space behind them) is ignored.
+    ignore_behind: Vec<LineId>,
+    /// Seed the floor and ceiling from this sector instead of the one under
+    /// the centre (the centre sits behind a portal line).
+    seed: Option<(usize, f64, f64)>,
+}
+
+/// `P_CheckPosition` subset: solid lines + solid things. Across linked line
+/// portals the other side is checked too, at the displaced position; across
+/// teleport / interactive ones only its floor and ceiling count
+/// (`PIT_CheckPortal`).
 pub fn check_position(
     world: &World,
     actor: &Actor,
     pos: DVec3,
     self_id: Option<ActorId>,
+) -> CheckResult {
+    let touched = if world.map.setup.portals.lines.is_empty() {
+        Vec::new()
+    } else {
+        crate::portal::touched_line_portals(world, DVec2::new(pos.x(), pos.y()), actor.radius)
+            .into_iter()
+            .filter(|p| !portal_side_back(world, p.line, DVec2::new(pos.x(), pos.y())))
+            .collect::<Vec<_>>()
+    };
+    if touched.is_empty() {
+        return check_position_inner(world, actor, pos, self_id, &PortalCheck::default());
+    }
+    let ctx = PortalCheck {
+        ignore_behind: touched.iter().map(|p| p.line).collect(),
+        seed: None,
+    };
+    let mut result = check_position_inner(world, actor, pos, self_id, &ctx);
+    if !result.ok {
+        return result;
+    }
+    for p in &touched {
+        let Some(target) = p.target else {
+            continue;
+        };
+        let dest = crate::portal::translate_through(world, p, pos);
+        let zofs = dest.z() - pos.z();
+        let mut moved = actor.clone();
+        moved.pos = crate::portal::translate_through(world, p, actor.pos);
+        let seed = world
+            .map
+            .lines
+            .get(target.raw() as usize)
+            .and_then(|l| l.front_sector)
+            .map(|s| {
+                let si = s.raw() as usize;
+                (
+                    si,
+                    sector_z_at_portal(world, si, dest.x(), dest.y(), true),
+                    sector_z_at_portal(world, si, dest.x(), dest.y(), false),
+                )
+            });
+        let sub_ctx = PortalCheck {
+            ignore_behind: vec![target],
+            seed,
+        };
+        let sub = check_position_inner(world, &moved, dest, self_id, &sub_ctx);
+        result.floor_z = result.floor_z.max(sub.floor_z - zofs);
+        result.ceiling_z = result.ceiling_z.min(sub.ceiling_z - zofs);
+        result.dropoff_z = result.dropoff_z.min(sub.dropoff_z - zofs);
+        if p.is_linked() && !sub.ok {
+            result.ok = false;
+            result.blocking_line = sub.blocking_line;
+            result.blocking_actor = sub.blocking_actor;
+            return result;
+        }
+    }
+    if result.ceiling_z - result.floor_z < actor.height {
+        result.ok = false;
+    }
+    result
+}
+
+/// The point is on the back of a portal line (0 front, 1 back, as Doom).
+fn portal_side_back(world: &World, lid: LineId, p: DVec2) -> bool {
+    let Some(line) = world.map.lines.get(lid.raw() as usize) else {
+        return false;
+    };
+    let v1 = world.map.vertices[line.v1.raw() as usize].pos;
+    let d = line.delta;
+    (p.y() - v1.y()) * d.x() - (p.x() - v1.x()) * d.y() > 0.0
+}
+
+/// Floor / ceiling at a point, through linked plane portals when the map
+/// has them (`NextLowestFloorAt` / `NextHighestCeilingAt`).
+fn sector_z_at_portal(world: &World, si: usize, x: f64, y: f64, floor: bool) -> f64 {
+    if !crate::portal::has_linked_planes(world) {
+        return sector_z_at(world, si, x, y, floor);
+    }
+    if floor {
+        crate::portal::floor_through_portals(world, si, x, y).0
+    } else {
+        crate::portal::ceiling_through_portals(world, si, x, y).0
+    }
+}
+
+/// Distance test the position check uses for "the box touches this line".
+#[must_use]
+pub(crate) fn box_touches_segment(p: DVec2, radius: f64, a: DVec2, b: DVec2) -> bool {
+    dist_point_to_seg(p, a, b) < radius
+}
+
+fn check_position_inner(
+    world: &World,
+    actor: &Actor,
+    pos: DVec3,
+    self_id: Option<ActorId>,
+    pctx: &PortalCheck,
 ) -> CheckResult {
     let xy = DVec2::new(pos.x(), pos.y());
     let mut result = CheckResult {
@@ -332,13 +441,19 @@ pub fn check_position(
     // player would inherit that floor and fall through the high floor they stand on.
     let mut saw_sector = false;
     let mut contacted: BTreeSet<usize> = BTreeSet::new();
-    if let Some(sid) = room_nodebuild::point_in_sector(&world.map, pos.x(), pos.y())
+    if let Some((si, f, c)) = pctx.seed {
+        contacted.insert(si);
+        result.floor_z = f;
+        result.ceiling_z = c;
+        result.dropoff_z = f;
+        saw_sector = true;
+    } else if let Some(sid) = room_nodebuild::point_in_sector(&world.map, pos.x(), pos.y())
         .or_else(|| room_nodebuild::point_in_sector_vanilla(&world.map, pos.x(), pos.y()))
     {
         let si = sid.raw() as usize;
         if world.sectors.get(si).is_some() {
-            let floor_z = sector_z_at(world, si, pos.x(), pos.y(), true);
-            let ceiling_z = sector_z_at(world, si, pos.x(), pos.y(), false);
+            let floor_z = sector_z_at_portal(world, si, pos.x(), pos.y(), true);
+            let ceiling_z = sector_z_at_portal(world, si, pos.x(), pos.y(), false);
             // An overlapping Build sector (a balcony over a doorway) can contain
             // the same point. Ignore a floor the actor cannot step up to.
             // Doom/GZDoom always seed from the centre sector (an out-of-reach
@@ -352,10 +467,31 @@ pub fn check_position(
             }
         }
     }
+    let has_line_portals = !world.map.setup.portals.lines.is_empty();
     for lid in lines_near(&world.map, xy, actor.radius) {
         let Some(line) = world.map.lines.get(lid.raw() as usize) else {
             continue;
         };
+        if has_line_portals {
+            // A passable portal line is not a wall and has no opening of its
+            // own; what lies behind the portals in play is the other side.
+            if world
+                .map
+                .setup
+                .portals
+                .line(lid)
+                .is_some_and(|p| p.is_traversable() && p.target.is_some())
+            {
+                continue;
+            }
+            if pctx
+                .ignore_behind
+                .iter()
+                .any(|&pl| crate::portal::line_behind_portal(world, lid, pl))
+            {
+                continue;
+            }
+        }
         let front = line
             .front_sector
             .and_then(|sid| world.sectors.get(sid.raw() as usize).map(|_| sid));
@@ -381,10 +517,10 @@ pub fn check_position(
                 (Some(f), Some(b)) => {
                     let fi = f.raw() as usize;
                     let bi = b.raw() as usize;
-                    let f_floor = sector_z_at(world, fi, pos.x(), pos.y(), true);
-                    let b_floor = sector_z_at(world, bi, pos.x(), pos.y(), true);
-                    let f_ceil = sector_z_at(world, fi, pos.x(), pos.y(), false);
-                    let b_ceil = sector_z_at(world, bi, pos.x(), pos.y(), false);
+                    let f_floor = sector_z_at_portal(world, fi, pos.x(), pos.y(), true);
+                    let b_floor = sector_z_at_portal(world, bi, pos.x(), pos.y(), true);
+                    let f_ceil = sector_z_at_portal(world, fi, pos.x(), pos.y(), false);
+                    let b_ceil = sector_z_at_portal(world, bi, pos.x(), pos.y(), false);
                     let open_bottom = f_floor.max(b_floor);
                     let open_top = f_ceil.min(b_ceil);
                     let low_floor = f_floor.min(b_floor);
@@ -432,8 +568,8 @@ pub fn check_position(
                 }
                 (Some(f), None) | (None, Some(f)) => {
                     let fi = f.raw() as usize;
-                    let floor_z = sector_z_at(world, fi, pos.x(), pos.y(), true);
-                    let ceiling_z = sector_z_at(world, fi, pos.x(), pos.y(), false);
+                    let floor_z = sector_z_at_portal(world, fi, pos.x(), pos.y(), true);
+                    let ceiling_z = sector_z_at_portal(world, fi, pos.x(), pos.y(), false);
                     // A balcony sector overlapping the floor the actor is on.
                     if floor_z - pos.z() <= step_limit(actor) && !saw_sector {
                         result.floor_z = floor_z;
@@ -465,7 +601,7 @@ pub fn check_position(
             }
             if line.back_sector.is_none()
                 && line.front_sector.is_some_and(|sid| {
-                    sector_z_at(world, sid.raw() as usize, pos.x(), pos.y(), true) - pos.z()
+                    sector_z_at_portal(world, sid.raw() as usize, pos.x(), pos.y(), true) - pos.z()
                         > step_limit(actor)
                 })
             {
@@ -487,6 +623,9 @@ pub fn check_position(
                 .map_or(0, |c| c.ext.thru_bits)
         })
         .filter(|b| *b != 0);
+    // Linked portals: actors of the groups this box reaches block at their
+    // displaced position (UZDoom `FMultiBlockThingsIterator`).
+    let qgroups = crate::portal::query_groups(world, pos, pos.z() + actor.height, actor.radius);
     // Thing-thing: block on solid actors whose XY disks overlap.
     for id in world.collision_candidates() {
         if self_id == Some(*id) {
@@ -522,13 +661,20 @@ pub fn check_position(
         {
             continue;
         }
-        let dx = other.pos.x() - pos.x();
-        let dy = other.pos.y() - pos.y();
+        let opos = match &qgroups {
+            None => other.pos,
+            Some((g, gs)) => match crate::portal::pos_in_groups(world, other, *g, gs) {
+                Some(p) => p,
+                None => continue,
+            },
+        };
+        let dx = opos.x() - pos.x();
+        let dy = opos.y() - pos.y();
         let r = other.radius + actor.radius;
         if dx * dx + dy * dy < r * r {
             // Vertical overlap check (no step-up yet).
             let top = pos.z() + actor.height;
-            let obot = other.pos.z();
+            let obot = opos.z();
             let otop = obot + other.height;
             if top > obot && pos.z() < otop {
                 result.ok = false;
@@ -541,8 +687,8 @@ pub fn check_position(
         // Fall back to sector 0 if present.
         if !world.sectors.is_empty() {
             contacted.insert(0);
-            result.floor_z = sector_z_at(world, 0, pos.x(), pos.y(), true);
-            result.ceiling_z = sector_z_at(world, 0, pos.x(), pos.y(), false);
+            result.floor_z = sector_z_at_portal(world, 0, pos.x(), pos.y(), true);
+            result.ceiling_z = sector_z_at_portal(world, 0, pos.x(), pos.y(), false);
         }
     }
     apply_solid_ffloors(world, actor, pos, &contacted, &mut result);
@@ -714,6 +860,12 @@ pub fn ceiling_at_xy(world: &World, x: f64, y: f64) -> Option<f64> {
     Some(sector_z_at(world, si, x, y, false))
 }
 
+/// [`sector_z_at`] for other modules.
+#[must_use]
+pub(crate) fn sector_z_at_pub(world: &World, si: usize, x: f64, y: f64, floor: bool) -> f64 {
+    sector_z_at(world, si, x, y, floor)
+}
+
 /// Floor or ceiling Z at XY: sloped setup plane plus mover delta.
 fn sector_z_at(world: &World, si: usize, x: f64, y: f64, floor: bool) -> f64 {
     let dyn_z = world
@@ -800,6 +952,22 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
     };
     let from = DVec2::new(actor.pos.x(), actor.pos.y());
     let to = DVec2::new(new_pos.x(), new_pos.y());
+    // `P_TryMove` portal crossing: a move whose centre passes a passable
+    // portal line from its front is checked (and lands) on the other side.
+    let crossing = if world.map.setup.portals.has_passable_lines {
+        crate::portal::crossed_line_portal(world, from, to).map(|(p, _)| p)
+    } else {
+        None
+    };
+    let (actor, new_pos) = match &crossing {
+        Some(p) => {
+            let mut moved = actor.clone();
+            moved.pos = crate::portal::translate_through(world, p, actor.pos);
+            let dest = crate::portal::translate_through(world, p, new_pos);
+            (moved, dest)
+        }
+        None => (actor, new_pos),
+    };
     let mut dest = new_pos;
     if !actor_noclip(world, actor_id) {
         let check = check_position(world, &actor, new_pos, Some(actor_id));
@@ -893,6 +1061,18 @@ pub fn try_move_ex(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryM
         if delta > 0.0 {
             dest = DVec3::new(new_pos.x(), new_pos.y(), check.floor_z);
         }
+    }
+    if let Some(p) = crossing {
+        // Walkover lines on the way to the portal, then the move through it.
+        crate::cross_lines::cross_special_lines(world, actor_id, from, to);
+        if let Some(a) = world.actors.get_mut(actor_id) {
+            a.pos = dest;
+        }
+        crate::portal::rotate_after_crossing(world, actor_id, &p);
+        return TryMoveResult {
+            ok: true,
+            blocking_actor: None,
+        };
     }
     if let Some(a) = world.actors.get_mut(actor_id) {
         a.pos = dest;
@@ -1090,7 +1270,7 @@ fn slide_move_double(
 }
 
 /// Doom gravity units per tic² (before level gravity scale).
-const GRAVITY: f64 = 1.0;
+pub(crate) const GRAVITY: f64 = 1.0;
 
 /// Below this speed (units per tic) a bounce settles instead of rebounding.
 const BOUNCE_REST_SPEED: f64 = 1.0;
@@ -1441,6 +1621,12 @@ pub(crate) fn try_falling_damage(world: &mut World, actor_id: ActorId, impact_ve
 
 /// `P_ZMovement` subset: gravity + floor/ceiling clamp (no splash / bounce).
 pub fn z_movement(world: &mut World, actor_id: ActorId) {
+    z_movement_inner(world, actor_id);
+    // `AActor::Tick` → `CheckPortalTransition`: through linked plane portals.
+    crate::portal::check_portal_transition(world, actor_id);
+}
+
+fn z_movement_inner(world: &mut World, actor_id: ActorId) {
     if world.math_mode == crate::vanilla::SimMathMode::VanillaFixed {
         crate::vanilla::z_movement_fixed(world, actor_id);
         return;
@@ -1665,16 +1851,16 @@ fn try_sector_plane_portal(
     floor_z: f64,
     ceiling_z: f64,
 ) -> bool {
-    if world.map.setup.portals.sectors.is_empty() {
+    if world.map.setup.portals.build_links.is_empty() {
         return false;
     }
     let Some(sid) = room_nodebuild::point_in_sector(&world.map, actor.pos.x(), actor.pos.y())
     else {
         return false;
     };
-    let portals: Vec<_> = world.map.setup.portals.sectors.clone();
+    let portals: Vec<_> = world.map.setup.portals.build_links.clone();
     for p in portals {
-        if p.sector != sid || !p.is_traversable() || p.target == p.sector {
+        if p.sector != sid || p.target == p.sector {
             continue;
         }
         if p.kind == room_map::PORTAL_KIND_FALL {
@@ -4113,46 +4299,6 @@ actor CorpseBit : Actor 9322
     }
 
     #[test]
-    fn sector_floor_portal_teleports_on_fall() {
-        let mut map = MapBuilder::new()
-            .room("from", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
-            .room("to", rect(256.0, 0.0, 512.0, 256.0), 0.0, 128.0)
-            .sector_tag("to", 5)
-            .sector_portal_between("from", "to", 5, 3, 0)
-            .player_start(64.0, 64.0, 0)
-            .build_udmf("MAP01")
-            .unwrap();
-        apply_nodes(&mut map);
-        assert!(
-            map.setup
-                .portals
-                .sectors
-                .iter()
-                .any(|p| p.is_traversable() && p.plane == 0),
-            "expected floor Sector_SetPortal"
-        );
-        let mut w = World::from_map(map).unwrap();
-        let id = w.thinkers.default[0];
-        {
-            let a = w.actors.get_mut(id).unwrap();
-            a.pos = DVec3::new(64.0, 64.0, 16.0);
-            a.vel = DVec3::new(0.0, 0.0, -24.0);
-        }
-        z_movement(&mut w, id);
-        let pos = w.actors.get(id).unwrap().pos;
-        assert!(
-            pos.x() > 256.0,
-            "floor portal should shift XY into dest sector, x={}",
-            pos.x()
-        );
-        assert!(
-            pos.z() > 32.0,
-            "should appear near dest ceiling, z={}",
-            pos.z()
-        );
-    }
-
-    #[test]
     fn water_link_dives_players_only_when_swimming_down() {
         let mut map = MapBuilder::new()
             .room("above", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
@@ -4163,7 +4309,7 @@ actor CorpseBit : Actor 9322
             .build_udmf("MAP01")
             .unwrap();
         apply_nodes(&mut map);
-        for p in &mut map.setup.portals.sectors {
+        for p in &mut map.setup.portals.build_links {
             p.offset = [300, 10];
         }
         let mut w = World::from_map(map).unwrap();

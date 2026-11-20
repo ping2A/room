@@ -523,6 +523,7 @@ impl Actor {
 }
 
 /// Generational actor store.
+#[derive(Clone)]
 pub struct ActorArena {
     inner: Arena<Actor>,
 }

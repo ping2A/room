@@ -253,6 +253,25 @@ pub fn graphics_menu(cvars: &CvarStore) -> ListMenu {
                 int_val(cvars, "gl_texture_filter_anisotropic").max(1)
             ),
         ),
+        cycle(
+            cvars,
+            "UPSCALE",
+            "gl_texture_hqresizemode",
+            0,
+            5,
+            ["OFF", "SCALENX", "HQNX*", "XBRZ*", "OLD XBRZ*", "NORMALNX"]
+                [int_val(cvars, "gl_texture_hqresizemode").clamp(0, 5) as usize]
+                .to_owned(),
+        ),
+        cycle(
+            cvars,
+            "UPSCALE X",
+            "gl_texture_hqresizemult",
+            1,
+            6,
+            format!("{}X", int_val(cvars, "gl_texture_hqresizemult").clamp(1, 6)),
+        ),
+        tog(cvars, "AUTOMAP FLATS", "am_textured"),
         tog(cvars, "HEAT HAZE", "r_heathaze"),
         tog(cvars, "PARALLAX", "r_parallax"),
         tog(cvars, "SSR", "r_ssr"),

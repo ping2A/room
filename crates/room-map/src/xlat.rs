@@ -363,6 +363,8 @@ mod tests {
             automap_style: 0,
             clip_midtex: false,
             wrap_midtex: false,
+            ext: 0,
+            user: Default::default(),
         }
     }
 

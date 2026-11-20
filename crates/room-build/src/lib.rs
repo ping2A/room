@@ -37,6 +37,7 @@ mod sav;
 pub mod sprites;
 pub mod wad;
 
+pub use anm::palette as anm_palette;
 pub use art::{Tile, TileSet};
 pub use con::{LevelInfo, parse_user_con};
 pub use condata::{

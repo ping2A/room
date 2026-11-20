@@ -689,6 +689,15 @@ impl Editor {
                 }));
             }
         }
+        // Map-setup things the engine reads at load (no actor class).
+        for (num, name) in PORTAL_THINGS {
+            if !nums.contains(num) {
+                things.push(json!({
+                    "num": num, "name": name, "title": name, "radius": 8.0,
+                    "height": 8.0, "sprite": null, "cat": "portal",
+                }));
+            }
+        }
         let overrides: Vec<Value> = self
             .overrides
             .iter()
@@ -827,8 +836,24 @@ fn classify(name: &str, path: &str, ns: Namespace) -> &'static str {
     }
 }
 
+/// Portal, skybox and polyobject things (`DoomEdNums` handled by map setup).
+const PORTAL_THINGS: &[(i32, &str)] = &[
+    (9077, "Upper stack (sector portal)"),
+    (9078, "Lower stack (sector portal)"),
+    (9080, "Sky viewpoint"),
+    (9081, "Sky picker"),
+    (9083, "Skybox camera (compat)"),
+    (5006, "Skybox camera (Eternity)"),
+    (9300, "Polyobject anchor"),
+    (9301, "Polyobject start spot"),
+    (9302, "Polyobject start spot (crushing)"),
+    (9303, "Polyobject start spot (harmful)"),
+];
+
 fn thing_category(num: i32, c: &ClassDef) -> &'static str {
-    if matches!(num, 1..=4 | 11) {
+    if PORTAL_THINGS.iter().any(|(n, _)| *n == num) {
+        "portal"
+    } else if matches!(num, 1..=4 | 11) {
         "player"
     } else if c.flags & FLAG_COUNTKILL != 0 {
         "monster"
@@ -2320,6 +2345,29 @@ pub fn room_editor_update_map(json: &str) -> Result<String, JsValue> {
         ed.doc = Some(doc);
         ed.geom = Some(geom);
         Ok(how.to_owned())
+    })
+}
+
+/// The map document converted to UDMF (Doom / Hexen specials translated),
+/// so UDMF-only features such as line portals can be used on it.
+#[wasm_bindgen(js_name = roomEditorConvertToUdmf)]
+pub fn room_editor_convert_to_udmf(json: &str) -> Result<String, JsValue> {
+    let mut doc: RawMap = serde_json::from_str(json).map_err(err)?;
+    doc.convert_to_udmf();
+    serde_json::to_string(&doc).map_err(err)
+}
+
+/// Portals of the open map as the engine linked them (line portals and
+/// destinations, portal planes, linked groups, polyobjects, warnings).
+#[wasm_bindgen(js_name = roomEditorPortals)]
+pub fn room_editor_portals() -> Result<String, JsValue> {
+    with_editor(|ed| {
+        let report = ed
+            .geom
+            .as_ref()
+            .map(room_map::portal_report)
+            .unwrap_or_default();
+        serde_json::to_string(&report).map_err(|e| e.to_string())
     })
 }
 

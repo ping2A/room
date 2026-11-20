@@ -59,6 +59,8 @@ pub fn parse_linedefs(data: &[u8]) -> Result<Vec<RawLinedef>, MapError> {
             automap_style: 0,
             clip_midtex: false,
             wrap_midtex: false,
+            ext: 0,
+            user: Default::default(),
         });
     }
     Ok(out)
@@ -106,6 +108,8 @@ pub fn parse_linedefs_hexen(data: &[u8]) -> Result<Vec<RawLinedef>, MapError> {
             automap_style: 0,
             clip_midtex: false,
             wrap_midtex: false,
+            ext: 0,
+            user: Default::default(),
         });
     }
     Ok(out)
@@ -157,6 +161,7 @@ pub fn parse_sidedefs(data: &[u8]) -> Result<Vec<RawSidedef>, MapError> {
             no_decals: false,
             alpha: None,
             block_rendering: false,
+            user: Default::default(),
         });
     }
     Ok(out)
@@ -217,6 +222,8 @@ pub fn parse_sectors(data: &[u8]) -> Result<Vec<RawSector>, MapError> {
             light: i16::from_le_bytes([chunk[20], chunk[21]]),
             special: i16::from_le_bytes([chunk[22], chunk[23]]),
             tag: i16::from_le_bytes([chunk[24], chunk[25]]),
+            ext: 0,
+            user: Default::default(),
         });
     }
     Ok(out)
@@ -271,6 +278,8 @@ pub fn parse_things(data: &[u8]) -> Result<Vec<RawThing>, MapError> {
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
     }
     Ok(out)
@@ -331,6 +340,8 @@ pub fn parse_things_hexen(data: &[u8]) -> Result<Vec<RawThing>, MapError> {
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
     }
     Ok(out)

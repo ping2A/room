@@ -314,6 +314,36 @@ pub fn blit_draw_list_full(
                 // draw list names before blitting, so this lump doesn't exist.
                 // Draw nothing, like GZDoom (a grey box used to show here).
             }
+            DrawCmd::FlatPoly {
+                edges,
+                flat,
+                tex,
+                light,
+            } => {
+                let Some(cache) = patches else {
+                    continue;
+                };
+                let Some(patch) = cache.get_flat(flat) else {
+                    continue;
+                };
+                let fb_clip = clip.unwrap_or([0.0, 0.0, fb_w, fb_h]);
+                if let Some((x0, y0, w, h, px)) = raster_flat_poly(
+                    edges,
+                    patch,
+                    cache.palette(),
+                    *tex,
+                    *light,
+                    (sx, sy),
+                    [
+                        fb_clip[0].max(0.0),
+                        fb_clip[1].max(0.0),
+                        fb_clip[2].min(fb_w),
+                        fb_clip[3].min(fb_h),
+                    ],
+                ) {
+                    sink.blit_rgba(x0, y0, w, h, &px);
+                }
+            }
             DrawCmd::Line {
                 a,
                 b,
@@ -331,6 +361,77 @@ pub fn blit_draw_list_full(
             }
         }
     }
+}
+
+/// Rasterize a [`DrawCmd::FlatPoly`] (even-odd fill of `edges`, scaled to
+/// the framebuffer by `scale`, clipped to `clip` `[x0, y0, x1, y1]`).
+/// Returns the covered rect and its RGBA pixels.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn raster_flat_poly(
+    edges: &[[Vec2; 2]],
+    patch: &crate::SoftPatch,
+    palette: &[[u8; 3]; 256],
+    tex: [f32; 6],
+    light: f32,
+    (sx, sy): (f32, f32),
+    clip: [f32; 4],
+) -> Option<(f32, f32, u32, u32, Vec<u8>)> {
+    let fb: Vec<[(f32, f32); 2]> = edges
+        .iter()
+        .map(|[a, b]| [(a.x * sx, a.y * sy), (b.x * sx, b.y * sy)])
+        .collect();
+    let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for [a, b] in &fb {
+        for p in [a, b] {
+            minx = minx.min(p.0);
+            miny = miny.min(p.1);
+            maxx = maxx.max(p.0);
+            maxy = maxy.max(p.1);
+        }
+    }
+    let x0 = minx.max(clip[0]).floor();
+    let y0 = miny.max(clip[1]).floor();
+    let x1 = maxx.min(clip[2]).ceil();
+    let y1 = maxy.min(clip[3]).ceil();
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    let lit = light.clamp(0.0, 1.0);
+    let mut xs: Vec<f32> = Vec::new();
+    for row in 0..h {
+        let py = y0 + row as f32 + 0.5;
+        xs.clear();
+        for [a, b] in &fb {
+            if (a.1 <= py) != (b.1 <= py) {
+                xs.push(a.0 + (py - a.1) / (b.1 - a.1) * (b.0 - a.0));
+            }
+        }
+        xs.sort_by(f32::total_cmp);
+        for span in xs.chunks_exact(2) {
+            let sa = (span[0] - x0 - 0.5).ceil().max(0.0) as u32;
+            let sb = ((span[1] - x0 - 0.5).floor() as i64).min(i64::from(w) - 1);
+            if sb < i64::from(sa) {
+                continue;
+            }
+            for col in sa..=sb as u32 {
+                // Back to virtual pixels for the texture map.
+                let vx = (x0 + col as f32 + 0.5) / sx;
+                let vy = py / sy;
+                let u = tex[0] * vx + tex[1] * vy + tex[2];
+                let v = tex[3] * vx + tex[4] * vy + tex[5];
+                if let Some(p) = patch.texel_wrapped(u.floor() as i32, v.floor() as i32, palette) {
+                    let o = ((row * w + col) * 4) as usize;
+                    out[o] = (f32::from(p[0]) * lit) as u8;
+                    out[o + 1] = (f32::from(p[1]) * lit) as u8;
+                    out[o + 2] = (f32::from(p[2]) * lit) as u8;
+                    out[o + 3] = p[3];
+                }
+            }
+        }
+    }
+    Some((x0, y0, w, h, out))
 }
 
 /// GZDoom font translation: map each pixel's luminance (normalised over the

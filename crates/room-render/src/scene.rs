@@ -127,8 +127,15 @@ pub struct SceneLists {
     pub visible_subsectors: Vec<u32>,
     /// `Line_Mirror` surfaces drawn this frame (for canvas refresh).
     pub mirrors: Vec<MirrorSurface>,
-    /// Linked/visual line portals (displaced camera canvas).
+    /// Linked/visual line portals (displaced camera canvas). Kept empty:
+    /// portals go through [`Self::portal_views`].
     pub linked_portals: Vec<LinkedPortalSurface>,
+    /// Portal views this frame's surfaces sample in screen space
+    /// ([`crate::portal_view`]).
+    pub portal_views: Vec<PortalView>,
+    /// The sky ranges a sky-box background replaced (drawn instead inside
+    /// sky boxes and past the portal recursion limit).
+    pub plain_sky_ranges: Vec<MaterialRange>,
     /// Floor/ceiling plane reflections (`Sector_SetPlaneReflection`).
     pub plane_reflects: Vec<PlaneReflectSurface>,
     /// Dynamic lights visible this frame (GLDEFS / muzzle — M10 bootstrap).
@@ -266,10 +273,131 @@ pub struct LinkedPortalSurface {
     pub tex_name: String,
 }
 
+/// What a portal surface shows (`crate::portal_view` turns it into a camera).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PortalViewKind {
+    /// A line portal (`Line_SetPortal` / `Line_QuickPortal`), seen from the
+    /// line's front.
+    Line {
+        /// Origin linedef.
+        line: u32,
+    },
+    /// `Line_Mirror`.
+    Mirror {
+        /// Linedef.
+        line: u32,
+    },
+    /// A sector portal (sky viewpoint, stacked sectors, linked plane).
+    Sector {
+        /// Index into `map.setup.portals.sectors`.
+        portal: u32,
+        /// Plane it is seen on (0 floor, 1 ceiling).
+        plane: u8,
+        /// Height of that plane where it is seen (clip plane of stacks).
+        plane_z: f64,
+    },
+    /// The planes of `sector` drawn out to the horizon (`Line_Horizon`,
+    /// Eternity horizon and plane portals).
+    Horizon {
+        /// Sector whose planes are drawn.
+        sector: u32,
+        /// Eternity plane portal: planes keep their distance to the eye.
+        relative: bool,
+    },
+}
+
+/// One portal view this frame needs: the view is drawn into the material
+/// [`Self::name`], which the surfaces sample in screen space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortalView {
+    /// Material name (`__PV…`); unique per view and recursion depth.
+    pub name: String,
+    /// What the view shows.
+    pub kind: PortalViewKind,
+}
+
+/// Vertex style of a screen-space portal surface (`unlit.wgsl`).
+pub const PORTAL_STYLE: f32 = 2.0;
+/// [`PORTAL_STYLE`] sampled mirrored left-right (line mirrors).
+pub const PORTAL_STYLE_FLIP_X: f32 = 2.25;
+
+/// Material name prefix of portal views.
+pub const PORTAL_VIEW_PREFIX: &str = "__PV";
+
+fn portal_view_name(kind: &PortalViewKind) -> String {
+    match *kind {
+        PortalViewKind::Line { line } => format!("__PVL{line}"),
+        PortalViewKind::Mirror { line } => format!("__PVM{line}"),
+        PortalViewKind::Sector {
+            portal,
+            plane,
+            plane_z,
+        } => {
+            format!("__PVS{portal}P{plane}Z{}", plane_z.round() as i64)
+        }
+        PortalViewKind::Horizon { sector, relative } => {
+            format!("__PVH{sector}{}", if relative { "R" } else { "" })
+        }
+    }
+}
+
+/// Register a portal view (once per frame) and return its material name.
+pub fn request_portal_view(lists: &mut SceneLists, kind: PortalViewKind) -> String {
+    let name = portal_view_name(&kind);
+    if !lists.portal_views.iter().any(|v| v.name == name) {
+        lists.portal_views.push(PortalView {
+            name: name.clone(),
+            kind,
+        });
+    }
+    name
+}
+
+/// Mark every vertex of a portal material with the screen-space style.
+fn finalize_portal_vertices(lists: &mut SceneLists) {
+    if lists.portal_views.is_empty() {
+        return;
+    }
+    let style = |name: &str| -> Option<f32> {
+        if !name.starts_with(PORTAL_VIEW_PREFIX) {
+            return None;
+        }
+        Some(if name.starts_with("__PVM") {
+            PORTAL_STYLE_FLIP_X
+        } else {
+            PORTAL_STYLE
+        })
+    };
+    for r in &lists.wall_ranges {
+        if let Some(st) = style(&r.name) {
+            let (a, b) = (r.start as usize, (r.start + r.count) as usize);
+            for v in lists.opaque_walls.get_mut(a..b).into_iter().flatten() {
+                v._pad = [1.0, st];
+            }
+        }
+    }
+    for r in &lists.flat_ranges {
+        if let Some(st) = style(&r.name) {
+            let (a, b) = (r.start as usize, (r.start + r.count) as usize);
+            for v in lists.flats.get_mut(a..b).into_iter().flatten() {
+                v._pad = [1.0, st];
+            }
+        }
+    }
+    for r in &lists.sky_ranges {
+        if let Some(st) = style(&r.name) {
+            let (a, b) = (r.start as usize, (r.start + r.count) as usize);
+            for v in lists.sky_parts.get_mut(a..b).into_iter().flatten() {
+                v._pad = [1.0, st];
+            }
+        }
+    }
+}
+
 /// Synthetic texture name for a mirror linedef canvas.
 #[must_use]
 pub fn mirror_tex_name(line: u32) -> String {
-    format!("__MIRROR{line}")
+    format!("__PVM{line}")
 }
 
 /// Synthetic texture name for a linked portal canvas.
@@ -352,6 +480,126 @@ pub fn build_scene_with_sky_ex_sized(
         Some(sprites) => append_sprites_in_map(&mut lists, sprites, camera, Some(map)),
         None => emit_thing_sprites(map, camera, &mut lists),
     }
+    // The level's default sky viewpoint (a `SkyViewpoint` without a TID)
+    // replaces the sky everywhere it is not overridden.
+    if map
+        .setup
+        .portals
+        .sectors
+        .first()
+        .is_some_and(|p| p.skybox.is_some())
+        && !lists.sky_parts.is_empty()
+    {
+        let name = request_portal_view(
+            &mut lists,
+            PortalViewKind::Sector {
+                portal: 0,
+                plane: 1,
+                plane_z: 0.0,
+            },
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        let count = lists.sky_parts.len() as u32;
+        lists.plain_sky_ranges = std::mem::take(&mut lists.sky_ranges);
+        lists.sky_ranges = vec![MaterialRange {
+            name,
+            start: 0,
+            count,
+            flags: 0,
+        }];
+    }
+    finalize_portal_vertices(&mut lists);
+    lists
+}
+
+/// The view through a horizon portal: `sector`'s floor and ceiling drawn as
+/// planes reaching 32768 units around `eye` (UZDoom `HWHorizonPortal`).
+/// `relative` (Eternity plane portals) keeps each plane's height as a
+/// distance from the eye.
+#[must_use]
+pub fn horizon_scene(
+    map: &MapGeometry,
+    sector: u32,
+    relative: bool,
+    eye: (f64, f64, f64),
+) -> SceneLists {
+    let mut lists = SceneLists::default();
+    let Some(sec) = map.sectors.get(sector as usize) else {
+        return lists;
+    };
+    let light = doom_light(sec.light);
+    const R: f64 = 32768.0;
+    const STEP: f64 = 4096.0;
+    let (ex, ey, ez) = eye;
+    let plane = |tex: &str, z: f64, floor: bool, uv: FlatUv, lists: &mut SceneLists| {
+        if is_sky_flat(tex) {
+            return;
+        }
+        let mut x = -R;
+        while x < R {
+            let mut y = -R;
+            while y < R {
+                let (x0, y0) = (
+                    (ex / 64.0).floor() * 64.0 + x,
+                    (ey / 64.0).floor() * 64.0 + y,
+                );
+                let (x1, y1) = (x0 + STEP, y0 + STEP);
+                for tri in [
+                    [(x0, y0), (x1, y0), (x1, y1)],
+                    [(x0, y0), (x1, y1), (x0, y1)],
+                ] {
+                    push_flat_tri_oriented_ex(
+                        lists,
+                        tex,
+                        [
+                            (tri[0].0, tri[0].1, z),
+                            (tri[1].0, tri[1].1, z),
+                            (tri[2].0, tri[2].1, z),
+                        ],
+                        light,
+                        uv,
+                        1.0,
+                        floor,
+                        Some(sector),
+                    );
+                }
+                y += STEP;
+            }
+            x += STEP;
+        }
+    };
+    let (fz, cz) = if relative {
+        (ez - sec.floor_height.abs(), ez + sec.ceiling_height.abs())
+    } else {
+        (sec.floor_height, sec.ceiling_height)
+    };
+    plane(
+        &sec.floor_pic,
+        fz,
+        true,
+        FlatUv {
+            u_off: sec.floor_u_off,
+            v_off: sec.floor_v_off,
+            scale_u: sec.floor_scale_u,
+            scale_v: sec.floor_scale_v,
+            angle_deg: sec.floor_angle,
+        },
+        &mut lists,
+    );
+    plane(
+        &sec.ceiling_pic,
+        cz,
+        false,
+        FlatUv {
+            u_off: sec.ceiling_u_off,
+            v_off: sec.ceiling_v_off,
+            scale_u: sec.ceiling_scale_u,
+            scale_v: sec.ceiling_scale_v,
+            angle_deg: sec.ceiling_angle,
+        },
+        &mut lists,
+    );
+    coalesce_by_material(&mut lists.flats, &mut lists.flat_ranges);
     lists
 }
 
@@ -810,7 +1058,6 @@ pub fn build_scene_from_visible_ex(
     let Some(nodes) = map.game_nodes.as_ref() else {
         emit_polyobj_walls(map, &mut lists);
         emit_ffloor_sides(map, &mut lists);
-        emit_linked_portal_canvases(map, &mut lists);
         // Tall closed shell: old height 1024 only covered ~±7° vertical FOV.
         lists.sky_parts = cylinder_sky(4096.0, 8192.0, 32, 1.0);
         return lists;
@@ -852,7 +1099,6 @@ pub fn build_scene_from_visible_ex(
     }
     emit_polyobj_walls(map, &mut lists);
     emit_ffloor_sides(map, &mut lists);
-    emit_linked_portal_canvases(map, &mut lists);
     // Classic sky shell centred on origin; translated to the eye after build.
     lists.sky_parts = cylinder_sky(4096.0, 8192.0, 32, 1.0);
     lists
@@ -873,6 +1119,13 @@ fn skip_wall_line_set(map: &MapGeometry) -> std::collections::BTreeSet<u32> {
     s
 }
 
+fn is_polyobj_line(map: &MapGeometry, lid: room_core::LineId) -> bool {
+    map.setup
+        .polyobjects
+        .iter()
+        .any(|po| po.lines.contains(&lid))
+}
+
 /// Extra walls for polyobjects (BSP segs stay at spawn; verts move in-place).
 fn emit_polyobj_walls(map: &MapGeometry, lists: &mut SceneLists) {
     for po in &map.setup.polyobjects {
@@ -880,6 +1133,11 @@ fn emit_polyobj_walls(map: &MapGeometry, lists: &mut SceneLists) {
             let Some(line) = map.lines.get(lid.raw() as usize) else {
                 continue;
             };
+            // A portal on a polyobject line moves and turns with it.
+            if map.setup.portals.line(lid).is_some_and(|p| p.skip_wall()) {
+                emit_portal_wall(map, lid, lists);
+                continue;
+            }
             let fake = Seg {
                 v1: line.v1,
                 v2: line.v2,
@@ -964,11 +1222,128 @@ fn emit_subsector(
     for seg in segs {
         if let Some(lid) = seg.line {
             if skip_lines.contains(&lid.raw()) {
+                // Polyobject lines are drawn where the polyobject is now
+                // (`emit_polyobj_walls`), portals included.
+                if seg.side == 0 && !is_polyobj_line(map, lid) {
+                    emit_portal_wall(map, lid, lists);
+                }
                 continue;
             }
         }
         emit_seg_walls(map, seg, lists, false);
     }
+}
+
+/// A line portal or horizon line seen from its front: one quad over the
+/// front sector's full height (UZDoom `HWWall::Process`), sampling the
+/// portal view.
+fn emit_portal_wall(map: &MapGeometry, lid: room_core::LineId, lists: &mut SceneLists) {
+    let Some(p) = map.setup.portals.line(lid).copied() else {
+        return;
+    };
+    if !p.skip_wall() {
+        return;
+    }
+    let Some(line) = map.lines.get(lid.raw() as usize) else {
+        return;
+    };
+    let Some(front_id) = line.front_sector else {
+        return;
+    };
+    let fi = front_id.raw() as usize;
+    let Some(front) = map.sectors.get(fi) else {
+        return;
+    };
+    let kind = if p.is_horizon() {
+        PortalViewKind::Horizon {
+            sector: fi as u32,
+            relative: false,
+        }
+    } else {
+        PortalViewKind::Line { line: lid.raw() }
+    };
+    let name = request_portal_view(lists, kind);
+    let a = map.vertices[line.v1.raw() as usize].pos;
+    let b = map.vertices[line.v2.raw() as usize].pos;
+    let planes = map.setup.planes.get(fi);
+    let zf = |x: f64, y: f64| match planes {
+        Some(pl) => pl.floor.z_at(x, y) + (front.floor_height - pl.base_floor),
+        None => front.floor_height,
+    };
+    let zc = |x: f64, y: f64| match planes {
+        Some(pl) => pl.ceiling.z_at(x, y) + (front.ceiling_height - pl.base_ceiling),
+        None => front.ceiling_height,
+    };
+    let ends = (
+        zf(a.x(), a.y()),
+        zf(b.x(), b.y()),
+        zc(a.x(), a.y()),
+        zc(b.x(), b.y()),
+    );
+    push_sloped_wall_quad(
+        lists,
+        &name,
+        WallQuad {
+            x1: a.x(),
+            y1: a.y(),
+            z_lo: front.floor_height,
+            x2: b.x(),
+            y2: b.y(),
+            z_hi: front.ceiling_height,
+            u1: 0.0,
+            u2: 1.0,
+            v_off: 0.0,
+            v_scale: 1.0,
+            light: 1.0,
+            alpha: 1.0,
+            masked: false,
+            clamp_v: false,
+            single_v: false,
+            peg: WallPeg::Top,
+            side_raw: None,
+            lm_surf: None,
+        },
+        ends,
+    );
+}
+
+/// The portal a sector plane shows, as a material (`ValidatePortal`).
+/// Plain skies return `None`.
+fn plane_portal_material(
+    map: &MapGeometry,
+    sector: usize,
+    plane: usize,
+    lists: &mut SceneLists,
+) -> Option<String> {
+    let t = &map.setup.portals;
+    let sec = map.sectors.get(sector)?;
+    let pic = if plane == 0 {
+        &sec.floor_pic
+    } else {
+        &sec.ceiling_pic
+    };
+    let idx = t.visible_plane_portal(sector, plane, is_sky_flat(pic))?;
+    let portal = t.sectors.get(idx as usize)?;
+    let plane_z = if plane == 0 {
+        sec.floor_height
+    } else {
+        sec.ceiling_height
+    };
+    let kind = match portal.kind {
+        room_map::portals::PORTS_PLANE | room_map::portals::PORTS_HORIZON => {
+            let origin = portal.origin?.raw();
+            PortalViewKind::Horizon {
+                sector: origin,
+                relative: portal.kind == room_map::portals::PORTS_PLANE,
+            }
+        }
+        _ => PortalViewKind::Sector {
+            portal: idx,
+            plane: plane as u8,
+            plane_z,
+        },
+    };
+    Some(request_portal_view(lists, kind))
 }
 
 fn sector_from_seg(map: &MapGeometry, seg: &Seg) -> Option<room_core::SectorId> {
@@ -1463,22 +1838,28 @@ fn emit_flats_for_sector(
         Some(p) => p.ceiling.z_at(x, y) + (sec.ceiling_height - p.base_ceiling),
         None => sec.ceiling_height,
     };
-    let skip_floor = is_sky_flat(&sec.floor_pic)
-        || map.setup.portals.sectors.iter().any(|p| {
-            p.sector.raw() as usize == sector_i
-                && p.plane == 0
-                && p.kind != room_map::PORTAL_KIND_FALL
-        });
+    let floor_portal = plane_portal_material(map, sector_i, 0, lists);
+    let ceil_portal = plane_portal_material(map, sector_i, 1, lists);
+    let skip_floor = floor_portal.is_none()
+        && (is_sky_flat(&sec.floor_pic)
+            || map.setup.portals.build_links.iter().any(|p| {
+                p.sector.raw() as usize == sector_i
+                    && p.plane == 0
+                    && p.kind != room_map::PORTAL_KIND_FALL
+            }));
     // `F_SKY1` is a redirect marker — never draw it as a ceiling flat (sky cylinder
     // shows through). Drawing the sky graphic as a horizontal plane looks inverted.
-    let skip_ceil = is_sky_flat(&sec.ceiling_pic)
-        || map
-            .setup
-            .portals
-            .sectors
-            .iter()
-            .any(|p| p.sector.raw() as usize == sector_i && p.plane == 1);
-    let floor_tex = if sec.floor_reflection > 0.01 {
+    let skip_ceil = ceil_portal.is_none()
+        && (is_sky_flat(&sec.ceiling_pic)
+            || map
+                .setup
+                .portals
+                .build_links
+                .iter()
+                .any(|p| p.sector.raw() as usize == sector_i && p.plane == 1));
+    let floor_tex = if let Some(name) = floor_portal.clone() {
+        name
+    } else if sec.floor_reflection > 0.01 {
         let name = plane_reflect_tex_name(sector_i as u32, true);
         if !lists
             .plane_reflects
@@ -1497,7 +1878,9 @@ fn emit_flats_for_sector(
     } else {
         sec.floor_pic.clone()
     };
-    let ceil_tex = if sec.ceiling_reflection > 0.01 {
+    let ceil_tex = if let Some(name) = ceil_portal.clone() {
+        name
+    } else if sec.ceiling_reflection > 0.01 {
         let name = plane_reflect_tex_name(sector_i as u32, false);
         if !lists
             .plane_reflects
@@ -1516,6 +1899,10 @@ fn emit_flats_for_sector(
     } else {
         sec.ceiling_pic.clone()
     };
+    let overlay = [
+        portal_flat_overlay(map, sector_i, 0, floor_portal.is_some()),
+        portal_flat_overlay(map, sector_i, 1, ceil_portal.is_some()),
+    ];
     let want = room_core::SectorId(sector_i as u32);
     for tri in earclip_tris(&ring) {
         let [(xa, ya), (xb, yb), (xc, yc)] = tri;
@@ -1536,6 +1923,7 @@ fn emit_flats_for_sector(
             skip_ceil,
             &z_floor,
             &z_ceil,
+            overlay,
             (xa, ya),
             (xb, yb),
             (xc, yc),
@@ -1574,20 +1962,26 @@ fn emit_flats_for_sector_trusted(
         Some(p) => p.ceiling.z_at(x, y) + (sec.ceiling_height - p.base_ceiling),
         None => sec.ceiling_height,
     };
-    let skip_floor = is_sky_flat(&sec.floor_pic)
-        || map.setup.portals.sectors.iter().any(|p| {
-            p.sector.raw() as usize == sector_i
-                && p.plane == 0
-                && p.kind != room_map::PORTAL_KIND_FALL
-        });
-    let skip_ceil = is_sky_flat(&sec.ceiling_pic)
-        || map
-            .setup
-            .portals
-            .sectors
-            .iter()
-            .any(|p| p.sector.raw() as usize == sector_i && p.plane == 1);
-    let floor_tex = if sec.floor_reflection > 0.01 {
+    let floor_portal = plane_portal_material(map, sector_i, 0, lists);
+    let ceil_portal = plane_portal_material(map, sector_i, 1, lists);
+    let skip_floor = floor_portal.is_none()
+        && (is_sky_flat(&sec.floor_pic)
+            || map.setup.portals.build_links.iter().any(|p| {
+                p.sector.raw() as usize == sector_i
+                    && p.plane == 0
+                    && p.kind != room_map::PORTAL_KIND_FALL
+            }));
+    let skip_ceil = ceil_portal.is_none()
+        && (is_sky_flat(&sec.ceiling_pic)
+            || map
+                .setup
+                .portals
+                .build_links
+                .iter()
+                .any(|p| p.sector.raw() as usize == sector_i && p.plane == 1));
+    let floor_tex = if let Some(name) = floor_portal.clone() {
+        name
+    } else if sec.floor_reflection > 0.01 {
         let name = plane_reflect_tex_name(sector_i as u32, true);
         if !lists
             .plane_reflects
@@ -1606,7 +2000,9 @@ fn emit_flats_for_sector_trusted(
     } else {
         sec.floor_pic.clone()
     };
-    let ceil_tex = if sec.ceiling_reflection > 0.01 {
+    let ceil_tex = if let Some(name) = ceil_portal.clone() {
+        name
+    } else if sec.ceiling_reflection > 0.01 {
         let name = plane_reflect_tex_name(sector_i as u32, false);
         if !lists
             .plane_reflects
@@ -1627,6 +2023,10 @@ fn emit_flats_for_sector_trusted(
     };
     // Always ear-clip: BSP/GL leaves can be concave; a fan from ring[0] spills
     // triangles into neighboring sectors (wrong Z / clear holes).
+    let overlay = [
+        portal_flat_overlay(map, sector_i, 0, floor_portal.is_some()),
+        portal_flat_overlay(map, sector_i, 1, ceil_portal.is_some()),
+    ];
     let want = room_core::SectorId(sector_i as u32);
     for tri in earclip_tris(&ring) {
         let [(xa, ya), (xb, yb), (xc, yc)] = tri;
@@ -1645,6 +2045,7 @@ fn emit_flats_for_sector_trusted(
             skip_ceil,
             &z_floor,
             &z_ceil,
+            overlay,
             (xa, ya),
             (xb, yb),
             (xc, yc),
@@ -1708,6 +2109,7 @@ fn push_floor_ceil_tri(
     skip_ceil: bool,
     z_floor: &dyn Fn(f64, f64) -> f64,
     z_ceil: &dyn Fn(f64, f64) -> f64,
+    overlay: [Option<f32>; 2],
     a: (f64, f64),
     b: (f64, f64),
     c: (f64, f64),
@@ -1715,6 +2117,17 @@ fn push_floor_ceil_tri(
     let (xa, ya) = a;
     let (xb, yb) = b;
     let (xc, yc) = c;
+    // Portal planes are opaque views; the sector's own alpha is for its flat.
+    let floor_alpha = if floor_tex.starts_with(PORTAL_VIEW_PREFIX) {
+        1.0
+    } else {
+        sec.floor_alpha
+    };
+    let ceil_alpha = if ceil_tex.starts_with(PORTAL_VIEW_PREFIX) {
+        1.0
+    } else {
+        sec.ceiling_alpha
+    };
     if !skip_floor {
         push_flat_tri_oriented_ex(
             lists,
@@ -1732,10 +2145,32 @@ fn push_floor_ceil_tri(
                 scale_v: sec.floor_scale_v,
                 angle_deg: sec.floor_angle,
             },
-            sec.floor_alpha,
+            floor_alpha,
             true,
             Some(sector_raw),
         );
+        if let Some(alpha) = overlay[0] {
+            push_flat_tri_oriented_ex(
+                lists,
+                &sec.floor_pic,
+                [
+                    (xa, ya, z_floor(xa, ya)),
+                    (xb, yb, z_floor(xb, yb)),
+                    (xc, yc, z_floor(xc, yc)),
+                ],
+                floor_light,
+                FlatUv {
+                    u_off: sec.floor_u_off,
+                    v_off: sec.floor_v_off,
+                    scale_u: sec.floor_scale_u,
+                    scale_v: sec.floor_scale_v,
+                    angle_deg: sec.floor_angle,
+                },
+                alpha,
+                true,
+                Some(sector_raw),
+            );
+        }
     }
     if !skip_ceil {
         push_flat_tri_oriented_ex(
@@ -1754,11 +2189,66 @@ fn push_floor_ceil_tri(
                 scale_v: sec.ceiling_scale_v,
                 angle_deg: sec.ceiling_angle,
             },
-            sec.ceiling_alpha,
+            ceil_alpha,
             false,
             Some(sector_raw),
         );
+        if let Some(alpha) = overlay[1] {
+            push_flat_tri_oriented_ex(
+                lists,
+                &sec.ceiling_pic,
+                [
+                    (xa, ya, z_ceil(xa, ya)),
+                    (xb, yb, z_ceil(xb, yb)),
+                    (xc, yc, z_ceil(xc, yc)),
+                ],
+                ceil_light,
+                FlatUv {
+                    u_off: sec.ceiling_u_off,
+                    v_off: sec.ceiling_v_off,
+                    scale_u: sec.ceiling_scale_u,
+                    scale_v: sec.ceiling_scale_v,
+                    angle_deg: sec.ceiling_angle,
+                },
+                alpha,
+                false,
+                Some(sector_raw),
+            );
+        }
     }
+}
+
+/// UZDoom `HWFlat::ProcessSector`: a stacked or linked portal plane whose
+/// alpha is below 1 (`Sector_SetPortal`'s alpha, or the sector's own
+/// `alphafloor` / `alphaceiling`) also draws its flat over the view, at
+/// that alpha (water seen from above, a window floor). Sky flats stay off.
+fn portal_flat_overlay(
+    map: &MapGeometry,
+    sector: usize,
+    plane: usize,
+    portal: bool,
+) -> Option<f32> {
+    if !portal {
+        return None;
+    }
+    let t = &map.setup.portals;
+    let kind = t.plane_portal(sector, plane)?.kind;
+    if !matches!(
+        kind,
+        room_map::portals::PORTS_STACKEDSECTORTHING
+            | room_map::portals::PORTS_PORTAL
+            | room_map::portals::PORTS_LINKEDPORTAL
+    ) {
+        return None;
+    }
+    let alpha = t.plane_alpha.get(sector)?[plane & 1];
+    let sec = map.sectors.get(sector)?;
+    let pic = if plane == 0 {
+        &sec.floor_pic
+    } else {
+        &sec.ceiling_pic
+    };
+    (alpha > 0.0 && alpha < 1.0 && !is_sky_flat(pic)).then_some(alpha)
 }
 
 /// Vertical sides for 3D-floor slabs (control-sector textures on target linedefs).
@@ -2107,7 +2597,7 @@ fn line_is_mirror(map: &MapGeometry, line: room_core::LineId) -> bool {
 }
 
 fn note_mirror(lists: &mut SceneLists, line: u32, x1: f64, y1: f64, x2: f64, y2: f64) {
-    let tex_name = mirror_tex_name(line);
+    let tex_name = request_portal_view(lists, PortalViewKind::Mirror { line });
     if lists.mirrors.iter().any(|m| m.line == line) {
         return;
     }
@@ -2119,108 +2609,6 @@ fn note_mirror(lists: &mut SceneLists, line: u32, x1: f64, y1: f64, x2: f64, y2:
         by: y2,
         tex_name,
     });
-}
-
-fn line_mid(map: &MapGeometry, line: room_core::LineId) -> Option<(f64, f64)> {
-    let l = map.lines.get(line.raw() as usize)?;
-    let a = map.vertices.get(l.v1.raw() as usize)?;
-    let b = map.vertices.get(l.v2.raw() as usize)?;
-    Some((0.5 * (a.pos.x() + b.pos.x()), 0.5 * (a.pos.y() + b.pos.y())))
-}
-
-/// Emit `__PORTAL*` mid quads + refresh metadata for linked/visual line portals.
-fn emit_linked_portal_canvases(map: &MapGeometry, lists: &mut SceneLists) {
-    for p in &map.setup.portals.lines {
-        if p.is_mirror() {
-            continue;
-        }
-        let Some(target) = p.target else {
-            continue;
-        };
-        let Some(line) = map.lines.get(p.line.raw() as usize) else {
-            continue;
-        };
-        let Some(v1) = map.vertices.get(line.v1.raw() as usize) else {
-            continue;
-        };
-        let Some(v2) = map.vertices.get(line.v2.raw() as usize) else {
-            continue;
-        };
-        let (ax, ay) = (v1.pos.x(), v1.pos.y());
-        let (bx, by) = (v2.pos.x(), v2.pos.y());
-        let Some((sx, sy)) = line_mid(map, p.line) else {
-            continue;
-        };
-        let Some((tx, ty)) = line_mid(map, target) else {
-            continue;
-        };
-        let dx = tx - sx;
-        let dy = ty - sy;
-        let tex_name = portal_tex_name(p.line.raw());
-        if lists.linked_portals.iter().any(|q| q.line == p.line.raw()) {
-            continue;
-        }
-        lists.linked_portals.push(LinkedPortalSurface {
-            line: p.line.raw(),
-            target: target.raw(),
-            ax,
-            ay,
-            bx,
-            by,
-            dx,
-            dy,
-            tex_name: tex_name.clone(),
-        });
-        let Some(front_id) = line.front_sector else {
-            continue;
-        };
-        let Some(front) = map.sectors.get(front_id.raw() as usize) else {
-            continue;
-        };
-        let (z_lo, z_hi) = if let Some(back_id) = line.back_sector {
-            let back = map.sectors.get(back_id.raw() as usize);
-            let z_lo = back.map_or(front.floor_height, |b| {
-                front.floor_height.max(b.floor_height)
-            });
-            let z_hi = back.map_or(front.ceiling_height, |b| {
-                front.ceiling_height.min(b.ceiling_height)
-            });
-            (z_lo, z_hi)
-        } else {
-            (front.floor_height, front.ceiling_height)
-        };
-        if z_hi <= z_lo {
-            continue;
-        }
-        let light = doom_light(front.light);
-        let len = libm::hypot(bx - ax, by - ay);
-        #[allow(clippy::cast_possible_truncation)]
-        let u2 = (len / f64::from(WALL_TEXEL)) as f32;
-        push_wall_quad(
-            lists,
-            &tex_name,
-            WallQuad {
-                x1: ax,
-                y1: ay,
-                z_lo,
-                x2: bx,
-                y2: by,
-                z_hi,
-                u1: 0.0,
-                u2,
-                v_off: 0.0,
-                v_scale: 1.0,
-                light,
-                alpha: 1.0,
-                masked: false,
-                clamp_v: false,
-                single_v: false,
-                peg: WallPeg::Top,
-                side_raw: None,
-                lm_surf: None,
-            },
-        );
-    }
 }
 
 /// World clip plane for a mirror linedef: discard when `n·p + d > 0`
@@ -4282,6 +4670,8 @@ mod tests {
                 automap_style: 0,
                 clip_midtex: false,
                 wrap_midtex: false,
+                ext: 0,
+                user: Default::default(),
             })
             .collect();
         let sidedefs = (0u16..4)
@@ -4319,6 +4709,7 @@ mod tests {
                 no_decals: false,
                 alpha: None,
                 block_rendering: false,
+                user: Default::default(),
             })
             .collect();
         let sectors = vec![RawSector {
@@ -4369,6 +4760,8 @@ mod tests {
             ceiling_alpha: 1.0,
             floor_additive: false,
             ceiling_additive: false,
+            ext: 0,
+            user: Default::default(),
         }];
         let things = vec![
             RawThing {
@@ -4413,6 +4806,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
             RawThing {
                 tid: 0,
@@ -4456,6 +4851,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
             RawThing {
                 tid: 0,
@@ -4499,6 +4896,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             },
         ];
         let mut map = link_geometry(
@@ -4583,89 +4982,123 @@ mod tests {
     }
 
     #[test]
-    fn portal_lines_skip_opaque_walls() {
-        let mut map = MapBuilder::new()
-            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
-            .room("b", rect(512.0, 0.0, 768.0, 256.0), 0.0, 128.0)
-            .player_start(128.0, 128.0, 0)
-            .build_udmf("MAP01")
-            .unwrap();
-        let mut a_east = None;
-        let mut b_west = None;
-        for (i, line) in map.lines.iter().enumerate() {
-            if line.back_sector.is_some() {
-                continue;
-            }
-            let v1 = map.vertices[line.v1.raw() as usize].pos;
-            let v2 = map.vertices[line.v2.raw() as usize].pos;
-            if (v1.x() - 256.0).abs() < 1.0 && (v2.x() - 256.0).abs() < 1.0 {
-                a_east = Some(i);
-            }
-            if (v1.x() - 512.0).abs() < 1.0 && (v2.x() - 512.0).abs() < 1.0 {
-                b_west = Some(i);
-            }
-        }
-        for i in [a_east.unwrap(), b_west.unwrap()] {
-            let line = &mut map.lines[i];
-            line.special = 156;
-            line.args = [42, 0, 1, 0, 0];
-            line.tag = 42;
-        }
-        map.setup = room_map::build_setup(&map);
+    fn portal_lines_draw_a_view_seen_from_their_front() {
+        let mut map = room_map::load_udmf_text(
+            "MAP01",
+            &room_testkit::linked_line_portal_rooms(3).textmap(),
+        )
+        .unwrap();
         apply_nodes(&mut map);
         let cam = Camera {
             eye: Vec3::new(128.0, 128.0, 41.0),
             ..Camera::default()
         };
         let scene = build_scene(&map, &cam, None);
-        let portal_quads = scene
+        // One view per portal line (both fronts are emitted; culling happens
+        // in the portal renderer).
+        let views: Vec<_> = scene
+            .portal_views
+            .iter()
+            .filter(|v| matches!(v.kind, PortalViewKind::Line { .. }))
+            .collect();
+        assert_eq!(views.len(), 2);
+        // A's portal quad spans its front sector's full height, with the
+        // screen-space style.
+        let r = scene
             .wall_ranges
             .iter()
-            .filter(|r| r.name.starts_with("__PORTAL"))
-            .count();
-        assert_eq!(portal_quads, 2, "both sides emit portal canvas quads");
-        assert_eq!(
-            scene.linked_portals.len(),
-            2,
-            "both sides list portal surfaces"
-        );
+            .find(|r| {
+                r.name.starts_with(PORTAL_VIEW_PREFIX) && {
+                    let v = &scene.opaque_walls[r.start as usize];
+                    (v.pos[0] - 256.0).abs() < 1.0
+                }
+            })
+            .unwrap();
+        let verts = &scene.opaque_walls[r.start as usize..(r.start + r.count) as usize];
+        assert!(verts.iter().all(|v| v._pad[1] == PORTAL_STYLE));
+        let zs: Vec<f32> = verts.iter().map(|v| v.pos[2]).collect();
+        assert!(zs.contains(&0.0) && zs.contains(&128.0));
+        // No ordinary wall on the portal line.
         let opaque_at_east = scene.wall_ranges.iter().filter(|r| {
-            !r.name.starts_with("__PORTAL")
+            !r.name.starts_with(PORTAL_VIEW_PREFIX)
                 && scene.opaque_walls[r.start as usize..(r.start + r.count) as usize]
                     .iter()
                     .all(|v| (v.pos[0] - 256.0).abs() < 1.0)
         });
-        assert_eq!(
-            opaque_at_east.count(),
-            0,
-            "east portal should not emit normal opaque walls"
-        );
+        assert_eq!(opaque_at_east.count(), 0);
     }
 
     #[test]
-    fn sector_floor_portal_skips_floor_flats() {
-        let mut map = MapBuilder::new()
-            .room("from", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
-            .room("to", rect(256.0, 0.0, 512.0, 256.0), 0.0, 128.0)
-            .sector_tag("to", 5)
-            .sector_portal_between("from", "to", 5, 3, 0)
-            .player_start(64.0, 64.0, 0)
-            .build_udmf("MAP01")
-            .unwrap();
+    fn translucent_portal_planes_draw_their_flat_over_the_view() {
+        let mut map = room_map::load_udmf_text(
+            "MAP01",
+            &room_testkit::linked_plane_portal_rooms().textmap(),
+        )
+        .unwrap();
+        apply_nodes(&mut map);
+        let cam = Camera {
+            eye: Vec3::new(64.0, 64.0, 41.0),
+            ..Camera::default()
+        };
+        // Opaque portal plane: the view only.
+        let scene = build_scene(&map, &cam, None);
+        let ceiling = map.sectors[0].ceiling_pic.clone();
+        assert!(
+            !scene
+                .translucent_flat_ranges
+                .iter()
+                .any(|r| r.name == ceiling)
+        );
+        // Half see-through: the view, and A's ceiling flat over it.
+        map.setup.portals.plane_alpha[0][1] = 0.5;
+        let scene = build_scene(&map, &cam, None);
+        assert!(
+            scene
+                .flat_ranges
+                .iter()
+                .any(|r| r.name.starts_with(PORTAL_VIEW_PREFIX))
+        );
+        let r = scene
+            .translucent_flat_ranges
+            .iter()
+            .find(|r| r.name == ceiling)
+            .expect("overlay flat");
+        let verts = &scene.translucent_flats[r.start as usize..(r.start + r.count) as usize];
+        assert!(verts.iter().all(|v| (v.pos[2] - 128.0).abs() < 1.0));
+    }
+
+    #[test]
+    fn plane_portals_replace_the_flat() {
+        let mut map = room_map::load_udmf_text(
+            "MAP01",
+            &room_testkit::linked_plane_portal_rooms().textmap(),
+        )
+        .unwrap();
         apply_nodes(&mut map);
         let cam = Camera {
             eye: Vec3::new(64.0, 64.0, 41.0),
             ..Camera::default()
         };
         let scene = build_scene(&map, &cam, None);
-        let from_floor = scene
-            .flats
-            .iter()
-            .any(|v| v.pos[2].abs() < 1.0 && v.pos[0] < 200.0);
-        assert!(!from_floor, "source floor plane should be a portal hole");
+        // Room A's ceiling is a view; its floor is an ordinary flat.
+        let ceiling_view = scene.flat_ranges.iter().any(|r| {
+            r.name.starts_with(PORTAL_VIEW_PREFIX)
+                && scene.flats[r.start as usize..(r.start + r.count) as usize]
+                    .iter()
+                    .all(|v| (v.pos[2] - 128.0).abs() < 1.0 && v.pos[0] < 300.0)
+        });
+        assert!(ceiling_view);
         assert!(
-            scene.flats.iter().any(|v| (v.pos[2] - 128.0).abs() < 1.0),
-            "ceiling should still emit"
+            scene
+                .portal_views
+                .iter()
+                .any(|v| matches!(v.kind, PortalViewKind::Sector { plane: 1, .. }))
+        );
+        assert!(
+            scene
+                .flats
+                .iter()
+                .any(|v| v.pos[2].abs() < 1.0 && v.pos[0] < 200.0 && v._pad[1] == 0.0)
         );
     }
 

@@ -52,6 +52,12 @@ struct Lx {
     locals_s: BTreeMap<String, u8>,
     /// Array local → (object register, string elements).
     locals_a: BTreeMap<String, (u8, bool)>,
+    /// Lowercased array locals holding objects → lowercased element class.
+    obj_arrays: BTreeMap<String, String>,
+    /// Lowercased class → object-array field → lowercased element class.
+    obj_array_fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// Lowercased class and struct names (object element types).
+    type_names: std::collections::BTreeSet<String>,
     /// Object local → (register, lowercased class).
     locals_o: BTreeMap<String, (u8, String)>,
     locals_f: BTreeMap<String, u8>,
@@ -657,10 +663,29 @@ pub fn lower(
     parents
         .entry("object".to_owned())
         .or_insert_with(|| "actor".to_owned());
+    // Object-array fields per class (`Array<Actor> list;`, `level.Lines`).
+    let mut obj_array_fields: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for (class, members) in &merged_fields {
+        for m in members {
+            if let Member::Field(fd) = m {
+                if let Some(elem) = array_obj_elem(&fd.ty, &type_names) {
+                    for n in &fd.names {
+                        obj_array_fields
+                            .entry(class.clone())
+                            .or_default()
+                            .insert(n.to_ascii_lowercase(), elem.clone());
+                    }
+                }
+            }
+        }
+    }
     let mut lx = Lx {
         locals: BTreeMap::new(),
         locals_s: BTreeMap::new(),
         locals_a: BTreeMap::new(),
+        obj_arrays: BTreeMap::new(),
+        obj_array_fields,
+        type_names: type_names.clone(),
         locals_o: BTreeMap::new(),
         locals_f: BTreeMap::new(),
         locals_v: BTreeMap::new(),
@@ -789,6 +814,7 @@ pub fn lower(
         lx.locals.clear();
         lx.locals_s.clear();
         lx.locals_a.clear();
+        lx.obj_arrays.clear();
         lx.locals_o.clear();
         lx.locals_f.clear();
         lx.locals_v.clear();
@@ -833,6 +859,14 @@ pub fn lower(
                         }
                         let ar = lx.alloc_a();
                         f.emit_ext(Op::LoadFieldA, ar, r, 0, u32::from(slot));
+                        if let Some(elem) = lx
+                            .obj_array_fields
+                            .get(&name)
+                            .and_then(|m| m.get(&fname.to_ascii_lowercase()))
+                            .cloned()
+                        {
+                            lx.obj_arrays.insert(fname.to_ascii_lowercase(), elem);
+                        }
                         lx.locals_a.insert(fname, (ar, string_elem));
                     }
                 }
@@ -904,12 +938,23 @@ pub fn lower(
                 let id = lx.native_id(&format!("_.{fname}"));
                 f.emit_ext(Op::CallNat, 0, 3, 0, id);
                 f.emit(Op::GetRet, 3, ar, 0);
+                if let Some(elem) = lx
+                    .obj_array_fields
+                    .get("_")
+                    .and_then(|m| m.get(&fname.to_ascii_lowercase()))
+                    .cloned()
+                {
+                    lx.obj_arrays.insert(fname.to_ascii_lowercase(), elem);
+                }
                 lx.locals_a.insert(fname, (ar, string_elem));
             }
         }
         for p in &meth.params {
             if let Some(string_elem) = array_elem_kind(&p.ty) {
                 let r = lx.alloc_a();
+                if let Some(elem) = array_obj_elem(&p.ty, &lx.type_names) {
+                    lx.obj_arrays.insert(p.name.to_ascii_lowercase(), elem);
+                }
                 lx.locals_a.insert(p.name.clone(), (r, string_elem));
                 f.params.push(FuncParam {
                     bank: 3,
@@ -1181,6 +1226,7 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                 None
             };
             let array_elems = ty.as_ref().and_then(array_elem_kind);
+            let obj_elem = ty.as_ref().and_then(|t| array_obj_elem(t, &lx.type_names));
             let vec_dim = match ty {
                 Some(t) => fvec::type_vector_dim(t),
                 None => init.as_ref().and_then(|e| expr_vector_dim(e, lx)),
@@ -1212,7 +1258,23 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                     let r = lx.alloc_a();
                     lx.locals_a.insert(name.clone(), (r, string_elem));
                     let fixed = name_init.and_then(|e| const_int(e, &lx.consts, &lx.parents));
-                    if let Some(n) = fixed {
+                    if let Some(elem) = obj_elem.clone() {
+                        lx.obj_arrays.insert(name.to_ascii_lowercase(), elem);
+                        if fixed.is_some() || (k == 0 && init.is_none()) {
+                            emit_named_array(f, lx, "Array.NewA", r);
+                        }
+                        // `Actor slots[4]`: four empty slots.
+                        if let Some(n) = fixed {
+                            let null = lx.alloc_a();
+                            f.emit(Op::LoadNull, null, 0, 0);
+                            let id = lx.native_id("Array.PushA");
+                            for _ in 0..n.clamp(0, 64) {
+                                f.emit(Op::Arg, 3, r, 0);
+                                f.emit(Op::Arg, 3, null, 0);
+                                f.emit_ext(Op::CallNat, 2, 0, 0, id);
+                            }
+                        }
+                    } else if let Some(n) = fixed {
                         // Fixed-size array: `n` zeroed elements.
                         emit_new_array(f, lx, string_elem, r);
                         let zero = if string_elem {
@@ -2284,6 +2346,20 @@ fn load_s(f: &mut CompiledFunction, lx: &mut Lx, text: &str) -> u8 {
     r
 }
 
+fn emit_array_get_a(f: &mut CompiledFunction, lx: &mut Lx, arr: u8, idx: u8, dest: u8) {
+    f.emit(Op::Arg, 3, arr, 0);
+    f.emit(Op::Arg, 0, idx, 0);
+    let id = lx.native_id("Array.GetA");
+    f.emit_ext(Op::CallNat, 1, 3, 0, id);
+    f.emit(Op::GetRet, 3, dest, 0);
+}
+
+fn emit_named_array(f: &mut CompiledFunction, lx: &mut Lx, native: &str, dest: u8) {
+    let id = lx.native_id(native);
+    f.emit_ext(Op::CallNat, 1, 3, 0, id);
+    f.emit(Op::GetRet, 3, dest, 0);
+}
+
 fn emit_new_array(f: &mut CompiledFunction, lx: &mut Lx, string_elem: bool, dest: u8) {
     let name = if string_elem {
         "Array.NewS"
@@ -2299,11 +2375,32 @@ fn array_method(callee: &Expr, args: &[Expr], lx: &Lx) -> Option<&'static str> {
     let Expr::Member { obj, field, .. } = callee else {
         return None;
     };
-    let Expr::Ident(name, _) = obj.as_ref() else {
-        return None;
+    let string_elem = match obj.as_ref() {
+        Expr::Ident(name, _) => array_local(lx, name)?.1,
+        // `self.items.Push(x)` / `h.items.Find(x)`: an array field.
+        Expr::Member {
+            obj: base,
+            field: afield,
+            ..
+        } => {
+            let class = init_object_class(base, lx);
+            let class = class?;
+            lookup_array_field(lx, &class, afield)?.1
+        }
+        _ => return None,
     };
-    let (_, string_elem) = array_local(lx, name)?;
     let field_l = field.to_ascii_lowercase();
+    if obj_array_elem(obj, lx).is_some() {
+        return Some(match field_l.as_str() {
+            "push" => "Array.PushA",
+            "insert" => "Array.InsertA",
+            "find" => "Array.FindA",
+            "delete" => "Array.Delete",
+            "size" => "Array.Size",
+            "clear" => "Array.Clear",
+            _ => return None,
+        });
+    }
     let string_value = args.iter().any(|a| {
         matches!(a, Expr::String(_, _))
             || matches!(a, Expr::Ident(n, _) if lx.locals_s.contains_key(n))
@@ -2332,12 +2429,8 @@ fn emit_array_call(
     let Expr::Member { obj, .. } = callee else {
         return 0;
     };
-    let Expr::Ident(name, span) = obj.as_ref() else {
+    let Some((reg, _)) = array_expr(f, lx, obj) else {
         lx.err(obj.span(), "array receiver");
-        return 0;
-    };
-    let Some((reg, _)) = array_local(lx, name) else {
-        lx.err(*span, format!("unknown array {name}"));
         return 0;
     };
     f.emit(Op::Arg, 3, reg, 0);
@@ -2359,6 +2452,22 @@ fn emit_array_call(
             }
         }
         "Array.Size" | "Array.Clear" => {}
+        "Array.PushA" | "Array.FindA" => {
+            if let Some(arg) = args.first() {
+                let r = emit_expr_a(f, arg, lx);
+                f.emit(Op::Arg, 3, r, 0);
+            }
+        }
+        "Array.InsertA" => {
+            if let Some(idx) = args.first() {
+                let r = emit_expr(f, idx, lx);
+                f.emit(Op::Arg, 0, r, 0);
+            }
+            if let Some(val) = args.get(1) {
+                let r = emit_expr_a(f, val, lx);
+                f.emit(Op::Arg, 3, r, 0);
+            }
+        }
         "Array.FindS" => {
             if let Some(arg) = args.first() {
                 let r = emit_expr_s(f, arg, lx);
@@ -2383,7 +2492,10 @@ fn emit_array_call(
     let id = lx.native_id(native);
     let ret_bank = if native == "Array.Size" { 0 } else { 0 };
     f.emit_ext(Op::CallNat, 1, ret_bank, 0, id);
-    if matches!(native, "Array.Size" | "Array.Find" | "Array.FindS") {
+    if matches!(
+        native,
+        "Array.Size" | "Array.Find" | "Array.FindS" | "Array.FindA" | "Array.PushA"
+    ) {
         let dest = lx.alloc();
         f.emit(Op::GetRet, 0, dest, 0);
         dest
@@ -2396,7 +2508,7 @@ fn init_object_class(expr: &Expr, lx: &Lx) -> Option<String> {
     match expr {
         Expr::New { class, .. } => Some(class.to_ascii_lowercase()),
         Expr::Cast { ty, .. } => Some(ty.to_ascii_lowercase()),
-        Expr::Call { callee, .. } => {
+        Expr::Call { callee, args, .. } => {
             if let Some(target) = resolve_call(callee, lx) {
                 if let Some(sig) = lx.funcs.get(&target.key) {
                     if sig.ret == 3 {
@@ -2414,6 +2526,15 @@ fn init_object_class(expr: &Expr, lx: &Lx) -> Option<String> {
                 return Some(class.to_ascii_lowercase());
             }
             if let Expr::Ident(n, _) = callee.as_ref() {
+                // `new("Holder")`: the class named by a literal.
+                if n.eq_ignore_ascii_case("new") {
+                    if let Some(Expr::String(c, _) | Expr::Name(c, _)) = args.first() {
+                        let c = c.to_ascii_lowercase();
+                        if lx.class_ids.contains_key(&c) {
+                            return Some(c);
+                        }
+                    }
+                }
                 if n.eq_ignore_ascii_case("new") || n.eq_ignore_ascii_case("find") {
                     return Some("object".to_owned());
                 }
@@ -2485,6 +2606,27 @@ fn object_local(lx: &Lx, name: &str) -> Option<(u8, String)> {
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(name))
         .map(|(_, (reg, class))| (*reg, class.clone()))
+}
+
+/// Element class when `arr` names an object array (a local, a parameter,
+/// an array field of an object, a global such as `level.Lines`).
+fn obj_array_elem(arr: &Expr, lx: &Lx) -> Option<String> {
+    match arr {
+        Expr::Ident(name, _) => lx.obj_arrays.get(&name.to_ascii_lowercase()).cloned(),
+        Expr::Member { obj, field, .. } => {
+            let field = field.to_ascii_lowercase();
+            let mut cur = init_object_class(obj, lx);
+            for _ in 0..64 {
+                let class = cur?;
+                if let Some(e) = lx.obj_array_fields.get(&class).and_then(|m| m.get(&field)) {
+                    return Some(e.clone());
+                }
+                cur = parent_of(lx, &class);
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn array_local(lx: &Lx, name: &str) -> Option<(u8, bool)> {
@@ -2775,12 +2917,17 @@ fn object_base(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> Option<(u8
                     return Some((dest, "playerinfo".to_owned()));
                 }
             }
+            let elem = obj_array_elem(arr, lx);
             let (reg, string_elem) = array_expr(f, lx, arr)?;
             if string_elem {
                 return None;
             }
             let idx = emit_expr(f, index, lx);
             let dest = lx.alloc_a();
+            if let Some(elem) = elem {
+                emit_array_get_a(f, lx, reg, idx, dest);
+                return Some((dest, elem));
+            }
             f.emit(Op::ArrayGetI, dest, reg, idx);
             Some((dest, "object".to_owned()))
         }
@@ -3504,12 +3651,25 @@ fn emit_index_i(
     lx: &mut Lx,
     span: crate::span::Span,
 ) -> u8 {
+    let obj_elem = obj_array_elem(arr, lx).is_some();
     if let Some((reg, string_elem)) = array_expr(f, lx, arr) {
         if string_elem {
             let idx = emit_expr(f, index, lx);
             let dest = lx.alloc_s();
             f.emit(Op::ArrayGetS, dest, reg, idx);
             return string_truthy(f, lx, dest);
+        }
+        if obj_elem {
+            // An object element as a condition: set or not.
+            let idx = emit_expr(f, index, lx);
+            let o = lx.alloc_a();
+            emit_array_get_a(f, lx, reg, idx, o);
+            let is_null = lx.alloc();
+            f.emit(Op::IsNull, is_null, o, 0);
+            let zero = load_i(f, lx, 0);
+            let dest = lx.alloc();
+            f.emit(Op::EqI, dest, is_null, zero);
+            return dest;
         }
         let idx = emit_expr(f, index, lx);
         let dest = lx.alloc();
@@ -3572,6 +3732,28 @@ fn is_class_type(ty: &TypeRef) -> bool {
 
 fn p_type_name(ty: &TypeRef) -> &str {
     named_type(ty).unwrap_or("")
+}
+
+/// Element class of an object array type (`Array<Actor>`, `Array<@Line>`,
+/// `Actor[]`): the element is a declared class or struct. Ints, floats,
+/// enums, strings and names are not objects.
+fn array_obj_elem(ty: &TypeRef, type_names: &std::collections::BTreeSet<String>) -> Option<String> {
+    let inner = match ty {
+        TypeRef::Array(inner) => inner.as_ref(),
+        TypeRef::Readonly(inner) => return array_obj_elem(inner, type_names),
+        _ => return None,
+    };
+    let inner = match inner {
+        TypeRef::Readonly(i) => i.as_ref(),
+        other => other,
+    };
+    match inner {
+        TypeRef::Named(t) => {
+            let l = t.to_ascii_lowercase();
+            (type_names.contains(&l) && l != "string" && l != "name").then_some(l)
+        }
+        _ => None,
+    }
 }
 
 fn array_elem_kind(ty: &TypeRef) -> Option<bool> {
@@ -3708,6 +3890,8 @@ fn layout_members(
                     ) || matches!(inner.as_ref(), TypeRef::ClassOf(_));
                     if string_elem {
                         layout.array_s.push(n_a);
+                    } else if array_obj_elem(&field.ty, type_names).is_some() {
+                        layout.array_a.push(n_a);
                     } else {
                         layout.array_i.push(n_a);
                     }
@@ -4125,6 +4309,16 @@ fn emit_new(f: &mut CompiledFunction, lx: &mut Lx, class: &str) -> u8 {
 }
 
 fn emit_expr_a(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
+    // `Sum(h.items)`: an array field passed or assigned as a whole.
+    if let Expr::Member { obj, field, .. } = expr {
+        let is_array = init_object_class(obj, lx)
+            .is_some_and(|class| lookup_array_field(lx, &class, field).is_some());
+        if is_array {
+            if let Some((reg, _)) = array_expr(f, lx, expr) {
+                return reg;
+            }
+        }
+    }
     if let Some((reg, _)) = object_base(f, expr, lx) {
         return reg;
     }
@@ -4698,6 +4892,15 @@ fn emit_array_store(f: &mut CompiledFunction, lx: &mut Lx, arr: &Expr, index: &E
         return;
     };
     let idx = emit_expr(f, index, lx);
+    if obj_array_elem(arr, lx).is_some() {
+        let v = emit_expr_a(f, rhs, lx);
+        f.emit(Op::Arg, 3, reg, 0);
+        f.emit(Op::Arg, 3, v, 0);
+        f.emit(Op::Arg, 0, idx, 0);
+        let id = lx.native_id("Array.SetA");
+        f.emit_ext(Op::CallNat, 1, 0, 0, id);
+        return;
+    }
     if string_elem {
         let v = emit_expr_s(f, rhs, lx);
         f.emit(Op::ArraySetS, reg, idx, v);
@@ -5537,7 +5740,8 @@ class ZC_IntStrMap
     #[test]
     fn lower_real_damage_handler() {
         let text = std::fs::read_to_string(
-            "/Users/toto/Code/games/room/testdata/zscript/bd_real/DamageHandler.zc",
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testdata/zscript/bd_real/DamageHandler.zc"),
         )
         .expect("damage");
         let sources = crate::with_room_stdlib(&[("zscript/DamageHandler.zc".into(), text)]);

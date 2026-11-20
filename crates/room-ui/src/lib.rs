@@ -31,7 +31,7 @@ mod weapon;
 mod zscript_bar;
 
 pub use acs_hud::{color_by_name, draw_acs_hud_messages, strip_color_codes};
-pub use automap::{AutomapThing, AutomapView, draw_automap, draw_automap_things};
+pub use automap::{AutomapThing, AutomapView, automap_flats, draw_automap, draw_automap_things};
 pub use canvas_bridge::{
     CanvasSink, blit_draw_list, blit_draw_list_full, blit_draw_list_with_fonts,
 };

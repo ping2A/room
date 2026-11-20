@@ -480,3 +480,11 @@ dialog.duke-anim h3 { margin: 0 0 10px; font-size: 14px; }
 .gen-report dt { color: var(--muted); }
 .gen-report dd { margin: 0; color: var(--text); font-family: var(--mono); }
 .gen-report .gen-err { color: #ff8f80; }
+
+/* Portal panel and UDMF extras in the inspector. */
+.portal-info .row span { color: var(--text); }
+.portal-info .tex-field { flex-wrap: wrap; gap: 6px; }
+.portal-info p { margin: 2px 0; font-size: 12px; }
+.portal-info .warn-text { color: var(--warn); }
+.named-args .row label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#inspector-body fieldset textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 12px; resize: vertical; }

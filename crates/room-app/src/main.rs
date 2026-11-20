@@ -44,10 +44,10 @@ use room_render::{
     PostChain, PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient,
     TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes,
     append_actor_models, append_decals, append_particles_animated, apply_glow_fullbright,
-    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, clip_scene_to_mirror_line,
-    mirror_clip_plane, particle_tint_tex_name, read_rgba, read_texture_rgba, render_offscreen,
-    scroll_sky_u, soft_disc_rgba, sprite_lump_candidates_rot, sprite_offset_delta,
-    sprite_rotation_digit, voxel_spin_degrees, voxel_view_angles,
+    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, particle_tint_tex_name,
+    read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u, soft_disc_rgba,
+    sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit, voxel_spin_degrees,
+    voxel_view_angles,
 };
 use room_sim::mod_hud::layer as mod_hud_layer;
 use room_sim::{
@@ -151,6 +151,13 @@ struct Args {
     /// Coop player count when hosting (2..=4 UDP/TCP; 2..=8 with `--transport tcp-server`).
     #[arg(long, default_value_t = 2)]
     players: u8,
+    /// Deathmatch instead of co-op: alone against `--bots`, or when hosting
+    /// (`--host`; joiners take the host's rules).
+    #[arg(long, default_value_t = false)]
+    deathmatch: bool,
+    /// Bot seats after the players (0..=7): fill a deathmatch or co-op game.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=7))]
+    bots: u8,
     /// Native Duke network mode: 0 = DukeMatch, 1 = co-op, 2 = no-spawn.
     #[arg(
         long,
@@ -314,6 +321,8 @@ fn main() {
             skill: skill.0,
             kind: args.transport,
             noise: args.noise,
+            deathmatch: args.deathmatch,
+            bots: args.bots,
         }) {
             Ok(n) => {
                 local_seat = 0;
@@ -360,6 +369,10 @@ fn main() {
             }
         }
     }
+    // Rules: the host's in netplay, else the command line.
+    let (deathmatch, bots) = net
+        .as_ref()
+        .map_or((args.deathmatch, args.bots), |n| (n.deathmatch, n.bots));
     let (play, decaldef, script_sbar, sbarinfo_bar) = if args.play && !args.native_duke {
         let (mut game, decaldef, script_sbar, sbarinfo_bar) = start_play_session(
             &map,
@@ -369,6 +382,7 @@ fn main() {
             audio_rate,
             rng_seed,
             coop_players,
+            (deathmatch, bots),
         );
         if let Some(net) = net.as_ref() {
             for (i, n) in net
@@ -497,6 +511,16 @@ fn main() {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .to_path_buf(),
             });
+            // A `--con` from a mod folder (one with DEF files, like Brutal
+            // Duke's) is EDuke32 CON; a lone replacement GAME.CON stays Atomic.
+            let con_dialect =
+                duke_con_dialect(args.con.as_ref().and_then(|con| con.parent()).map(|dir| {
+                    if dir.as_os_str().is_empty() {
+                        std::path::Path::new(".")
+                    } else {
+                        dir
+                    }
+                }));
             let selected_skill = args.skill.clamp(1, 5);
             let skill = selected_skill - 1;
             let tables_dat = path.parent().and_then(|parent| {
@@ -549,7 +573,7 @@ fn main() {
                 match std::fs::read(map_file) {
                     Ok(map_bytes) => {
                         standalone_map_bytes = Some(map_bytes.clone());
-                        room_duke::session_from_grp_map_bytes_with_con_and_includes(
+                        room_duke::session_from_grp_map_bytes_with_con_and_includes_dialect(
                             &grp_layers,
                             &map_bytes,
                             skill,
@@ -557,12 +581,13 @@ fn main() {
                             con_includes.as_mut().map(|resolver| {
                                 resolver as &mut dyn room_duke::con::IncludeResolver
                             }),
+                            con_dialect,
                         )
                     }
                     Err(error) => Err(format!("read user map {}: {error}", map_file.display())),
                 }
             } else {
-                room_duke::session_from_grp_layers_with_con_and_includes(
+                room_duke::session_from_grp_layers_with_con_and_includes_dialect(
                     &grp_layers,
                     &args.map,
                     skill,
@@ -570,6 +595,7 @@ fn main() {
                     con_includes
                         .as_mut()
                         .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+                    con_dialect,
                 )
             };
             let mut session = match session_result {
@@ -756,6 +782,7 @@ fn main() {
         voxels: VoxelCatalog::new(),
         voxel_poses: Vec::new(),
         voxel_pose_actors: std::collections::BTreeSet::new(),
+        model_pose_actors: std::collections::BTreeSet::new(),
         camera_tex_sizes,
         tex_anim,
         camera_tex_frame: 0,
@@ -768,6 +795,7 @@ fn main() {
         depth: None,
         stencil_aux: None,
         frame_color: None,
+        portal_renderer: room_render::PortalRenderer::new(),
         post_ping: None,
         post_ldr: None,
         post_chain: None,
@@ -837,6 +865,10 @@ fn main() {
         duke_environment_music_active: false,
         duke_last_save_slot: None,
         net,
+        rollback_frames: std::collections::VecDeque::new(),
+        rollback_world: None,
+        rollback_swapped: false,
+        rollback_sounds: std::collections::VecDeque::new(),
         local_seat,
         tic_accum: 0.0,
         cam_prev: None,
@@ -1017,6 +1049,30 @@ fn main() {
 
 /// `showendoom`: print the IWAD/PWAD ENDOOM (ENDTEXT, ENDSTRF) quit screen
 /// to the terminal in ANSI colour after the window closes.
+/// CON dialect for a `--con` override: EDuke32 when its folder is a mod with
+/// DEF files (as the browser does for mounted mod files), else Atomic.
+fn duke_con_dialect(con_directory: Option<&std::path::Path>) -> room_duke::ConDialect {
+    fn has_def(dir: &std::path::Path, depth: u8) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                depth > 0 && has_def(&path, depth - 1)
+            } else {
+                path.extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("def"))
+            }
+        })
+    }
+    match con_directory {
+        Some(dir) if has_def(dir, 2) => room_duke::ConDialect::EDuke32,
+        _ => room_duke::ConDialect::Atomic,
+    }
+}
+
 fn read_duke_mod_render_assets(
     root: &std::path::Path,
 ) -> Result<
@@ -1060,7 +1116,10 @@ fn read_duke_mod_render_assets(
                 .map(str::to_ascii_lowercase);
             let target = match extension.as_deref() {
                 Some("def") => Some(&mut *defs),
-                Some("png" | "bmp") => Some(&mut *images),
+                // Everything a DEF references by path travels with the tile
+                // assets: images, `voxel` KVX models, `basepalette` .pal and
+                // `blendtable` .raw files (same set as the web bundle).
+                Some("png" | "bmp" | "jpg" | "jpeg" | "kvx" | "pal" | "raw") => Some(&mut *images),
                 Some("mhk") => Some(&mut *mhks),
                 Some("ogg" | "wav" | "flac" | "mp3" | "mid" | "midi" | "mus") => Some(&mut *music),
                 _ => None,
@@ -1311,7 +1370,7 @@ impl DukeCampaignContent {
             .map(|directory| DukeConIncludes {
                 directory: directory.clone(),
             });
-        room_duke::session_from_grp_layers_with_con_and_includes(
+        room_duke::session_from_grp_layers_with_con_and_includes_dialect(
             &layers,
             &map,
             skill,
@@ -1319,6 +1378,11 @@ impl DukeCampaignContent {
             includes
                 .as_mut()
                 .map(|resolver| resolver as &mut dyn room_duke::con::IncludeResolver),
+            duke_con_dialect(
+                self.con_override
+                    .as_ref()
+                    .and(self.con_directory.as_deref()),
+            ),
         )
     }
 
@@ -2378,6 +2442,8 @@ struct Keys {
     slash: bool,
     /// Duke inventory use (`'`).
     quote: bool,
+    /// Duke turn around (Backspace; Brutal Duke reloads with it).
+    backspace: bool,
     shift: bool,
     /// Turn left (← / Q when not in a menu).
     left: bool,
@@ -2470,6 +2536,8 @@ struct ViewerApp {
     voxel_poses: Vec<VoxelActorPose>,
     /// Actors that received a voxel pose this frame (sprite suppressed).
     voxel_pose_actors: std::collections::BTreeSet<(u32, u32)>,
+    /// Actors whose current frame has a MODELDEF binding (no sprite drawn).
+    model_pose_actors: std::collections::BTreeSet<(u32, u32)>,
     /// ANIMDEFS `cameratexture` sizes (uppercase name → w×h).
     camera_tex_sizes: std::collections::BTreeMap<String, (u32, u32)>,
     /// ANIMDEFS texture / flat animations.
@@ -2489,6 +2557,8 @@ struct ViewerApp {
     stencil_aux: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Colour buffer with `COPY_SRC` (surface itself often cannot be read back).
     frame_color: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Portal views drawn each frame (`room_render::portal_view`).
+    portal_renderer: room_render::PortalRenderer,
     /// Ping buffer for SSAO when the post chain runs.
     post_ping: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// LDR output of the post chain (HUD draws here when post is on).
@@ -2605,6 +2675,17 @@ struct ViewerApp {
     duke_last_save_slot: Option<usize>,
     /// Optional UDP lockstep coop session (`--host` / `--join`).
     net: Option<netplay::NetPlay>,
+    /// Rollback (`cl_rollback`): frames released by the lockstep, waiting to
+    /// run on the confirmed game.
+    rollback_frames: std::collections::VecDeque<Vec<TicCmd>>,
+    /// Rollback: the speculative copy drawn this frame (swapped into the game
+    /// only while drawing).
+    rollback_world: Option<room_sim::World>,
+    /// Rollback: `rollback_world` is in the game right now.
+    rollback_swapped: bool,
+    /// Rollback: own sounds already played from a copy, `(maptime, name)`,
+    /// so the confirmed tic does not play them twice.
+    rollback_sounds: std::collections::VecDeque<(u32, String)>,
     /// Local player seat when netplaying (also used for camera / HUD).
     local_seat: u8,
     /// Accumulator toward the next 1/35s tic.
@@ -2949,6 +3030,7 @@ fn start_play_session(
     audio_rate: u32,
     rng_seed: u32,
     coop_players: u8,
+    (deathmatch, bots): (bool, u8),
 ) -> (
     Headless,
     Option<room_defs::DecalInfo>,
@@ -2964,7 +3046,11 @@ fn start_play_session(
         skill,
         rng_seed,
         record_demo: false,
-        coop_players: coop_players.max(1),
+        // Bots take the seats after the players (every peer runs them).
+        coop_players: coop_players.max(1).saturating_add(bots).min(8),
+        deathmatch,
+        fill_bots: bots > 0,
+        bot_first_seat: coop_players.max(1),
         ..GameOptions::default()
     });
     let mut decaldef = None;
@@ -3867,6 +3953,7 @@ impl ApplicationHandler for ViewerApp {
                     KeyCode::KeyC if !menu_open => self.keys.c = down,
                     KeyCode::Slash if !menu_open => self.keys.slash = down,
                     KeyCode::Quote if !menu_open => self.keys.quote = down,
+                    KeyCode::Backspace if !menu_open => self.keys.backspace = down,
                     KeyCode::ShiftLeft | KeyCode::ShiftRight if !menu_open => {
                         self.keys.shift = down
                     }
@@ -4547,6 +4634,9 @@ impl ViewerApp {
         let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
             return;
         };
+        // Moving polyobjects and changed portals (`Line_SetPortalTarget`,
+        // polyobject portals) reach the render copy of the map.
+        room_map::portals::sync_dynamic_geometry(&mut self.map, &world.map);
         for (&i, name) in &world.switch_mids {
             if let Some(side) = self.map.sides.get_mut(i as usize) {
                 side.middle = name.clone();
@@ -4821,6 +4911,27 @@ impl ViewerApp {
     }
 
     fn frame(&mut self) {
+        self.frame_inner();
+        // Rollback: the speculative copy was only borrowed for drawing.
+        self.swap_rollback_world(false);
+    }
+
+    /// Rollback: put the speculative copy into the game for drawing (`true`)
+    /// or put the real world back (`false`).
+    fn swap_rollback_world(&mut self, show: bool) {
+        if show == self.rollback_swapped {
+            return;
+        }
+        if show && self.rollback_world.is_none() {
+            return;
+        }
+        if let Some(game) = self.play.as_mut() {
+            game.swap_world(&mut self.rollback_world);
+            self.rollback_swapped = show;
+        }
+    }
+
+    fn frame_inner(&mut self) {
         let elapsed = self.last_frame.elapsed();
         let dt = elapsed.as_secs_f32().min(0.05);
         self.last_frame = std::time::Instant::now();
@@ -4837,6 +4948,8 @@ impl ViewerApp {
             self.tick_play(dt);
             // Re-apply after tics (and between tics) so switch LEDs stay flipped.
             self.sync_switch_textures_from_world();
+            // Rollback: draw this frame from the speculative copy.
+            self.swap_rollback_world(true);
         } else if self.play.is_none() {
             self.integrate(dt);
         }
@@ -4895,7 +5008,7 @@ impl ViewerApp {
         scene.dyn_lights = self.collect_dyn_lights();
         // Dyn lights shade on the GPU (`LightUniforms`); keep CPU boost off to
         // avoid double-lighting once the forward path is active.
-        {
+        let glow = {
             let mut glow = std::collections::BTreeSet::new();
             for n in self
                 .gldefs
@@ -4910,8 +5023,9 @@ impl ViewerApp {
                     glow.insert(g.name.clone());
                 }
             }
-            apply_glow_fullbright(&mut scene, &glow);
-        }
+            glow
+        };
+        apply_glow_fullbright(&mut scene, &glow);
         let mut fog_density = 0.0f32;
         let mut thick_fog = (0.0f32, 0.0f32);
         let mut sky_fog = 0.0f32;
@@ -4992,8 +5106,6 @@ impl ViewerApp {
                 }
             }
         }
-        self.refresh_mirror_textures(&scene.mirrors);
-        self.refresh_portal_textures(&scene.linked_portals);
         self.refresh_plane_reflect_textures(&scene.plane_reflects);
         if self.shot_after.is_some_and(|n| self.frames >= n) {
             self.pending_screenshot = true;
@@ -5150,6 +5262,15 @@ impl ViewerApp {
             }
         }
         let capture_rgba = {
+            // Model poses for portal views (taken before the GPU borrows).
+            let portal_model_poses = if in_level
+                && !scene.portal_views.is_empty()
+                && !self.modeldefs.by_actor.is_empty()
+            {
+                self.collect_model_poses()
+            } else {
+                Vec::new()
+            };
             let (
                 Some(surface),
                 Some(gpu),
@@ -5189,6 +5310,75 @@ impl ViewerApp {
             pass.set_sky_fog(sky_fog);
             pass.inverse_colormap = inverse_colormap;
             pass.time += dt; // fuzz animation clock
+            // Portal views (line portals, stacked sectors, sky boxes, mirrors,
+            // horizons): drawn first, sampled by the portal surfaces.
+            if !scene.portal_views.is_empty()
+                && let Some(vfs) = vfs
+            {
+                let size = (frame_color.0.width(), frame_color.0.height());
+                let map = &self.map;
+                let tex_anim = &self.tex_anim;
+                let cubemap = self.sky_cubemap.as_ref();
+                let dyn_lights = scene.dyn_lights.clone();
+                let sky_du = self.play.as_ref().and_then(|g| g.world()).map_or(0.0, |w| {
+                    (w.sky_speed1 * f64::from(w.level.maptime) / 360.0) as f32
+                });
+                let tic = u32::try_from(tic).unwrap_or(0);
+                let sky = (!self.sky_texture.is_empty()).then_some(self.sky_texture.as_str());
+                // What the main view adds after the map (decals, particles,
+                // models, voxels) belongs in portal views too; their
+                // textures were uploaded for the main view above.
+                let model_poses = &portal_model_poses;
+                let decals = &self.decals;
+                let particles = &self.particles;
+                let particle_fx = self.render_settings.particle_fx;
+                let models = &mut self.models;
+                let modeldefs = &self.modeldefs;
+                let voxels = &mut self.voxels;
+                let voxel_poses = &self.voxel_poses;
+                let mut build = |cam: &room_render::Camera, _depth: u32, _skybox: bool| {
+                    let mut s = build_scene_with_sky_ex_sized(
+                        map,
+                        cam,
+                        live_sprites.as_deref(),
+                        sky,
+                        cubemap,
+                        Some(&tex_sizes),
+                    );
+                    tex_anim.apply(&mut s, tic);
+                    s.dyn_lights = dyn_lights.clone();
+                    apply_glow_fullbright(&mut s, &glow);
+                    scroll_sky_u(&mut s.sky_parts, sky_du);
+                    if in_level {
+                        append_decals(&mut s, decals, cam, Some(map));
+                        append_particles_animated(
+                            &mut s,
+                            particles,
+                            cam,
+                            particle_fx,
+                            Some((tex_anim, tic)),
+                        );
+                        if !model_poses.is_empty() {
+                            append_actor_models(&mut s, models, vfs, modeldefs, model_poses);
+                        }
+                        if !voxel_poses.is_empty() {
+                            let _ = voxels.append_poses(&mut s, vfs, voxel_poses);
+                        }
+                    }
+                    s
+                };
+                self.portal_renderer.render(
+                    gpu,
+                    pass,
+                    materials,
+                    vfs,
+                    map,
+                    &self.camera,
+                    &mut scene,
+                    size,
+                    &mut build,
+                );
+            }
             pass.prepare(gpu, &self.camera, &scene);
 
             let ui_only = matches!(
@@ -5268,10 +5458,11 @@ impl ViewerApp {
                                 let me = game.intermission_ready
                                     & room_sim::seat_bit(usize::from(self.local_seat))
                                     != 0;
+                                let secs = game.intermission_auto_advance_in().div_ceil(35);
                                 let line = if me {
-                                    format!("READY  {ready}/{of}")
+                                    format!("READY  {ready}/{of}  {secs}")
                                 } else {
-                                    format!("PRESS USE WHEN READY  {ready}/{of}")
+                                    format!("PRESS USE WHEN READY  {ready}/{of}  {secs}")
                                 };
                                 let w = room_ui::measure_stcfn_string(&line, 1.0);
                                 room_ui::draw_stcfn_string(
@@ -5358,6 +5549,11 @@ impl ViewerApp {
                             allmap,
                             // Play mode: only show linedefs the player has walked near.
                             fog: self.play.is_some(),
+                            textured: matches!(
+                                self.console.cvars.get("am_textured"),
+                                Some(room_console::CvarValue::Bool(true))
+                                    | Some(room_console::CvarValue::Int(1..))
+                            ),
                         };
                         // Native Duke maps use Build wall loops and keep their
                         // own camera pose; the Doom `MapGeometry` automap is
@@ -5392,6 +5588,11 @@ impl ViewerApp {
                             }
                         // Live world map carries `ML_MAPPED` exploration bits.
                         } else if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
+                            if let Some(vfs) = self.vfs.as_ref() {
+                                for flat in room_ui::automap_flats(&world.map, &view) {
+                                    let _ = self.patches.ensure_flat(vfs, &flat);
+                                }
+                            }
                             draw_automap(&world.map, &view, &mut ui);
                             if world
                                 .players
@@ -5405,6 +5606,11 @@ impl ViewerApp {
                             let maptime = world.level.maptime;
                             draw_mod_zones_automap(&world.mod_zones, maptime, 1000, &view, &mut ui);
                         } else {
+                            if let Some(vfs) = self.vfs.as_ref() {
+                                for flat in room_ui::automap_flats(&self.map, &view) {
+                                    let _ = self.patches.ensure_flat(vfs, &flat);
+                                }
+                            }
                             draw_automap(&self.map, &view, &mut ui);
                         }
                     } else if self.duke_session.is_none() {
@@ -6533,6 +6739,7 @@ impl ViewerApp {
                 if !ui_only {
                     if let Some(vfs) = vfs {
                         materials.anisotropy = render_settings.anisotropy;
+                        materials.set_hq_resize(render_settings.hq_resize);
                         pass.draw_materials(gpu, &mut rp, &scene, materials, vfs);
                     } else {
                         pass.draw(&mut rp, &scene);
@@ -6840,48 +7047,91 @@ impl ViewerApp {
         }
         let tic = 1.0 / self.play.as_ref().map(GameRuntime::tic_rate).unwrap_or(35) as f32;
         self.tic_accum += dt;
-        while self.tic_accum >= tic {
-            self.tic_accum -= tic;
-            let sample = self.sample_input();
-            let mut bits = build_ticcmd_with_mods_and_impulses(
-                &sample,
-                self.mod_buttons,
-                self.weapon_impulses,
-            );
-            if self.menu.is_none()
-                && let Some(pad) = self.pad
-            {
-                room_input::apply_gamepad(&mut bits, &pad, &self.gamepad_config());
-            }
-            bits.buttons |= std::mem::take(&mut self.inv_cmd);
-            if let Some((load, slot)) = self.net_save_cmd.take() {
-                bits.buttons |= if load {
-                    Buttons::NETLOAD
-                } else {
-                    Buttons::NETSAVE
-                };
-                bits.weapon_select = slot;
-            }
-            let cmd = TicCmd {
-                buttons: Buttons(bits.buttons),
-                pitch: bits.pitch,
-                yaw: bits.yaw,
-                roll: bits.roll,
-                forward_move: bits.forward_move,
-                side_move: bits.side_move,
-                up_move: bits.up_move,
-                weapon_select: bits.weapon_select,
-            };
-            let cmds: Vec<TicCmd> = if let Some(net) = self.net.as_mut() {
-                match net.advance_tic(netplay::tic_to_net(cmd)) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("room: netplay: {e}");
-                        continue;
-                    }
-                }
+        let rollback_window = match self.console.cvars.get("cl_rollback") {
+            Some(room_console::CvarValue::Int(n)) => u32::try_from(*n).unwrap_or(0),
+            _ => 0,
+        };
+        let rollback_ok =
+            rollback_window > 0 && self.play.as_ref().is_some_and(Headless::can_speculate);
+        if let Some(net) = self.net.as_mut() {
+            net.set_rollback_window(if rollback_ok { rollback_window } else { 0 });
+        }
+        let rollback = self.net.as_ref().is_some_and(netplay::NetPlay::rollback);
+        if !rollback {
+            self.rollback_world = None;
+        }
+        let mut rollback_submitted = false;
+        while self.tic_accum >= tic || !self.rollback_frames.is_empty() {
+            let queued = self.rollback_frames.pop_front();
+            let cmds: Vec<TicCmd> = if let Some(frame) = queued {
+                frame
             } else {
-                vec![cmd]
+                self.tic_accum -= tic;
+                let sample = self.sample_input();
+                let mut bits = build_ticcmd_with_mods_and_impulses(
+                    &sample,
+                    self.mod_buttons,
+                    self.weapon_impulses,
+                );
+                if self.menu.is_none()
+                    && let Some(pad) = self.pad
+                {
+                    room_input::apply_gamepad(&mut bits, &pad, &self.gamepad_config());
+                }
+                bits.buttons |= std::mem::take(&mut self.inv_cmd);
+                if let Some((load, slot)) = self.net_save_cmd.take() {
+                    bits.buttons |= if load {
+                        Buttons::NETLOAD
+                    } else {
+                        Buttons::NETSAVE
+                    };
+                    bits.weapon_select = slot;
+                }
+                let cmd = TicCmd {
+                    buttons: Buttons(bits.buttons),
+                    pitch: bits.pitch,
+                    yaw: bits.yaw,
+                    roll: bits.roll,
+                    forward_move: bits.forward_move,
+                    side_move: bits.side_move,
+                    up_move: bits.up_move,
+                    weapon_select: bits.weapon_select,
+                };
+                if rollback && let Some(net) = self.net.as_mut() {
+                    // Rollback: never wait; released frames run next, then the
+                    // speculative copy is rebuilt after the loop.
+                    let frames = net.rollback_tic(netplay::tic_to_net(cmd));
+                    if let Some(tic) = net.take_desync() {
+                        self.messages.push(
+                            format!("Network desync at tic {tic}: players' games differ"),
+                            175,
+                        );
+                    }
+                    self.rollback_frames.extend(frames);
+                    rollback_submitted = true;
+                    continue;
+                }
+                if let Some(net) = self.net.as_mut() {
+                    let play = &self.play;
+                    let result = net.advance_doom_tic(netplay::tic_to_net(cmd), || {
+                        play.as_ref().and_then(Headless::checksum)
+                    });
+                    if let Some(tic) = net.take_desync() {
+                        self.messages.push(
+                            format!("Network desync at tic {tic}: players' games differ"),
+                            175,
+                        );
+                    }
+                    match result {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("room: netplay: {e}");
+                            continue;
+                        }
+                    }
+                } else {
+                    vec![cmd]
+                }
             };
             let mut msgs = Vec::new();
             let mut cam = None;
@@ -7043,6 +7293,9 @@ impl ViewerApp {
                 }
                 let prev_state = game.state;
                 game.tick(&cmds);
+                if rollback && let Some(net) = self.net.as_mut() {
+                    net.rollback_frame_applied(|| game.checksum());
+                }
                 for line in game.drain_script_log() {
                     eprintln!("room: mod {line}");
                 }
@@ -7059,7 +7312,15 @@ impl ViewerApp {
                     {
                         game.set_player_gender(self.local_seat, room_sim::parse_gender(g));
                     }
-                    let events = game.drain_audio_for(vfs, self.local_seat);
+                    let events = if rollback {
+                        game.drain_audio_for_predicted(
+                            vfs,
+                            self.local_seat,
+                            &mut self.rollback_sounds,
+                        )
+                    } else {
+                        game.drain_audio_for(vfs, self.local_seat)
+                    };
                     let music_req = game.take_music_request();
                     if let Some(audio) = self.audio.as_ref() {
                         if let Ok(mut shared) = audio.shared.lock() {
@@ -7909,144 +8170,43 @@ impl ViewerApp {
                         (pit as f32).clamp(-1.5, 1.5),
                     );
                     // Advance the lerp window once per completed sim tic.
-                    self.cam_prev = self.cam_curr.or(Some(next));
-                    self.cam_curr = Some(next);
-                    // Always lock look to the sim after a tic. Mouse look still
-                    // previews mid-tic via DeviceEvent, but must not drift away
-                    // from `actor.angle` (rounded ticcmd counts vs float yaw) —
-                    // otherwise W walks left/right of the crosshair.
-                    self.yaw = next.3;
-                    self.pitch = next.4;
-                    self.note_sprite_poses();
-                    if let Some(fov) = fov {
-                        self.camera.fov_y_deg = fov.clamp(1.0, 175.0);
+                    // (Rollback moves the eye from the speculative copy
+                    // instead, after the loop.)
+                    if rollback {
+                        if let Some(fov) = fov {
+                            self.camera.fov_y_deg = fov.clamp(1.0, 175.0);
+                        }
+                    } else {
+                        self.cam_prev = self.cam_curr.or(Some(next));
+                        self.cam_curr = Some(next);
+                        // Through a portal this tic: no lerp across the map.
+                        if self.local_crossed_portal() {
+                            self.cam_prev = self.cam_curr;
+                        }
+                        // Always lock look to the sim after a tic. Mouse look still
+                        // previews mid-tic via DeviceEvent, but must not drift away
+                        // from `actor.angle` (rounded ticcmd counts vs float yaw) —
+                        // otherwise W walks left/right of the crosshair.
+                        self.yaw = next.3;
+                        self.pitch = next.4;
+                        self.note_sprite_poses();
+                        if let Some(fov) = fov {
+                            self.camera.fov_y_deg = fov.clamp(1.0, 175.0);
+                        }
                     }
                 }
             }
-            if let Some(h) = hud_snap {
-                if h.health < self.last_player_hp {
-                    let seat = usize::from(self.local_seat);
-                    let drop = self.last_player_hp - h.health;
-                    let (who, detail) = self.format_hit_debug(seat, drop);
-                    let msg = format!("HIT {}→{} by {who}", self.last_player_hp, h.health);
-                    eprintln!("room: {msg}");
-                    for line in detail {
-                        eprintln!("room:   {line}");
-                    }
-                }
-                self.last_player_hp = h.health;
-                self.hud.health = h.health;
-                self.hud.armor = h.armor;
-                self.hud.ammo = h.ammo;
-                self.hud.ammo_max = h.ammo_max;
-                self.hud.ammo2 = h.ammo2;
-                self.hud.ammo2_max = h.ammo2_max;
-                self.hud.keys = h.keys;
-                self.hud.face = h.face;
-                self.hud.weapon_patch = h.weapon_patch;
-                self.hud.layers = h
-                    .layers
-                    .iter()
-                    .map(|l| room_ui::HudLayer {
-                        id: l.id,
-                        patch: l.patch.clone(),
-                        ofs_x: l.ofs_x,
-                        ofs_y: l.ofs_y,
-                        alpha: l.alpha,
-                        scale_x: l.scale_x,
-                        scale_y: l.scale_y,
-                        flip: l.flip,
-                        mirror: l.mirror,
-                        angle: l.angle,
-                        pivot_x: l.pivot_x,
-                        pivot_y: l.pivot_y,
-                        pivot_percent: l.pivot_percent,
-                        add_bob: l.add_bob,
-                        add_weapon: l.add_weapon,
-                        interpolate: l.interpolate,
-                        fuzz: l.fuzz,
-                        bright: l.bright,
-                        tint: l.tint,
-                        vertex: l.vertex,
-                    })
-                    .collect();
-                self.hud.flash_patch = h.flash_patch;
-                self.hud.overlay_patch = h.overlay_patch;
-                self.hud.overlay_ofs_x = h.overlay_ofs_x;
-                self.hud.overlay_ofs_y = h.overlay_ofs_y;
-                self.hud.overlay_alpha = h.overlay_alpha;
-                self.hud.overlay_scale_x = h.overlay_scale_x;
-                self.hud.overlay_scale_y = h.overlay_scale_y;
-                self.hud.overlay_flip = h.overlay_flip;
-                self.hud.overlay_mirror = h.overlay_mirror;
-                self.hud.overlay_angle = h.overlay_angle;
-                self.hud.overlay_pivot_x = h.overlay_pivot_x;
-                self.hud.overlay_pivot_y = h.overlay_pivot_y;
-                self.hud.overlay_tint_r = h.overlay_tint_r;
-                self.hud.overlay_tint_g = h.overlay_tint_g;
-                self.hud.overlay_tint_b = h.overlay_tint_b;
-                self.hud.overlay_fuzz = h.overlay_fuzz;
-                self.hud.overlay_pivot_percent = h.overlay_pivot_percent;
-                self.hud.overlay_add_bob = h.overlay_add_bob;
-                self.hud.overlay_add_weapon = h.overlay_add_weapon;
-                self.hud.overlay_interpolate = h.overlay_interpolate;
-                self.hud.bob_ofs_x = h.bob_ofs_x;
-                self.hud.bob_ofs_y = h.bob_ofs_y;
-                self.hud.weapon_light = h.weapon_light;
-                self.hud.weapon_bright = h.weapon_bright;
-                self.hud.flash_bright = h.flash_bright;
-                self.hud.weapon_fuzz = h.weapon_fuzz;
-                self.hud.weapon_alpha = h.weapon_alpha;
-                self.hud.weapon_scale_x = h.weapon_scale_x;
-                self.hud.weapon_scale_y = h.weapon_scale_y;
-                self.hud.weapon_flip = h.weapon_flip;
-                self.hud.weapon_mirror = h.weapon_mirror;
-                self.hud.weapon_pivot_percent = h.weapon_pivot_percent;
-                self.hud.weapon_pivot_x = h.weapon_pivot_x;
-                self.hud.weapon_pivot_y = h.weapon_pivot_y;
-                self.hud.weapon_angle = h.weapon_angle;
-                self.hud.weapon_vertex = h.weapon_vertex;
-                self.hud.inv_bar = h
-                    .inv_bar
-                    .iter()
-                    .map(|(icon, amount)| {
-                        let (w, hh) = self
-                            .vfs
-                            .as_ref()
-                            .and_then(|v| self.patches.ensure(v, icon))
-                            .map_or((0.0, 0.0), |p| (f32::from(p.width), f32::from(p.height)));
-                        room_ui::HudInvItem {
-                            icon: icon.clone(),
-                            amount: *amount,
-                            w,
-                            h: hh,
-                        }
-                    })
-                    .collect();
-                self.hud.inv_sel = h.inv_sel;
-                self.hud.inv_bar_open = h.inv_bar_open;
-                self.hud.overlay_vertex = h.overlay_vertex;
-                self.hud.weapon_class = h.weapon_class.clone();
-                self.hud.player_class = h.player_class.clone();
-                self.hud.armor_type = h.armor_type.clone();
-                self.hud.crosshair = h.crosshair;
-                self.hud.weapon_tint_r = h.weapon_tint_r;
-                self.hud.weapon_tint_g = h.weapon_tint_g;
-                self.hud.weapon_tint_b = h.weapon_tint_b;
-                self.hud.weapon_interpolate = h.weapon_interpolate;
-                self.weapon_bob_prev = (self.hud.bob_x, self.hud.bob_y);
-                self.hud.bob_x = h.bob_x;
-                self.hud.bob_y = h.bob_y;
-                self.hud.arms = h.arms;
-                self.hud.ammo_table = h.ammo_table;
-                self.hud.palette = h.palette;
-                self.hud.colormap = h.colormap;
-                self.hud.deathmatch = h.deathmatch;
-                self.hud.frags = h.frags;
-                self.hud.face_back = h.face_back;
+            // (Rollback draws the HUD from the speculative copy instead.)
+            if let Some(h) = hud_snap
+                && !rollback
+            {
+                self.apply_hud_snap(h);
             }
             self.messages.tick();
             self.sync_forward();
+        }
+        if rollback && rollback_submitted {
+            self.rebuild_rollback_world();
         }
         // Smooth eye XYZ between tics so stair steps don't snap every tic.
         // Yaw/pitch are locked to the sim after each tic; mouse still previews mid-tic.
@@ -8063,13 +8223,28 @@ impl ViewerApp {
         }
     }
 
+    /// EDuke32 runs EVENT_DISPLAYMENU each frame its menu is drawn over a
+    /// game (`MENU_MAIN_INGAME`, 50); Room's menu pages are not mapped to
+    /// EDuke32's sub-menu ids.
+    fn run_duke_menu_event(&mut self) {
+        if let Some(session) = self.duke_session.as_mut()
+            && session.world.is_some()
+        {
+            let _ = session.run_eduke_menu_display(50);
+        }
+    }
+
     /// Drive the native Build playsim at EDuke32's selected timer rate.
     fn tick_duke(&mut self, dt: f32) {
         if let Some(state) = self.duke_menu.as_mut() {
             state.clock += dt * 120.0;
+            self.run_duke_menu_event();
             return;
         }
         if self.menu.is_some() || self.duke_help_page != 0 {
+            if self.menu.is_some() {
+                self.run_duke_menu_event();
+            }
             return;
         }
         self.tic_accum += dt;
@@ -8197,6 +8372,10 @@ impl ViewerApp {
             if sample.keys.contains(&Key::InvUse) {
                 bits |= room_duke::INPUT_INVENTORY_USE;
             }
+            // Chocolate gamefunc_TurnAround (sync bit 28), Backspace.
+            if self.keys.backspace {
+                bits |= room_duke::INPUT_TURNAROUND;
+            }
             if run {
                 bits |= 1 << 5;
             }
@@ -8285,7 +8464,14 @@ impl ViewerApp {
                     }
                 } else if let Some(net) = self.net.as_mut() {
                     let checksum = session.checksum().map(|value| (session.tic, value));
-                    let frame = match net.advance_duke_tic(duke_input, checksum) {
+                    let frame = net.advance_duke_tic(duke_input, checksum);
+                    if let Some(tic) = net.take_desync() {
+                        self.messages.push(
+                            format!("Network desync at tic {tic}: players' games differ"),
+                            175,
+                        );
+                    }
+                    let frame = match frame {
                         Ok(frame) => frame,
                         Err(error) => {
                             eprintln!("room: Duke netplay: {error}");
@@ -9031,7 +9217,41 @@ impl ViewerApp {
             .contains(&(id.index(), id.generation()))
     }
 
-    /// Actors that have a MODELDEF entry (drawn as meshes when files resolve).
+    /// Actors whose current sprite frame a MODELDEF block binds: they are
+    /// drawn as models instead of sprites (UZDoom `FindModelFrame`).
+    fn fill_model_actors(&mut self) {
+        self.model_pose_actors.clear();
+        if self.modeldefs.blocks.is_empty() {
+            return;
+        }
+        let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
+            return;
+        };
+        for &id in &world.thinkers.default {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            let Some(class) = world.classes.get(a.class) else {
+                continue;
+            };
+            let model_class = if a.ext.model.modeldef.is_empty() {
+                class.name.as_str()
+            } else {
+                a.ext.model.modeldef.as_str()
+            };
+            let frame = char::from(b'A' + a.frame.min(25));
+            if room_render::actor_has_model(&self.modeldefs, model_class, &a.sprite, frame) {
+                self.model_pose_actors.insert((id.index(), id.generation()));
+            }
+        }
+    }
+
+    fn actor_draws_model(&self, id: ActorId) -> bool {
+        self.model_pose_actors
+            .contains(&(id.index(), id.generation()))
+    }
+
+    /// Actors drawn as MODELDEF models this frame.
     fn collect_model_poses(&self) -> Vec<ModelActorPose> {
         let Some(world) = self.play.as_ref().and_then(|g| g.world()) else {
             return Vec::new();
@@ -9063,20 +9283,38 @@ impl ViewerApp {
             } else {
                 a.ext.model.modeldef.clone()
             };
-            if !self
-                .modeldefs
-                .by_actor
-                .contains_key(&model_class.to_ascii_lowercase())
-            {
+            if !self.actor_draws_model(id) {
                 continue;
             }
             let light = (actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0);
-            let (sprite, frame) = a
-                .state
-                .and_then(|st| world.states.get(st))
-                .map_or((String::new(), 'A'), |st| {
-                    (st.sprite.clone(), char::from(b'A' + st.frame.min(25)))
-                });
+            let (sprite, frame) = (a.sprite.clone(), char::from(b'A' + a.frame.min(25)));
+            let frac = f64::from((self.tic_accum * 35.0).clamp(0.0, 1.0));
+            let block_flags = self
+                .modeldefs
+                .frame(&model_class, &sprite, frame)
+                .map_or(0, |(d, _)| d.mdl_flags());
+            let flags = a.ext.model.flags.unwrap_or(block_flags);
+            let next = room_sim::model_frame_lerp(
+                world,
+                a,
+                frac,
+                flags & room_defs::mdl::INTERPOLATEDOUBLEDFRAMES != 0,
+            )
+            .map(|n| (n.sprite, char::from(b'A' + n.frame.min(25)), n.inter));
+            let prev = self.sprite_prev.get(&id).copied();
+            let pose = sprite_pose(
+                a.pos.x(),
+                a.pos.y(),
+                a.pos.z(),
+                a.angle.degrees(),
+                prev.map_or(a.pos.x(), |p| f64::from(p.0)),
+                prev.map_or(a.pos.y(), |p| f64::from(p.1)),
+                prev.map_or(a.pos.z(), |p| f64::from(p.2)),
+                prev.map_or(a.angle.degrees(), |p| f64::from(p.3)),
+                frac,
+                a.extra_flags.get_name("DONTINTERPOLATE"),
+                a.extra_flags.get_name("INTERPOLATEANGLES"),
+            );
             let m = &a.ext.model;
             let req = |anim: &(String, f64, i32, i32, i32, i32, i32), start: u32| {
                 room_render::AnimRequest {
@@ -9093,9 +9331,16 @@ impl ViewerApp {
             #[allow(clippy::cast_possible_truncation)]
             out.push(ModelActorPose {
                 class: model_class,
-                origin: Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
+                origin: Vec3::new(pose.x as f32, pose.y as f32, pose.z as f32),
                 light,
-                angle_deg: a.angle.degrees() as f32,
+                angle_deg: (pose.angle_deg + a.ext.sprite_rotation) as f32,
+                pitch_deg: a.pitch.degrees() as f32,
+                roll_deg: a.roll.degrees() as f32,
+                vel: Vec3::new(a.vel.x() as f32, a.vel.y() as f32, a.vel.z() as f32),
+                scale: [a.scale_x as f32, a.scale_y as f32],
+                next,
+                flags: a.ext.model.flags,
+                clock_tic: self.start_instant.elapsed().as_secs_f64() * 35.0,
                 sprite,
                 frame,
                 tic: f64::from(world.level.maptime)
@@ -9483,6 +9728,237 @@ impl ViewerApp {
 
     /// Shift sprite samples once per completed tic. `+DONTINTERPOLATE` is applied
     /// at draw time so a flag change does not need another snapshot.
+    /// Copy one tic's status-bar / weapon-sprite numbers into the HUD.
+    fn apply_hud_snap(&mut self, h: room_sim::PlayerHud) {
+        if h.health < self.last_player_hp {
+            let seat = usize::from(self.local_seat);
+            let drop = self.last_player_hp - h.health;
+            let (who, detail) = self.format_hit_debug(seat, drop);
+            let msg = format!("HIT {}→{} by {who}", self.last_player_hp, h.health);
+            eprintln!("room: {msg}");
+            for line in detail {
+                eprintln!("room:   {line}");
+            }
+        }
+        self.last_player_hp = h.health;
+        self.hud.health = h.health;
+        self.hud.armor = h.armor;
+        self.hud.ammo = h.ammo;
+        self.hud.ammo_max = h.ammo_max;
+        self.hud.ammo2 = h.ammo2;
+        self.hud.ammo2_max = h.ammo2_max;
+        self.hud.keys = h.keys;
+        self.hud.face = h.face;
+        self.hud.weapon_patch = h.weapon_patch;
+        self.hud.layers = h
+            .layers
+            .iter()
+            .map(|l| room_ui::HudLayer {
+                id: l.id,
+                patch: l.patch.clone(),
+                ofs_x: l.ofs_x,
+                ofs_y: l.ofs_y,
+                alpha: l.alpha,
+                scale_x: l.scale_x,
+                scale_y: l.scale_y,
+                flip: l.flip,
+                mirror: l.mirror,
+                angle: l.angle,
+                pivot_x: l.pivot_x,
+                pivot_y: l.pivot_y,
+                pivot_percent: l.pivot_percent,
+                add_bob: l.add_bob,
+                add_weapon: l.add_weapon,
+                interpolate: l.interpolate,
+                fuzz: l.fuzz,
+                bright: l.bright,
+                tint: l.tint,
+                vertex: l.vertex,
+            })
+            .collect();
+        self.hud.flash_patch = h.flash_patch;
+        self.hud.overlay_patch = h.overlay_patch;
+        self.hud.overlay_ofs_x = h.overlay_ofs_x;
+        self.hud.overlay_ofs_y = h.overlay_ofs_y;
+        self.hud.overlay_alpha = h.overlay_alpha;
+        self.hud.overlay_scale_x = h.overlay_scale_x;
+        self.hud.overlay_scale_y = h.overlay_scale_y;
+        self.hud.overlay_flip = h.overlay_flip;
+        self.hud.overlay_mirror = h.overlay_mirror;
+        self.hud.overlay_angle = h.overlay_angle;
+        self.hud.overlay_pivot_x = h.overlay_pivot_x;
+        self.hud.overlay_pivot_y = h.overlay_pivot_y;
+        self.hud.overlay_tint_r = h.overlay_tint_r;
+        self.hud.overlay_tint_g = h.overlay_tint_g;
+        self.hud.overlay_tint_b = h.overlay_tint_b;
+        self.hud.overlay_fuzz = h.overlay_fuzz;
+        self.hud.overlay_pivot_percent = h.overlay_pivot_percent;
+        self.hud.overlay_add_bob = h.overlay_add_bob;
+        self.hud.overlay_add_weapon = h.overlay_add_weapon;
+        self.hud.overlay_interpolate = h.overlay_interpolate;
+        self.hud.bob_ofs_x = h.bob_ofs_x;
+        self.hud.bob_ofs_y = h.bob_ofs_y;
+        self.hud.weapon_light = h.weapon_light;
+        self.hud.weapon_bright = h.weapon_bright;
+        self.hud.flash_bright = h.flash_bright;
+        self.hud.weapon_fuzz = h.weapon_fuzz;
+        self.hud.weapon_alpha = h.weapon_alpha;
+        self.hud.weapon_scale_x = h.weapon_scale_x;
+        self.hud.weapon_scale_y = h.weapon_scale_y;
+        self.hud.weapon_flip = h.weapon_flip;
+        self.hud.weapon_mirror = h.weapon_mirror;
+        self.hud.weapon_pivot_percent = h.weapon_pivot_percent;
+        self.hud.weapon_pivot_x = h.weapon_pivot_x;
+        self.hud.weapon_pivot_y = h.weapon_pivot_y;
+        self.hud.weapon_angle = h.weapon_angle;
+        self.hud.weapon_vertex = h.weapon_vertex;
+        self.hud.inv_bar = h
+            .inv_bar
+            .iter()
+            .map(|(icon, amount)| {
+                let (w, hh) = self
+                    .vfs
+                    .as_ref()
+                    .and_then(|v| self.patches.ensure(v, icon))
+                    .map_or((0.0, 0.0), |p| (f32::from(p.width), f32::from(p.height)));
+                room_ui::HudInvItem {
+                    icon: icon.clone(),
+                    amount: *amount,
+                    w,
+                    h: hh,
+                }
+            })
+            .collect();
+        self.hud.inv_sel = h.inv_sel;
+        self.hud.inv_bar_open = h.inv_bar_open;
+        self.hud.overlay_vertex = h.overlay_vertex;
+        self.hud.weapon_class = h.weapon_class.clone();
+        self.hud.player_class = h.player_class.clone();
+        self.hud.armor_type = h.armor_type.clone();
+        self.hud.crosshair = h.crosshair;
+        self.hud.weapon_tint_r = h.weapon_tint_r;
+        self.hud.weapon_tint_g = h.weapon_tint_g;
+        self.hud.weapon_tint_b = h.weapon_tint_b;
+        self.hud.weapon_interpolate = h.weapon_interpolate;
+        self.weapon_bob_prev = (self.hud.bob_x, self.hud.bob_y);
+        self.hud.bob_x = h.bob_x;
+        self.hud.bob_y = h.bob_y;
+        self.hud.arms = h.arms;
+        self.hud.ammo_table = h.ammo_table;
+        self.hud.palette = h.palette;
+        self.hud.colormap = h.colormap;
+        self.hud.deathmatch = h.deathmatch;
+        self.hud.frags = h.frags;
+        self.hud.face_back = h.face_back;
+    }
+
+    /// Rollback: run a copy of the confirmed game through the frames not
+    /// confirmed yet (our real commands, guesses for the others), keep it
+    /// to draw from, and move the eye and sprite poses to it. Rebuilt every
+    /// local tic from the confirmed game, so a wrong guess lasts one tic.
+    fn rebuild_rollback_world(&mut self) {
+        let frames = self
+            .net
+            .as_ref()
+            .map(netplay::NetPlay::speculative_frames)
+            .unwrap_or_default();
+        let seat_u8 = self.local_seat;
+        let Some((spec, own_sounds)) = self
+            .play
+            .as_ref()
+            .and_then(|g| g.speculate_with_own_sounds(&frames, seat_u8))
+        else {
+            self.rollback_world = None;
+            return;
+        };
+        // Your own shots, jumps and pickups sound now, not a round trip
+        // later; the confirmed tic skips them (`rollback_sounds`).
+        if !own_sounds.is_empty() {
+            let maptime = spec.level.maptime;
+            for e in &own_sounds {
+                self.rollback_sounds.push_back((maptime, e.name.clone()));
+            }
+            while self.rollback_sounds.len() > 64 {
+                self.rollback_sounds.pop_front();
+            }
+            if let (Some(game), Some(vfs)) = (self.play.as_mut(), self.vfs.as_ref()) {
+                let events = game.translate_sounds_for(vfs, &own_sounds, seat_u8);
+                if let Some(audio) = self.audio.as_ref()
+                    && let Ok(mut shared) = audio.shared.lock()
+                {
+                    shared.mixer.apply(&events);
+                }
+            }
+        }
+        self.rollback_world = Some(spec);
+        self.swap_rollback_world(true);
+        self.note_sprite_poses();
+        let seat = usize::from(self.local_seat);
+        // HUD and weapon sprite from the copy: your shot shows at once.
+        if let Some(h) = self
+            .play
+            .as_ref()
+            .and_then(|g| g.world())
+            .and_then(|w| w.player_hud(seat))
+        {
+            self.apply_hud_snap(h);
+        }
+        let eye = self
+            .play
+            .as_ref()
+            .and_then(|g| g.world())
+            .and_then(|world| {
+                let p = world.players.get(seat)?.as_ref()?;
+                let a = world.actors.get(p.camera.or(p.mo)?)?;
+                let z = if p.camera.is_some() {
+                    a.pos.z()
+                        + if a.camera_height > 0.0 {
+                            a.camera_height
+                        } else {
+                            41.0
+                        }
+                } else {
+                    p.view_z
+                };
+                let ((x, y, ez), _) = room_sim::view_eye(world, a, z);
+                Some((
+                    x,
+                    y,
+                    ez,
+                    a.camera_yaw().radians(),
+                    a.camera_pitch().radians(),
+                ))
+            });
+        self.swap_rollback_world(false);
+        if let Some((x, y, z, yaw, pitch)) = eye {
+            #[allow(clippy::cast_possible_truncation)]
+            let next = (
+                x as f32,
+                y as f32,
+                z as f32,
+                yaw as f32,
+                (pitch as f32).clamp(-1.5, 1.5),
+            );
+            self.cam_prev = self.cam_curr.or(Some(next));
+            self.cam_curr = Some(next);
+            self.yaw = next.3;
+            self.pitch = next.4;
+        }
+    }
+
+    /// The local player's body went through a portal in the last tic.
+    fn local_crossed_portal(&self) -> bool {
+        let Some(w) = self.play.as_ref().and_then(|g| g.world()) else {
+            return false;
+        };
+        let mo = w
+            .players
+            .get(usize::from(self.local_seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        w.portal_moves.iter().any(|m| Some(m.actor) == mo)
+    }
+
     fn note_sprite_poses(&mut self) {
         let Some(game) = self.play.as_ref() else {
             return;
@@ -9511,6 +9987,13 @@ impl ViewerApp {
         } else {
             std::mem::take(&mut self.sprite_curr)
         };
+        // Actors that went through a portal this tic snap instead of
+        // sliding across the map.
+        for m in &world.portal_moves {
+            if let Some(&now) = next.get(&m.actor) {
+                self.sprite_prev.insert(m.actor, now);
+            }
+        }
         self.sprite_curr = next;
         // `+INTERPOLATESCALE` / `+INTERPOLATEALPHA` (5.0): only flagged actors
         // keep a scale / alpha sample.
@@ -9532,6 +10015,7 @@ impl ViewerApp {
     /// Live actor billboards for play mode (`None` in free-fly viewer).
     fn collect_live_sprites(&mut self) -> Option<Vec<SpriteInstance>> {
         self.fill_voxel_poses();
+        self.fill_model_actors();
         let game = self.play.as_ref()?;
         let world = game.world()?;
         let local_mo = world
@@ -9539,6 +10023,17 @@ impl ViewerApp {
             .get(usize::from(self.local_seat))
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
+        // Player pawns wear their seat's colour (vanilla translations).
+        let pawn_colors: Vec<(room_sim::ActorId, u8)> = world
+            .players
+            .iter()
+            .enumerate()
+            .filter_map(|(seat, p)| {
+                let mo = p.as_ref()?.mo?;
+                Some((mo, room_render::player_colors::seat_color(seat)))
+            })
+            .filter(|(_, color)| *color != 0)
+            .collect();
         let view_x = f64::from(self.camera.eye.x);
         let view_y = f64::from(self.camera.eye.y);
         let tic = 1.0 / self.play.as_ref().map(GameRuntime::tic_rate).unwrap_or(35) as f32;
@@ -9678,7 +10173,7 @@ impl ViewerApp {
             // `+ROLLSPRITE` / `+SQUAREPIXELS` keep square pixels.
             let scale_x = scale_x * view.pixel_scale.0;
             let scale_y = scale_y * view.pixel_scale.1;
-            if self.actor_draws_voxel(id) {
+            if self.actor_draws_voxel(id) || self.actor_draws_model(id) {
                 continue;
             }
             // Prefer patch pixel size (1 map unit per texel). Floor items / monsters
@@ -9798,6 +10293,12 @@ impl ViewerApp {
                 sprite_pos += up * (h as f32 * 0.5);
                 orient = SpriteOrient::Facing { right, up };
             }
+            let texture = match pawn_colors.iter().find(|(mo, _)| *mo == id) {
+                Some((_, color)) => {
+                    room_render::player_colors::player_color_texture(&texture, *color)
+                }
+                None => texture,
+            };
             if std::env::var("ROOM_DEBUG_SPRITE")
                 .is_ok_and(|v| v == "*" || sprite.eq_ignore_ascii_case(&v))
             {
@@ -9911,58 +10412,6 @@ impl ViewerApp {
         }
     }
 
-    /// Render displaced views into `__PORTAL*` materials (throttled).
-    fn refresh_portal_textures(&mut self, portals: &[room_render::LinkedPortalSurface]) {
-        if portals.is_empty() || self.camera_tex_frame % 4 != 2 {
-            return;
-        }
-        let cam = self.camera;
-        self.refresh_portal_views(cam, portals, 0);
-    }
-
-    /// Recursively fill portal canvases up to [`room_render::MAX_PORTAL_RECURSION`].
-    fn refresh_portal_views(
-        &mut self,
-        cam: room_render::Camera,
-        portals: &[room_render::LinkedPortalSurface],
-        depth: u32,
-    ) {
-        if portals.is_empty() || self.gpu.is_none() || self.pass.is_none() {
-            return;
-        }
-        for p in portals {
-            let view = cam.shifted_by(p.dx, p.dy);
-            let mut scene = build_scene(&self.map, &view, None);
-            scene
-                .wall_ranges
-                .retain(|r| !r.name.starts_with("__MIRROR"));
-            scene.mirrors.clear();
-            if room_render::portal_view_strips_portals(depth) {
-                scene
-                    .wall_ranges
-                    .retain(|r| !r.name.starts_with("__PORTAL"));
-                scene.linked_portals.clear();
-            } else {
-                let nested = scene.linked_portals.clone();
-                self.refresh_portal_views(view, &nested, depth + 1);
-            }
-            let Some(gpu) = self.gpu.as_ref() else {
-                return;
-            };
-            let Some(pass) = self.pass.as_mut() else {
-                return;
-            };
-            let target = OffscreenTarget::with_format(gpu, 128, 128, pass.format());
-            render_offscreen(gpu, pass, &target, &view, &scene);
-            let Ok(rgba) = read_rgba(gpu, &target) else {
-                continue;
-            };
-            let _ =
-                self.materials
-                    .upsert_rgba(&gpu.device, &gpu.queue, &p.tex_name, 128, 128, &rgba);
-        }
-    }
-
     /// Render Z-mirrored views into `__PREFL*` floor/ceiling materials.
     fn refresh_plane_reflect_textures(&mut self, planes: &[room_render::PlaneReflectSurface]) {
         if planes.is_empty() || self.camera_tex_frame % 4 != 2 {
@@ -9991,56 +10440,6 @@ impl ViewerApp {
             let _ =
                 self.materials
                     .upsert_rgba(&gpu.device, &gpu.queue, &p.tex_name, 128, 128, &rgba);
-        }
-    }
-
-    /// Render reflected views into `__MIRROR*` materials (throttled with cameras).
-    fn refresh_mirror_textures(&mut self, mirrors: &[room_render::MirrorSurface]) {
-        if mirrors.is_empty() || self.camera_tex_frame % 4 != 1 {
-            return;
-        }
-        let Some(gpu) = self.gpu.as_ref() else {
-            return;
-        };
-        let Some(pass) = self.pass.as_mut() else {
-            return;
-        };
-        let cam = self.camera;
-        for m in mirrors {
-            let reflected = cam.reflect_across_line(m.ax, m.ay, m.bx, m.by);
-            let mut scene = build_scene(&self.map, &reflected, None);
-            // Avoid drawing mirror surfaces in the reflected view (stencil portal pass later).
-            scene
-                .wall_ranges
-                .retain(|r| !r.name.starts_with("__MIRROR"));
-            scene.mirrors.clear();
-            clip_scene_to_mirror_line(
-                &mut scene,
-                m.ax,
-                m.ay,
-                m.bx,
-                m.by,
-                f64::from(reflected.eye.x),
-                f64::from(reflected.eye.y),
-            );
-            let plane = mirror_clip_plane(
-                m.ax,
-                m.ay,
-                m.bx,
-                m.by,
-                f64::from(reflected.eye.x),
-                f64::from(reflected.eye.y),
-            );
-            pass.set_clip_plane(plane);
-            let target = OffscreenTarget::with_format(gpu, 128, 128, pass.format());
-            render_offscreen(gpu, pass, &target, &reflected, &scene);
-            pass.clear_clip_plane();
-            let Ok(rgba) = read_rgba(gpu, &target) else {
-                continue;
-            };
-            let _ =
-                self.materials
-                    .upsert_rgba(&gpu.device, &gpu.queue, &m.tex_name, 128, 128, &rgba);
         }
     }
 

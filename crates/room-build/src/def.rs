@@ -168,6 +168,15 @@ pub struct ImportedSkyboxFace {
     pub height: u16,
     /// Column-major Build palette indices (`255` is transparent).
     pub pixels: Arc<[u8]>,
+    /// Column-major source colors as `0xFFRRGGBB` (`0` where transparent),
+    /// kept for true-colour rendering of RGB images; `None` for paletted ones.
+    pub true_color: Option<Arc<[u32]>>,
+}
+
+/// Pack an opaque source color for true-colour rendering (`0` stays "none").
+#[must_use]
+pub fn pack_true_color([r, g, b]: [u8; 3]) -> u32 {
+    0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
 }
 
 /// Six decoded faces ready for a renderer's skybox cache.
@@ -262,6 +271,9 @@ pub struct ImportedTile {
     pub height: u16,
     /// Column-major palette indices (`255` is transparent).
     pub pixels: Vec<u8>,
+    /// Column-major source colors as `0xFFRRGGBB` (`0` where transparent),
+    /// kept for true-colour rendering of RGB images; `None` for paletted ones.
+    pub true_color: Option<Vec<u32>>,
     /// Horizontal offset from the DEF declaration.
     pub x_offset: i8,
     /// Vertical offset from the DEF declaration.
@@ -431,6 +443,7 @@ impl DefDocument {
                 return Err(BuildError::Invalid("DEF tile image size"));
             }
             let mut column_major = vec![255; count];
+            let mut true_color = None;
             match image.pixels {
                 ImagePixels::Paletted(pixels) => {
                     if pixels.indices.len() != count
@@ -459,26 +472,26 @@ impl DefDocument {
                     if pixels.pixels.len() != rgba_len {
                         return Err(BuildError::Invalid("DEF tile image pixel count"));
                     }
+                    let mut colors = vec![0_u32; count];
                     for y in 0..usize::from(height) {
                         for x in 0..usize::from(width) {
                             let source = (y * usize::from(width) + x) * 4;
                             let destination = x * usize::from(height) + y;
+                            let rgb = [
+                                pixels.pixels[source],
+                                pixels.pixels[source + 1],
+                                pixels.pixels[source + 2],
+                            ];
                             column_major[destination] =
                                 if pixels.pixels[source + 3] < spec.opaque_alpha_threshold {
                                     255
                                 } else {
-                                    nearest_palette_index(
-                                        palette,
-                                        [
-                                            pixels.pixels[source],
-                                            pixels.pixels[source + 1],
-                                            pixels.pixels[source + 2],
-                                        ],
-                                        &mut palette_cache,
-                                    )
+                                    colors[destination] = pack_true_color(rgb);
+                                    nearest_palette_index(palette, rgb, &mut palette_cache)
                                 };
                         }
                     }
+                    true_color = Some(colors);
                 }
             }
             let tile_id =
@@ -491,6 +504,7 @@ impl DefDocument {
                     width,
                     height,
                     pixels: column_major,
+                    true_color,
                     x_offset,
                     y_offset,
                 },
@@ -548,6 +562,7 @@ impl DefDocument {
                     .filter(|total| *total <= MAX_DEF_SKYBOX_PIXELS)
                     .ok_or(BuildError::Invalid("DEF skybox total image size"))?;
                 let mut column_major = vec![255; count];
+                let mut true_color = None;
                 match image.pixels {
                     ImagePixels::Paletted(pixels) => {
                         if pixels.indices.len() != count
@@ -575,31 +590,32 @@ impl DefDocument {
                         if pixels.pixels.len() != rgba_len {
                             return Err(BuildError::Invalid("DEF skybox image pixel count"));
                         }
+                        let mut colors = vec![0_u32; count];
                         for y in 0..usize::from(height) {
                             for x in 0..usize::from(width) {
                                 let source = (y * usize::from(width) + x) * 4;
                                 let destination = x * usize::from(height) + y;
+                                let rgb = [
+                                    pixels.pixels[source],
+                                    pixels.pixels[source + 1],
+                                    pixels.pixels[source + 2],
+                                ];
                                 column_major[destination] = if pixels.pixels[source + 3] < 174 {
                                     255
                                 } else {
-                                    nearest_palette_index(
-                                        palette,
-                                        [
-                                            pixels.pixels[source],
-                                            pixels.pixels[source + 1],
-                                            pixels.pixels[source + 2],
-                                        ],
-                                        &mut palette_cache,
-                                    )
+                                    colors[destination] = pack_true_color(rgb);
+                                    nearest_palette_index(palette, rgb, &mut palette_cache)
                                 };
                             }
                         }
+                        true_color = Some(Arc::from(colors));
                     }
                 }
                 let face = ImportedSkyboxFace {
                     width,
                     height,
                     pixels: Arc::from(column_major),
+                    true_color,
                 };
                 decoded_faces.insert(key, face.clone());
                 faces.push(face);

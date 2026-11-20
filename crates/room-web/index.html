@@ -747,7 +747,10 @@
     /* In-game messages as toasts (Settings › Messages) */
     #toasts {
       position: fixed; z-index: 7; pointer-events: none;
-      top: calc(max(8px, env(safe-area-inset-top)) + 56px); left: max(12px, env(safe-area-inset-left));
+      /* Below the network graph when it is showing (netgraph.js sets
+         --netgraph-bottom to its bottom edge; 0 when hidden). */
+      top: max(calc(max(8px, env(safe-area-inset-top)) + 56px), calc(var(--netgraph-bottom, 0px) + 8px));
+      left: max(12px, env(safe-area-inset-left));
       display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: min(28rem, 60vw);
     }
     .toast {

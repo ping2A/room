@@ -493,7 +493,7 @@ fn uzdoom_stdlib_compiles() {
     let t0 = std::time::Instant::now();
     let art = compile(&vm.program, &Options::default()).expect("codegen");
     let t1 = std::time::Instant::now();
-    let mut vm2 = Zvm::new_with_stubs(vm.program.clone());
+    let mut vm2 = Zvm::new_with_stubs((*vm.program).clone());
     vm2.attach_aot(&art.bytes, art.compiled.clone())
         .expect("attach");
     let t2 = std::time::Instant::now();

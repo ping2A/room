@@ -13,6 +13,17 @@ pub fn check_sight(world: &World, from: ActorId, to: ActorId) -> bool {
     let Some(b) = world.actors.get(to) else {
         return false;
     };
+    if world.map.setup.portal_groups.has_links()
+        || world
+            .map
+            .setup
+            .portals
+            .lines
+            .iter()
+            .any(|p| p.target.is_some())
+    {
+        return crate::sight_portal::check_sight_portals(world, a, b);
+    }
     let p0 = DVec2::new(a.pos.x(), a.pos.y());
     let p1 = DVec2::new(b.pos.x(), b.pos.y());
 
@@ -149,9 +160,8 @@ fn cross_subsector(world: &World, nodes: &GameNodes, ctx: &mut SightTrace, ss: u
                 .map
                 .setup
                 .portals
-                .lines
-                .iter()
-                .any(|p| p.line == lid && p.is_traversable())
+                .line(lid)
+                .is_some_and(|p| p.is_traversable())
             {
                 continue;
             }
@@ -284,7 +294,6 @@ mod tests {
     use room_core::{Angle, DVec3};
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
-    use std::collections::BTreeSet;
 
     #[test]
     fn sight_clear_in_open_room() {
@@ -354,65 +363,5 @@ mod tests {
             )
             .unwrap();
         assert!(!check_sight(&w, player, other));
-    }
-
-    fn stamp_paired_portals(map: &mut room_map::MapGeometry) {
-        let mut a_east = None;
-        let mut b_west = None;
-        for (i, line) in map.lines.iter().enumerate() {
-            if line.back_sector.is_some() {
-                continue;
-            }
-            let v1 = map.vertices[line.v1.raw() as usize].pos;
-            let v2 = map.vertices[line.v2.raw() as usize].pos;
-            if (v1.x() - 256.0).abs() < 1.0 && (v2.x() - 256.0).abs() < 1.0 {
-                a_east = Some(i);
-            }
-            if (v1.x() - 512.0).abs() < 1.0 && (v2.x() - 512.0).abs() < 1.0 {
-                b_west = Some(i);
-            }
-        }
-        for i in [a_east.unwrap(), b_west.unwrap()] {
-            let line = &mut map.lines[i];
-            line.special = 156;
-            line.args = [42, 0, 3, 0, 0];
-            line.tag = 42;
-        }
-        map.setup = room_map::build_setup(map);
-    }
-
-    #[test]
-    fn sight_through_linked_portals() {
-        let mut map = MapBuilder::new()
-            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
-            .room("b", rect(512.0, 0.0, 768.0, 256.0), 0.0, 128.0)
-            .player_start(200.0, 64.0, 0)
-            .build_udmf("MAP01")
-            .unwrap();
-        stamp_paired_portals(&mut map);
-        apply_nodes(&mut map);
-        let g = &map.setup.portal_groups;
-        assert!(
-            g.sector_group
-                .iter()
-                .copied()
-                .collect::<BTreeSet<_>>()
-                .len()
-                >= 2,
-            "disconnected rooms should be two portal groups"
-        );
-        let mut w = World::from_map(map).unwrap();
-        let player = w.thinkers.default[0];
-        let other = w
-            .spawn_at(
-                room_core::ClassId::from_raw(0),
-                DVec3::new(600.0, 64.0, 0.0),
-                Angle::ZERO,
-            )
-            .unwrap();
-        assert!(
-            check_sight(&w, player, other),
-            "LOS should continue through linked portals"
-        );
     }
 }

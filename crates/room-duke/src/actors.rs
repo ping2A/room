@@ -10,7 +10,8 @@ use room_build_engine::types::{SectorT, SpriteT, WallT};
 use room_build_engine::world::{MAXSPRITES, MAXSTATUS, SpriteLists};
 
 use crate::badguy::badguy_pic;
-use crate::con::{ActorConTemps, ConProjectile, ConSpriteEnv, ConStop, ScriptImage, execute_actor};
+use crate::con::vm::{CanseeInput, CanseeLazy, execute_actor_with};
+use crate::con::{ActorConTemps, ConProjectile, ConSpriteEnv, ConStop, ScriptImage};
 use crate::fta::findplayer_dist;
 use crate::player::{DUKE_GC, Player, TileZMeta, sprite_z_clip};
 use crate::shoot::{
@@ -304,8 +305,8 @@ pub(crate) fn hits_xy(
 fn actor_con_move(
     lists: &SpriteLists,
     sp: &mut SpriteT,
-    _spr_hits: &[SpriteHit],
-    spr_clips: &[SpriteZClip],
+    // Chocolate `hits()` / CLIPMASK0 face-sprite clips, built on first use.
+    clip_source: &mut ClipSource<'_>,
     temps: &mut ActorConTemps,
     script: &ScriptImage,
     sectors: &[SectorT],
@@ -569,7 +570,7 @@ fn actor_con_move(
         &sec,
         &wxy,
         Some(&sec_z),
-        spr_clips,
+        clip_source.clips(lists, tile_meta),
         CLIPMASK0_SPR,
         Some(lists),
     );
@@ -747,6 +748,8 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         respawn_settings[2],
     );
     let players_len = players.len();
+    let mut cansee_view = ActorPassView::new(ViewKind::Cansee, sprites, lists, tile_meta);
+    let mut clip_view = ActorPassView::new(ViewKind::Clip, sprites, lists, tile_meta);
     let mut i = lists.headspritestat[STAT_ACTOR as usize];
     while i >= 0 {
         let next = lists.nextspritestat[i as usize];
@@ -949,42 +952,6 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         // every tic, which changes both branch decisions and CON RNG traffic.
         let hit_floorz = temps[iu].hit_floorz;
         let hit_ceilingz = temps[iu].hit_ceilingz;
-        // Chocolate hitscan reads the live sector sprite lists per actor.
-        // Refresh this index-aligned snapshot after earlier actors have moved,
-        // spawned, or changed their tile during the same actor pass.
-        let cansee_sprs: Vec<SpriteHit> = sprites
-            .iter()
-            .enumerate()
-            .map(|(sprite_index, sprite)| {
-                let active = lists.sprite_stat[sprite_index] != MAXSTATUS as i16;
-                let cstat = if active { sprite.cstat } else { 0 };
-                let meta = tile_meta.get(sprite.picnum.max(0) as usize);
-                let face = active && sprite.cstat & 48 == 0;
-                let face_span = if face {
-                    meta.map_or(0, |meta| i32::from(meta.width) * i32::from(sprite.xrepeat))
-                } else {
-                    0
-                };
-                let face_height = if face {
-                    meta.map_or(0, |meta| {
-                        (i32::from(meta.height) * i32::from(sprite.yrepeat)) << 2
-                    })
-                } else {
-                    0
-                };
-                SpriteHit {
-                    x: sprite.x,
-                    y: sprite.y,
-                    z: sprite.z,
-                    sectnum: sprite.sectnum,
-                    clipdist: i32::from(sprite.clipdist) << 2,
-                    cstat,
-                    face_span,
-                    face_height,
-                }
-            })
-            .collect();
-        let cansee_picnums: Vec<i16> = sprites.iter().map(|sprite| sprite.picnum).collect();
         let mut projectile_i = lists.headspritestat[crate::stat::STAT_PROJECTILE as usize];
         let mut projectiles = Vec::new();
         while projectile_i >= 0 {
@@ -1011,22 +978,41 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
             let players_ro: &[Player] = players;
             // `shoot` and `fall` both act on the live sprite array mid-parse.
             let sprites_cell = std::cell::RefCell::new(&mut *sprites);
+            let lists_cell = std::cell::RefCell::new(&mut *lists);
+            // Chocolate hitscan reads the live sector sprite lists per actor:
+            // the sight view reflects earlier actors' moves, spawns and tile
+            // changes, as of the start of this actor's code. It is built at
+            // the first sight ray, or before `shoot`/`fall` change the world.
+            let sight = LazySight {
+                view: std::cell::RefCell::new(&mut cansee_view),
+                built: std::cell::Cell::new(false),
+                sprites: &sprites_cell,
+                lists: &lists_cell,
+                tile_meta,
+            };
             let mut fall_now = |t: &mut ActorConTemps, z: &mut i32, zvel: &mut i16| {
+                sight.build();
                 let mut guard = sprites_cell.borrow_mut();
                 let sprites: &mut [SpriteT] = &mut guard;
-                let peers: Vec<SpriteT> = sprites.to_vec();
+                // `me` is a copy, so the live array serves as the (unchanged)
+                // peer snapshot without cloning all MAXSPRITES slots.
                 let mut me = sprites[iu];
                 me.z = *z;
                 me.zvel = *zvel;
-                con_fall(&mut me, sectors_ro, walls_ro, &peers, tile_meta, DUKE_GC, t);
+                con_fall(
+                    &mut me, sectors_ro, walls_ro, sprites, tile_meta, DUKE_GC, t,
+                );
                 sprites[iu].z = me.z;
                 sprites[iu].zvel = me.zvel;
                 *z = me.z;
                 *zvel = me.zvel;
             };
             let mut shoot_now = |pn: i16, ang: i16, seed: &mut i32| -> bool {
+                sight.build();
                 let mut guard = sprites_cell.borrow_mut();
                 let sprites: &mut [SpriteT] = &mut guard;
+                let mut lists_guard = lists_cell.borrow_mut();
+                let lists: &mut SpriteLists = &mut lists_guard;
                 let bloodsplat = pn == BLOODSPLAT1
                     || pn == BLOODSPLAT2
                     || pn == BLOODSPLAT3
@@ -1065,7 +1051,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 }
                 true
             };
-            execute_actor(
+            execute_actor_with(
                 script,
                 body,
                 randomseed,
@@ -1078,8 +1064,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 env_player,
                 &sec_z,
                 &wxy,
-                &cansee_sprs,
-                &cansee_picnums,
+                CanseeInput::Lazy(&sight),
                 &projectiles,
                 active_sound_owners,
                 Some(&mut shoot_now),
@@ -1342,16 +1327,18 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         // blood Z uses post-fall parent Z (DEMO1 tic231 #196: 62720 not 62758).
         if temps[iu].fall_requested {
             temps[iu].fall_requested = false;
-            let peers: Vec<SpriteT> = sprites.to_vec();
+            // Fall a copy against the untouched array (no full-array clone).
+            let mut me = sprites[iu];
             con_fall(
-                &mut sprites[iu],
+                &mut me,
                 sectors,
                 walls,
-                &peers,
+                sprites,
                 tile_meta,
                 DUKE_GC,
                 &mut temps[iu],
             );
+            sprites[iu] = me;
         }
         // CON `spawn` / `shoot` — after fall + damage so BLOOD freelist/Z match.
         let spawns: Vec<i16> = temps[iu].pending_spawns.drain(..).collect();
@@ -1553,42 +1540,24 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         if stop == ConStop::KillIt {
             let _ = lists.deletesprite(i);
         } else {
-            // Snapshot for Chocolate `hits()` / CLIPMASK0 face-sprite clips.
-            let spr_hits: Vec<SpriteHit> = sprites
-                .iter()
-                .map(|s| {
-                    SpriteHit::cylinder(
-                        s.x,
-                        s.y,
-                        s.z,
-                        s.sectnum,
-                        i32::from(s.clipdist) << 2,
-                        s.cstat,
-                    )
-                })
-                .collect();
-            let spr_clips: Vec<SpriteZClip> = sprites
-                .iter()
-                .enumerate()
-                .map(|(j, s)| {
-                    let mut z = sprite_z_clip(s, tile_meta);
-                    if j == iu {
-                        z.cstat = 0;
-                    }
-                    z
-                })
-                .collect();
             let (px, py) = players
                 .get(pidx)
                 .map(|p| (p.posx, p.posy))
                 .unwrap_or((temps[iu].lastvx, temps[iu].lastvy));
             let old_sect = sprites[iu].sectnum;
             let single_player = players.len() < 2;
+            // The mover works on a copy so the clip snapshot (taken on first
+            // use, as before the move) can borrow the untouched array.
+            let mut me = sprites[iu];
+            let mut clip_source = ClipSource {
+                view: &mut clip_view,
+                sprites,
+                mover: iu,
+            };
             actor_con_move(
                 lists,
-                &mut sprites[iu],
-                &spr_hits,
-                &spr_clips,
+                &mut me,
+                &mut clip_source,
                 &mut temps[iu],
                 script,
                 sectors,
@@ -1604,6 +1573,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 single_player,
                 i,
             );
+            sprites[iu] = me;
             // `clipmove` updates the actor's destination sector in the
             // temporary `dasectnum`; Chocolate only links it into that
             // sector after stayput/boss/water rejection has completed.
@@ -1624,6 +1594,268 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         global_random,
         temps,
     );
+}
+
+/// One sprite slot of the CON sight/aim view (`ifcansee`, `ifcanshoottarget`).
+fn cansee_hit(
+    sprite_index: usize,
+    sprite: &SpriteT,
+    lists: &SpriteLists,
+    tile_meta: &[TileZMeta],
+) -> SpriteHit {
+    let active = lists.sprite_stat[sprite_index] != MAXSTATUS as i16;
+    let cstat = if active { sprite.cstat } else { 0 };
+    let meta = tile_meta.get(sprite.picnum.max(0) as usize);
+    let face = active && sprite.cstat & 48 == 0;
+    let face_span = if face {
+        meta.map_or(0, |meta| i32::from(meta.width) * i32::from(sprite.xrepeat))
+    } else {
+        0
+    };
+    let face_height = if face {
+        meta.map_or(0, |meta| {
+            (i32::from(meta.height) * i32::from(sprite.yrepeat)) << 2
+        })
+    } else {
+        0
+    };
+    SpriteHit {
+        x: sprite.x,
+        y: sprite.y,
+        z: sprite.z,
+        sectnum: sprite.sectnum,
+        clipdist: i32::from(sprite.clipdist) << 2,
+        cstat,
+        face_span,
+        face_height,
+    }
+}
+
+/// Which per-slot views an [`ActorPassView`] keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewKind {
+    /// CON sight/aim rays: [`cansee_hit`] plus each slot's picnum.
+    Cansee,
+    /// Actor movement clipping: Z clips with raw `cstat`.
+    Clip,
+}
+
+/// Index-aligned views of every sprite slot used during the actor pass.
+///
+/// The pass used to rebuild these for all `MAXSPRITES` slots before every
+/// actor (two `O(MAXSPRITES)` copies per actor per tic). Each refresh now
+/// recomputes, with the same per-slot formulas, every slot that is linked in
+/// a status list now or was at the previous refresh; a slot unlinked at
+/// both refreshes is never written by game code, so the views equal a full
+/// rebuild. `ROOM_DUKE_CHECK_VIEWS=1` compares against a full rebuild on
+/// every refresh (debug aid).
+struct ActorPassView {
+    kind: ViewKind,
+    hits: Vec<SpriteHit>,
+    picnums: Vec<i16>,
+    clips: Vec<SpriteZClip>,
+    /// Sprite and linked state each slot's entry was computed from.
+    source: Vec<(SpriteT, bool)>,
+    /// Slots linked at the previous refresh.
+    live: Vec<usize>,
+    /// Slot whose clip `cstat` was cleared by [`Self::exclude`].
+    excluded: Option<usize>,
+    check: bool,
+}
+
+impl ActorPassView {
+    fn new(
+        kind: ViewKind,
+        sprites: &[SpriteT],
+        lists: &SpriteLists,
+        tile_meta: &[TileZMeta],
+    ) -> Self {
+        let mut view = Self::empty(kind);
+        view.check = std::env::var_os("ROOM_DUKE_CHECK_VIEWS").is_some();
+        view.rebuild(sprites, lists, tile_meta);
+        view
+    }
+
+    fn empty(kind: ViewKind) -> Self {
+        Self {
+            kind,
+            hits: Vec::new(),
+            picnums: Vec::new(),
+            clips: Vec::new(),
+            source: Vec::new(),
+            live: Vec::new(),
+            excluded: None,
+            check: false,
+        }
+    }
+
+    /// The moving actor does not clip against itself: clear its clip `cstat`
+    /// until the next refresh.
+    fn exclude(&mut self, k: usize) {
+        if let Some(clip) = self.clips.get_mut(k) {
+            clip.cstat = 0;
+            self.excluded = Some(k);
+        }
+    }
+
+    fn slot(
+        &mut self,
+        k: usize,
+        sprites: &[SpriteT],
+        lists: &SpriteLists,
+        tile_meta: &[TileZMeta],
+    ) {
+        let s = &sprites[k];
+        match self.kind {
+            ViewKind::Cansee => {
+                self.hits[k] = cansee_hit(k, s, lists, tile_meta);
+                self.picnums[k] = s.picnum;
+            }
+            ViewKind::Clip => self.clips[k] = sprite_z_clip(s, tile_meta),
+        }
+    }
+
+    fn rebuild(&mut self, sprites: &[SpriteT], lists: &SpriteLists, tile_meta: &[TileZMeta]) {
+        match self.kind {
+            ViewKind::Cansee => {
+                self.hits = sprites
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| cansee_hit(k, s, lists, tile_meta))
+                    .collect();
+                self.picnums = sprites.iter().map(|s| s.picnum).collect();
+            }
+            ViewKind::Clip => {
+                self.clips = sprites
+                    .iter()
+                    .map(|s| sprite_z_clip(s, tile_meta))
+                    .collect();
+            }
+        }
+        self.source = sprites
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (*s, slot_linked(lists, k)))
+            .collect();
+        self.live = linked_slots(lists, sprites.len());
+        self.excluded = None;
+    }
+
+    /// Bring the view up to date with the current sprites.
+    fn refresh(&mut self, sprites: &[SpriteT], lists: &SpriteLists, tile_meta: &[TileZMeta]) {
+        if self.source.len() != sprites.len() || lists.sprite_stat.len() < sprites.len() {
+            self.rebuild(sprites, lists, tile_meta);
+            return;
+        }
+        if let Some(k) = self.excluded.take() {
+            self.clips[k] = sprite_z_clip(&self.source[k].0, tile_meta);
+        }
+        let now = linked_slots(lists, sprites.len());
+        let previous = std::mem::take(&mut self.live);
+        for &k in previous.iter().chain(now.iter()) {
+            let key = (sprites[k], slot_linked(lists, k));
+            if self.source[k] != key {
+                self.slot(k, sprites, lists, tile_meta);
+                self.source[k] = key;
+            }
+        }
+        self.live = now;
+        if self.check {
+            let mut full = Self::empty(self.kind);
+            full.rebuild(sprites, lists, tile_meta);
+            assert!(
+                full.hits == self.hits,
+                "actor-pass hit view diverged from a full rebuild"
+            );
+            if self.kind == ViewKind::Cansee {
+                // Unlinked slots' picnums are never read (only hit sprites).
+                for &k in &self.live {
+                    assert_eq!(full.picnums[k], self.picnums[k], "picnum view diverged");
+                }
+            } else {
+                assert!(
+                    full.clips == self.clips,
+                    "actor-pass clip view diverged from a full rebuild"
+                );
+            }
+        }
+    }
+}
+
+fn slot_linked(lists: &SpriteLists, k: usize) -> bool {
+    lists
+        .sprite_stat
+        .get(k)
+        .is_some_and(|&stat| stat != MAXSTATUS as i16)
+}
+
+/// The actor pass sight view for one actor's CON run, built on first use.
+struct LazySight<'r, 's, 'l> {
+    view: std::cell::RefCell<&'r mut ActorPassView>,
+    built: std::cell::Cell<bool>,
+    sprites: &'r std::cell::RefCell<&'s mut [SpriteT]>,
+    lists: &'r std::cell::RefCell<&'l mut SpriteLists>,
+    tile_meta: &'r [TileZMeta],
+}
+
+impl LazySight<'_, '_, '_> {
+    /// Snapshot the sprites now (idempotent per actor run).
+    fn build(&self) {
+        if self.built.get() {
+            return;
+        }
+        let sprites = self.sprites.borrow();
+        let lists = self.lists.borrow();
+        self.view
+            .borrow_mut()
+            .refresh(&sprites, &lists, self.tile_meta);
+        self.built.set(true);
+    }
+}
+
+impl CanseeLazy for LazySight<'_, '_, '_> {
+    fn with(&self, f: &mut dyn FnMut(&[SpriteHit], &[i16])) {
+        self.build();
+        let view = self.view.borrow();
+        f(&view.hits, &view.picnums);
+    }
+}
+
+/// Lazily refreshed CLIPMASK0 sprite clips for one actor's move: most actors
+/// return before `movesprite`, so the snapshot is only built when clipping.
+struct ClipSource<'a> {
+    view: &'a mut ActorPassView,
+    sprites: &'a [SpriteT],
+    mover: usize,
+}
+
+impl ClipSource<'_> {
+    fn clips(&mut self, lists: &SpriteLists, tile_meta: &[TileZMeta]) -> &[SpriteZClip] {
+        self.view.refresh(self.sprites, lists, tile_meta);
+        // The moving actor does not clip against itself.
+        self.view.exclude(self.mover);
+        &self.view.clips
+    }
+}
+
+/// Every sprite slot linked into a status list (`0..MAXSTATUS`), bounded.
+fn linked_slots(lists: &SpriteLists, len: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let statuses = lists.headspritestat.len().min(MAXSTATUS);
+    for stat in 0..statuses {
+        let mut i = lists.headspritestat[stat];
+        let mut guard = 0usize;
+        while i >= 0 && guard <= len {
+            let k = i as usize;
+            if k >= len || k >= lists.nextspritestat.len() {
+                break;
+            }
+            out.push(k);
+            i = lists.nextspritestat[k];
+            guard += 1;
+        }
+    }
+    out
 }
 
 /// Chocolate `actors.c::moveactors` GREENSLIME frozen-state branch. The slime's
@@ -2023,16 +2255,11 @@ fn move_pipebombs(
                 }
                 // Chocolate runs makeitfall for all three marker states after
                 // the color/timer logic, using the live actor sprite list.
-                let peers = sprites.to_vec();
+                let mut me = sprites[iu];
                 crate::spawn::makeitfall(
-                    &mut sprites[iu],
-                    sectors,
-                    walls,
-                    &peers,
-                    tile_meta,
-                    DUKE_GC,
-                    true,
+                    &mut me, sectors, walls, sprites, tile_meta, DUKE_GC, true,
                 );
+                sprites[iu] = me;
             }
             continue;
         }

@@ -15,13 +15,15 @@ pub struct SetupData {
     /// Static polyobject definitions.
     pub polyobjects: Vec<PolyobjStatic>,
     /// Line / sector portal tables.
-    pub portals: PortalTables,
+    pub portals: crate::portals::PortalTables,
     /// Linked-portal groups and 2D displacements.
-    pub portal_groups: PortalGroups,
+    pub portal_groups: crate::portals::PortalGroups,
     /// 3D floor definitions attached to sectors.
     pub ffloors: Vec<FFloorStatic>,
     /// `Sector_Attach3dMidtex` links (line indices attached to a sector plane).
     pub midtex_attach: Vec<MidtexAttach>,
+    /// Portal setup problems (disabled portals, bad groups) for editors.
+    pub portal_warnings: Vec<String>,
 }
 
 /// One `Sector_Attach3dMidtex` binding.
@@ -156,108 +158,6 @@ pub struct PolyobjStatic {
     pub crush: bool,
 }
 
-/// Portal lookup tables (line + sector).
-#[derive(Clone, Debug, Default)]
-pub struct PortalTables {
-    /// Line portals.
-    pub lines: Vec<LinePortal>,
-    /// Sector (plane/sky) portals.
-    pub sectors: Vec<SectorPortal>,
-}
-
-/// One line portal.
-#[derive(Clone, Copy, Debug)]
-pub struct LinePortal {
-    /// Source line.
-    pub line: LineId,
-    /// Destination line (or None for horizon/mirror).
-    pub target: Option<LineId>,
-    /// Portal type (0 visual … 3 linked; 182 mirror; 9 horizon).
-    pub kind: u8,
-}
-
-impl LinePortal {
-    /// Actors may walk through (teleporter / interactive / linked).
-    #[must_use]
-    pub fn is_traversable(self) -> bool {
-        matches!(self.kind, 1..=3)
-    }
-
-    /// `Line_Mirror` (special 182) — reflective surface (render recursion later).
-    #[must_use]
-    pub fn is_mirror(self) -> bool {
-        self.kind == 182
-    }
-
-    /// Do not emit a blocking wall (visual hole or walk-through).
-    ///
-    /// Mirrors keep their wall (drawn as reflective); only portal holes skip.
-    #[must_use]
-    pub fn skip_wall(self) -> bool {
-        self.kind <= 3
-    }
-}
-
-/// Sector portal-group ids plus displacements between groups.
-#[derive(Clone, Debug, Default)]
-pub struct PortalGroups {
-    /// Group id per sector index.
-    pub sector_group: Vec<u32>,
-    /// Add this XY to a point in `from` to express it in `to` (`(from, to)`).
-    pub delta: BTreeMap<(u32, u32), (f64, f64)>,
-}
-
-impl PortalGroups {
-    /// Group for a sector index.
-    #[must_use]
-    pub fn group_of(&self, sector: usize) -> Option<u32> {
-        self.sector_group.get(sector).copied()
-    }
-}
-
-/// One sector portal / skybox link.
-#[derive(Clone, Copy, Debug)]
-pub struct SectorPortal {
-    /// Source sector.
-    pub sector: SectorId,
-    /// Destination sector.
-    pub target: SectorId,
-    /// Kind (0 visual, 1 teleporter, 3 linked, …).
-    pub kind: u8,
-    /// `0` = floor plane, `1` = ceiling plane.
-    pub plane: u8,
-    /// [`PORTAL_KIND_WATER`] / [`PORTAL_KIND_FALL`] displacement (`args[3]`,
-    /// `args[4]` map units).
-    pub offset: [i32; 2],
-    /// [`PORTAL_KIND_FALL`] source and destination effector heights.
-    pub heights: [i32; 2],
-}
-
-/// Room extension (`docs/23-build-engine.md`): a Build water link (`SE 7`
-/// between above-water and underwater sectors). Only players pass: down
-/// through the floor when swimming down or falling fast, up through the
-/// ceiling when swimming up; they move by [`SectorPortal::offset`].
-pub const PORTAL_KIND_WATER: u8 = 200;
-
-/// Room extension: a Build `SE 7` transporter floating above its floor. A
-/// player whose eye comes within 24 units of the source effector height moves
-/// by [`SectorPortal::offset`] to 24 units below (above, when rising) the
-/// destination effector. `arg2` packs the heights: source in the low 16 bits,
-/// destination in the high 16 (both signed).
-pub const PORTAL_KIND_FALL: u8 = 201;
-
-impl SectorPortal {
-    /// Actors may pass through this plane (teleporter / linked / water link).
-    #[must_use]
-    pub fn is_traversable(self) -> bool {
-        matches!(self.kind, 1 | 3 | PORTAL_KIND_WATER | PORTAL_KIND_FALL)
-    }
-}
-
-fn unpack_fall_heights(arg: i32) -> [i32; 2] {
-    [i32::from(arg as u16 as i16), arg >> 16]
-}
-
 /// Static 3D floor attached to a control sector.
 #[derive(Clone, Copy, Debug)]
 pub struct FFloorStatic {
@@ -302,13 +202,9 @@ impl FFloorStatic {
 // Hexen-style special numbers (GZDoom actionspecials.h).
 const POLYOBJ_START_LINE: i16 = 1;
 const POLYOBJ_EXPLICIT_LINE: i16 = 5;
-const LINE_HORIZON: i16 = 9;
-const SECTOR_SET_PORTAL: i16 = 57;
-const LINE_SET_PORTAL: i16 = 156;
 const EXTRA_FLOOR_LIGHT_ONLY: i16 = 50;
 const SECTOR_ATTACH_3D_MIDTEX: i16 = 51;
 const SECTOR_SET_3DFLOOR: i16 = 160;
-const LINE_MIRROR: i16 = 182;
 const PLANE_ALIGN: i16 = 181;
 
 /// Thing editor numbers for polyobject anchors / spawn spots.
@@ -345,8 +241,7 @@ pub fn build_setup(map: &crate::geom::MapGeometry) -> SetupData {
     apply_plane_align(map, &mut planes);
     apply_slope_point_line_things(map, &mut planes);
     let polyobjects = collect_polyobjects(map);
-    let portals = collect_portals(map);
-    let portal_groups = build_portal_groups(map, &portals);
+    let (portals, portal_groups, portal_warnings) = crate::portals::build_portals(map, &planes);
     let ffloors = collect_ffloors(map);
     let midtex_attach = collect_midtex_attach(map);
     SetupData {
@@ -356,6 +251,7 @@ pub fn build_setup(map: &crate::geom::MapGeometry) -> SetupData {
         portal_groups,
         ffloors,
         midtex_attach,
+        portal_warnings,
     }
 }
 
@@ -639,7 +535,7 @@ fn align_one(
     }
 }
 
-fn collect_polyobjects(map: &crate::geom::MapGeometry) -> Vec<PolyobjStatic> {
+pub(crate) fn collect_polyobjects(map: &crate::geom::MapGeometry) -> Vec<PolyobjStatic> {
     // Crushing flags from spawn-spot things, keyed by poly id (angle field).
     let mut crush_ids = BTreeSet::new();
     for th in &map.things {
@@ -755,196 +651,6 @@ fn verts_of_lines(map: &crate::geom::MapGeometry, lines: &[LineId]) -> Vec<Verte
     out
 }
 
-fn collect_portals(map: &crate::geom::MapGeometry) -> PortalTables {
-    let mut lines = Vec::new();
-    let mut sectors = Vec::new();
-
-    // Index lines by tag for portal targets.
-    let mut by_tag: BTreeMap<i32, Vec<LineId>> = BTreeMap::new();
-    for (li, line) in map.lines.iter().enumerate() {
-        let tag = i32::from(line.tag);
-        if tag != 0 {
-            by_tag
-                .entry(tag)
-                .or_default()
-                .push(LineId::from_raw(li as u32));
-        }
-        // UDMF / Hexen may put id in args[0] for some specials — also index arg0
-        // when it looks like a tag for portal pairing.
-        if line.special == LINE_SET_PORTAL && line.args[0] != 0 {
-            by_tag
-                .entry(line.args[0])
-                .or_default()
-                .push(LineId::from_raw(li as u32));
-        }
-    }
-
-    for (li, line) in map.lines.iter().enumerate() {
-        let lid = LineId::from_raw(li as u32);
-        match line.special {
-            LINE_HORIZON => {
-                lines.push(LinePortal {
-                    line: lid,
-                    target: None,
-                    kind: 9,
-                });
-            }
-            LINE_MIRROR => {
-                lines.push(LinePortal {
-                    line: lid,
-                    target: None,
-                    kind: 182,
-                });
-            }
-            LINE_SET_PORTAL => {
-                let tag = if line.args[0] != 0 {
-                    line.args[0]
-                } else {
-                    i32::from(line.tag)
-                };
-                let kind = line.args[2].clamp(0, 255) as u8;
-                let target = by_tag
-                    .get(&tag)
-                    .and_then(|v| v.iter().copied().find(|&t| t != lid));
-                lines.push(LinePortal {
-                    line: lid,
-                    target,
-                    kind,
-                });
-            }
-            SECTOR_SET_PORTAL => {
-                // args: tag, type, … — bind first sector with matching tag.
-                let tag = line.args[0];
-                let kind = line.args[1].clamp(0, 255) as u8;
-                let plane = line.args[2].clamp(0, 1) as u8;
-                let src = line.front_sector.unwrap_or(SectorId::from_raw(0));
-                let target = map
-                    .sectors
-                    .iter()
-                    .enumerate()
-                    .find(|(_, s)| s.tags.contains(&tag))
-                    .map(|(i, _)| SectorId::from_raw(i as u32))
-                    .unwrap_or(src);
-                sectors.push(SectorPortal {
-                    sector: src,
-                    target,
-                    kind,
-                    plane: if kind == PORTAL_KIND_FALL { 0 } else { plane },
-                    offset: [line.args[3], line.args[4]],
-                    heights: if kind == PORTAL_KIND_FALL {
-                        unpack_fall_heights(line.args[2])
-                    } else {
-                        [0; 2]
-                    },
-                });
-            }
-            _ => {}
-        }
-    }
-
-    PortalTables { lines, sectors }
-}
-
-fn build_portal_groups(map: &crate::geom::MapGeometry, portals: &PortalTables) -> PortalGroups {
-    let n = map.sectors.len();
-    let mut groups = PortalGroups {
-        sector_group: vec![0; n],
-        delta: BTreeMap::new(),
-    };
-    if n == 0 {
-        return groups;
-    }
-    let portal_lines: BTreeSet<u32> = portals
-        .lines
-        .iter()
-        .filter(|p| p.is_traversable())
-        .map(|p| p.line.raw())
-        .collect();
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (li, line) in map.lines.iter().enumerate() {
-        if portal_lines.contains(&(li as u32)) {
-            continue;
-        }
-        let Some(a) = line.front_sector else {
-            continue;
-        };
-        let Some(b) = line.back_sector else {
-            continue;
-        };
-        let ai = a.raw() as usize;
-        let bi = b.raw() as usize;
-        if ai < n && bi < n && ai != bi {
-            adj[ai].push(bi);
-            adj[bi].push(ai);
-        }
-    }
-    let mut sector_group = vec![u32::MAX; n];
-    let mut gid = 0u32;
-    for s in 0..n {
-        if sector_group[s] != u32::MAX {
-            continue;
-        }
-        let mut stack = vec![s];
-        sector_group[s] = gid;
-        while let Some(u) = stack.pop() {
-            for &v in &adj[u] {
-                if sector_group[v] == u32::MAX {
-                    sector_group[v] = gid;
-                    stack.push(v);
-                }
-            }
-        }
-        gid = gid.saturating_add(1);
-    }
-    for p in &portals.lines {
-        if !p.is_traversable() {
-            continue;
-        }
-        let Some(dest_id) = p.target else {
-            continue;
-        };
-        let Some(src) = map.lines.get(p.line.raw() as usize) else {
-            continue;
-        };
-        let Some(dst) = map.lines.get(dest_id.raw() as usize) else {
-            continue;
-        };
-        let Some(g0) = src
-            .front_sector
-            .and_then(|s| sector_group.get(s.raw() as usize).copied())
-        else {
-            continue;
-        };
-        let Some(g1) = dst
-            .front_sector
-            .and_then(|s| sector_group.get(s.raw() as usize).copied())
-        else {
-            continue;
-        };
-        if g0 == g1 {
-            continue;
-        }
-        let Some(sv1) = map.vertices.get(src.v1.raw() as usize) else {
-            continue;
-        };
-        let Some(sv2) = map.vertices.get(src.v2.raw() as usize) else {
-            continue;
-        };
-        let Some(dv1) = map.vertices.get(dst.v1.raw() as usize) else {
-            continue;
-        };
-        let Some(dv2) = map.vertices.get(dst.v2.raw() as usize) else {
-            continue;
-        };
-        let dx = (dv1.pos.x() + dv2.pos.x()) * 0.5 - (sv1.pos.x() + sv2.pos.x()) * 0.5;
-        let dy = (dv1.pos.y() + dv2.pos.y()) * 0.5 - (sv1.pos.y() + sv2.pos.y()) * 0.5;
-        groups.delta.insert((g0, g1), (dx, dy));
-        groups.delta.insert((g1, g0), (-dx, -dy));
-    }
-    groups.sector_group = sector_group;
-    groups
-}
-
 fn collect_ffloors(map: &crate::geom::MapGeometry) -> Vec<FFloorStatic> {
     let mut out = Vec::new();
     for line in &map.lines {
@@ -996,14 +702,6 @@ mod tests {
     use super::*;
     use crate::{MapFormat, RawLinedef, RawSector, RawSidedef, RawThing, RawVertex, link_geometry};
 
-    #[test]
-    fn fall_portal_heights_are_signed_halves() {
-        let pack = |src: i16, dst: i16| (i32::from(dst) << 16) | i32::from(src as u16);
-        assert_eq!(unpack_fall_heights(pack(140, 276)), [140, 276]);
-        assert_eq!(unpack_fall_heights(pack(-132, -24)), [-132, -24]);
-        assert_eq!(unpack_fall_heights(pack(580, -3000)), [580, -3000]);
-    }
-
     fn square_map_with_line(
         special: i16,
         args: [i32; 5],
@@ -1045,6 +743,8 @@ mod tests {
                 automap_style: 0,
                 clip_midtex: false,
                 wrap_midtex: false,
+                ext: 0,
+                user: Default::default(),
             })
             .collect();
         let sidedefs = (0u16..4)
@@ -1082,6 +782,7 @@ mod tests {
                 no_decals: false,
                 alpha: None,
                 block_rendering: false,
+                user: Default::default(),
             })
             .collect();
         let sectors = vec![RawSector {
@@ -1132,6 +833,8 @@ mod tests {
             ceiling_alpha: 1.0,
             floor_additive: false,
             ceiling_additive: false,
+            ext: 0,
+            user: Default::default(),
         }];
         link_geometry(
             "MAP01",
@@ -1186,7 +889,7 @@ mod tests {
 
     #[test]
     fn line_mirror_recorded() {
-        let map = square_map_with_line(LINE_MIRROR, [0; 5], Vec::new());
+        let map = square_map_with_line(crate::portals::LINE_MIRROR, [0; 5], Vec::new());
         let setup = build_setup(&map);
         assert_eq!(setup.portals.lines.len(), 1);
         assert_eq!(setup.portals.lines[0].kind, 182);
@@ -1239,6 +942,8 @@ mod tests {
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         }];
         let map = square_map_with_line(POLYOBJ_START_LINE, [3, 0, 0, 0, 0], things);
         let setup = build_setup(&map);
@@ -1292,6 +997,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             }],
         );
         map.lines[0].tag = 9;

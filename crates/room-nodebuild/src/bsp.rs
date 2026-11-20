@@ -481,6 +481,8 @@ mod tests {
                 automap_style: 0,
                 clip_midtex: false,
                 wrap_midtex: false,
+                ext: 0,
+                user: Default::default(),
             })
             .collect();
         let sidedefs = (0u16..4)
@@ -518,6 +520,7 @@ mod tests {
                 no_decals: false,
                 alpha: None,
                 block_rendering: false,
+                user: Default::default(),
             })
             .collect();
         let sectors = vec![RawSector {
@@ -568,6 +571,8 @@ mod tests {
             ceiling_alpha: 1.0,
             floor_additive: false,
             ceiling_additive: false,
+            ext: 0,
+            user: Default::default(),
         }];
         let map = link_geometry(
             "MAP01",

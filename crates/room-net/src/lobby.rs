@@ -38,6 +38,11 @@ pub struct Welcome {
     pub map: String,
     /// Skill 1..=5.
     pub skill: u8,
+    /// Match rules: `0` co-op, `1` deathmatch. Trailing byte; `0` from older
+    /// hosts.
+    pub deathmatch: u8,
+    /// Bot seats after the player seats (everyone simulates them).
+    pub bots: u8,
 }
 
 /// Host rejected the join.
@@ -54,6 +59,25 @@ pub struct Start {
     pub rng_seed: u32,
     /// Display name per seat (`0..names.len()`), broadcast for lockstep (BE3).
     pub names: Vec<String>,
+    /// Input delay the host picked once everyone joined (from measured
+    /// ping); overrides [`Welcome::delay`]. `None` from older hosts.
+    pub delay: Option<u32>,
+}
+
+/// Host → peer round-trip probe while the lobby fills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ping {
+    /// Host clock (ms since the probe began), echoed back.
+    pub nonce: u32,
+}
+
+/// Peer → host answer to a [`Ping`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pong {
+    /// Answering seat.
+    pub peer_id: PeerId,
+    /// [`Ping::nonce`].
+    pub nonce: u32,
 }
 
 /// Peer finished local load and is ready for tic 0 (web coop gate).
@@ -76,6 +100,10 @@ pub enum LobbyMsg {
     Start(Start),
     /// Peer → all: map/sim loaded; lockstep may begin when every seat has Ready.
     Ready(Ready),
+    /// Host → peer.
+    Ping(Ping),
+    /// Peer → host.
+    Pong(Pong),
 }
 
 impl LobbyMsg {
@@ -100,14 +128,20 @@ impl LobbyMsg {
                 v.extend_from_slice(&w.rng_seed.to_le_bytes());
                 push_str(&mut v, &w.map);
                 v.push(w.skill);
+                v.push(w.deathmatch);
+                v.push(w.bots);
             }
             Self::Reject(r) => {
                 v.push(3);
                 push_str(&mut v, &r.reason);
             }
             Self::Start(s) => {
-                v.push(4);
+                // Type 6 carries the negotiated delay; 4 is the old layout.
+                v.push(if s.delay.is_some() { 6 } else { 4 });
                 v.extend_from_slice(&s.rng_seed.to_le_bytes());
+                if let Some(delay) = s.delay {
+                    v.extend_from_slice(&delay.to_le_bytes());
+                }
                 for name in &s.names {
                     push_str(&mut v, name);
                 }
@@ -115,6 +149,15 @@ impl LobbyMsg {
             Self::Ready(r) => {
                 v.push(5);
                 v.push(r.peer_id.0);
+            }
+            Self::Ping(p) => {
+                v.push(7);
+                v.extend_from_slice(&p.nonce.to_le_bytes());
+            }
+            Self::Pong(p) => {
+                v.push(8);
+                v.push(p.peer_id.0);
+                v.extend_from_slice(&p.nonce.to_le_bytes());
             }
         }
         v
@@ -150,6 +193,9 @@ impl LobbyMsg {
                 let rng_seed = take_u32(bytes, &mut o)?;
                 let map = take_str(bytes, &mut o)?;
                 let skill = take_u8(bytes, &mut o)?;
+                // Rules and bots came later: absent from older hosts.
+                let deathmatch = take_u8(bytes, &mut o).unwrap_or(0);
+                let bots = take_u8(bytes, &mut o).unwrap_or(0);
                 Ok(Self::Welcome(Welcome {
                     peer_id,
                     peer_count,
@@ -157,19 +203,37 @@ impl LobbyMsg {
                     rng_seed,
                     map,
                     skill,
+                    deathmatch,
+                    bots,
                 }))
             }
             3 => Ok(Self::Reject(Reject {
                 reason: take_str(bytes, &mut o)?,
             })),
-            4 => {
+            kind @ (4 | 6) => {
                 let rng_seed = take_u32(bytes, &mut o)?;
+                let delay = if kind == 6 {
+                    Some(take_u32(bytes, &mut o)?)
+                } else {
+                    None
+                };
                 let mut names = Vec::new();
                 while o < bytes.len() {
                     names.push(take_str(bytes, &mut o)?);
                 }
-                Ok(Self::Start(Start { rng_seed, names }))
+                Ok(Self::Start(Start {
+                    rng_seed,
+                    names,
+                    delay,
+                }))
             }
+            7 => Ok(Self::Ping(Ping {
+                nonce: take_u32(bytes, &mut o)?,
+            })),
+            8 => Ok(Self::Pong(Pong {
+                peer_id: PeerId(take_u8(bytes, &mut o)?),
+                nonce: take_u32(bytes, &mut o)?,
+            })),
             5 => Ok(Self::Ready(Ready {
                 peer_id: PeerId(take_u8(bytes, &mut o)?),
             })),
@@ -214,6 +278,8 @@ pub struct LobbyHost {
     rng_seed: u32,
     map: String,
     skill: u8,
+    deathmatch: u8,
+    bots: u8,
     /// Joined names by peer id.
     seats: Vec<(PeerId, String)>,
     next_id: u8,
@@ -237,9 +303,18 @@ impl LobbyHost {
             rng_seed,
             map: map.into(),
             skill: skill.clamp(1, 5),
+            deathmatch: 0,
+            bots: 0,
             seats: vec![(PeerId(0), "host".into())],
             next_id: 1,
         }
+    }
+
+    /// Match rules sent to every joiner: deathmatch (`true`) or co-op, and
+    /// how many bot seats follow the player seats.
+    pub fn set_rules(&mut self, deathmatch: bool, bots: u8) {
+        self.deathmatch = u8::from(deathmatch);
+        self.bots = bots;
     }
 
     /// Handle a hello; returns welcome or reject message.
@@ -297,6 +372,8 @@ impl LobbyHost {
             rng_seed: self.rng_seed,
             map: self.map.clone(),
             skill: self.skill,
+            deathmatch: self.deathmatch,
+            bots: self.bots,
         })
     }
 
@@ -313,7 +390,20 @@ impl LobbyHost {
         LobbyMsg::Start(Start {
             rng_seed: self.rng_seed,
             names,
+            delay: None,
         })
+    }
+
+    /// [`Self::start_msg`] carrying the input delay every seat must use.
+    #[must_use]
+    pub fn start_msg_with_delay(&self, delay: u32) -> LobbyMsg {
+        match self.start_msg() {
+            LobbyMsg::Start(mut s) => {
+                s.delay = Some(delay);
+                LobbyMsg::Start(s)
+            }
+            other => other,
+        }
     }
 
     /// Occupied seats.
@@ -321,6 +411,25 @@ impl LobbyHost {
     pub fn seats(&self) -> &[(PeerId, String)] {
         &self.seats
     }
+}
+
+/// Lockstep input delay (tics, `1..=8`) for the host's measured round trips
+/// to each joined seat (ms). A command from seat A reaches seat B in about
+/// half A's round trip plus half B's (through the host on a relay; a mesh is
+/// usually no slower), so the two slowest seats decide. A peer stalls only
+/// when that one-way time (plus jitter margin) is longer than the delay.
+#[must_use]
+pub fn delay_for_rtts(rtts_ms: &[u32]) -> u32 {
+    const TIC_MS: f64 = 1000.0 / 35.0;
+    const JITTER_MS: f64 = 10.0;
+    let mut sorted = rtts_ms.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let worst = f64::from(sorted.first().copied().unwrap_or(0));
+    let second = f64::from(sorted.get(1).copied().unwrap_or(0));
+    let one_way = (worst + second) / 2.0 + JITTER_MS;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let tics = (one_way / TIC_MS).ceil() as u32;
+    tics.clamp(1, 8)
 }
 
 fn push_str(v: &mut Vec<u8>, s: &str) {
@@ -478,6 +587,61 @@ mod tests {
                 assert_eq!(host.seats()[1].1, "p2-retry");
             }
             other => panic!("expected Welcome on retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_with_delay_and_ping_pong_round_trip() {
+        for delay in [None, Some(3)] {
+            let msg = LobbyMsg::Start(Start {
+                rng_seed: 77,
+                names: vec!["Ann".into(), "Bob".into()],
+                delay,
+            });
+            assert_eq!(LobbyMsg::decode(&msg.encode()).unwrap(), msg);
+        }
+        let ping = LobbyMsg::Ping(Ping { nonce: 1234 });
+        assert_eq!(LobbyMsg::decode(&ping.encode()).unwrap(), ping);
+        let pong = LobbyMsg::Pong(Pong {
+            peer_id: PeerId(2),
+            nonce: 1234,
+        });
+        assert_eq!(LobbyMsg::decode(&pong.encode()).unwrap(), pong);
+    }
+
+    #[test]
+    fn delay_grows_with_the_two_slowest_round_trips() {
+        assert_eq!(delay_for_rtts(&[]), 1);
+        assert_eq!(delay_for_rtts(&[2, 1, 3]), 1, "LAN");
+        // One joiner 60 ms away: 30 ms + 10 ms margin = 2 tics.
+        assert_eq!(delay_for_rtts(&[60]), 2);
+        // Two joiners 100 ms away talk to each other in ~100 ms: 4 tics.
+        assert_eq!(delay_for_rtts(&[100, 100, 5]), 4);
+        assert_eq!(delay_for_rtts(&[2000, 2000]), 8, "capped");
+    }
+
+    #[test]
+    fn welcome_carries_rules_and_reads_old_hosts() {
+        let w = Welcome {
+            peer_id: PeerId(1),
+            peer_count: 2,
+            delay: 2,
+            rng_seed: 9,
+            map: "MAP01".into(),
+            skill: 3,
+            deathmatch: 1,
+            bots: 3,
+        };
+        let msg = LobbyMsg::Welcome(w.clone());
+        let bytes = msg.encode();
+        assert_eq!(LobbyMsg::decode(&bytes).unwrap(), msg);
+        // An older host stops after the skill byte: co-op, no bots.
+        match LobbyMsg::decode(&bytes[..bytes.len() - 2]).unwrap() {
+            LobbyMsg::Welcome(old) => {
+                assert_eq!((old.deathmatch, old.bots), (0, 0));
+                assert_eq!(old.map, "MAP01");
+            }
+            other => panic!("{other:?}"),
         }
     }
 }

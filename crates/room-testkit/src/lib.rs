@@ -4,6 +4,10 @@
 
 mod royale01;
 pub use royale01::royale01;
+mod udmf_poly;
+pub use udmf_poly::{
+    PolyMap, linked_line_portal_rooms, linked_plane_portal_rooms, rotated_line_portal_rooms,
+};
 
 use room_map::{MapGeometry, load_map};
 use room_vfs::{VfsBuilder, WadWriter};

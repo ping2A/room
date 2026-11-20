@@ -6,7 +6,7 @@ use crate::web_audio::WebAudio;
 use bytes::Bytes;
 use glam::Vec3;
 use room_audio::ENGINE_SAMPLE_RATE;
-use room_defs::{DefinitionsBuilder, GlDefs, VoxelDefs};
+use room_defs::{DefinitionsBuilder, GlDefs, ModelDefs, VoxelDefs};
 use room_game::{
     EngineData, GameOptions, GameRuntime, GameState, Headless, Skill, SoundSystem,
     intermission_music_candidates, load_embedded_engine_data, mount_embedded_engine,
@@ -38,6 +38,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 thread_local! {
+    /// Rollback window in tics from Settings (`roomSetRollback`; 0 = off).
+    pub(crate) static ROLLBACK_WINDOW: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Prediction on / off from Settings (`roomSetPredict`; `None` = the
+    /// session's own value, from the URL).
+    pub(crate) static PREDICT_SETTING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     /// The page draws messages and the Tab stats itself (`roomSetHtmlOverlays`).
     pub(crate) static HTML_OVERLAYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Message kinds turned off in Settings (`kill`, `frag`, `death`,
@@ -85,8 +90,16 @@ pub struct PlaySession {
     voxel_poses: Vec<VoxelActorPose>,
     /// Actors that received a voxel pose this frame (sprite suppressed).
     voxel_pose_actors: BTreeSet<(u32, u32)>,
+    /// MODELDEF registry.
+    modeldefs: ModelDefs,
+    /// Cached model meshes.
+    models: room_render::ModelCatalog,
+    /// Actors drawn as models this frame (sprite suppressed).
+    model_pose_actors: BTreeSet<(u32, u32)>,
     /// ANIMDEFS texture / flat animations.
     tex_anim: room_render::TextureAnimator,
+    /// Portal views (`room_render::portal_view`).
+    portals: room_render::PortalRenderer,
     /// `A_SpawnParticle(Ex)` / ACS `SpawnParticle` particles (render-only,
     /// as on desktop; never in the checksum).
     particles: room_render::ParticleStore,
@@ -141,6 +154,16 @@ pub struct PlaySession {
     /// Client prediction of the local view in netplay (`docs/38`); the
     /// playsim is never touched.
     predict: bool,
+    /// Rollback: the speculative copy of the world drawn this frame, and
+    /// whether it is in `game` right now (only while drawing).
+    rollback_world: Option<room_sim::World>,
+    rollback_swapped: bool,
+    /// Rollback: `(next frame, newest sent command)` the copy was built for.
+    rollback_key: (u32, u32),
+    /// Rollback: own sounds already played from a copy, `(maptime, name)`.
+    rollback_sounds: std::collections::VecDeque<(u32, String)>,
+    /// Smooths prediction corrections (see [`PredictSmoothing`]).
+    predict_smooth: std::cell::Cell<PredictSmoothing>,
     /// `snd_reverb`: render the listener's sound environment.
     reverb: bool,
     /// `snd_waterreverb`: "Underwater" reverb and muffling under water.
@@ -149,6 +172,8 @@ pub struct PlaySession {
     scores: Scores,
     /// Bottom-left event lines.
     feed: EventFeed,
+    /// Net saves of this match by slot (also kept in `localStorage`).
+    net_saves: BTreeMap<u8, Vec<u8>>,
     /// Messages for the page (`kind`, text), taken by `roomTakeMessages`.
     toasts: Vec<(String, String)>,
     /// One-shot "toggle spectator grid" (from [`crate::input_hub`]).
@@ -377,6 +402,7 @@ impl PlaySession {
         let mut gldefs = GlDefs::default();
         let mut sbarinfo_bar = None;
         let mut voxeldefs = VoxelDefs::default();
+        let mut modeldefs = ModelDefs::default();
         let mut tex_anim = room_render::TextureAnimator::default();
         let mut camera_tex_sizes = BTreeMap::new();
         let mut mapinfo = Arc::new(room_defs::MapInfo::default());
@@ -422,6 +448,7 @@ impl PlaySession {
                 .filter(|i| !i.statusbars.is_empty())
                 .map(|i| room_ui::SbarInfoBar::new(i, &defs.fonts));
             voxeldefs = defs.voxeldefs;
+            modeldefs = defs.modeldefs;
             tex_anim = room_render::TextureAnimator::new(&defs.animdefs);
             for cam in &defs.animdefs.camera_textures {
                 let w = cam.width.clamp(1, 256) as u32;
@@ -534,7 +561,11 @@ impl PlaySession {
             voxels: VoxelCatalog::new(),
             voxel_poses: Vec::new(),
             voxel_pose_actors: BTreeSet::new(),
+            modeldefs,
+            models: room_render::ModelCatalog::new(),
+            model_pose_actors: BTreeSet::new(),
             tex_anim,
+            portals: room_render::PortalRenderer::new(),
             particles: room_render::ParticleStore::default(),
             particle_maptime: 0,
             camera_tex_sizes,
@@ -562,10 +593,17 @@ impl PlaySession {
             prev_eyes: [None; EYE_SEATS],
             cur_eyes: [None; EYE_SEATS],
             predict: true,
+            predict_smooth: std::cell::Cell::new(PredictSmoothing::default()),
+            rollback_world: None,
+            rollback_swapped: false,
+            rollback_key: (u32::MAX, u32::MAX),
+            rollback_sounds: std::collections::VecDeque::new(),
+
             reverb: true,
             water_reverb: true,
             scores: Scores::default(),
             feed: EventFeed::default(),
+            net_saves: BTreeMap::new(),
             toasts: Vec::new(),
             view_grid_toggle: false,
             spectator_grid: true,
@@ -1040,6 +1078,76 @@ impl PlaySession {
     }
 
     /// Swap animated wall / flat materials of `scene` to the frame due now.
+    /// Draw the portal views `scene` asks for (line portals, stacked
+    /// sectors, sky boxes, mirrors, horizons) before the main pass.
+    pub fn render_portal_views(
+        &mut self,
+        gpu: &room_render::GpuContext,
+        pass: &mut room_render::UnlitPass,
+        cam: &room_render::Camera,
+        scene: &mut room_render::SceneLists,
+        sprites: &[room_render::SpriteInstance],
+        size: (u32, u32),
+        particle_stretch: bool,
+    ) {
+        if scene.portal_views.is_empty() {
+            return;
+        }
+        let sizes = self.materials.wall_texel_sizes();
+        let sky = self.sky_texture();
+        let tic = self.game.world().map_or(0, |w| w.level.maptime);
+        let dyn_lights = scene.dyn_lights.clone();
+        let map = &self.map;
+        let tex_anim = &self.tex_anim;
+        // Particles and voxels belong in the views too (their textures are
+        // already up for the main view).
+        let in_level = self.game.state == GameState::Level;
+        let particles = &self.particles;
+        let voxels = &mut self.voxels;
+        let voxel_poses = &self.voxel_poses;
+        let vfs = &self.vfs;
+        let anim_tic = u32::try_from(tic).unwrap_or(0);
+        let mut build = |c: &room_render::Camera, _depth: u32, _skybox: bool| {
+            let mut s = room_render::build_scene_with_sky_ex_sized(
+                map,
+                c,
+                Some(sprites),
+                Some(sky.as_str()),
+                None,
+                Some(&sizes),
+            );
+            tex_anim.apply(&mut s, tic);
+            s.dyn_lights = dyn_lights.clone();
+            room_render::apply_dyn_lights(&mut s);
+            if in_level {
+                if !voxel_poses.is_empty() {
+                    let _ = voxels.append_poses(&mut s, vfs, voxel_poses);
+                }
+                if !particles.particles.is_empty() {
+                    room_render::append_particles_animated(
+                        &mut s,
+                        particles,
+                        c,
+                        particle_stretch,
+                        Some((tex_anim, anim_tic)),
+                    );
+                }
+            }
+            s
+        };
+        self.portals.render(
+            gpu,
+            pass,
+            &mut self.materials,
+            &self.vfs,
+            map,
+            cam,
+            scene,
+            size,
+            &mut build,
+        );
+    }
+
     pub fn animate_textures(&self, scene: &mut room_render::SceneLists) {
         let tic = self.game.world().map_or(0, |w| w.level.maptime);
         self.tex_anim.apply(scene, tic);
@@ -1178,6 +1286,18 @@ impl PlaySession {
         );
         set("rx", wasm_bindgen::JsValue::from(f64::from(rx)));
         set("tx", wasm_bindgen::JsValue::from(f64::from(tx)));
+        // Rollback: the look-ahead in use and how many tics the drawn copy
+        // is ahead of the confirmed game right now.
+        let window = self.rollback_window();
+        set("rollback", wasm_bindgen::JsValue::from(f64::from(window)));
+        if window > 0 && self.rollback_world.is_some() {
+            let (next, sent) = self.rollback_key;
+            let ahead = sent.saturating_sub(next).min(window);
+            set(
+                "rollbackAhead",
+                wasm_bindgen::JsValue::from(f64::from(ahead)),
+            );
+        }
         set(
             "peers",
             wasm_bindgen::JsValue::from(f64::from(net.peer_count)),
@@ -1218,7 +1338,107 @@ impl PlaySession {
     }
 
     /// Advance sim at [`GameRuntime::tic_rate`]; returns `true` if at least one tic ran.
+    ///
+    /// With rollback on (Settings → Network), confirmed frames run as soon
+    /// as they arrive and the view comes from a copy of the world run ahead
+    /// to our newest command ([`Self::update_rollback_view`]).
     pub fn tick_play(&mut self, dt: f32) -> bool {
+        self.end_rollback_view();
+        let rollback = self.rollback_window() > 0;
+        let saved = (self.prev_eyes, self.cur_eyes, self.yaw, self.pitch);
+        let stepped = self.tick_play_inner(dt);
+        if rollback {
+            // Confirmed frames moved the eye; the view follows the copy.
+            if !self.update_rollback_view(saved) && self.rollback_world.is_some() {
+                (self.prev_eyes, self.cur_eyes, self.yaw, self.pitch) = saved;
+            }
+        } else {
+            self.rollback_world = None;
+            self.rollback_key = (u32::MAX, u32::MAX);
+        }
+        stepped
+    }
+
+    /// Rollback window in use: the Settings value, when this game can do it
+    /// (protocol v2 netplay, playing a seat, a copyable world).
+    fn rollback_window(&self) -> u32 {
+        let window = ROLLBACK_WINDOW.with(std::cell::Cell::get);
+        let ok = window > 0
+            && self
+                .net
+                .as_ref()
+                .is_some_and(|n| n.is_v2() && !n.is_spectator())
+            && self.game.can_speculate();
+        if ok { window } else { 0 }
+    }
+
+    /// Rollback: rebuild the speculative copy when a frame or a command
+    /// arrived since the last one (a wrong guess lasts until then), and move
+    /// the eye to it. Returns whether it was rebuilt.
+    #[allow(clippy::type_complexity)]
+    fn update_rollback_view(
+        &mut self,
+        saved: (
+            [Option<Vec3>; EYE_SEATS],
+            [Option<Vec3>; EYE_SEATS],
+            f64,
+            f64,
+        ),
+    ) -> bool {
+        let window = self.rollback_window();
+        let Some(net) = self.net.as_ref() else {
+            return false;
+        };
+        let key = (net.next_tic(), net.next_send_tic());
+        if key == self.rollback_key && self.rollback_world.is_some() {
+            return false;
+        }
+        let frames = net.rollback_frames(window);
+        let seat = self.local_seat;
+        let Some((spec, own_sounds)) = self.game.speculate_with_own_sounds(&frames, seat) else {
+            self.rollback_world = None;
+            return false;
+        };
+        self.rollback_key = key;
+        // Your own shots sound now; the confirmed tic skips them.
+        if !own_sounds.is_empty() {
+            let maptime = spec.level.maptime;
+            for e in &own_sounds {
+                self.rollback_sounds.push_back((maptime, e.name.clone()));
+            }
+            while self.rollback_sounds.len() > 64 {
+                self.rollback_sounds.pop_front();
+            }
+            let events = self.game.translate_sounds_for(&self.vfs, &own_sounds, seat);
+            self.play_sound_events(&events);
+        }
+        self.rollback_world = Some(spec);
+        // Eyes and look from the copy (prev ← the last copy's).
+        (self.prev_eyes, self.cur_eyes, self.yaw, self.pitch) = saved;
+        self.begin_rollback_view();
+        self.sync_camera_from_player();
+        self.end_rollback_view();
+        true
+    }
+
+    /// Rollback: put the speculative copy into the game for drawing. Call
+    /// [`Self::end_rollback_view`] before anything ticks or saves.
+    pub fn begin_rollback_view(&mut self) {
+        if !self.rollback_swapped && self.rollback_world.is_some() {
+            self.game.swap_world(&mut self.rollback_world);
+            self.rollback_swapped = true;
+        }
+    }
+
+    /// Rollback: put the confirmed world back.
+    pub fn end_rollback_view(&mut self) {
+        if self.rollback_swapped {
+            self.game.swap_world(&mut self.rollback_world);
+            self.rollback_swapped = false;
+        }
+    }
+
+    fn tick_play_inner(&mut self, dt: f32) -> bool {
         crate::zvm_web::refresh(&mut self.game);
         let tic = 1.0 / self.game.tic_rate() as f32;
         if self.edit_cam.is_some() {
@@ -1289,6 +1509,28 @@ impl PlaySession {
                     stepped = true;
                     self.step_level(&cmds, spectator);
                 }
+                GameState::Intermission if self.net.is_some() => {
+                    // Netplay: lockstep tics keep flowing and carry the
+                    // ready-vote (use / fire), as on desktop; every peer
+                    // moves on on the same tic.
+                    let Some(net) = self.net.as_mut() else { break };
+                    let Some(cmds) = net.try_advance(
+                        &self.held,
+                        self.attack,
+                        &mut self.weapon,
+                        &mut self.weapon_cycle,
+                        &mut self.mouse_yaw,
+                        &mut self.mouse_pitch,
+                    ) else {
+                        break;
+                    };
+                    self.tic_accum -= tic;
+                    stepped = true;
+                    self.game.tick(&cmds);
+                    if self.game.take_intermission_advance() {
+                        self.advance_intermission();
+                    }
+                }
                 GameState::Intermission => {
                     self.tic_accum -= tic;
                     stepped = true;
@@ -1327,6 +1569,103 @@ impl PlaySession {
         if let (Some(net), Some((x, y, angle))) = (self.net.as_mut(), pose) {
             net.maybe_send_pose(x, y, angle);
         }
+        let game = &self.game;
+        if let Some(net) = self.net.as_mut() {
+            net.report_world_checksum(|| game.checksum());
+        }
+        if let Some(req) = self.game.take_net_save_request() {
+            self.run_net_save(req.load, req.slot);
+        }
+    }
+
+    /// F6 / F9 in netplay: ask for a net save (`load = false`) or load. It
+    /// rides in the host's next command so every seat does it on the same tic.
+    pub fn request_net_save(&mut self, load: bool, slot: u8) {
+        if self.net.is_none() || !matches!(self.game.state, GameState::Level) {
+            return;
+        }
+        if load && !self.net_saves.contains_key(&slot) && self.stored_net_save(slot).is_none() {
+            self.feed
+                .push("No net save to load yet (F6 saves)", now_ms());
+            return;
+        }
+        let Some(net) = self.net.as_mut() else {
+            return;
+        };
+        match net.request_net_save(load, slot) {
+            Ok(()) => {}
+            Err(why) => self.feed.push(why, now_ms()),
+        }
+    }
+
+    fn net_save_key(&self, slot: u8) -> String {
+        format!("netsave/{:08x}/{slot}", self.game.options.rng_seed)
+    }
+
+    fn stored_net_save(&self, slot: u8) -> Option<Vec<u8>> {
+        let text = crate::browser::room_opfs_get(&self.net_save_key(slot)).ok()??;
+        base64_decode(&text)
+    }
+
+    /// Save or load net slot `slot` on this tic (every peer does the same).
+    fn run_net_save(&mut self, load: bool, slot: u8) {
+        let now = now_ms();
+        if !load {
+            match self.game.save_game_with_sounds(&[]) {
+                Ok(bytes) => {
+                    // Best effort: a full browser storage still leaves the
+                    // in-memory copy for this session.
+                    let _ = crate::browser::room_opfs_set(
+                        &self.net_save_key(slot),
+                        &base64_encode(&bytes),
+                    );
+                    self.net_saves.insert(slot, bytes);
+                    self.feed.push("Game saved", now);
+                }
+                Err(e) => self.feed.push(format!("Net save failed: {e}"), now),
+            }
+            return;
+        }
+        let Some(bytes) = self
+            .net_saves
+            .get(&slot)
+            .cloned()
+            .or_else(|| self.stored_net_save(slot))
+        else {
+            // The others load and we cannot: the desync check will say so.
+            self.feed
+                .push("This browser has no copy of the net save", now);
+            return;
+        };
+        let Ok(info) = room_game::read_save_info(&bytes) else {
+            self.feed.push("Net save is damaged", now);
+            return;
+        };
+        if self.game.map_name() != info.map {
+            let Ok(mut next_map) = load_map(&self.vfs, &info.map) else {
+                self.feed
+                    .push(format!("Net load: no map {}", info.map), now);
+                return;
+            };
+            ensure_nodes(&mut next_map);
+            self.map_base = next_map.clone();
+            self.map = next_map.clone();
+            if let Err(e) = self.game.start_custom_map(next_map, Skill::new(info.skill)) {
+                self.feed.push(format!("Net load: {e}"), now);
+                return;
+            }
+        }
+        match self.game.load_game(&bytes) {
+            Ok(()) => {
+                self.particles.clear();
+                self.sync_map_from_world();
+                self.sync_camera_from_player();
+                self.prev_eyes = self.cur_eyes;
+                self.start_level_music();
+                self.feed.push("Game loaded", now);
+            }
+            Err(e) => self.feed.push(format!("Net load failed: {e}"), now),
+        }
     }
 
     /// Netplay (v2) paced by the server-clock estimate (`net_clock`): input
@@ -1352,7 +1691,13 @@ impl PlaySession {
         }
         let pos = net.playout_pos(now)?;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let want = pos.floor() as u32;
+        let want = if self.rollback_window() > 0 {
+            // Rollback draws ahead anyway: no jitter buffer for the
+            // confirmed game, run every frame that is here.
+            u32::MAX
+        } else {
+            pos.floor() as u32
+        };
         let mut ran = 0_u32;
         while matches!(self.game.state, GameState::Level) {
             let Some(net) = self.net.as_mut() else { break };
@@ -1935,7 +2280,16 @@ impl PlaySession {
     fn pump_audio(&mut self) {
         // Always drain: `World::tick` clears the queue next tic, and translate
         // also loads DMX lumps into `SoundSystem.bank` for later merge.
-        let events = self.game.drain_audio(&self.vfs);
+        let events = if self.rollback_world.is_some() {
+            // Rollback already played this seat's own sounds from a copy.
+            self.game.drain_audio_for_predicted(
+                &self.vfs,
+                self.local_seat,
+                &mut self.rollback_sounds,
+            )
+        } else {
+            self.game.drain_audio(&self.vfs)
+        };
         let music_req = self.game.take_music_request();
         let Some(audio) = self.audio.as_ref() else {
             return;
@@ -1987,6 +2341,19 @@ impl PlaySession {
         }
         // Top up the AudioWorklet ring (ScriptProcessor renders in its callback).
         audio.feed_output();
+    }
+
+    /// Rollback: play sounds taken from a speculative copy right away.
+    fn play_sound_events(&self, events: &[room_audio::SoundEvent]) {
+        let Some(audio) = self.audio.as_ref() else {
+            return;
+        };
+        if let Ok(mut mix) = audio.mixer.try_borrow_mut() {
+            if let Some(sounds) = self.game.sounds.as_ref() {
+                mix.bank.merge_missing(&sounds.bank);
+            }
+            mix.apply(events);
+        }
     }
 
     /// Ears of the seat on screen: the player you control, or the one a
@@ -2734,6 +3101,7 @@ impl PlaySession {
             .map(|p| (p.extralight, p.fixed_colormap()))
             .unwrap_or((0, 0));
         let light_boost = (extralight.clamp(0, 2) * 16 + i32::from(colormap == 1) * 64) as i16;
+        room_map::portals::sync_dynamic_geometry(&mut self.map, &world.map);
         // Restore switchable textures from base, then apply live overrides.
         for (i, side) in self.map_base.sides.iter().enumerate() {
             if let Some(dst) = self.map.sides.get_mut(i) {
@@ -2785,8 +3153,19 @@ impl PlaySession {
     fn sync_camera_from_player(&mut self) {
         for seat in 0..EYE_SEATS {
             let eye = self.sim_eye(seat as u8);
+            // Went through a portal this tic: no lerp across the map.
+            let crossed = self.game.world().is_some_and(|w| {
+                let mo = w
+                    .players
+                    .get(seat)
+                    .and_then(|p| p.as_ref())
+                    .and_then(|p| p.mo);
+                w.portal_moves.iter().any(|m| Some(m.actor) == mo)
+            });
             self.prev_eyes[seat] = match (self.cur_eyes[seat], eye) {
-                (Some(prev), Some(cur)) if prev.distance(cur) <= TELEPORT_DIST => Some(prev),
+                (Some(prev), Some(cur)) if !crossed && prev.distance(cur) <= TELEPORT_DIST => {
+                    Some(prev)
+                }
                 _ => eye,
             };
             self.cur_eyes[seat] = eye;
@@ -2869,7 +3248,11 @@ impl PlaySession {
             // shrinks, and the view does not saw back and forth.
             let base = self.cur_eyes[usize::from(self.local_seat).min(EYE_SEATS - 1)]
                 .or_else(|| self.interp_eye(self.local_seat))?;
-            return Some((base + offset, look_dir(yaw, pitch)));
+            let next_tic = self.net.as_ref().map_or(0, NetPlay::next_tic);
+            let mut smooth = self.predict_smooth.get();
+            let eye = smooth.apply(base + offset, next_tic, now_ms());
+            self.predict_smooth.set(smooth);
+            return Some((eye, look_dir(yaw, pitch)));
         }
         let (sent_yaw, sent_pitch) = self.net.as_ref().map_or((0, 0), NetPlay::unapplied_look);
         let yaw = self.yaw + (f64::from(self.mouse_yaw) * mouse + f64::from(sent_yaw)) * scale;
@@ -2902,7 +3285,12 @@ impl PlaySession {
     /// spectators, with prediction off, or when the sim cannot predict the
     /// player's state (dead, camera, flying, …).
     fn predicted_view(&self) -> Option<(Vec3, f64, f64)> {
-        if !self.predict || self.is_spectator() {
+        let predict = PREDICT_SETTING
+            .with(std::cell::Cell::get)
+            .unwrap_or(self.predict);
+        // Rollback already draws the whole world ahead.
+        if !predict || self.is_spectator() || self.rollback_world.is_some() || self.rollback_swapped
+        {
             return None;
         }
         let net = self.net.as_ref()?;
@@ -2961,7 +3349,15 @@ impl PlaySession {
             self.cur_eyes.get(i).copied().flatten(),
         ) {
             (Some(prev), Some(cur)) => {
-                let alpha = (self.tic_accum * self.game.tic_rate() as f32).clamp(0.0, 1.0);
+                // Rollback copies follow the input clock (one per command).
+                let alpha = match self.net.as_ref() {
+                    Some(net) if self.rollback_world.is_some() || self.rollback_swapped => {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let f = net.input_frac(now_ms()) as f32;
+                        f.clamp(0.0, 1.0)
+                    }
+                    _ => (self.tic_accum * self.game.tic_rate() as f32).clamp(0.0, 1.0),
+                };
                 Some(prev.lerp(cur, alpha))
             }
             _ => self.sim_eye(seat),
@@ -3153,6 +3549,152 @@ impl PlaySession {
             .contains(&(id.index(), id.generation()))
     }
 
+    /// Actors whose current sprite frame a MODELDEF block binds (drawn as
+    /// models, not sprites), skipping `seat`'s own body.
+    fn fill_model_actors(&mut self, seat: u8) {
+        self.model_pose_actors.clear();
+        if self.modeldefs.blocks.is_empty() {
+            return;
+        }
+        let Some(world) = self.game.world() else {
+            return;
+        };
+        let local_mo = world
+            .players
+            .get(usize::from(seat))
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.mo);
+        for &id in &world.thinkers.default {
+            let Some(a) = world.actors.get(id) else {
+                continue;
+            };
+            let class_flags = world.classes.get(a.class).map(|c| c.flags).unwrap_or(0);
+            if a.destroyed || Some(id) == local_mo || ((a.flags | class_flags) & FLAG_DONTDRAW) != 0
+            {
+                continue;
+            }
+            let Some(class) = world.classes.get(a.class) else {
+                continue;
+            };
+            let model_class = if a.ext.model.modeldef.is_empty() {
+                class.name.as_str()
+            } else {
+                a.ext.model.modeldef.as_str()
+            };
+            let frame = char::from(b'A' + a.frame.min(25));
+            if room_render::actor_has_model(&self.modeldefs, model_class, &a.sprite, frame) {
+                self.model_pose_actors.insert((id.index(), id.generation()));
+            }
+        }
+    }
+
+    fn actor_draws_model(&self, id: room_sim::ActorId) -> bool {
+        self.model_pose_actors
+            .contains(&(id.index(), id.generation()))
+    }
+
+    /// Draw the MODELDEF models of the actors found by the latest sprite collect.
+    pub fn append_model_poses(&mut self, lists: &mut SceneLists) {
+        if self.model_pose_actors.is_empty() {
+            return;
+        }
+        let Some(world) = self.game.world() else {
+            return;
+        };
+        // `ROTATING` spins with game time here (UZDoom uses the wall clock).
+        let clock_tic = f64::from(world.level.maptime);
+        let mut poses = Vec::new();
+        for &id in &world.thinkers.default {
+            if !self.actor_draws_model(id) {
+                continue;
+            }
+            let (Some(a), Some(class)) = (
+                world.actors.get(id),
+                world
+                    .actors
+                    .get(id)
+                    .and_then(|a| world.classes.get(a.class)),
+            ) else {
+                continue;
+            };
+            let model_class = if a.ext.model.modeldef.is_empty() {
+                class.name.clone()
+            } else {
+                a.ext.model.modeldef.clone()
+            };
+            let frame = char::from(b'A' + a.frame.min(25));
+            let block_flags = self
+                .modeldefs
+                .frame(&model_class, &a.sprite, frame)
+                .map_or(0, |(d, _)| d.mdl_flags());
+            let flags = a.ext.model.flags.unwrap_or(block_flags);
+            let next = room_sim::model_frame_lerp(
+                world,
+                a,
+                0.0,
+                flags & room_defs::mdl::INTERPOLATEDOUBLEDFRAMES != 0,
+            )
+            .map(|n| (n.sprite, char::from(b'A' + n.frame.min(25)), n.inter));
+            let m = &a.ext.model;
+            let req = |anim: &(String, f64, i32, i32, i32, i32, i32), start: u32| {
+                room_render::AnimRequest {
+                    name: anim.0.clone(),
+                    framerate: anim.1,
+                    start_frame: anim.2,
+                    loop_frame: anim.3,
+                    end_frame: anim.4,
+                    interpolate_tics: anim.5,
+                    flags: anim.6,
+                    start_tic: f64::from(start),
+                }
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            poses.push(room_render::ModelActorPose {
+                class: model_class,
+                origin: glam::Vec3::new(a.pos.x() as f32, a.pos.y() as f32, a.pos.z() as f32),
+                light: (room_sim::actor_light_level(world, a) as f32 / 255.0).clamp(0.2, 1.0),
+                angle_deg: (a.angle.degrees() + a.ext.sprite_rotation) as f32,
+                sprite: a.sprite.clone(),
+                frame,
+                tic: f64::from(world.level.maptime),
+                animation: m
+                    .animation
+                    .as_ref()
+                    .map(|anim| req(anim, m.animation_start)),
+                prev_animation: m
+                    .prev_animation
+                    .as_ref()
+                    .map(|(anim, start, switch)| (req(anim, *start), f64::from(*switch))),
+                bones: m
+                    .bones
+                    .iter()
+                    .map(|b| (b.index, b.name.clone(), bone_override(b)))
+                    .collect(),
+                animation_file: m.animation_file.as_ref().map(|(_, path, file)| {
+                    if path.is_empty() {
+                        file.clone()
+                    } else {
+                        room_render::join_model_path(path, file)
+                    }
+                }),
+                pitch_deg: a.pitch.degrees() as f32,
+                roll_deg: a.roll.degrees() as f32,
+                vel: glam::Vec3::new(a.vel.x() as f32, a.vel.y() as f32, a.vel.z() as f32),
+                scale: [a.scale_x as f32, a.scale_y as f32],
+                next,
+                flags: a.ext.model.flags,
+                clock_tic,
+            });
+        }
+        room_render::append_actor_models(
+            lists,
+            &mut self.models,
+            &self.vfs,
+            &self.modeldefs,
+            &poses,
+        );
+    }
+
     /// Draw voxel poses gathered by the latest sprite collect.
     pub fn append_voxel_poses(&mut self, lists: &mut SceneLists) -> Vec<(String, Vec<u8>)> {
         if self.voxel_poses.is_empty() {
@@ -3179,6 +3721,7 @@ impl PlaySession {
     /// Like [`Self::collect_live_sprites`], hiding `seat`'s own body.
     pub fn collect_live_sprites_for(&mut self, camera: &Camera, seat: u8) -> Vec<SpriteInstance> {
         self.fill_voxel_poses(seat, camera);
+        self.fill_model_actors(seat);
         let Some(world) = self.game.world() else {
             return Vec::new();
         };
@@ -3188,6 +3731,17 @@ impl PlaySession {
             .get(seat)
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
+        // Player pawns wear their seat's colour (vanilla translations).
+        let pawn_colors: Vec<(room_sim::ActorId, u8)> = world
+            .players
+            .iter()
+            .enumerate()
+            .filter_map(|(s, p)| {
+                let mo = p.as_ref()?.mo?;
+                Some((mo, room_render::player_colors::seat_color(s)))
+            })
+            .filter(|(_, color)| *color != 0)
+            .collect();
         let view_x = f64::from(camera.eye.x);
         let view_y = f64::from(camera.eye.y);
         let actors: Vec<_> = world
@@ -3281,7 +3835,7 @@ impl PlaySession {
             (fuzz, additive, subtract),
         ) in actors
         {
-            if self.actor_draws_voxel(id) {
+            if self.actor_draws_voxel(id) || self.actor_draws_model(id) {
                 continue;
             }
             let scale_x = scale_x * view.pixel_scale.0;
@@ -3363,6 +3917,12 @@ impl PlaySession {
                 sprite_pos += up * (h as f32 * 0.5);
                 orient = SpriteOrient::Facing { right, up };
             }
+            let texture = match pawn_colors.iter().find(|(mo, _)| *mo == id) {
+                Some((_, color)) => {
+                    room_render::player_colors::player_color_texture(&texture, *color)
+                }
+                None => texture,
+            };
             out.push(SpriteInstance {
                 pos: sprite_pos
                     + sprite_offset_delta(camera.forward, sprite_ofs_x as f32, sprite_ofs_y as f32),
@@ -3648,6 +4208,20 @@ impl PlaySession {
                 "Playing {} — click for audio/mouse · WASD · E use · LMB fire",
                 self.game.map_name()
             ),
+            GameState::Intermission if self.net.is_some() => {
+                let (ready, of) = self.game.intermission_votes();
+                let secs = self.game.intermission_auto_advance_in().div_ceil(35);
+                let me = self.game.intermission_ready
+                    & room_sim::seat_bit(usize::from(self.local_seat))
+                    != 0;
+                if self.is_spectator() || me {
+                    format!("Intermission — ready {ready}/{of} · next map in {secs} s")
+                } else {
+                    format!(
+                        "Intermission — press E or click when ready ({ready}/{of}) · next map in {secs} s"
+                    )
+                }
+            }
             GameState::Intermission => "Intermission…".into(),
             GameState::Finale => "Episode complete".into(),
             GameState::Title => "Title".into(),
@@ -3892,6 +4466,25 @@ fn clamp_i16(v: f64) -> i16 {
     v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
+/// The playsim's bone override in the renderer's form (UZ7).
+fn bone_override(b: &room_sim::BoneOffset) -> room_render::BoneOverride {
+    let comp = |c: &room_sim::BoneComponent| {
+        (c.mode != 0 || c.prev_mode != 0).then(|| room_render::BoneComponent {
+            mode: c.mode,
+            prev_mode: c.prev_mode,
+            switch_tic: c.switch_tic,
+            interp_len: c.interp_len,
+            prev: c.prev.map(|v| v as f32),
+            cur: c.cur.map(|v| v as f32),
+        })
+    };
+    room_render::BoneOverride {
+        translation: comp(&b.translation),
+        rotation: comp(&b.rotation),
+        scaling: comp(&b.scaling),
+    }
+}
+
 fn load_genmidi(vfs: &Vfs) -> Option<GenMidiBank> {
     let id = vfs
         .find("GENMIDI", Namespace::Global)
@@ -3987,5 +4580,145 @@ mod analog_tests {
         bits.forward_move = 123;
         apply_analog_move(&mut bits);
         assert_eq!(bits.forward_move, 123);
+    }
+}
+
+/// Hides prediction corrections. When a confirmed frame shows the guess was
+/// wrong (a door that did not open, a push, a monster in the way) the raw
+/// predicted eye jumps; this keeps the eye where it was drawn and eases the
+/// difference out over about a tenth of a second. Teleports still snap.
+#[derive(Clone, Copy, Debug, Default)]
+struct PredictSmoothing {
+    /// Last raw predicted eye and the lockstep tic it was predicted from.
+    last_raw: Option<(Vec3, u32)>,
+    /// Offset added to the raw eye, decaying to zero.
+    correction: Vec3,
+    /// Time of the last frame (ms).
+    last_ms: f64,
+}
+
+impl PredictSmoothing {
+    /// A jump smaller than this between frames is ordinary movement.
+    const MOVE: f32 = 12.0;
+    /// A jump larger than this is a teleport: snap.
+    const SNAP: f32 = 128.0;
+    /// Correction half-life (ms).
+    const HALF_LIFE_MS: f64 = 35.0;
+
+    fn apply(&mut self, raw: Vec3, next_tic: u32, now: f64) -> Vec3 {
+        let dt = (now - self.last_ms).clamp(0.0, 250.0);
+        self.last_ms = now;
+        #[allow(clippy::cast_possible_truncation)]
+        let keep = 0.5_f64.powf(dt / Self::HALF_LIFE_MS) as f32;
+        self.correction *= keep;
+        if let Some((last, last_tic)) = self.last_raw {
+            let jump = (raw - last).length();
+            if jump > Self::SNAP {
+                self.correction = Vec3::ZERO;
+            } else if next_tic != last_tic && jump > Self::MOVE {
+                // A frame was confirmed and the guess moved: start from
+                // where the eye was drawn.
+                self.correction += last - raw;
+            }
+        }
+        if self.correction.length() > Self::SNAP {
+            self.correction = Vec3::ZERO;
+        }
+        self.last_raw = Some((raw, next_tic));
+        raw + self.correction
+    }
+}
+
+#[cfg(test)]
+mod predict_smoothing_tests {
+    use super::*;
+
+    #[test]
+    fn a_wrong_guess_eases_out_and_a_teleport_snaps() {
+        let mut s = PredictSmoothing::default();
+        let a = Vec3::new(0.0, 0.0, 41.0);
+        assert_eq!(s.apply(a, 10, 0.0), a);
+        // The next frame confirms a tic and the guess jumps 40 units back.
+        let b = Vec3::new(-40.0, 0.0, 41.0);
+        let drawn = s.apply(b, 11, 16.0);
+        assert!((drawn - a).length() < 1.0, "no visible jump: {drawn}");
+        // About 0.2 s later the correction is gone.
+        let mut last = drawn;
+        for i in 2..14 {
+            last = s.apply(b, 11, 16.0 * f64::from(i));
+        }
+        assert!(
+            (last - b).length() < 1.0,
+            "settled on the confirmed guess: {last}"
+        );
+        // A teleport is not smoothed.
+        let far = Vec3::new(4000.0, 0.0, 41.0);
+        assert_eq!(s.apply(far, 12, 300.0), far);
+    }
+}
+
+/// Standard base64 (for net saves in `localStorage`).
+fn base64_encode(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(char::from(ABC[((n >> shift) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(u32::from(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    };
+    let bytes = text.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= val(c)? << (18 - 6 * i);
+        }
+        let take = chunk.len().saturating_sub(1);
+        for i in 0..take {
+            #[allow(clippy::cast_possible_truncation)]
+            out.push((n >> (16 - 8 * i)) as u8);
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod net_save_tests {
+    use super::*;
+
+    #[test]
+    fn base64_round_trips_every_length() {
+        for len in 0..40 {
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let text = base64_encode(&data);
+            assert_eq!(text.len() % 4, 0);
+            assert_eq!(base64_decode(&text).unwrap(), data, "len {len}");
+        }
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
     }
 }

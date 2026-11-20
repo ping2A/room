@@ -100,6 +100,7 @@ Use GZDoom's exact formulas (`secplane_t` in `r_defs.h`) to keep collision ident
 - Namespaces: `doom`, `heretic`, `hexen`, `strife`, `zdoom`, `zdaemon`, `vavoom`, `eternity` (partial, as GZDoom), `dsda` (S). Non-ZDoom namespaces restrict available keys and select the special set/translator.
 - Every key in `udmf.txt` + `udmf_zdoom.txt` (GZDoom repo `specs/`) must be supported. Notable: things (`id, x, y, height, angle, type, skill1..16, class1..16, single, coop, dm, friend, dormant, ambush, standing, strifeally, translucent, invisible, countsecret, conversation, special, arg0..4, arg0str, gravity, health, renderstyle, fillcolor, alpha, score, pitch, roll, scalex/scaley/scale, floatbobphase, friendlyseeblocks, lm_*`), linedefs (all `SPAC` booleans, block flags, `moreids`, `arg0str`, `alpha`, `renderstyle`, `locknumber`, `automapstyle`, `health`, `healthgroup`, `damagespecial`, `deathspecial`, …), sidedefs (per-tier offsets/scales, `light_top/mid/bottom`, `lightabsolute_*`, colours, `nodecals`, `clipmidtex`, `wrapmidtex`, `nogradient_*`, `flipgradient_*`, `useowncolors_*`, `xscroll*`, …), sectors (plane panning/scale/rotation, plane light/absolute, alpha, renderstyle, `lightcolor`, `fadecolor`, `desaturation`, `fogdensity`, `silent`, `nofallingdamage`, `dropactors`, `norespawn`, `hidden`, `waterzone`, `moreids`, `damageamount/type/interval/leakiness/terrainhit/hazard`, `floorterrain/ceilingterrain`, `floorplane_a..d`, `ceilingplane_a..d`, `color_*`, `glow*`, `portal_*`, `skyfloor/skyceiling`, `xscrollfloor…`, `friction`, `gravity`, `soundsequence`, `health*`, …), vertices (`zfloor`, `zceiling`).
 - Keys prefixed `user_` are stored in `UserFields` with declared type inferred from the literal.
+- Editable documents (`RawMap`): each `RawLinedef` / `RawSector` / `RawThing` keeps the UDMF booleans that have no raw slot as `ext` bits (`udmf::ext`, key tables `LINE_EXT_KEYS` / `SECTOR_EXT_KEYS` / `THING_EXT_KEYS`) and every record its `user_*` bag (`user`, ints and 16.16 fixed); `write_textmap` writes both back, `coop` / `dm` explicitly, and `RawMap::to_geometry` rebuilds `udmf_user` from them.
 - Unknown non-user keys: ignored silently (spec says so).
 - Comments (`//`, `/* */`) allowed.
 
@@ -143,30 +144,116 @@ Process in GZDoom's order (`MapLoader::LoadLevel`, `P_SpawnSpecials`, `P_SpawnSl
 
 ## 5. Portals
 
-GZDoom's portal model (`portal.cpp`, `portal.h`) must be reproduced; it affects collision, sight, sound and rendering.
+Room follows UZDoom's portal model (`src/playsim/portal.cpp`,
+`src/maploader/specials.cpp`). Load-time tables live in
+`room-map/src/portals.rs`, the playsim side in `room-sim/src/portal.rs` and
+`room-sim/src/sight_portal.rs`, drawing in `room-render/src/portal_view.rs`.
+Maps without portals take none of these paths, so vanilla play, demos and
+checksums are unchanged.
 
-### 5.1 Types
+### 5.1 Types (implemented 2026-11-19)
 
-| Portal | Source | Effect |
+| Portal | Source | Room |
 |---|---|---|
-| Line portal, visual | `Line_SetPortal(tag, 0, type=0 visual)` | rendered only |
-| Line portal, teleporter | type 1 | actors crossing are teleported (non-seamless) |
-| Line portal, interactive | type 2 | seamless crossing, no static linking |
-| Line portal, static/linked | type 3 | full collision/sight linking; creates **portal groups** |
-| Line_QuickPortal (`156`) | | shortcut to linked portal |
-| Sector skybox | `SkyViewpoint` (9080), `SkyPicker` (9081), `SectorSkyViewpoint`… | rendered sky through another viewpoint |
-| Stacked sectors | `UpperStackLookOnly`/`LowerStackLookOnly` (9077/9078), `Sector_SetPortal` (57) type 0/1 | rendered; linked when "static" |
-| Plane portals (static linked) | `Sector_SetPortal(tag, 1|2 linked…)` | collision across floors/ceilings (e.g. room over room) |
-| Horizon | `Line_Horizon` (9) | rendering only |
-| Mirror | `Line_Mirror` (182) | rendering only |
-| Sky viewpoint for whole map | 9080 with tid 0 | |
+| Line portal, visual | `Line_SetPortal(target id, this id, 0, align)` (156) | drawn; also one-sided lines |
+| Line portal, teleport | type 1 | actors crossing move (position, velocity, angle, Z by `align`); hitscans continue |
+| Line portal, interactive | type 2 | as teleport, plus collision checks the other side (`PIT_CheckPortal`); a Z alignment demotes it to teleport |
+| Line portal, linked | type 3 | pure XY offset; creates **portal groups**; collision, sight, hitscans, sound and AI distances across it |
+| Eternity linked pair | `Line_SetPortal(0, …, 4)` + `(1, …, 4)` sharing a line id | linked both ways |
+| `Line_QuickPortal` (301) | two lines with one id | linked (`args[0]` 0) or visual |
+| Stacked sectors | `UpperStackLookOnly` / `LowerStackLookOnly` (9077/9078, same TID), `Sector_SetPortal(tag, 0, plane, 0/1)` anchor + reference | drawn |
+| Linked plane portal | `Sector_SetPortal(tag, 6, plane, 0/1)` | groups; floor/ceiling heights, movement (`CheckPortalTransition`), sight, hitscans and noise go through |
+| Copy | `Sector_SetPortal(tag, 1, …)` / type 5 onto lines | copies an existing portal to more sectors / lines |
+| Eternity plane / horizon | `Sector_SetPortal(tag, 3/4, plane)` | drawn as the origin sector's planes to the horizon |
+| Sky viewpoint | `SkyViewpoint` (9080; TID 0 = level default), `SkyPicker` (9081), `SkyCamCompat` (9083 / 5006 with `Sector_SetPortal(tag, 2, plane)`) | drawn |
+| Horizon | `Line_Horizon` (9) | drawn |
+| Mirror | `Line_Mirror` (182) | drawn |
+| UDMF plane keys | `portal_floor_*` / `portal_ceil_*` `blocksound`, `disabled`, `nopass`, `norender` | honoured |
+| Runtime retarget | `Line_SetPortalTarget(thisid, destid)` (107) | `ChangePortal` |
+
+UZDoom's set-up rules are kept: a traversable line portal without a back
+sector becomes visual; a portal whose destination does not lead back is a
+teleporter; linked portals must be two-way, unrotated and have consistent
+displacements (else they are demoted, as in UZDoom); linked plane portals on
+sloped planes are removed; a plane past its portal plane is *obstructed*
+(checked against the live height). Hexen-format maps take line ids from the
+specials that carry them (UZDoom `SetLineID`).
+
+Room's Build water and fall links (`Sector_SetPortal` types 200 / 201,
+`docs/23-build-engine.md`) are separate: `PortalTables::build_links`.
 
 ### 5.2 Linked portal groups
 
-- At load, connected linked portals partition sectors into **groups**. Each pair of groups has a fixed 2D displacement (`FDisplacementTable`). Displacements must be consistent (GZDoom validates; inconsistency disables linking with a warning).
-- Every actor has a `group` derived from its sector. Distances between actors use `actor.pos_relative(other)` which adds the displacement between their groups (GZDoom `Vec2To`, `Vec3To`, `PosRelative`). **All** sim distance computations must go through these helpers.
-- The blockmap search crosses portals via a **portal blockmap** (lines that are portals, and sectors with linked plane portals per block). `FMultiBlockLinesIterator` and `FMultiBlockThingsIterator` equivalents iterate blocks in all reachable groups within the check radius.
-- Hitscans (`P_LineAttack`/`P_TraceBullet`) and sight checks continue through linked portals by re-entering the trace in the other group with transformed origin.
+- At load, linked portals split sectors into groups (`CollectSectors`); group
+  0 is everything no linked portal reaches. `PortalGroups::offset(from, to)`
+  is UZDoom's `Displacements.getOffset`; indirect connections are filled in
+  (`ConnectPortalGroups`).
+- `portal::pos_relative`, `vec2_to`, `vec3_to`, `pos_seen_from` are
+  `PosRelative` / `Vec2To` / `Vec3To`. Monster aiming, facing, chase
+  direction, melee and missile range checks and missile aim use them.
+- Movement: a move whose centre passes a passable line portal from its front
+  is checked and lands on the destination side (`P_TryMove`); actors
+  touching a line portal also check the other side, at the displaced
+  position, with the empty space behind both portal lines ignored. Through
+  linked plane portals, floor and ceiling come from the far side
+  (`NextLowestFloorAt` / `NextHighestCeilingAt`) and actors that pass the
+  plane change group (`CheckPortalTransition`).
+- Sight (`SightCheck`): sorted line intercepts; a line portal stops the trace
+  and queues a task that re-runs it in the destination group from that
+  fraction; planes that open on a linked portal queue the group above or
+  below.
+- Hitscans continue through passable line portals and linked plane portals
+  (up to 4).
+- Noise alerts flood through linked planes and sound-passing line portals;
+  sound positions are moved into the listener's group.
+- The reject table is not used on maps with linked portals.
+- `World::portal_moves` lists the actors moved through a portal each tic, so
+  the shells snap their interpolation instead of sliding across the map.
+
+- Position queries see every group they reach (UZDoom
+  `CollectConnectedGroups` / `FMultiBlockThingsIterator`): thing–thing
+  collision, blast damage (`P_RadiusAttack`), `A_RadiusThrust` and
+  `A_RadiusGive` take the groups a box touches through linked line portals
+  and, from its bottom to its top, through linked floor and ceiling portals
+  (straight up / down and over neighbouring sectors), and find actors there
+  at their displaced position (`portal::connected_groups`,
+  `portal::query_pos`). Room keeps one actor list, not a blockmap per group,
+  so this is a filter on that list rather than a second link.
+- Polyobject portals: a polyobject whose lines carry a passable portal
+  (UZDoom `bHasPortals`) keeps it while it moves. One-sided polyobject lines
+  are not demoted to visual portals (`WALLF_POLYOBJ`). After each move a
+  linked portal recomputes its displacement, its partner takes the
+  opposite and the destination group moves in the displacement table
+  (`FPolyObj::UpdateLinks`, `MoveGroup`); other portals on or aimed at the
+  lines recompute their rotation, so a turning polyobject turns the view
+  and the crossing with it (UZDoom keeps the load-time angle). Polyobjects
+  with linked portals refuse `Polyobj_Rotate*` and swinging doors, as
+  UZDoom. Portals are set up against the polyobject's start spot.
+- ZScript: `Sector.GetPortalType` / `GetPortalPlaneZ` /
+  `GetPortalDisplacement` / `GetOppositePortalGroup` / `PortalBlocks*` /
+  `PortalIsLinked` (on `level.PointInSector` sectors and on `CurSector`);
+  `LevelLocals.Vec2Diff` / `Vec3Diff` / `Vec2Offset` / `Vec3Offset` /
+  `Vec2OffsetZ` / `GetDisplacement`; actor `Vec2To` / `Vec3To` /
+  `Distance2D` / `Distance3D` / `AngleTo` / `PosRelative` through linked
+  portals, and `Vec2Offset` / `Vec3Offset` / `Vec2Angle` / `Vec3Angle` /
+  `Vec2OffsetZ` carried through interactive line portals unless
+  `absolute` (`GetPortalOffsetPosition`). The playsim publishes a snapshot
+  of the portals to the VM per map and whenever a portal changes
+  (`room-zvm/src/portal_natives.rs`). Plane blocking answers use the flags
+  at load (UZDoom re-checks `PLANEF_OBSTRUCTED` when planes move).
+
+- `Line.isLinePortal` / `isVisualPortal` / `getPortalDestination` /
+  `getPortalFlags` / `getPortalAlignment` on the map's `Line` objects
+  (`level.Lines[i]`, a sector's `Lines`, a portal's destination); see doc 34
+  for the map objects.
+
+Not done: crossing a portal because a polyobject moved into the actor
+(UZDoom has the same gap).
+
+Editors: `room_map::portal_report(&MapGeometry)` summarises the linked
+tables (line portals and destinations, portal planes with their flags,
+groups, polyobject portal lines, `SetupData::portal_warnings`); the web
+editor overlays it on the 2D view (doc 18 §3.8).
 
 ## 6. Polyobjects
 

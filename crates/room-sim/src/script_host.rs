@@ -55,6 +55,14 @@ pub struct ScriptHost {
     modules: Vec<LoadedScript>,
 }
 
+/// Copy for world snapshots (rollback): a fresh host. Only a world with no
+/// play modules loaded may be snapshotted ([`crate::World::snapshot`]).
+impl Clone for ScriptHost {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
 impl Default for ScriptHost {
     fn default() -> Self {
         Self::new()
@@ -62,6 +70,12 @@ impl Default for ScriptHost {
 }
 
 impl ScriptHost {
+    /// No play modules are loaded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_empty()
+    }
+
     /// Empty host with world-backed `level_time` / `actor_exists`.
     #[must_use]
     pub fn new() -> Self {

@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(demo.map, "MAP01");
         assert_eq!(demo.rng_seed, 1993);
         assert_eq!(demo.tics.len(), 70);
-        assert_eq!(demo.fingerprint(), 0xfaca6416f1529343);
+        assert_eq!(demo.fingerprint(), 0xdf46a6298242988a);
     }
 
     #[test]
@@ -645,7 +645,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom2_map01_03.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 3);
-        assert_eq!(bundle.fingerprint(), 0xa3a0561b6270f5a0);
+        assert_eq!(bundle.fingerprint(), 0xdef8854f53385efe);
     }
 
     #[test]
@@ -653,7 +653,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom2_map01_10.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 10);
-        assert_eq!(bundle.fingerprint(), 0x24ce159a69804516);
+        assert_eq!(bundle.fingerprint(), 0xcad47cee5e1f509c);
     }
 
     #[test]
@@ -661,7 +661,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom2_map11_20.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 10);
-        assert_eq!(bundle.fingerprint(), 0xe71030ebffc7caa7);
+        assert_eq!(bundle.fingerprint(), 0xa8ec8aba55eec15f);
     }
 
     #[test]
@@ -669,7 +669,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom2_map21_30.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 10);
-        assert_eq!(bundle.fingerprint(), 0x6497c95f12f328e5);
+        assert_eq!(bundle.fingerprint(), 0xc83574ab80b936e0);
     }
 
     #[test]
@@ -677,7 +677,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom1_e1.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 8);
-        assert_eq!(bundle.fingerprint(), 0x26911146d0d00298);
+        assert_eq!(bundle.fingerprint(), 0x408629dd6923c794);
     }
 
     #[test]
@@ -685,7 +685,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom1_e2.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 8);
-        assert_eq!(bundle.fingerprint(), 0x5b735328783a6a23);
+        assert_eq!(bundle.fingerprint(), 0x3fd7981567385e63);
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom1_e3.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 8);
-        assert_eq!(bundle.fingerprint(), 0xf834aa2093629cec);
+        assert_eq!(bundle.fingerprint(), 0x19b2465eba4c6b7d);
     }
 
     #[test]
@@ -701,7 +701,7 @@ mod tests {
         let bytes = include_bytes!("../../../testdata/demos/freedoom1_e4.fdbn");
         let bundle = DemoBundle::from_fdbn(bytes).unwrap();
         assert_eq!(bundle.demos.len(), 8);
-        assert_eq!(bundle.fingerprint(), 0x23014dafdd935e0);
+        assert_eq!(bundle.fingerprint(), 0x90eec315e9fb1e2d);
     }
 
     #[test]

@@ -623,7 +623,7 @@ class AnonZombie
     States
     {
     Spawn:
-        TNT1 A 0
+        TNT1 A 0 NoDelay
         {
             A_SetHealth(77);
         }
@@ -657,7 +657,9 @@ class AnonZombie
         Some("A_SetHealth"),
         "anon brace should compile to A_SetHealth on Spawn"
     );
-    // spawn_at → set_state(Spawn, true) should already have run the anon action.
+    // GZDoom: the first spawn frame's action runs in the first tick, and
+    // only with `NoDelay` (`CheckNoDelay`).
+    w.tick();
     let health = w.actors.get(id).map(|a| a.health).unwrap_or(0);
     assert_eq!(
         health, 77,
@@ -2128,9 +2130,15 @@ class SoundProbe : Actor
             .collect::<Vec<_>>()
     );
     room_sim::call_zscript_action(&mut w, id, "Stop");
+    // The queued start is dropped; a stop event tells the mixer to silence
+    // anything already playing on those channels.
     assert!(
-        w.sound_events.is_empty(),
+        w.sound_events.iter().all(|ev| ev.name != "weapons/pistol"),
         "A_StopSounds should clear the queued sound"
+    );
+    assert_eq!(
+        w.sound_events.last().map(|ev| ev.adjust),
+        Some(room_sim::SimSoundAdjust::StopChannels)
     );
 }
 
@@ -2173,6 +2181,8 @@ class RailProbe : Actor
             room_core::math::Angle::ZERO,
         )
         .expect("probe");
+    // UZDoom's `A_MonsterRail` fires at the target and does nothing without one.
+    w.actors.get_mut(id).unwrap().target = Some(zombie);
     room_sim::call_zscript_action(&mut w, id, "Do");
     let after = w.actors.get(zombie).unwrap().health;
     assert!(
@@ -2461,6 +2471,173 @@ class EchoSetter : Actor
 }
 
 #[test]
+fn a_world_snapshot_carries_the_zscript_vm() {
+    // Rollback copies the world, VM and all: a copy run through the same
+    // tics must land exactly where the original does, including ZScript
+    // fields and the RNG the script uses.
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor Wanderer 9904
+{
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  }
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let zs = r#"
+class Wanderer : Actor
+{
+    int steps;
+    override void Tick()
+    {
+        Super.Tick();
+        steps++;
+        SetOrigin(pos + (random(-3, 3), random(-3, 3), 0), false);
+        angle += steps;
+    }
+}
+"#;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((
+                path.replace('\\', "/"),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
+        }
+    }
+    sources.push(("wander.zs".into(), zs.into()));
+    let result = room_zscript::check(&sources);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w =
+        World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+    w.load_zscript_program(result.program.unwrap());
+    let zid = classes.find_name("Wanderer").unwrap();
+    let id = w
+        .spawn_at(
+            zid,
+            room_core::math::DVec3::new(256.0, 256.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    for _ in 0..10 {
+        w.tick();
+    }
+    let mut copy = w.snapshot().expect("a ZScript world can be copied");
+    for _ in 0..40 {
+        w.tick();
+        copy.tick();
+    }
+    let (a, b) = (w.actors.get(id).unwrap(), copy.actors.get(id).unwrap());
+    assert_ne!(a.pos.x(), 256.0, "the script moved it");
+    assert_eq!((a.pos, a.angle), (b.pos, b.angle));
+    assert_eq!(w.checksum(), copy.checksum());
+    // Same RNG state too: more random steps still agree.
+    for _ in 0..5 {
+        w.tick();
+        copy.tick();
+    }
+    assert_eq!(
+        w.actors.get(id).unwrap().pos,
+        copy.actors.get(id).unwrap().pos
+    );
+}
+
+#[test]
+fn zscript_point_in_sector_set_environment_reaches_another_sector() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor FarEcho 9903
+{
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  }
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    // A sector other than the caller's, the way a level-wide script names
+    // one: `level.PointInSector(pos)`.
+    let zs = r#"
+class FarEcho : Actor
+{
+    override void PostBeginPlay()
+    {
+        Sector s = level.PointInSector((600, 100));
+        s.SetEnvironmentID((8 << 8) | 0);
+    }
+}
+"#;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((
+                path.replace('\\', "/"),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
+        }
+    }
+    sources.push(("far.zs".into(), zs.into()));
+    let result = room_zscript::check(&sources);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+        .room("b", rect(512.0, 0.0, 768.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w =
+        World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+    w.load_zscript_program(result.program.unwrap());
+    let here = room_sim::sector_at_xy(&w, 100.0, 100.0).unwrap();
+    let there = room_sim::sector_at_xy(&w, 600.0, 100.0).unwrap();
+    assert_ne!(here, there);
+    let zid = classes.find_name("FarEcho").unwrap();
+    w.spawn_at(
+        zid,
+        room_core::math::DVec3::new(100.0, 100.0, 0.0),
+        room_core::math::Angle::ZERO,
+    )
+    .unwrap();
+    w.tick();
+    assert_eq!(
+        w.sound_env.sector_env(there),
+        0x0800,
+        "Cave on the named sector"
+    );
+    assert_eq!(w.sound_env.sector_env(here), 0, "caller's sector untouched");
+}
+
+#[test]
 fn uz6_level_sky_fog_natives_reach_the_world() {
     let src = r#"
 class FogProbe : EventHandler
@@ -2524,4 +2701,232 @@ class UzProbe : BaseProbe
         _ => 0,
     };
     assert_eq!(score, 11, "Super.Score() runs the parent body, then + 1");
+}
+
+/// Compile `zs` with UZDoom's base scripts, load it on `map` with a
+/// `PortalProbe` actor, spawn one at `at` and run a tic.
+fn run_portal_probe(zs: &str, map: room_map::MapGeometry, at: (f64, f64)) -> room_sim::Actor {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        "actor PortalProbe 9904\n{\n  States\n  {\n  Spawn:\n    POSS A -1\n    Stop\n  }\n}\n"
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((
+                path.replace('\\', "/"),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
+        }
+    }
+    sources.push(("probe.zs".into(), zs.into()));
+    let result = room_zscript::check(&sources);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut map = map;
+    apply_nodes(&mut map);
+    let mut w =
+        World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+    w.load_zscript_program(result.program.unwrap());
+    let zid = classes.find_name("PortalProbe").unwrap();
+    let id = w
+        .spawn_at(
+            zid,
+            room_core::math::DVec3::new(at.0, at.1, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    w.tick();
+    w.actors.get(id).unwrap().clone()
+}
+
+#[test]
+fn zscript_vectors_go_through_linked_line_portals() {
+    let zs = r#"
+class PortalProbe : Actor
+{
+    override void PostBeginPlay()
+    {
+        // Room B's x 1040 is 16 past A's portal line at x 256.
+        Vector2 d = level.Vec2Diff((128, 128), (1040, 128));
+        special1 = int(d.x);
+        // 200 east of x 128 crosses the portal at x 256.
+        Vector3 p = Vec3Offset(200, 0, 0);
+        special2 = int(p.x);
+        Vector3 q = Vec3Offset(200, 0, 0, true);
+        accuracy = int(q.x);
+        Vector2 g = level.GetDisplacement(1, 2);
+        stamina = int(g.x);
+    }
+}
+"#;
+    let map = room_map::load_udmf_text(
+        "MAP01",
+        &room_testkit::linked_line_portal_rooms(3).textmap(),
+    )
+    .unwrap();
+    let a = run_portal_probe(zs, map, (128.0, 128.0));
+    assert_eq!(a.ext.special1, 144);
+    assert_eq!(a.ext.special2, 1096);
+    assert_eq!(a.accuracy, 328, "absolute offsets ignore portals");
+    assert_eq!(a.stamina.abs(), 768);
+}
+
+#[test]
+fn zscript_sector_portal_queries() {
+    let zs = r#"
+class PortalProbe : Actor
+{
+    override void PostBeginPlay()
+    {
+        Sector s = level.PointInSector((128, 128));
+        Vector2 d = s.GetPortalDisplacement(Sector.ceiling);
+        special1 = int(d.x);
+        special2 = s.PortalIsLinked(Sector.ceiling) ? 1 : 0;
+        accuracy = s.PortalBlocksMovement(Sector.ceiling) ? 1 : 0;
+        stamina = int(s.GetPortalPlaneZ(Sector.ceiling));
+        threshold = s.PortalIsLinked(Sector.floor) ? 1 : 0;
+        // CurSector is the caller's own sector.
+        reactiontime = CurSector.GetPortalType(Sector.ceiling);
+    }
+}
+"#;
+    let map = room_map::load_udmf_text(
+        "MAP01",
+        &room_testkit::linked_plane_portal_rooms().textmap(),
+    )
+    .unwrap();
+    let a = run_portal_probe(zs, map, (128.0, 128.0));
+    assert_eq!(a.ext.special1, 1024);
+    assert_eq!(a.ext.special2, 1);
+    assert_eq!(a.accuracy, 0);
+    assert_eq!(a.stamina, 128);
+    assert_eq!(a.threshold, 0, "A's floor is no portal");
+    assert_eq!(a.reaction_time, 3, "PORTS_LINKEDPORTAL");
+}
+
+#[test]
+fn zscript_map_objects_and_line_portals() {
+    let zs = r#"
+class PortalProbe : Actor
+{
+    override void PostBeginPlay()
+    {
+        // Lines that are portals, and where the first one leads.
+        int portals = 0;
+        int dest = -1;
+        for (int i = 0; i < level.Lines.Size(); i++)
+        {
+            Line l = level.Lines[i];
+            if (l.isLinePortal())
+            {
+                portals++;
+                if (dest < 0) dest = l.getPortalDestination().Index();
+            }
+        }
+        special1 = portals;
+        special2 = dest;
+        // Sectors, and the caller's own.
+        accuracy = level.Sectors.Size() * 100 + CurSector.Index();
+        // Its floor through the plane object.
+        stamina = int(CurSector.floorplane.ZAtPoint(pos.xy));
+        // A sector's lines know their sectors.
+        Line first = CurSector.Lines[0];
+        threshold = (first.frontsector == CurSector || first.backsector == CurSector) ? 1 : 0;
+        CurSector.SetLightLevel(77);
+    }
+}
+"#;
+    let map = room_map::load_udmf_text(
+        "MAP01",
+        &room_testkit::linked_line_portal_rooms(3).textmap(),
+    )
+    .unwrap();
+    let mut w_light = 0;
+    let mut n_sectors = 0;
+    let mut own = 0;
+    let a = {
+        let deco = format!(
+            "{}\n{}",
+            include_str!("../../../testdata/actors/doom_basic.txt"),
+            "actor PortalProbe 9904\n{\n  States\n  {\n  Spawn:\n    POSS A -1\n    Stop\n  }\n}\n"
+        );
+        let ir = parse_decorate(&deco).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let prog = load_uzdoom_stdlib_with(zs);
+        let mut map = map;
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        w.load_zscript_program(prog);
+        let zid = classes.find_name("PortalProbe").unwrap();
+        let id = w
+            .spawn_at(
+                zid,
+                room_core::math::DVec3::new(128.0, 128.0, 0.0),
+                room_core::math::Angle::ZERO,
+            )
+            .unwrap();
+        w.tick();
+        let sector = room_sim::sector_at_xy(&w, 128.0, 128.0).unwrap();
+        w_light = w.sectors[sector].light;
+        n_sectors = w.map.sectors.len() as i32;
+        own = sector as i32;
+        w.actors.get(id).unwrap().clone()
+    };
+    assert_eq!(a.ext.special1, 2, "the two portal lines");
+    assert!(a.ext.special2 >= 0, "a destination line");
+    assert_eq!(
+        a.accuracy,
+        n_sectors * 100 + own,
+        "level.Sectors and CurSector"
+    );
+    assert_eq!(a.stamina, 0, "floor height");
+    assert_eq!(a.threshold, 1);
+    assert_eq!(w_light, 77, "SetLightLevel reaches the playsim");
+}
+
+#[test]
+fn zscript_object_arrays() {
+    let src = r#"
+class Box { int v; }
+class Holder { Array<Box> items; }
+class T {
+    static int Sum(Array<Box> list) {
+        int t = 0;
+        for (int i = 0; i < list.Size(); i++) t += list[i].v;
+        return t;
+    }
+    static int Run() {
+        let h = new("Holder");
+        for (int i = 1; i <= 3; i++) { Box b = new("Box"); b.v = i; h.items.Push(b); }
+        Box mid = h.items[1];
+        int found = h.items.Find(mid);
+        Box extra = new("Box"); extra.v = 10;
+        h.items.Insert(0, extra);
+        h.items.Delete(2);
+        Box last = new("Box"); last.v = 100;
+        h.items[0] = last;
+        int setcount = 0;
+        if (h.items[0]) setcount++;
+        Array<Box> loc;
+        loc.Push(null);
+        if (!loc[0]) setcount += 10;
+        return Sum(h.items) * 1000 + found * 100 + setcount;
+    }
+}
+"#;
+    let result = room_zscript::check(&[("arrays.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    // [1,2,3] → Find(2) = 1; Insert 10 at 0, Delete(2), [0] = 100 → [100,1,3].
+    assert_eq!(rt.script_call_with("T.Run", &[], &[]).unwrap(), 104_111);
 }

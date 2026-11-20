@@ -920,18 +920,22 @@ fn freedoom2_map01_complevel_vanilla_and_boom_demo_verifies() {
         assert_eq!(demo.complevel, complevel);
         assert_eq!(demo.tics.len(), 35);
 
+        // Replay on a game started the same way: the complevel must be in
+        // force while the map's things spawn (vanilla randomises their first
+        // tics with `P_Random`), not switched on afterwards.
         let vfs = VfsBuilder::new().mount_path(&wad).unwrap().build().unwrap();
         let mut map2 = load_map(&vfs, "MAP01").unwrap();
         ensure_nodes(&mut map2);
-        let mut world2 = room_sim::World::from_map_with_skill(
-            map2,
-            Arc::clone(&classes),
-            Arc::clone(&states),
-            3,
-        )
-        .unwrap();
-        world2.rng.set_seed(1993);
-        let result = DemoPlayer { demo: &demo }.verify(&mut world2).unwrap();
+        let mut game2 = Headless::new(GameOptions {
+            skill: Skill::new(3),
+            rng_seed: 1993,
+            complevel,
+            ..Default::default()
+        });
+        game2.set_defs(Arc::clone(&classes), Arc::clone(&states));
+        game2.start_custom_map(map2, Skill::new(3)).unwrap();
+        let world2 = game2.world_mut().unwrap();
+        let result = DemoPlayer { demo: &demo }.verify(world2).unwrap();
         assert_eq!(result.first_mismatch, None, "{complevel:?} demo desync");
         assert_eq!(world2.math_mode, expect_math);
     }
@@ -1817,4 +1821,92 @@ fn freedoom2_map01_two_peer_lockstep_stays_synced() {
     }
     assert_eq!(g0.state, GameState::Level);
     assert_ne!(g0.checksum(), Some(0));
+}
+
+/// Compare Freedoom2 DEMO1 tic by tic with a vanilla engine trace made by
+/// `scripts/vanilla-demo-trace.sh` (default `target/vanilla-demo1.txt`, or
+/// `ROOM_VANILLA_TRACE`). Reports the first tic where the player's position,
+/// health or the RNG index differ. Skips when there is no trace.
+#[test]
+fn freedoom2_demo1_matches_the_vanilla_trace() {
+    let trace_path = std::env::var_os("ROOM_VANILLA_TRACE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/vanilla-demo1.txt"),
+        PathBuf::from,
+    );
+    let Ok(trace) = std::fs::read_to_string(&trace_path) else {
+        eprintln!(
+            "skip: no vanilla trace at {} (run scripts/vanilla-demo-trace.sh)",
+            trace_path.display()
+        );
+        return;
+    };
+    let Some(wad) = freedoom2() else {
+        eprintln!("skip: testdata/freedoom/freedoom2.wad missing");
+        return;
+    };
+    // `leveltime x y angle prndindex health momx momy` per tic.
+    let reference: Vec<(usize, f64, f64, u32, i32, i32)> = trace
+        .lines()
+        .filter(|l| !l.starts_with(' '))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            Some((
+                f.first()?.parse().ok()?,
+                f.get(1)?.parse().ok()?,
+                f.get(2)?.parse().ok()?,
+                f.get(3)?.parse().ok()?,
+                f.get(4)?.parse().ok()?,
+                f.get(5)?.parse().ok()?,
+            ))
+        })
+        .collect();
+    let vfs = VfsBuilder::new().mount_path(&wad).unwrap().build().unwrap();
+    let id = vfs.find("DEMO1", Namespace::Global).expect("DEMO1 lump");
+    let lmp = VanillaLmp::from_lmp(&vfs.read(id).unwrap()).unwrap();
+    let Ok(eng) = load_embedded_engine_data() else {
+        eprintln!("skip: embedded engine data unavailable");
+        return;
+    };
+    let mut map = load_map(&vfs, "MAP03").unwrap();
+    ensure_nodes(&mut map);
+    let mut game = Headless::new(GameOptions {
+        skill: Skill::new(lmp.skill),
+        rng_seed: 0,
+        record_demo: false,
+        complevel: Complevel::Vanilla,
+        ..Default::default()
+    });
+    game.set_defs(eng.classes, eng.states);
+    game.start_custom_map(map, Skill::new(lmp.skill)).unwrap();
+    let mut first_bad = None;
+    for (i, cmds) in lmp.tics.iter().enumerate() {
+        game.tick(cmds);
+        let t = i + 1;
+        let Some(&(_, ex, ey, ang, idx, hp)) = reference.iter().find(|r| r.0 == t) else {
+            continue;
+        };
+        let w = game.world().unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let p = w.actors.get(mo).unwrap();
+        let ok = (p.pos.x() - ex).abs() < 0.01
+            && (p.pos.y() - ey).abs() < 0.01
+            && w.vanilla_rng.prndindex as i32 == idx
+            && p.health == hp;
+        if !ok {
+            first_bad = Some(format!(
+                "tic {t}: room pos=({:.4},{:.4}) bam={} idx={} hp={} — vanilla pos=({ex:.4},{ey:.4}) bam={ang} idx={idx} hp={hp}",
+                p.pos.x(),
+                p.pos.y(),
+                p.angle.to_bam().0,
+                w.vanilla_rng.prndindex,
+                p.health
+            ));
+            break;
+        }
+    }
+    assert!(
+        first_bad.is_none(),
+        "DEMO1 drifts from vanilla at {}",
+        first_bad.unwrap()
+    );
 }

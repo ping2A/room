@@ -60,6 +60,9 @@ pub enum ObjKind {
     ArrayI(Vec<i64>),
     /// `Array<string>` backing store.
     ArrayS(Vec<StrHandle>),
+    /// `Array<Object>` backing store (classes, structs, map objects); traced
+    /// by the collector.
+    ArrayA(Vec<ObjHandle>),
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +207,11 @@ impl ZvmHeap {
         self.alloc_slot(ObjKind::ArrayS(Vec::new()))
     }
 
+    /// Allocate an empty object array.
+    pub fn new_array_a(&mut self) -> ObjHandle {
+        self.alloc_slot(ObjKind::ArrayA(Vec::new()))
+    }
+
     /// Resolve a live object; `None` if destroyed/null.
     #[must_use]
     pub fn get(&self, h: ObjHandle) -> Option<&ObjKind> {
@@ -268,6 +276,13 @@ impl ZvmHeap {
             match &slot.kind {
                 ObjKind::Object { fields_a, .. } => {
                     for &child in fields_a {
+                        if !child.is_null() {
+                            stack.push(child);
+                        }
+                    }
+                }
+                ObjKind::ArrayA(items) => {
+                    for &child in items {
                         if !child.is_null() {
                             stack.push(child);
                         }
@@ -364,6 +379,14 @@ impl ZvmHeap {
                         mix(&mut h, u64::from(s.0));
                     }
                 }
+                ObjKind::ArrayA(items) => {
+                    mix(&mut h, 4);
+                    mix(&mut h, items.len() as u64);
+                    for a in items {
+                        mix(&mut h, u64::from(a.index));
+                        mix(&mut h, u64::from(a.generation));
+                    }
+                }
             }
         }
         for &idx in &self.free {
@@ -413,6 +436,9 @@ impl ZvmHeap {
                         ObjKind::ArrayS(items) => {
                             HeapKindImage::ArrayS(items.iter().map(|s| s.0).collect())
                         }
+                        ObjKind::ArrayA(items) => HeapKindImage::ArrayA(
+                            items.iter().map(|h| (h.index, h.generation)).collect(),
+                        ),
                     },
                 })
                 .collect(),
@@ -465,6 +491,12 @@ impl ZvmHeap {
                     HeapKindImage::ArrayS(items) => {
                         ObjKind::ArrayS(items.iter().map(|&i| StrHandle(i)).collect())
                     }
+                    HeapKindImage::ArrayA(items) => ObjKind::ArrayA(
+                        items
+                            .iter()
+                            .map(|&(index, generation)| ObjHandle { index, generation })
+                            .collect(),
+                    ),
                 },
             })
             .collect();
@@ -529,4 +561,6 @@ pub enum HeapKindImage {
     ArrayI(Vec<i64>),
     /// `Array<string>` as string-table indices.
     ArrayS(Vec<u32>),
+    /// Object array as `(index, generation)` handles.
+    ArrayA(Vec<(u32, u32)>),
 }

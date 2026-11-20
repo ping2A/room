@@ -45,10 +45,39 @@ pub(crate) struct Frame {
     pub(crate) ret: Option<(u8, u8)>,
 }
 
+/// A copy of the VM for world snapshots (rollback): same program (shared),
+/// heap, natives and registers. The AOT tier is not copied; the copy runs
+/// the same code in the interpreter.
+impl Clone for Zvm {
+    fn clone(&self) -> Self {
+        Self {
+            program: std::sync::Arc::clone(&self.program),
+            heap: self.heap.clone(),
+            natives: self.natives.clone(),
+            config: self.config.clone(),
+            host: self.host,
+            last_f: self.last_f,
+            last_i: self.last_i,
+            last_s: self.last_s.clone(),
+            play: self.play.clone(),
+            args: self.args.clone(),
+            rets: self.rets,
+            fuel_left: self.fuel_left,
+            costs: self.costs.clone(),
+            depth_base: self.depth_base,
+            bridge_floor: self.bridge_floor,
+            bridge_rq: self.bridge_rq,
+            #[cfg(feature = "aot")]
+            aot: None,
+        }
+    }
+}
+
 /// ZScript VM instance.
 pub struct Zvm {
-    /// Linked program.
-    pub program: CompiledProgram,
+    /// Linked program, shared by copies of this VM ([`Clone`]); a change
+    /// copies it first (`Arc::make_mut`).
+    pub program: std::sync::Arc<CompiledProgram>,
     /// Heap.
     pub heap: ZvmHeap,
     /// Natives.
@@ -140,7 +169,7 @@ impl Zvm {
         let mut play = crate::natives::ZvmPlayHost::default();
         play.object_layouts = object_layouts;
         Self {
-            program,
+            program: std::sync::Arc::new(program),
             heap: ZvmHeap::new(),
             natives,
             config: ZvmConfig::default(),
@@ -165,7 +194,7 @@ impl Zvm {
     #[cfg(feature = "aot")]
     pub(crate) fn empty() -> Self {
         Self {
-            program: CompiledProgram::default(),
+            program: std::sync::Arc::default(),
             heap: ZvmHeap::new(),
             natives: NativeTable::default(),
             config: ZvmConfig::default(),
@@ -292,9 +321,14 @@ impl Zvm {
         Some(ops::new_obj(&mut self.heap, &self.program, class as u32))
     }
 
+    /// Like [`Self::new_object`] for a class index (`program.classes`).
+    pub fn new_object_of(&mut self, class: u32) -> ObjHandle {
+        ops::new_obj(&mut self.heap, &self.program, class)
+    }
+
     /// Remap helper exposed for tests that swap `program` after construction.
     pub fn rebind_natives(&mut self) {
-        remap_native_imports(&mut self.program, &self.natives);
+        remap_native_imports(std::sync::Arc::make_mut(&mut self.program), &self.natives);
     }
 
     /// Call an instance method with `self` placed in `a[0]`.
@@ -310,6 +344,12 @@ impl Zvm {
         obj_args: &[ObjHandle],
     ) -> Result<i64, Trap> {
         let idx = lookup_func(&self.program, name)?;
+        // Compiled methods name their parameter registers: other locals
+        // (array fields, global arrays) can be allocated ahead of them, so
+        // `a[1]` is not always the first object parameter.
+        if !self.program.functions[idx as usize].params.is_empty() {
+            return self.call_method_banks(name, self_h, &[], &[], &[], obj_args);
+        }
         self.fuel_left = self.config.fuel;
         let func = &self.program.functions[idx as usize];
         let mut frame = Frame {
@@ -347,6 +387,9 @@ impl Zvm {
         obj_args: &[ObjHandle],
     ) -> Result<i64, Trap> {
         let idx = lookup_func(&self.program, name)?;
+        if !self.program.functions[idx as usize].params.is_empty() {
+            return self.call_method_banks(name, self_h, i_args, &[], s_args, obj_args);
+        }
         self.fuel_left = self.config.fuel;
         let func = &self.program.functions[idx as usize];
         let mut frame = Frame {

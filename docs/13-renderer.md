@@ -105,12 +105,42 @@ Default model = unlit diffuse × light (Doom look). When GLDEFS defines normal/s
 
 ## 6. Portals
 
-Port `hw_portal.cpp` concepts:
+`room-render/src/portal_view.rs`, after UZDoom's `hw_portal.cpp`.
 
-- Portal types: line portals (visual and linked), sector stacks (upper/lower), sky viewpoints (skybox actors), horizon, mirrors, plane mirrors (`Sector_SetPlaneReflection` — reflective floors), sky (special-cased).
-- Algorithm: when a portal surface is visible, record it; after opaque scene, for each portal: (1) draw portal surface into stencil (increment), (2) clear depth inside stencil, (3) render the sub-scene from the transformed camera with a clip plane (user clip distance or manual discard in fragment shader on WebGPU), restricted to stencil, recursion depth limit `gl_portals_max_recursion` (default 4), (4) seal by writing portal surface depth.
-- The sub-scene BSP walk starts with a clipper pre-filled from the portal's angular extent.
-- Linked portals with consistent displacement can be rendered without recursion cost by shifting the view (GZDoom treats them as "line-to-line portals").
+- The scene builder records each portal surface it emits as a
+  `PortalView` (line portal, mirror, sector portal, horizon) and draws the
+  surface with a `__PV…` material whose vertices carry style 2.0 (2.25 for
+  mirrors). Line portals cover the front sector's full height (UZDoom
+  `HWWall::Process`); plane portals replace the flat; the level's default
+  `SkyViewpoint` replaces the sky shell.
+- Views nobody can see are dropped: surfaces off screen, on the clipped side
+  of the parent portal, or seen from behind.
+- `PortalRenderer::render` draws every remaining view into its own target
+  at the frame's resolution, before the main pass, from the portal's camera
+  (`portal_camera`): line portals move and turn the eye like
+  `P_TranslatePortalXY` / `Z` and clip what is behind the destination line;
+  stacks move it by the displacement and clip at the plane height; sky
+  viewpoints put it at the viewpoint (4 units off its floor and ceiling)
+  turned by the viewpoint's angle; mirrors reflect it and clip at the
+  mirror line; horizons draw the sector's planes 32768 units out. The
+  shader samples the view at the fragment's screen position (mirrors
+  mirrored), so for these rigid camera moves the picture matches UZDoom's
+  stencil method. Nested views nest up to `max_depth` (4, UZDoom's
+  `r_portal_recursions` default); skies inside a sky box are plain skies.
+- Desktop and browser both call it; sub-views use the shell's scene builder
+  (live sprites, sky, animated textures, lights), plus what the main view
+  adds after the map: decals, particles, models and voxels on desktop,
+  particles and voxels in the browser (it has no decals or models). Their
+  textures are uploaded for the main view first.
+- A stacked, `Sector_SetPortal` or linked plane portal whose alpha is below
+  1 (`Sector_SetPortal`'s alpha argument, or the sector's own
+  `alphafloor` / `alphaceiling`) draws its flat over the view at that alpha
+  (UZDoom `HWFlat::ProcessSector`); sky flats stay off.
+- Portal walls on polyobject lines are drawn where the polyobject is now.
+  Both shells copy moving polyobject vertices and changed portal tables
+  from the playsim into their render map each frame
+  (`portals::sync_dynamic_geometry`; before this, polyobjects moved in the
+  playsim but their render copy stayed at the spawn spot).
 
 ## 7. Sky
 

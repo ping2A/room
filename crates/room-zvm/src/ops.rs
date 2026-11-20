@@ -33,8 +33,13 @@ pub(crate) fn new_obj(heap: &mut ZvmHeap, program: &CompiledProgram, class: u32)
         .iter()
         .map(|&idx| (idx, heap.new_array_s()))
         .collect();
+    let made_a: Vec<_> = layout
+        .array_a
+        .iter()
+        .map(|&idx| (idx, heap.new_array_a()))
+        .collect();
     if let Some(ObjKind::Object { fields_a, .. }) = heap.get_mut(h) {
-        for (idx, arr) in made_i.into_iter().chain(made_s) {
+        for (idx, arr) in made_i.into_iter().chain(made_s).chain(made_a) {
             if let Some(slot) = fields_a.get_mut(idx as usize) {
                 *slot = arr;
             }
@@ -150,6 +155,7 @@ pub(crate) fn arr_len(heap: &ZvmHeap, h: ObjHandle) -> HeapResult<i64> {
     match heap.get(h) {
         Some(ObjKind::ArrayI(v)) => Ok(v.len() as i64),
         Some(ObjKind::ArrayS(v)) => Ok(v.len() as i64),
+        Some(ObjKind::ArrayA(v)) => Ok(v.len() as i64),
         None => Err(HeapErr::Null),
         _ => Ok(0),
     }

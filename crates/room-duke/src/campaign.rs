@@ -45,6 +45,7 @@ pub fn carry_player_state(previous: &Player, next: &mut Player) {
     next.custom_exit_sound = -1;
     next.end_of_game = false;
     next.quick_kick = 0;
+    next.one_eighty_count = 0;
     next.kickback_pic = if next.curr_weapon == 1 { 5 } else { 0 };
     next.weapon_pos = 6;
     next.want_weapon_fire = -1;

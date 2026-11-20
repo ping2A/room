@@ -167,6 +167,9 @@ pub struct RenderSettings {
     pub extra_light: i32,
     /// Anisotropic filtering samples for world textures (1 = off, up to 16).
     pub anisotropy: u16,
+    /// Texture upscaling (`gl_texture_hqresizemode` / `mult` /
+    /// `maxinputsize` / `targets`).
+    pub hq_resize: crate::hq_resize::HqResize,
 
     /// GPU pass profiler overlay (`r_gpuprofile`).
     pub gpu_profile: bool,
@@ -249,6 +252,7 @@ impl Default for RenderSettings {
             reduce_flashing: false,
             extra_light: 0,
             anisotropy: 1,
+            hq_resize: crate::hq_resize::HqResize::default(),
             gpu_profile: false,
         }
     }
@@ -832,6 +836,30 @@ impl RenderSettings {
                 self.anisotropy = crate::materials::sampler_anisotropy(v.clamp(0, 16) as u16);
                 true
             }
+            "gl_texture_hqresizemode" => {
+                if let Some(v) = i.or(f.map(|f| f as i32)) {
+                    self.hq_resize.mode = v.clamp(0, 5) as u8;
+                }
+                true
+            }
+            "gl_texture_hqresizemult" => {
+                if let Some(v) = i.or(f.map(|f| f as i32)) {
+                    self.hq_resize.mult = v.clamp(1, 6) as u8;
+                }
+                true
+            }
+            "gl_texture_hqresize_maxinputsize" => {
+                if let Some(v) = i.or(f.map(|f| f as i32)) {
+                    self.hq_resize.max_input = v.clamp(1, 1 << 14) as u32;
+                }
+                true
+            }
+            "gl_texture_hqresize_targets" => {
+                if let Some(v) = i.or(f.map(|f| f as i32)) {
+                    self.hq_resize.targets = v.clamp(0, 15) as u8;
+                }
+                true
+            }
             "r_reduce_flashing" => {
                 self.reduce_flashing = b.or(i.map(|v| v != 0)).unwrap_or(self.reduce_flashing);
                 true
@@ -921,6 +949,10 @@ pub const SHADER_CVAR_NAMES: &[&str] = &[
     "r_reduce_flashing",
     "r_extralight",
     "gl_texture_filter_anisotropic",
+    "gl_texture_hqresizemode",
+    "gl_texture_hqresizemult",
+    "gl_texture_hqresize_maxinputsize",
+    "gl_texture_hqresize_targets",
     "r_gpuprofile",
 ];
 

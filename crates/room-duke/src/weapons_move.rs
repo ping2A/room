@@ -38,6 +38,18 @@ fn is_flammable_radius_target(script: Option<&ScriptImage>, picnum: i16) -> bool
     .any(|(name, fallback)| script_tile(script, name).unwrap_or(*fallback) == picnum)
 }
 
+/// Atomic `hitradius(i, r, x>>2, x>>1, x-(x>>2), x)` as EDuke32's
+/// `ud.returnvar` payload `{radius, dmg1..dmg4}`.
+fn rpg_blast_payload(radius: i32, strength: i32) -> [i32; 5] {
+    [
+        radius,
+        strength >> 2,
+        strength >> 1,
+        strength - (strength >> 2),
+        strength,
+    ]
+}
+
 fn queue_radius_sprite_hit(
     sprites: &mut [SpriteT],
     actor_temps: &mut Vec<ActorConTemps>,
@@ -48,12 +60,22 @@ fn queue_radius_sprite_hit(
     owner: i16,
     hit_ang: i16,
     knockback: i32,
+    source_i: i16,
+    payload: [i32; 5],
 ) {
     if actor_temps.len() <= target_i {
         actor_temps.resize_with(target_i + 1, ActorConTemps::default);
     }
+    // Chocolate `hitradius` / EDuke32 `A_RadiusDamage` replace the queued
+    // damage; a source projectile with PROJECTILE_HITRADIUS_ADDITIVE adds.
+    let additive = usize::try_from(source_i)
+        .ok()
+        .and_then(|index| actor_temps.get(index))
+        .is_some_and(|source| {
+            source.projectile_workslike & crate::shoot::PROJECTILE_FLAG_HITRADIUS_ADDITIVE != 0
+        });
     let temp = &mut actor_temps[target_i];
-    temp.hit_extra = if temp.hit_extra < 0 {
+    temp.hit_extra = if temp.hit_extra < 0 || !additive {
         amount
     } else {
         temp.hit_extra.saturating_add(amount)
@@ -61,6 +83,8 @@ fn queue_radius_sprite_hit(
     temp.hit_picnum = hit_picnum;
     temp.hit_owner = owner;
     temp.hit_ang = hit_ang;
+    temp.hit_source = source_i;
+    temp.hit_radius = payload;
     if !matches!(
         target.picnum,
         1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740
@@ -1305,6 +1329,8 @@ pub fn moveweapons(
                                 temp.hit_extra.saturating_add(source.extra)
                             };
                             temp.hit_owner = source.owner;
+                            temp.hit_source = i;
+                            temp.hit_radius = crate::con::direct_hit_payload();
                             temp.hit_ang = source.ang;
                             if let Some(player) = players
                                 .iter_mut()
@@ -1463,6 +1489,8 @@ pub fn moveweapons(
                                 temp.hit_extra.saturating_add(source.extra)
                             };
                             temp.hit_owner = source.owner;
+                            temp.hit_source = i;
+                            temp.hit_radius = crate::con::direct_hit_payload();
                             temp.hit_ang = source.ang;
                             if sprites[target].picnum == APLAYER {
                                 temp.pending_actor_sounds
@@ -1610,6 +1638,8 @@ pub fn moveweapons(
                             temp.hit_extra.saturating_add(source.extra)
                         };
                         temp.hit_owner = source.owner;
+                        temp.hit_source = i;
+                        temp.hit_radius = crate::con::direct_hit_payload();
                         temp.hit_ang = source.ang;
                         temp.pending_actor_sounds
                             .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
@@ -1666,6 +1696,7 @@ pub fn moveweapons(
                         script,
                         randomseed,
                         source.sectnum,
+                        i,
                         source.owner,
                         &mut ceiling_sounds,
                     );
@@ -1677,6 +1708,16 @@ pub fn moveweapons(
                             .into_iter()
                             .map(|sound| i16::try_from(sound).unwrap_or_default()),
                     );
+                } else if hit.hitsprite < 0
+                    && hit.hitwall < 0
+                    && source.zvel > 0
+                    && !sectors
+                        .get(source.sectnum as usize)
+                        .is_some_and(|sector| sector.floorstat & 1 != 0 && sector.floorpal == 0)
+                {
+                    // EDuke32 `Proj_MaybeDamageCF`: a downward plane hit
+                    // damages the floor unless it is unshaded parallax.
+                    queue_floor_damage(script, sectors, i, source.sectnum);
                 }
 
                 if stop {
@@ -1899,6 +1940,7 @@ pub fn moveweapons(
                         script,
                         randomseed,
                         hit.hitsect,
+                        i,
                         sprites[iu].owner,
                         &mut ceiling_sounds,
                     );
@@ -1910,6 +1952,15 @@ pub fn moveweapons(
                             .into_iter()
                             .map(|sound| i16::try_from(sound).unwrap_or_default()),
                     );
+                } else if plane_hit
+                    && !timer_expired
+                    && sprites[iu].zvel > 0
+                    && !usize::try_from(hit.hitsect)
+                        .ok()
+                        .and_then(|index| sectors.get(index))
+                        .is_some_and(|sector| sector.floorstat & 1 != 0 && sector.floorpal == 0)
+                {
+                    queue_floor_damage(script, sectors, i, hit.hitsect);
                 }
                 if plane_hit
                     && custom_rpg
@@ -1957,6 +2008,13 @@ pub fn moveweapons(
                             || projectile_workslike & crate::shoot::PROJECTILE_FLAG_RPG_IMPACT != 0;
                         let direct_damage = if !direct_hit_enabled {
                             0
+                        } else if custom_rpg
+                            && projectile_workslike
+                                & crate::shoot::PROJECTILE_FLAG_RPG_IMPACT_DAMAGE
+                                != 0
+                        {
+                            // EDuke32 adds the projectile's `extra` again.
+                            projectile.extra.saturating_mul(2)
                         } else if custom_rpg {
                             projectile.extra
                         } else if is_badguy {
@@ -1976,6 +2034,8 @@ pub fn moveweapons(
                                 actor_temps[target].hit_extra.saturating_add(direct_damage)
                             };
                             actor_temps[target].hit_owner = projectile.owner;
+                            actor_temps[target].hit_source = i;
+                            actor_temps[target].hit_radius = crate::con::direct_hit_payload();
                             actor_temps[target].hit_ang = projectile.ang;
                             if is_badguy {
                                 wake_hit_badguy(lists, actor_temps, target);
@@ -2018,7 +2078,10 @@ pub fn moveweapons(
                     sprites[iu].picnum
                 };
                 let radius_picnum = (custom_rpg
-                    && projectile_workslike & crate::shoot::PROJECTILE_FLAG_RADIUS_PICNUM != 0)
+                    && projectile_workslike
+                        & (crate::shoot::PROJECTILE_FLAG_RADIUS_PICNUM
+                            | crate::shoot::PROJECTILE_FLAG_RADIUS_PICNUM_EX)
+                        != 0)
                     .then_some(sprites[iu].picnum);
                 if custom_rpg
                     && sprites[iu].extra <= 0
@@ -2331,6 +2394,8 @@ pub fn moveweapons(
                         actor_temps[target].hit_extra.saturating_add(hit_damage)
                     };
                     actor_temps[target].hit_owner = source.owner;
+                    actor_temps[target].hit_source = i;
+                    actor_temps[target].hit_radius = crate::con::direct_hit_payload();
                     actor_temps[target].hit_ang = source.ang;
                     if is_badguy {
                         wake_hit_badguy(lists, actor_temps, target);
@@ -2958,6 +3023,8 @@ pub(crate) fn apply_rpg_blast(
                     owner,
                     getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
                     strength << 2,
+                    wall_source_i,
+                    rpg_blast_payload(radius, strength),
                 );
             }
         }
@@ -3022,6 +3089,8 @@ pub(crate) fn apply_rpg_blast(
                     owner,
                     getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
                     strength << 2,
+                    wall_source_i,
+                    rpg_blast_payload(radius, strength),
                 );
                 if radius_actor_checkhit_target(script, t.picnum) {
                     let _ = check_radius_target_object(
@@ -3229,6 +3298,8 @@ pub(crate) fn apply_rpg_blast(
                         owner,
                         getangle(t.x.wrapping_sub(x), t.y.wrapping_sub(y)) as i16,
                         strength << 2,
+                        wall_source_i,
+                        rpg_blast_payload(radius, strength),
                     );
                 }
             }
@@ -3237,10 +3308,185 @@ pub(crate) fn apply_rpg_blast(
     }
 }
 
-/// Apply the wall side effects of a Freezer bolt's direct `checkhitwall` call.
-/// Chocolate does this before the FREEZEBLAST reflects from the wall.
+/// EDuke32 surface damage held back until the session can run
+/// EVENT_DAMAGEWALL / EVENT_DAMAGEFLOOR / EVENT_DAMAGECEILING /
+/// EVENT_DAMAGEHPLANE, whose negative `RETURN` cancels the effect. Only hits
+/// on surfaces that need an event are deferred (a `damageeventtile` surface
+/// tile, or any plane while EVENT_DAMAGEHPLANE is hooked), so Atomic and
+/// unflagged maps keep their immediate effects.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SurfaceDamage {
+    Wall {
+        source: SpriteT,
+        source_i: i16,
+        atwith: i16,
+        wall: usize,
+        hit: [i32; 3],
+        hit_sector: i16,
+    },
+    Floor {
+        source_i: i16,
+        sector: i16,
+    },
+    Ceiling {
+        source_i: i16,
+        sector: i16,
+        owner: i16,
+    },
+}
+
+thread_local! {
+    static PENDING_SURFACE_DAMAGE: std::cell::RefCell<Vec<SurfaceDamage>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the surface hits deferred since the last call (one session tic).
+pub(crate) fn take_pending_surface_damage() -> Vec<SurfaceDamage> {
+    PENDING_SURFACE_DAMAGE.with(|queue| std::mem::take(&mut *queue.borrow_mut()))
+}
+
+fn defer_surface_damage(damage: SurfaceDamage) {
+    PENDING_SURFACE_DAMAGE.with(|queue| queue.borrow_mut().push(damage));
+}
+
+/// Whether `event` is hooked by an EDuke32 script.
+pub(crate) fn eduke_event_hooked(script: Option<&ScriptImage>, event: &str) -> bool {
+    script.is_some_and(|image| {
+        image.dialect == crate::con::ConDialect::EDuke32 && image.has_eduke_event(event)
+    })
+}
+
+/// Whether `tile` was opted into damage events with `damageeventtile`
+/// (EDuke32 `SFLAG_DAMAGEEVENT`).
+pub(crate) fn eduke_damage_event_tile(script: Option<&ScriptImage>, tile: i16) -> bool {
+    script.is_some_and(|image| {
+        image.eduke_damage_event_tiles.iter().any(|name| {
+            image
+                .labels
+                .get(name.as_str())
+                .filter(|label| !label.is_ptr)
+                .map(|label| label.value)
+                .or_else(|| name.parse().ok())
+                == Some(i32::from(tile))
+        })
+    })
+}
+
+/// EDuke32 `Sect_DamageFloor`: Duke has no hardcoded floor damage, so a
+/// floor hit only raises EVENT_DAMAGEFLOOR (for a `damageeventtile` floor)
+/// and EVENT_DAMAGEHPLANE. Queued for the session when either is hooked.
+pub(crate) fn queue_floor_damage(
+    script: Option<&ScriptImage>,
+    sectors: &[SectorT],
+    source_i: i16,
+    sector: i16,
+) {
+    let Some(floor) = usize::try_from(sector)
+        .ok()
+        .and_then(|index| sectors.get(index))
+        .map(|sector| sector.floorpicnum)
+    else {
+        return;
+    };
+    if eduke_event_hooked(script, "EVENT_DAMAGEHPLANE")
+        || (eduke_event_hooked(script, "EVENT_DAMAGEFLOOR")
+            && eduke_damage_event_tile(script, floor))
+    {
+        defer_surface_damage(SurfaceDamage::Floor { source_i, sector });
+    }
+}
+
+/// Defer a ceiling hit for its EDuke32 events; `true` when deferred.
+pub(crate) fn defer_ceiling_damage(
+    script: Option<&ScriptImage>,
+    sectors: &[SectorT],
+    source_i: i16,
+    sector: i16,
+    owner: i16,
+) -> bool {
+    let Some(ceiling) = usize::try_from(sector)
+        .ok()
+        .and_then(|index| sectors.get(index))
+        .map(|sector| sector.ceilingpicnum)
+    else {
+        return false;
+    };
+    let deferred = eduke_event_hooked(script, "EVENT_DAMAGEHPLANE")
+        || (eduke_event_hooked(script, "EVENT_DAMAGECEILING")
+            && eduke_damage_event_tile(script, ceiling));
+    if deferred {
+        defer_surface_damage(SurfaceDamage::Ceiling {
+            source_i,
+            sector,
+            owner,
+        });
+    }
+    deferred
+}
+
+/// Chocolate `checkhitwall`. With an EDuke32 script that hooks
+/// EVENT_DAMAGEWALL, a hit on a `damageeventtile` wall (picnum or overpicnum)
+/// is deferred to the session, which runs the event and then applies
+/// [`apply_checkhitwall_unchecked`] unless `RETURN` is negative.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_checkhitwall(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &mut [WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    source: SpriteT,
+    source_i: i16,
+    atwith: i16,
+    wall_index: usize,
+    hit_x: i32,
+    hit_y: i32,
+    hit_z: i32,
+    hit_sector: i16,
+    script: Option<&ScriptImage>,
+) -> Vec<i16> {
+    if eduke_event_hooked(script, "EVENT_DAMAGEWALL")
+        && walls.get(wall_index).is_some_and(|wall| {
+            eduke_damage_event_tile(script, wall.picnum)
+                || eduke_damage_event_tile(script, wall.overpicnum)
+        })
+    {
+        defer_surface_damage(SurfaceDamage::Wall {
+            source,
+            source_i,
+            atwith,
+            wall: wall_index,
+            hit: [hit_x, hit_y, hit_z],
+            hit_sector,
+        });
+        return Vec::new();
+    }
+    apply_checkhitwall_unchecked(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        randomseed,
+        source,
+        source_i,
+        atwith,
+        wall_index,
+        hit_x,
+        hit_y,
+        hit_z,
+        hit_sector,
+        script,
+    )
+}
+
+/// The wall side effects of Chocolate `checkhitwall` (breakable glass,
+/// screens, fans, cracks…), without the EDuke32 event check.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_checkhitwall_unchecked(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
@@ -3732,6 +3978,7 @@ fn apply_radius_wall_hits(
                     script,
                     randomseed,
                     sector_index as i16,
+                    source_i,
                     sound_owner,
                     &mut ceiling_sounds,
                 );
@@ -4295,6 +4542,13 @@ pub(crate) fn apply_con_hitradius(
     if radius <= 0 {
         return;
     }
+    // EDuke32 `A_RadiusDamage` replaces each target's queued damage unless
+    // the blasting projectile is PROJECTILE_HITRADIUS_ADDITIVE.
+    let additive = actor_temps
+        .get(source_i.max(0) as usize)
+        .is_some_and(|temps| {
+            temps.projectile_workslike & crate::shoot::PROJECTILE_FLAG_HITRADIUS_ADDITIVE != 0
+        });
     let wall_sounds = apply_radius_wall_hits(
         lists,
         sprites,
@@ -4376,7 +4630,7 @@ pub(crate) fn apply_con_hitradius(
                     actor_temps.resize_with(ti + 1, ActorConTemps::default);
                 }
                 let temp = &mut actor_temps[ti];
-                temp.hit_extra = if temp.hit_extra < 0 {
+                temp.hit_extra = if temp.hit_extra < 0 || !additive {
                     amount
                 } else {
                     temp.hit_extra.saturating_add(amount)
@@ -4390,6 +4644,8 @@ pub(crate) fn apply_con_hitradius(
                     RADIUSEXPLOSION
                 };
                 temp.hit_owner = source.owner;
+                temp.hit_source = source_i;
+                temp.hit_radius = [radius, damage[0], damage[1], damage[2], damage[3]];
                 temp.hit_ang =
                     getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
                 if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
@@ -4454,7 +4710,7 @@ pub(crate) fn apply_con_hitradius(
                 actor_temps.resize_with(ti + 1, ActorConTemps::default);
             }
             let temp = &mut actor_temps[ti];
-            temp.hit_extra = if temp.hit_extra < 0 {
+            temp.hit_extra = if temp.hit_extra < 0 || !additive {
                 amount
             } else {
                 temp.hit_extra.saturating_add(amount)
@@ -4468,6 +4724,8 @@ pub(crate) fn apply_con_hitradius(
                 RADIUSEXPLOSION
             };
             temp.hit_owner = source.owner;
+            temp.hit_source = source_i;
+            temp.hit_radius = [radius, damage[0], damage[1], damage[2], damage[3]];
             temp.hit_ang = getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
             if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
                 sprites[ti].xvel = sprites[ti]
@@ -4530,13 +4788,15 @@ pub(crate) fn apply_con_hitradius(
                     actor_temps.resize_with(ti + 1, ActorConTemps::default);
                 }
                 let temp = &mut actor_temps[ti];
-                temp.hit_extra = if temp.hit_extra < 0 {
+                temp.hit_extra = if temp.hit_extra < 0 || !additive {
                     amount
                 } else {
                     temp.hit_extra.saturating_add(amount)
                 };
                 temp.hit_picnum = RADIUSEXPLOSION;
                 temp.hit_owner = source.owner;
+                temp.hit_source = source_i;
+                temp.hit_radius = [radius, damage[0], damage[1], damage[2], damage[3]];
                 temp.hit_ang =
                     getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
                 sprites[ti].xvel = sprites[ti]
@@ -4618,7 +4878,7 @@ pub(crate) fn apply_con_hitradius(
                     actor_temps.resize_with(ti + 1, ActorConTemps::default);
                 }
                 let temp = &mut actor_temps[ti];
-                temp.hit_extra = if temp.hit_extra < 0 {
+                temp.hit_extra = if temp.hit_extra < 0 || !additive {
                     amount
                 } else {
                     temp.hit_extra.saturating_add(amount)
@@ -4632,6 +4892,8 @@ pub(crate) fn apply_con_hitradius(
                     RADIUSEXPLOSION
                 };
                 temp.hit_owner = source.owner;
+                temp.hit_source = source_i;
+                temp.hit_radius = [radius, damage[0], damage[1], damage[2], damage[3]];
                 temp.hit_ang =
                     getangle(body.x.wrapping_sub(source.x), body.y.wrapping_sub(source.y)) as i16;
                 // Chocolate `hitradius` exits an active player camera when a
@@ -4733,7 +4995,7 @@ pub(crate) fn apply_con_hitradius(
                         actor_temps.resize_with(ti + 1, ActorConTemps::default);
                     }
                     let temp = &mut actor_temps[ti];
-                    temp.hit_extra = if temp.hit_extra < 0 {
+                    temp.hit_extra = if temp.hit_extra < 0 || !additive {
                         amount
                     } else {
                         temp.hit_extra.saturating_add(amount)
@@ -4747,6 +5009,8 @@ pub(crate) fn apply_con_hitradius(
                         RADIUSEXPLOSION
                     };
                     temp.hit_owner = source.owner;
+                    temp.hit_source = source_i;
+                    temp.hit_radius = [radius, damage[0], damage[1], damage[2], damage[3]];
                     temp.hit_ang =
                         getangle(t.x.wrapping_sub(source.x), t.y.wrapping_sub(source.y)) as i16;
                     if !matches!(t.picnum, 1975 | 2360 | 1960 | 2630 | 2710 | 2760 | 4740) {
@@ -4806,6 +5070,37 @@ fn radius_damage(dist: i32, radius: i32, randomseed: &mut i32, strength: i32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radius_hits_replace_queued_damage_unless_the_projectile_is_additive() {
+        let mut sprites = vec![SpriteT::default(); 4];
+        let target = sprites[2];
+        let mut temps = vec![ActorConTemps::default(); 4];
+        for additive in [false, true] {
+            temps[1].projectile_workslike = if additive {
+                crate::shoot::PROJECTILE_FLAG_RPG | crate::shoot::PROJECTILE_FLAG_HITRADIUS_ADDITIVE
+            } else {
+                crate::shoot::PROJECTILE_FLAG_RPG
+            };
+            temps[2].hit_extra = 10;
+            queue_radius_sprite_hit(
+                &mut sprites,
+                &mut temps,
+                2,
+                target,
+                7,
+                RADIUSEXPLOSION,
+                3,
+                0,
+                0,
+                1,
+                [512, 1, 2, 3, 4],
+            );
+            assert_eq!(temps[2].hit_extra, if additive { 17 } else { 7 });
+            assert_eq!(temps[2].hit_source, 1);
+            assert_eq!(temps[2].hit_radius, [512, 1, 2, 3, 4]);
+        }
+    }
 
     #[test]
     fn eduke_projectile_velocity_multiplier_updates_each_portal_step() {

@@ -74,7 +74,10 @@ impl StatusBar for ZscriptStatusBar {
         PENDING.with(|p| p.borrow_mut().clear());
         let mut vm = Zvm::new((*self.program).clone());
         let id = vm.natives.register("ui.draw_hud_numbers", native_draw_hud);
-        if let Some(f) = vm.program.functions.first_mut() {
+        if let Some(f) = std::sync::Arc::make_mut(&mut vm.program)
+            .functions
+            .first_mut()
+        {
             let mut i = 0;
             while i < f.code.len() {
                 let (op, _, _, _) = room_zvm::unpack(f.code[i]);

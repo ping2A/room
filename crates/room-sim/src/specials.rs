@@ -136,6 +136,8 @@ pub mod num {
     pub const PLANE_COPY: u16 = 118;
     /// `Line_SetIdentification` — id, … (runtime line id).
     pub const LINE_SET_IDENTIFICATION: u16 = 121;
+    /// `Line_SetPortalTarget` — thisid, destid.
+    pub const LINE_SET_PORTAL_TARGET: u16 = 107;
     /// `Scroll_Texture_Model` — lineid, controlside.
     pub const SCROLL_TEXTURE_MODEL: u16 = 222;
     /// `Scroll_Texture_Offsets` — …
@@ -1131,6 +1133,15 @@ pub fn execute_special(
         num::LIGHT_FORCE_LIGHTNING => light_force_lightning(world, args),
         num::PLANE_COPY => plane_copy(world, args, line),
         num::LINE_SET_IDENTIFICATION => line_set_identification(world, args, line),
+        num::LINE_SET_PORTAL_TARGET => {
+            let map = std::sync::Arc::make_mut(&mut world.map);
+            i32::from(room_map::portals::change_portal(
+                map,
+                line.map(|l| l.raw() as usize),
+                args[0],
+                args[1],
+            ))
+        }
         num::TRANSFER_HEIGHTS => transfer_heights(world, args, line),
         num::TRANSFER_FLOOR_LIGHT => transfer_floor_light(world, args, line),
         num::TRANSFER_CEILING_LIGHT => transfer_ceiling_light(world, args, line),
@@ -5268,10 +5279,9 @@ fn plat_dwus(
         let high = sec.floor_z;
         // Doom `P_FindLowestFloorSurrounding` + lip (not `high - lip`).
         let (min_f, _, _, _) = neighbor_plane_extrema(world, sid);
-        let low = min_f.unwrap_or(high) + lip;
-        if low >= high - 0.001 {
-            continue;
-        }
+        // Vanilla clamps a target above the floor to the floor and still
+        // starts the lift (it waits and returns; the switch still counts).
+        let low = (min_f.unwrap_or(high) + lip).min(high);
         world.plats.push(PlatMover {
             sector: sid,
             status: -1,
@@ -10545,6 +10555,8 @@ actor PlayerPawn : Actor 0
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         // Doom EV_Teleport: tag selects the sector holding TeleportDest.
@@ -10617,6 +10629,8 @@ actor PlayerPawn : Actor 0
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         if let Some(sid) = room_nodebuild::point_in_sector(&map, 200.0, 200.0) {
@@ -11867,6 +11881,8 @@ actor PlayerPawn : Actor 0
                 automap_style: 0,
                 clip_midtex: false,
                 wrap_midtex: false,
+                ext: 0,
+                user: Default::default(),
             };
             room_map::xlat::translate_doom_linedef(&raw)
         };
@@ -12645,10 +12661,9 @@ actor Spot : Actor 9001
             ),
             1
         );
-        assert!(
-            (w.plats[0].low - -16.0).abs() < 1e-6
-                || (w.plats[0].high - w.plats[0].low - 16.0).abs() < 1e-6
-        );
+        // A lone sector: the lowest surrounding floor is its own, + lip is
+        // above the floor, so vanilla clamps the target to the floor.
+        assert!((w.plats[0].low - w.plats[0].high).abs() < 1e-6);
         assert_eq!(
             execute_special(
                 &mut w,
@@ -12868,6 +12883,8 @@ actor Spot : Actor 9001
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         if let Some(sid) = room_nodebuild::point_in_sector(&map, 200.0, 64.0) {

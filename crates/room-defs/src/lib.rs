@@ -74,7 +74,9 @@ impl Definitions {
     }
 }
 pub use menudef::{MenuBlock, MenuBlockKind, MenuCmd, MenuDef, parse_menudef};
-pub use modeldef::{ModelDef, ModelDefs, ModelFrameBind, parse_modeldef, view_model_weapon_scale};
+pub use modeldef::{
+    ModelDef, ModelDefs, ModelFrameBind, mdl, parse_modeldef, view_model_weapon_scale,
+};
 pub use sbarinfo::{MugshotDef, SbarCmd, SbarInfo, StatusBarDef, parse_sbarinfo};
 pub use sndinfo::{SoundDef, SoundRegistry, parse_sndinfo};
 pub use sndseq::{SeqCommand, SoundSeqRegistry, SoundSequence, parse_sndseq};

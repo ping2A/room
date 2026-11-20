@@ -541,7 +541,7 @@ flowchart TB
   SCN["build_scene: walls (upper / mid / lower, 3D-floor sides),<br/>floor/ceiling fans, sky, sprites, decals,<br/>mirrors, portals → SceneLists"] --> ANI
   ANI["TextureAnimator (ANIMDEFS),<br/>glow / fullbright, dynamic lights (GLDEFS)"] --> PREP
   PREP["UnlitPass::prepare: upload vertices,<br/>ViewUniforms, LightUniforms (clusters, 1D shadowmaps),<br/>sector light + light mode, fog, colormap"] --> OFF
-  OFF["Offscreen canvases: camera textures,<br/>linked portals (recursive, depth ≤ 2),<br/>mirror / plane-reflection views"] --> MAIN
+  OFF["Offscreen canvases: camera textures,<br/>portal views (screen-space, depth ≤ 4),<br/>plane-reflection views"] --> MAIN
   MAIN["Main pass: draw by material range<br/>(depth + stencil), sprites, models, voxels,<br/>fuzz / translucency render styles"] --> HUDP
   HUDP["2D canvas: room-ui draw list (status bar, HUD,<br/>automap, menus, console) rasterized and blitted"] --> PRES["Present"]
 ```
@@ -566,10 +566,9 @@ Key pieces:
 - **Offscreen rendering** (`offscreen.rs`, `capture.rs`) renders any view to
   PNG with no window — the basis of the golden-image tests.
 
-> Spec vs code: `13-renderer.md` §6 describes stencil-recursive portals. The
-> desktop shell currently renders linked portals into offscreen canvases
-> refreshed every few frames (recursion depth `MAX_PORTAL_RECURSION = 2`) and
-> uses the stencil for mirrors.
+> Portals and mirrors: each visible portal view is drawn into a
+> full-resolution target every frame and sampled in screen space by the
+> portal surface (`room-render/src/portal_view.rs`, `13-renderer.md` §6).
 
 ---
 

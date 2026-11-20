@@ -1,5 +1,6 @@
 ---
 source: crates/room-defs/src/builder.rs
+assertion_line: 632
 expression: "crate::dump_debug(&defs)"
 ---
 Definitions {
@@ -132,6 +133,7 @@ Definitions {
     },
     modeldefs: ModelDefs {
         by_actor: {},
+        blocks: {},
     },
     voxeldefs: VoxelDefs {
         by_name: {},

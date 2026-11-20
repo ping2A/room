@@ -6,12 +6,15 @@ pub mod blockmap;
 pub mod boom_discrete;
 pub mod boom_gen;
 pub mod compat_db;
+pub mod convert;
 pub mod doom;
 pub mod error;
 pub mod geom;
 pub mod level_fixes;
 pub mod loader;
 pub mod nodes;
+pub mod portal_report;
+pub mod portals;
 pub mod raw;
 pub mod reject;
 pub mod setup;
@@ -35,17 +38,21 @@ pub use geom::{
     Line, MapFormat, MapGeometry, SectorStatic, Side, Vertex, link_geometry, link_geometry_at,
 };
 pub use level_fixes::{LevelFixOp, LevelFixesDatabase, apply_level_fixes};
-pub use loader::{list_maps, load_map};
+pub use loader::{list_maps, load_map, load_udmf_text};
 pub use nodes::{
     ExtendedNodes, GameNodes, GlNodes, GlSeg, NF_SUBSECTOR, Node, Seg, Subsector, gl_nodes_to_game,
     load_extended_nodes_lump, load_game_nodes, parse_nodes, parse_segs, parse_ssectors,
     parse_xnod_body,
 };
+pub use portal_report::{PortalReport, portal_report};
+pub use portals::{
+    BuildLink, LinePortal, PORTAL_KIND_FALL, PORTAL_KIND_WATER, PortalGroups, PortalTables,
+    PortalThing, SectorPortal,
+};
 pub use raw::{RawLinedef, RawSector, RawSidedef, RawThing, RawVertex};
 pub use reject::{Reject, build_reject, build_reject_zero, parse_reject};
 pub use setup::{
-    FFloorStatic, LinePortal, MidtexAttach, PORTAL_KIND_FALL, PORTAL_KIND_WATER, PolyobjStatic,
-    PortalGroups, PortalTables, SecPlane, SectorPlanes, SectorPortal, SetupData,
+    FFloorStatic, MidtexAttach, PolyobjStatic, SecPlane, SectorPlanes, SetupData,
     apply_attach_3d_midtex, build_setup,
 };
 pub use svg::map_to_svg;

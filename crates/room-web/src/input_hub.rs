@@ -30,6 +30,9 @@ thread_local! {
     static WHEEL: Cell<i32> = const { Cell::new(0) };
     static WHEEL_FRAC: Cell<f64> = const { Cell::new(0.0) };
     static VIEW_GRID: Cell<bool> = const { Cell::new(false) };
+    /// F6 (net save) / F9 (net load) presses waiting for the play session:
+    /// `Some(load)`.
+    static NET_SAVE: Cell<Option<bool>> = const { Cell::new(None) };
     static MOUSE_YAW: Cell<i32> = const { Cell::new(0) };
     /// Native Duke key-turn hold time in 120 Hz ticks (Chocolate `turnheldtime`).
     static DUKE_TURN_HELD: Cell<i16> = const { Cell::new(0) };
@@ -76,6 +79,7 @@ pub fn default_binds() -> BTreeMap<String, String> {
         ("Quote", "invuse"),
         ("Comma", "invleft"),
         ("Period", "invright"),
+        ("Backspace", "turnaround"),
         ("KeyB", "mod1"),
         ("KeyM", "mod2"),
         ("KeyV", "mod3"),
@@ -155,6 +159,7 @@ fn intern_action(action: &str) -> Option<&'static str> {
         "invuse" => "invuse",
         "invleft" => "invleft",
         "invright" => "invright",
+        "turnaround" => "turnaround",
         "grid" => "grid",
         "weapon1" => "weapon1",
         "weapon2" => "weapon2",
@@ -193,6 +198,11 @@ pub fn set_key(code: &str, down: bool) {
         } else if !down {
             DUKE_F7_HELD.set(false);
         }
+        return;
+    }
+    if !DUKE_MODE.get() && down && matches!(code, "F6" | "F9") {
+        // Doom netplay quick save / load (host only; desktop parity).
+        NET_SAVE.set(Some(code == "F9"));
         return;
     }
     if code == "Space" {
@@ -343,6 +353,10 @@ pub fn take_duke_input(ang: i16) -> room_duke::DukeInput {
     }
     if held.contains("invright") {
         bits |= room_duke::INPUT_INVENTORY_RIGHT;
+    }
+    // Chocolate gamefunc_TurnAround (sync bit 28); Brutal Duke reloads.
+    if held.contains("turnaround") {
+        bits |= room_duke::INPUT_TURNAROUND;
     }
     if run {
         bits |= 1 << 5;
@@ -511,6 +525,9 @@ pub fn drain_into(play: &mut PlaySession) {
     if VIEW_GRID.replace(false) {
         play.view_grid_toggle = true;
     }
+    if let Some(load) = NET_SAVE.take() {
+        play.request_net_save(load, 0);
+    }
     let wheel = WHEEL.replace(0);
     if wheel != 0 {
         play.weapon_cycle = play.weapon_cycle.saturating_add(wheel);
@@ -535,6 +552,7 @@ pub fn reset() {
     WHEEL.set(0);
     WHEEL_FRAC.set(0.0);
     VIEW_GRID.set(false);
+    NET_SAVE.set(None);
     MOUSE_YAW.set(0);
     MOUSE_PITCH.set(0);
     ANALOG_MOVE.set((0.0, 0.0));

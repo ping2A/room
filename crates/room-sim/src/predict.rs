@@ -5,7 +5,9 @@
 //! the confirmed world and walks a copy of the player's pawn through the
 //! pending commands with the same thrust rules as `move_player`, checking
 //! walls and solid things with the read-only [`check_position`]. Only the
-//! view (eye position, yaw, pitch) is predicted. Each frame starts again from
+//! view (eye position, yaw, pitch) is predicted. Jumps, gravity, falling off
+//! ledges and ceilings are followed too (out of water); moving floors are
+//! read where the confirmed world has them. Each frame starts again from
 //! the confirmed pawn, so a guess that went wrong (a door, a push, a monster
 //! in the way) is corrected as soon as the real tic arrives.
 
@@ -79,6 +81,20 @@ impl World {
         let mut vel = actor.vel;
         let mut floor_z = crate::physics::floor_at_xy(self, actor.pos.x(), actor.pos.y())
             .unwrap_or(actor.pos.z());
+        // Vertical motion (jump / fall) out of water; swimming keeps the
+        // pawn's height as before.
+        let model_z = crate::physics::actor_waterlevel(self, actor) < 2;
+        let mut jump_down = player.jump_down;
+        let gravity = if (actor.flags & crate::class::FLAG_NOGRAVITY) != 0 {
+            0.0
+        } else {
+            let actor_g = if actor.gravity > 0.0 {
+                actor.gravity
+            } else {
+                class.gravity
+            };
+            crate::physics::GRAVITY * self.level.gravity * actor_g
+        };
         for cmd in pending {
             // Turn first, as `player_think` does.
             if cmd.yaw != 0 {
@@ -90,6 +106,15 @@ impl World {
                     (probe.pitch.degrees() + f64::from(cmd.pitch) * YAW_TO_DEG).clamp(-89.0, 89.0);
                 probe.pitch = Angle::from_degrees(deg);
             }
+            let jump = cmd.buttons.any(crate::Buttons::JUMP);
+            let grounded = probe.pos.z() <= floor_z + 0.1 && vel.z() <= 0.0;
+            if model_z && jump && !jump_down && grounded && !player.crouching && !self.no_jump {
+                let jump_z = probe.jump_z * crate::powerups::jump_factor(self, mo);
+                if jump_z > 0.0 {
+                    vel = DVec3::new(vel.x(), vel.y(), jump_z);
+                }
+            }
+            jump_down = jump;
             let mut forward = f64::from(cmd.forward_move) * fwd_scale;
             let mut side = f64::from(cmd.side_move) * side_scale;
             if player.crouching {
@@ -98,6 +123,9 @@ impl World {
             }
             let rad = probe.angle.radians();
             let (s, c) = (room_core::dmath::sin(rad), room_core::dmath::cos(rad));
+            if model_z {
+                self.predict_z(&mut probe, mo, &mut vel, floor_z, gravity);
+            }
             let on_ground = probe.pos.z() <= floor_z + 0.1;
             if vanilla {
                 // Doom `P_Thrust` adds to momentum on the ground; then
@@ -138,6 +166,36 @@ impl World {
         })
     }
 
+    /// One tic of `z_movement` for the probe: gravity while above the floor,
+    /// then the floor and ceiling clamp.
+    fn predict_z(
+        &self,
+        probe: &mut crate::actor::Actor,
+        mo: crate::actor::ActorId,
+        vel: &mut DVec3,
+        floor_z: f64,
+        gravity: f64,
+    ) {
+        let airborne = probe.pos.z() > floor_z + 0.1 || vel.z() > 0.0;
+        if !airborne {
+            *vel = DVec3::new(vel.x(), vel.y(), 0.0);
+            return;
+        }
+        let ceiling_z = check_position(self, probe, probe.pos, Some(mo)).ceiling_z;
+        let mut vz = vel.z() - gravity;
+        let mut z = probe.pos.z() + vz;
+        if z <= floor_z {
+            z = floor_z;
+            vz = 0.0;
+        }
+        if z + probe.height > ceiling_z {
+            z = (ceiling_z - probe.height).max(floor_z);
+            vz = vz.min(0.0);
+        }
+        probe.pos = DVec3::new(probe.pos.x(), probe.pos.y(), z);
+        *vel = DVec3::new(vel.x(), vel.y(), vz);
+    }
+
     /// Move `probe` by `(dx, dy)` if it fits, else slide along one axis, in
     /// steps no longer than its radius. Floors under the new spot are
     /// followed down and climbed up to a step.
@@ -170,7 +228,13 @@ impl World {
                     && r.ceiling_z - r.floor_z >= probe.height
                     && r.ceiling_z - probe.pos.z().max(r.floor_z) >= probe.height
                 {
-                    let z = if r.floor_z > probe.pos.z() || probe.pos.z() - r.floor_z <= MAX_STEP {
+                    // Walking follows the floor (steps up, small drops
+                    // down); in the air the pawn keeps its height unless the
+                    // floor rises into it.
+                    let airborne = probe.pos.z() > *floor_z + 0.1;
+                    let z = if airborne {
+                        probe.pos.z().max(r.floor_z)
+                    } else if r.floor_z > probe.pos.z() || probe.pos.z() - r.floor_z <= MAX_STEP {
                         r.floor_z
                     } else {
                         probe.pos.z()
@@ -248,6 +312,46 @@ mod tests {
             "eye {} vs {view}",
             guess.view_z
         );
+    }
+
+    #[test]
+    fn prediction_follows_a_jump_up_and_back_down() {
+        let mut w = world();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.actors.get_mut(mo).unwrap().jump_z = 8.0;
+        let floor = w.actors.get(mo).unwrap().pos.z();
+        let jump = TicCmd {
+            buttons: Buttons(Buttons::JUMP),
+            ..walk(0)
+        };
+        let mut pending = vec![jump];
+        pending.extend(std::iter::repeat_n(walk(0), 5));
+        let guess = w.predict_player_view(0, &pending).unwrap();
+        let mut real_peak = floor;
+        let mut sim = world();
+        sim.actors.get_mut(mo).unwrap().jump_z = 8.0;
+        for cmd in &pending {
+            sim.set_ticcmds(&[*cmd]);
+            sim.tick();
+            real_peak = real_peak.max(sim.actors.get(mo).unwrap().pos.z());
+        }
+        let real = sim.actors.get(mo).unwrap().pos;
+        assert!(
+            guess.pos.z() > floor + 8.0,
+            "predicted pawn left the floor: {:?}",
+            guess.pos
+        );
+        assert!(
+            (guess.pos.z() - real.z()).abs() <= 4.0,
+            "guess z {} real z {} (peak {real_peak})",
+            guess.pos.z(),
+            real.z()
+        );
+        // Long enough to land again.
+        let mut long = vec![jump];
+        long.extend(std::iter::repeat_n(TicCmd::default(), 40));
+        let landed = w.predict_player_view(0, &long).unwrap();
+        assert!((landed.pos.z() - floor).abs() < 0.01, "{:?}", landed.pos);
     }
 
     #[test]

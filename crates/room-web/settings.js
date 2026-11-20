@@ -100,6 +100,10 @@ function defaultsFromMod(mod) {
     renderCap: mobile ? 640 : 0,
     lowPower: mobile,
     mobilePerfV1: mobile,
+    // Online play: rollback off (tics of look-ahead when on), prediction on.
+    rollback: false,
+    rollbackTics: 8,
+    predict: true,
     windowScale: 1,
     binds,
     /** @type {Record<string, string>} */
@@ -245,6 +249,21 @@ export function initSettings(mod, opts = {}) {
           <label class="settings-check"><input id="settings-lowpower" type="checkbox" /> Performance mode</label>
           <p class="settings-hint">For phones and tablets: no dynamic lights. On by default there, with Pixel resolution.</p>
           <button type="button" id="settings-fs" class="settings-btn">Toggle fullscreen</button>
+        </section>
+        <section>
+          <h3>Network</h3>
+          <label class="settings-check"><input id="settings-predict" type="checkbox" /> Prediction</label>
+          <p class="settings-hint">Online games: your own movement shows at once instead of after the round trip to the server.</p>
+          <label class="settings-check"><input id="settings-rollback" type="checkbox" /> Rollback netcode</label>
+          <label class="settings-row">Look-ahead
+            <select id="settings-rollback-tics">
+              <option value="4">4 tics (about 115 ms)</option>
+              <option value="8">8 tics (about 230 ms)</option>
+              <option value="12">12 tics (about 340 ms)</option>
+              <option value="16">16 tics (about 460 ms)</option>
+            </select>
+          </label>
+          <p class="settings-hint">Best for deathmatch. Runs the whole game ahead, so other players and shots show where they are now, not where they were. It guesses others' moves until their input arrives and corrects at once if a guess was wrong. Pick a look-ahead above your ping. Sound and the HUD still follow the server. Not available for mods with ZScript or WASM scripts.</p>
         </section>
         <section>
           <h3>Minimap</h3>
@@ -496,6 +515,11 @@ export function initSettings(mod, opts = {}) {
     root.querySelector("#settings-sens-val").textContent = (state.mouseSens || 1).toFixed(2);
     root.querySelector("#settings-invert").checked = !!state.invertY;
     root.querySelector("#settings-lowpower").checked = !!state.lowPower;
+    root.querySelector("#settings-predict").checked = state.predict !== false;
+    root.querySelector("#settings-rollback").checked = !!state.rollback;
+    const rbTics = root.querySelector("#settings-rollback-tics");
+    rbTics.value = String(state.rollbackTics || 8);
+    rbTics.disabled = !state.rollback;
     qualitySel.value = String(Number(state.shaders.r_quality || 0));
     tonemapSel.value = String(Number(state.shaders.gl_tonemap || 0));
     goreSel.value = String(Number(state.shaders.r_gore || 1));
@@ -856,6 +880,17 @@ export function initSettings(mod, opts = {}) {
       /* old wasm */
     }
     try {
+      if (typeof mod.roomSetRollback === "function") {
+        mod.roomSetRollback(state.rollback ? Number(state.rollbackTics) || 8 : 0);
+      }
+      // `?predict=0` in the URL wins until the box is changed here.
+      if (typeof mod.roomSetPredict === "function" && state.predictSet) {
+        mod.roomSetPredict(state.predict !== false);
+      }
+    } catch (_) {
+      /* old wasm */
+    }
+    try {
       mod.roomApplySettings(
         Number(state.mouseSens) || 1,
         !!state.invertY,
@@ -919,6 +954,20 @@ export function initSettings(mod, opts = {}) {
   root.querySelector("#settings-sens").addEventListener("change", apply);
   root.querySelector("#settings-lowpower").addEventListener("change", (ev) => {
     state.lowPower = ev.target.checked;
+    apply();
+  });
+  root.querySelector("#settings-predict").addEventListener("change", (ev) => {
+    state.predict = ev.target.checked;
+    state.predictSet = true;
+    apply();
+  });
+  root.querySelector("#settings-rollback").addEventListener("change", (ev) => {
+    state.rollback = ev.target.checked;
+    root.querySelector("#settings-rollback-tics").disabled = !state.rollback;
+    apply();
+  });
+  root.querySelector("#settings-rollback-tics").addEventListener("change", (ev) => {
+    state.rollbackTics = Number(ev.target.value) || 8;
     apply();
   });
   root.querySelector("#settings-invert").addEventListener("change", (ev) => {

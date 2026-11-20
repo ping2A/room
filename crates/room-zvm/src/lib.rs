@@ -15,10 +15,12 @@ mod budget;
 mod coverage;
 mod heap;
 mod interp;
+mod map_natives;
 mod natives;
 mod opcode;
 mod ops;
 mod peephole;
+mod portal_natives;
 mod program;
 mod program_codec;
 mod provider;
@@ -31,12 +33,14 @@ pub use budget::{DESKTOP_10K_TICK_MS, WEB_10K_TICK_MS, measure_ticks_ms, trivial
 pub use coverage::{CoverageRow, NativeStatus, bd_stub_map, coverage_percent, coverage_report};
 pub use heap::{HeapImage, HeapKindImage, HeapSlotImage, ObjHandle, ObjKind, StrHandle, ZvmHeap};
 pub use interp::{DEFAULT_FUEL, DEFAULT_STACK_LIMIT, Value, Zvm, ZvmConfig};
+pub use map_natives::{ZsMapKind, ZsMapObjects, ZsPlane};
 pub use natives::{
     NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx, ZvmPlayHost,
     format_printf, register_bd_natives, vararg_values,
 };
 pub use opcode::{Op, has_ext, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};
+pub use portal_natives::{SectorLookup, ZsLineInfo, ZsLinePortal, ZsPlanePortal, ZsPortalInfo};
 pub use program::{
     ClassLayout, CompiledFunction, CompiledProgram, FuncParam, block_costs, jump_target, next_insn,
 };

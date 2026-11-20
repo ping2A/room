@@ -59,6 +59,11 @@ impl TextureManager {
 
     /// Lookup by id.
     #[must_use]
+    /// Drop a texture (its GPU memory goes when the last view does).
+    pub fn remove(&mut self, id: TextureId) {
+        self.entries.remove(&id.raw());
+    }
+
     pub fn get(&self, id: TextureId) -> Option<&TextureEntry> {
         self.entries.get(&id.raw())
     }
@@ -83,13 +88,31 @@ impl TextureManager {
         image: &Image,
         playpal: Option<&Playpal>,
     ) -> TextureId {
+        self.upload_image_scaled(device, queue, image, playpal, None)
+    }
+
+    /// [`Self::upload_image`], upscaling the pixels first with
+    /// `gl_texture_hqresize*` (`(settings, target bit)`).
+    pub fn upload_image_scaled(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &Image,
+        playpal: Option<&Playpal>,
+        hq: Option<(crate::hq_resize::HqResize, u8)>,
+    ) -> TextureId {
         let id = self.alloc_id();
         let (w, h) = (image.width().max(1), image.height().max(1));
+        let mut rgba = expand_image(image, playpal);
+        let (mut pw, mut ph) = (w, h);
+        if let Some((settings, target)) = hq {
+            (pw, ph, rgba) = settings.apply(w, h, rgba, target);
+        }
         // Larger than the device allows (phones on WebGL2, hi-res mod art):
         // shrink the pixels, keep the logical size so texture scaling and UVs
         // stay as authored. Creating it full size fails validation.
         let max = device.limits().max_texture_dimension_2d.max(1);
-        let (gw, gh, base) = fit_to_limit(w, h, expand_image(image, playpal), max);
+        let (gw, gh, base) = fit_to_limit(pw, ph, rgba, max);
         let levels = mip_chain(gw, gh, base);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("tex"),

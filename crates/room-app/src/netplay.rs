@@ -3,8 +3,8 @@
 
 use room_net::{
     ABI_MAJOR, ENGINE_VERSION, Hello, LobbyHost, LobbyMsg, LockstepSession, NetTicCmd, NoiseKeys,
-    NoiseTransport, PeerId, TcpRelayClient, TcpRelayServer, TcpTransport, TimedCmd, Transport,
-    UdpTransport,
+    NoiseTransport, PeerId, Ping, Pong, TcpRelayClient, TcpRelayServer, TcpTransport, TimedCmd,
+    Transport, UdpTransport, delay_for_rtts,
 };
 use room_sim::{Buttons, TicCmd};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -41,6 +41,10 @@ pub struct HostOpts<'a> {
     pub kind: NetTransportKind,
     /// Wrap lockstep with Noise_XX.
     pub noise: bool,
+    /// Deathmatch instead of co-op (sent to joiners in Welcome).
+    pub deathmatch: bool,
+    /// Bot seats after the player seats.
+    pub bots: u8,
 }
 
 /// Active lockstep session after lobby completes.
@@ -55,6 +59,22 @@ pub struct NetPlay {
     pub rng_seed: u32,
     /// Seat display names from lobby start (BE3).
     pub seat_names: Vec<String>,
+    /// Match rules from the host: deathmatch (else co-op).
+    pub deathmatch: bool,
+    /// Bot seats after the player seats, simulated by every peer.
+    pub bots: u8,
+    /// First tic where peers' world checksums disagreed.
+    desync_tic: Option<u32>,
+    /// Whether [`Self::take_desync`] already handed the desync out.
+    desync_reported: bool,
+    /// Rollback play (`cl_rollback`): window in tics, `0` = blocking lockstep.
+    rollback_window: u32,
+    /// Rollback: world checksum to send with the next local command.
+    rollback_checksum: Option<(u32, u64)>,
+    /// Rollback: frames released but not yet applied by the caller.
+    rollback_applied: u32,
+    /// Rollback: local tics in a row that waited for a full window.
+    rollback_waits: u32,
 }
 
 impl NetPlay {
@@ -73,6 +93,7 @@ impl NetPlay {
                 opts.map,
                 opts.skill,
                 opts.noise,
+                (opts.deathmatch, opts.bots),
             ),
             NetTransportKind::Tcp => Self::host_tcp(
                 opts.bind_addr,
@@ -82,6 +103,7 @@ impl NetPlay {
                 opts.map,
                 opts.skill,
                 opts.noise,
+                (opts.deathmatch, opts.bots),
             ),
             NetTransportKind::TcpServer => Self::host_tcp_server(
                 opts.bind_addr,
@@ -91,6 +113,7 @@ impl NetPlay {
                 opts.map,
                 opts.skill,
                 opts.noise,
+                (opts.deathmatch, opts.bots),
             ),
         }
     }
@@ -122,6 +145,7 @@ impl NetPlay {
         map: &str,
         skill: u8,
         noise: bool,
+        rules: (bool, u8),
     ) -> Result<Self, String> {
         let mut transport = UdpTransport::bind(PeerId(0), bind_addr).map_err(|e| e.to_string())?;
         let local_addr = transport.local_addr().map_err(|e| e.to_string())?;
@@ -129,7 +153,15 @@ impl NetPlay {
             "room: hosting {max_players}-player UDP coop on {local_addr} (map={map} skill={skill})"
         );
 
-        let mut lobby = LobbyHost::new(fingerprint, max_players, 1, rng_seed, map, skill);
+        let mut lobby = LobbyHost::new(
+            fingerprint,
+            max_players,
+            net_input_delay(),
+            rng_seed,
+            map,
+            skill,
+        );
+        lobby.set_rules(rules.0, rules.1);
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut known_addrs = std::collections::BTreeSet::new();
         let mut welcome_by_addr = std::collections::BTreeMap::<SocketAddr, Vec<u8>>::new();
@@ -167,18 +199,36 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start_msg = lobby.start_msg();
+        let mut probe = PingProbe::new();
+        while !probe.finished(lobby.seats()) {
+            if let Some(ping) = probe.ping_due() {
+                for &addr in &known_addrs {
+                    let _ = transport.send_raw(addr, &ping);
+                }
+            }
+            let mut raw = Vec::new();
+            transport.poll_raw(&mut raw);
+            for (_addr, bytes) in raw {
+                probe.on_bytes(&bytes);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let delay = probe.negotiated_delay();
+        let start_msg = lobby.start_msg_with_delay(delay);
         let seat_names = match &start_msg {
             LobbyMsg::Start(s) => s.names.clone(),
             _ => Vec::new(),
         };
         let start = start_msg.encode();
-        for &addr in &known_addrs {
-            let _ = transport.send_raw(addr, &start);
+        // UDP may drop it: send a few copies (joiners act on the first).
+        for _ in 0..3 {
+            for &addr in &known_addrs {
+                let _ = transport.send_raw(addr, &start);
+            }
         }
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), delay);
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(transport, PeerId(0), &peers, noise)?;
 
@@ -189,6 +239,14 @@ impl NetPlay {
             peer_count: max_players,
             rng_seed,
             seat_names,
+            desync_tic: None,
+            desync_reported: false,
+            deathmatch: rules.0,
+            bots: rules.1,
+            rollback_window: 0,
+            rollback_checksum: None,
+            rollback_applied: 0,
+            rollback_waits: 0,
         })
     }
 
@@ -212,6 +270,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
@@ -236,7 +295,19 @@ impl NetPlay {
                     }
                     Ok(LobbyMsg::Start(s)) => {
                         start_seed = Some(s.rng_seed);
+                        start_delay = s.delay;
                         seat_names = s.names;
+                    }
+                    Ok(LobbyMsg::Ping(Ping { nonce })) => {
+                        // The host measures our round trip to pick the delay.
+                        if let Some(w) = welcome.as_ref() {
+                            let pong = LobbyMsg::Pong(Pong {
+                                peer_id: w.peer_id,
+                                nonce,
+                            })
+                            .encode();
+                            let _ = transport.send_raw(host_addr, &pong);
+                        }
                     }
                     _ => {}
                 }
@@ -253,7 +324,13 @@ impl NetPlay {
         transport.add_peer(PeerId(0), host_addr);
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
+        // The host's delay (sent in Welcome) wins: every seat must agree.
+        let mut session = LockstepSession::new(
+            local,
+            peers.clone(),
+            joined_delay(start_delay.unwrap_or(w.delay)),
+        );
+        let rules_from_welcome = (w.deathmatch != 0, w.bots);
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(transport, local, &peers, noise)?;
 
@@ -265,6 +342,14 @@ impl NetPlay {
                 peer_count,
                 rng_seed,
                 seat_names,
+                desync_tic: None,
+                desync_reported: false,
+                deathmatch: rules_from_welcome.0,
+                bots: rules_from_welcome.1,
+                rollback_window: 0,
+                rollback_checksum: None,
+                rollback_applied: 0,
+                rollback_waits: 0,
             },
             map,
         ))
@@ -279,6 +364,7 @@ impl NetPlay {
         map: &str,
         skill: u8,
         noise: bool,
+        rules: (bool, u8),
     ) -> Result<Self, String> {
         let mut transport =
             TcpTransport::bind(PeerId(0), bind_addr, max_players).map_err(|e| e.to_string())?;
@@ -287,7 +373,15 @@ impl NetPlay {
             "room: hosting {max_players}-player TCP coop on {local_addr} (map={map} skill={skill})"
         );
 
-        let mut lobby = LobbyHost::new(fingerprint, max_players, 1, rng_seed, map, skill);
+        let mut lobby = LobbyHost::new(
+            fingerprint,
+            max_players,
+            net_input_delay(),
+            rng_seed,
+            map,
+            skill,
+        );
+        lobby.set_rules(rules.0, rules.1);
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut welcomed = std::collections::BTreeSet::<PeerId>::new();
 
@@ -325,7 +419,22 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start_msg = lobby.start_msg();
+        let mut probe = PingProbe::new();
+        while !probe.finished(lobby.seats()) {
+            if let Some(ping) = probe.ping_due() {
+                for &id in &welcomed {
+                    transport.send(id, &ping);
+                }
+            }
+            let mut raw = Vec::new();
+            transport.poll(&mut raw);
+            for (_from, bytes) in raw {
+                probe.on_bytes(&bytes);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let delay = probe.negotiated_delay();
+        let start_msg = lobby.start_msg_with_delay(delay);
         let seat_names = match &start_msg {
             LobbyMsg::Start(s) => s.names.clone(),
             _ => Vec::new(),
@@ -336,7 +445,7 @@ impl NetPlay {
         }
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), delay);
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(transport, PeerId(0), &peers, noise)?;
 
@@ -347,6 +456,14 @@ impl NetPlay {
             peer_count: max_players,
             rng_seed,
             seat_names,
+            desync_tic: None,
+            desync_reported: false,
+            deathmatch: rules.0,
+            bots: rules.1,
+            rollback_window: 0,
+            rollback_checksum: None,
+            rollback_applied: 0,
+            rollback_waits: 0,
         })
     }
 
@@ -370,6 +487,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
@@ -394,7 +512,19 @@ impl NetPlay {
                     }
                     Ok(LobbyMsg::Start(s)) => {
                         start_seed = Some(s.rng_seed);
+                        start_delay = s.delay;
                         seat_names = s.names;
+                    }
+                    Ok(LobbyMsg::Ping(Ping { nonce })) => {
+                        // The host measures our round trip to pick the delay.
+                        if let Some(w) = welcome.as_ref() {
+                            let pong = LobbyMsg::Pong(Pong {
+                                peer_id: w.peer_id,
+                                nonce,
+                            })
+                            .encode();
+                            transport.send(PeerId(0), &pong);
+                        }
                     }
                     _ => {}
                 }
@@ -408,7 +538,13 @@ impl NetPlay {
         let local = w.peer_id;
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
+        // The host's delay (sent in Welcome) wins: every seat must agree.
+        let mut session = LockstepSession::new(
+            local,
+            peers.clone(),
+            joined_delay(start_delay.unwrap_or(w.delay)),
+        );
+        let rules_from_welcome = (w.deathmatch != 0, w.bots);
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(transport, local, &peers, noise)?;
 
@@ -420,6 +556,14 @@ impl NetPlay {
                 peer_count,
                 rng_seed,
                 seat_names,
+                desync_tic: None,
+                desync_reported: false,
+                deathmatch: rules_from_welcome.0,
+                bots: rules_from_welcome.1,
+                rollback_window: 0,
+                rollback_checksum: None,
+                rollback_applied: 0,
+                rollback_waits: 0,
             },
             map,
         ))
@@ -434,6 +578,7 @@ impl NetPlay {
         map: &str,
         skill: u8,
         noise: bool,
+        rules: (bool, u8),
     ) -> Result<Self, String> {
         let mut server = TcpRelayServer::bind(bind_addr, max_players).map_err(|e| e.to_string())?;
         let local_addr = server.local_addr().map_err(|e| e.to_string())?;
@@ -441,7 +586,15 @@ impl NetPlay {
             "room: hosting {max_players}-player TCP packet-server on {local_addr} (map={map} skill={skill})"
         );
 
-        let mut lobby = LobbyHost::new(fingerprint, max_players, 1, rng_seed, map, skill);
+        let mut lobby = LobbyHost::new(
+            fingerprint,
+            max_players,
+            net_input_delay(),
+            rng_seed,
+            map,
+            skill,
+        );
+        lobby.set_rules(rules.0, rules.1);
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut welcomed = std::collections::BTreeSet::<PeerId>::new();
 
@@ -476,7 +629,21 @@ impl NetPlay {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        let start_msg = lobby.start_msg();
+        let mut probe = PingProbe::new();
+        while !probe.finished(lobby.seats()) {
+            let _ = server.pump();
+            if let Some(ping) = probe.ping_due() {
+                server.broadcast_host(&ping);
+            }
+            let mut raw = Vec::new();
+            Transport::poll(&mut server, &mut raw);
+            for (_from, bytes) in raw {
+                probe.on_bytes(&bytes);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let delay = probe.negotiated_delay();
+        let start_msg = lobby.start_msg_with_delay(delay);
         let seat_names = match &start_msg {
             LobbyMsg::Start(s) => s.names.clone(),
             _ => Vec::new(),
@@ -484,7 +651,7 @@ impl NetPlay {
         server.broadcast_host(&start_msg.encode());
 
         let peers: Vec<PeerId> = lobby.seats().iter().map(|(id, _)| *id).collect();
-        let mut session = LockstepSession::new(PeerId(0), peers.clone(), net_input_delay());
+        let mut session = LockstepSession::new(PeerId(0), peers.clone(), delay);
         seed_tic0(&mut session, max_players);
         let transport = maybe_noise(server, PeerId(0), &peers, noise)?;
 
@@ -495,6 +662,14 @@ impl NetPlay {
             peer_count: max_players,
             rng_seed,
             seat_names,
+            desync_tic: None,
+            desync_reported: false,
+            deathmatch: rules.0,
+            bots: rules.1,
+            rollback_window: 0,
+            rollback_checksum: None,
+            rollback_applied: 0,
+            rollback_waits: 0,
         })
     }
 
@@ -524,6 +699,7 @@ impl NetPlay {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut welcome = None;
         let mut start_seed = None;
+        let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
             if Instant::now() > deadline {
@@ -549,7 +725,19 @@ impl NetPlay {
                     }
                     Ok(LobbyMsg::Start(s)) => {
                         start_seed = Some(s.rng_seed);
+                        start_delay = s.delay;
                         seat_names = s.names;
+                    }
+                    Ok(LobbyMsg::Ping(Ping { nonce })) => {
+                        // The host measures our round trip to pick the delay.
+                        if let Some(w) = welcome.as_ref() {
+                            let pong = LobbyMsg::Pong(Pong {
+                                peer_id: w.peer_id,
+                                nonce,
+                            })
+                            .encode();
+                            client.send(PeerId(0), &pong);
+                        }
                     }
                     _ => {}
                 }
@@ -563,7 +751,13 @@ impl NetPlay {
         let local = client.self_id();
 
         let peers: Vec<PeerId> = (0..peer_count).map(PeerId).collect();
-        let mut session = LockstepSession::new(local, peers.clone(), net_input_delay());
+        // The host's delay (sent in Welcome) wins: every seat must agree.
+        let mut session = LockstepSession::new(
+            local,
+            peers.clone(),
+            joined_delay(start_delay.unwrap_or(w.delay)),
+        );
+        let rules_from_welcome = (w.deathmatch != 0, w.bots);
         seed_tic0(&mut session, peer_count);
         let transport = maybe_noise(client, local, &peers, noise)?;
 
@@ -575,12 +769,19 @@ impl NetPlay {
                 peer_count,
                 rng_seed,
                 seat_names,
+                desync_tic: None,
+                desync_reported: false,
+                deathmatch: rules_from_welcome.0,
+                bots: rules_from_welcome.1,
+                rollback_window: 0,
+                rollback_checksum: None,
+                rollback_applied: 0,
+                rollback_waits: 0,
             },
             map,
         ))
     }
 
-    /// Submit local cmd; wait for all peers; return seat-ordered [`TicCmd`]s.
     /// Local commands sent but not released yet, oldest first (for
     /// `cl_predict`).
     pub fn pending_local_cmds(&self) -> Vec<TicCmd> {
@@ -591,8 +792,124 @@ impl NetPlay {
             .collect()
     }
 
-    pub fn advance_tic(&mut self, local_cmd: NetTicCmd) -> Result<Vec<TicCmd>, String> {
-        self.advance_tic_with_checksum(local_cmd, None)
+    /// Submit the local command, wait for every peer's, and return the
+    /// seat-ordered frame (blocking lockstep). Reports the Doom world checksum
+    /// every [`DOOM_CHECKSUM_INTERVAL`] lockstep tics so peers catch a
+    /// desync. `world_checksum` runs only when one is due and must describe
+    /// the world after every frame released so far (before this one runs).
+    pub fn advance_doom_tic(
+        &mut self,
+        local_cmd: NetTicCmd,
+        world_checksum: impl FnOnce() -> Option<u64>,
+    ) -> Result<Vec<TicCmd>, String> {
+        let tic = self.session.next_tic();
+        let checksum = if tic % DOOM_CHECKSUM_INTERVAL == 0 {
+            world_checksum().map(|value| (tic, value))
+        } else {
+            None
+        };
+        self.advance_tic_with_checksum(local_cmd, checksum)
+    }
+
+    /// Turn rollback play on (`window` tics, 1..=16) or off (`0`). Each
+    /// peer picks it on its own: the wire format and the confirmed game are
+    /// the same either way, only how far ahead this machine runs differs.
+    pub fn set_rollback_window(&mut self, window: u32) {
+        let window = window.min(16);
+        if window > 0 && self.rollback_window == 0 {
+            // Frames released so far were all run by the caller.
+            self.rollback_applied = self.session.next_tic();
+        }
+        self.rollback_window = window;
+        self.session.set_rollback_window(window);
+    }
+
+    /// Rollback play is on.
+    pub fn rollback(&self) -> bool {
+        self.rollback_window > 0
+    }
+
+    /// Rollback, one local tic: send `local_cmd` (unless local commands
+    /// already run a full window ahead, then wait for the others), and
+    /// return every frame that is now complete, oldest first. Never blocks
+    /// otherwise. Call [`Self::rollback_frame_applied`] after running each.
+    pub fn rollback_tic(&mut self, local_cmd: NetTicCmd) -> Vec<Vec<TicCmd>> {
+        self.session.recv(&mut *self.transport);
+        if self.session.local_lead() < self.rollback_window {
+            let msg = self.session.submit_local(local_cmd);
+            let checksum = self.rollback_checksum.take();
+            if let Some((tic, value)) = checksum {
+                self.session.report_checksum(tic, self.local, value);
+            }
+            self.session
+                .broadcast_with_checksum(&mut *self.transport, &msg, checksum);
+            self.rollback_waits = 0;
+        } else {
+            // Window full: the others are late. Resend ours in case they
+            // were lost, and wait (this tic's input is dropped, as a stall
+            // would have delayed it).
+            self.rollback_waits += 1;
+            if self.rollback_waits % 2 == 0 {
+                self.session.rebroadcast_recent(&mut *self.transport, None);
+            }
+        }
+        self.session.recv(&mut *self.transport);
+        let mut out = Vec::new();
+        while let Some(frame) = self.session.try_advance() {
+            if let Err(room_net::NetError::Desync { tic }) = self.session.check_complete_desyncs() {
+                self.desync_tic.get_or_insert(tic);
+                eprintln!("room: netplay DESYNC: peers disagree at tic {tic}");
+            }
+            let mut cmds = vec![TicCmd::default(); usize::from(self.peer_count)];
+            for (peer, net) in frame {
+                if let Some(slot) = cmds.get_mut(usize::from(peer.0)) {
+                    *slot = net_to_tic(net);
+                }
+            }
+            out.push(cmds);
+        }
+        out
+    }
+
+    /// Rollback: the caller ran one released frame on the confirmed game.
+    /// `world_checksum` (that game's `World::checksum`) is read every
+    /// [`DOOM_CHECKSUM_INTERVAL`] tics and goes out with the next command.
+    pub fn rollback_frame_applied(&mut self, world_checksum: impl FnOnce() -> Option<u64>) {
+        self.rollback_applied = self.rollback_applied.saturating_add(1);
+        let tic = self.rollback_applied;
+        if tic % DOOM_CHECKSUM_INTERVAL == 0
+            && let Some(value) = world_checksum()
+        {
+            self.rollback_checksum = Some((tic, value));
+        }
+    }
+
+    /// Rollback: the frames from the next unconfirmed tic to the newest
+    /// local command, with guessed commands for peers not heard from yet.
+    pub fn speculative_frames(&self) -> Vec<Vec<TicCmd>> {
+        self.session
+            .speculative_frames()
+            .into_iter()
+            .map(|(frame, _)| {
+                let mut cmds = vec![TicCmd::default(); usize::from(self.peer_count)];
+                for (peer, net) in frame {
+                    if let Some(slot) = cmds.get_mut(usize::from(peer.0)) {
+                        *slot = net_to_tic(net);
+                    }
+                }
+                cmds
+            })
+            .collect()
+    }
+
+    /// First tic where peers' world checksums disagreed, once.
+    pub fn take_desync(&mut self) -> Option<u32> {
+        if self.desync_reported {
+            return None;
+        }
+        let tic = self.desync_tic?;
+        self.desync_reported = true;
+        Some(tic)
     }
 
     fn advance_tic_with_checksum(
@@ -611,11 +928,13 @@ impl NetPlay {
         loop {
             self.session.recv(&mut *self.transport);
             if let Some(frame) = self.session.try_advance() {
-                let completed_tic = self.session.next_tic().saturating_sub(1);
-                if self.session.checksums_complete(completed_tic) {
-                    self.session
-                        .check_desync(completed_tic)
-                        .map_err(|error| error.to_string())?;
+                if let Err(room_net::NetError::Desync { tic }) =
+                    self.session.check_complete_desyncs()
+                {
+                    // Keep playing (the frame is already released) and let
+                    // the caller warn the players once.
+                    self.desync_tic.get_or_insert(tic);
+                    eprintln!("room: netplay DESYNC: peers disagree at tic {tic}");
                 }
                 let mut cmds = vec![TicCmd::default(); usize::from(self.peer_count)];
                 for (peer, net) in frame {
@@ -627,12 +946,10 @@ impl NetPlay {
                 return Ok(cmds);
             }
             if last_rebroadcast.elapsed() > Duration::from_millis(50) {
-                if checksum.is_some() {
-                    self.session
-                        .broadcast_with_checksum(&mut *self.transport, &msg, checksum);
-                } else {
-                    self.session.broadcast(&mut *self.transport, &msg);
-                }
+                // Resend the recent window, not just `msg`: a command lost
+                // a few tics ago is what a stalled peer may be waiting on.
+                self.session
+                    .rebroadcast_recent(&mut *self.transport, checksum);
                 last_rebroadcast = Instant::now();
             }
             if Instant::now() > deadline {
@@ -700,6 +1017,9 @@ impl NetPlay {
     }
 }
 
+/// Doom netplay reports a world checksum once a second.
+pub const DOOM_CHECKSUM_INTERVAL: u32 = 35;
+
 fn maybe_noise<T: Transport + 'static>(
     inner: T,
     local: PeerId,
@@ -726,6 +1046,95 @@ pub fn net_input_delay() -> u32 {
         .and_then(|v| v.trim().parse::<u32>().ok())
         .unwrap_or(1)
         .clamp(1, 8)
+}
+
+/// Measures the host's round trip to every joined seat once the lobby is
+/// full, to pick the input delay ([`delay_for_rtts`]) unless
+/// `ROOM_NET_DELAY` sets it.
+struct PingProbe {
+    began: Instant,
+    last_sent: Option<Instant>,
+    /// Best (lowest) round trip per seat, ms, and how many answers.
+    best: std::collections::BTreeMap<u8, (u32, u32)>,
+}
+
+impl PingProbe {
+    /// Answers wanted from every seat.
+    const SAMPLES: u32 = 4;
+    /// Give up waiting for slow or silent seats after this long.
+    const MAX_WAIT: Duration = Duration::from_millis(1500);
+
+    fn new() -> Self {
+        Self {
+            began: Instant::now(),
+            last_sent: None,
+            best: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn now_ms(&self) -> u32 {
+        u32::try_from(self.began.elapsed().as_millis()).unwrap_or(u32::MAX)
+    }
+
+    /// Encoded ping when one is due (every 40 ms).
+    fn ping_due(&mut self) -> Option<Vec<u8>> {
+        if self
+            .last_sent
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(40))
+        {
+            return None;
+        }
+        self.last_sent = Some(Instant::now());
+        Some(
+            LobbyMsg::Ping(Ping {
+                nonce: self.now_ms(),
+            })
+            .encode(),
+        )
+    }
+
+    fn on_bytes(&mut self, bytes: &[u8]) {
+        if let Ok(LobbyMsg::Pong(Pong { peer_id, nonce })) = LobbyMsg::decode(bytes) {
+            let rtt = self.now_ms().saturating_sub(nonce);
+            let e = self.best.entry(peer_id.0).or_insert((u32::MAX, 0));
+            e.0 = e.0.min(rtt);
+            e.1 += 1;
+        }
+    }
+
+    /// Every joined seat answered enough, ping is forced, or time is up.
+    fn finished(&self, seats: &[(PeerId, String)]) -> bool {
+        if std::env::var_os("ROOM_NET_DELAY").is_some() || self.began.elapsed() > Self::MAX_WAIT {
+            return true;
+        }
+        seats.iter().filter(|(id, _)| id.0 != 0).all(|(id, _)| {
+            self.best
+                .get(&id.0)
+                .is_some_and(|(_, n)| *n >= Self::SAMPLES)
+        })
+    }
+
+    /// `ROOM_NET_DELAY` when set, else from the measured round trips.
+    fn negotiated_delay(&self) -> u32 {
+        if std::env::var_os("ROOM_NET_DELAY").is_some() {
+            return net_input_delay();
+        }
+        let rtts: Vec<u32> = self.best.values().map(|(rtt, _)| *rtt).collect();
+        let delay = delay_for_rtts(&rtts);
+        eprintln!("room: round trips {rtts:?} ms → input delay {delay}");
+        delay
+    }
+}
+
+/// Input delay a joiner uses: the host's, from Welcome (`1..=8`). An old
+/// host that sent `1` while this side set `ROOM_NET_DELAY` still gets `1`,
+/// since every seat has to agree.
+fn joined_delay(host_delay: u32) -> u32 {
+    let delay = host_delay.clamp(1, 8);
+    if delay != net_input_delay() && std::env::var_os("ROOM_NET_DELAY").is_some() {
+        eprintln!("room: using the host's input delay {delay} (ROOM_NET_DELAY ignored)");
+    }
+    delay
 }
 
 /// Neutral commands for every seat for the tics before the first local input
@@ -798,4 +1207,67 @@ pub fn session_fingerprint(iwad: &str, map: &str, skill: u8) -> u64 {
     map.to_ascii_uppercase().hash(&mut h);
     skill.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn free_port(udp: bool) -> SocketAddr {
+        let addr = if udp {
+            std::net::UdpSocket::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+        } else {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+        };
+        addr
+    }
+
+    /// Host and joiner agree on the delay the host measured (loopback: 1).
+    fn lobby_agrees_on_the_delay(kind: NetTransportKind, udp: bool) {
+        if std::env::var_os("ROOM_NET_DELAY").is_some() {
+            return;
+        }
+        let addr = free_port(udp);
+        let host = std::thread::spawn(move || {
+            NetPlay::host(HostOpts {
+                bind_addr: addr,
+                max_players: 2,
+                fingerprint: 7,
+                rng_seed: 99,
+                map: "MAP01",
+                skill: 3,
+                kind,
+                noise: false,
+                deathmatch: true,
+                bots: 2,
+            })
+            .map(|host| host.session.delay())
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let (joined, map) = NetPlay::join(addr, 7, "Bob", kind, false, 2).expect("join");
+        let host_delay = host.join().unwrap().expect("host");
+        assert_eq!(map, "MAP01");
+        assert_eq!(host_delay, joined.session.delay());
+        assert_eq!(host_delay, 1, "loopback ping is tiny");
+        assert!(joined.deathmatch, "rules come from the host");
+        assert_eq!(joined.bots, 2);
+        assert_eq!(joined.rng_seed, 99);
+    }
+
+    #[test]
+    fn udp_lobby_negotiates_the_input_delay() {
+        lobby_agrees_on_the_delay(NetTransportKind::Udp, true);
+    }
+
+    #[test]
+    fn tcp_relay_lobby_negotiates_the_input_delay() {
+        lobby_agrees_on_the_delay(NetTransportKind::TcpServer, false);
+    }
 }

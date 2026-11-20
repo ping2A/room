@@ -24,6 +24,7 @@
       '<span class="ng-k">wait</span><span id="ngWait">—</span></div>' +
       '<div class="ng-row"><span class="ng-k">rx/tx</span><span id="ngRxTx">—</span>' +
       '<span class="ng-k">ice</span><span id="ngIce">—</span></div>' +
+      '<div class="ng-row" id="ngRbRow" hidden><span class="ng-k">rollback</span><span id="ngRb">—</span></div>' +
       '<div class="ng-row"><span class="ng-k">held</span><span id="ngHeld">—</span>' +
       '<span class="ng-k">pos</span><span id="ngPos">—</span></div>' +
       '<div id="ngBars" class="ng-bars" aria-hidden="true"></div>' +
@@ -49,10 +50,25 @@
       .join("");
   }
 
+  let lastBottom = -1;
+
+  /** Tell the page where the graph ends, so toasts start below it. */
+  function publishBottom(panel) {
+    // (offsetParent is always null for a fixed element, so ask for boxes.)
+    const style = panel && getComputedStyle(panel);
+    const shown =
+      !!panel && panel.getClientRects().length > 0 && style.display !== "none" && style.visibility !== "hidden";
+    const bottom = shown ? Math.ceil(panel.getBoundingClientRect().bottom) : 0;
+    if (bottom === lastBottom) return;
+    lastBottom = bottom;
+    document.documentElement.style.setProperty("--netgraph-bottom", `${bottom}px`);
+  }
+
   function tick() {
     ensureDom();
     const panel = document.getElementById("netGraph");
     if (!panel) return;
+    publishBottom(panel);
 
     let stats = null;
     try {
@@ -101,6 +117,14 @@
     }
     set("ngIce", ice);
     set("ngHeld", stats.held || "—");
+    // Rollback: look-ahead in use and how far ahead the drawn game is.
+    const rbRow = document.getElementById("ngRbRow");
+    const rb = Number(stats.rollback) || 0;
+    if (rbRow) rbRow.hidden = rb <= 0;
+    if (rb > 0) {
+      const ahead = typeof stats.rollbackAhead === "number" ? `${stats.rollbackAhead} ahead` : "off here";
+      set("ngRb", `${rb} tics · ${ahead}`);
+    }
     set("ngPos", stats.pos || "—");
 
     panel.classList.toggle("is-stalling", wait >= 45);

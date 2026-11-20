@@ -73,6 +73,9 @@ impl BuildWorld {
             mirror_render_sprites: Default::default(),
             mirror_render_sprite_blends: Default::default(),
             render_hud_draws: Default::default(),
+            render_hud_weapon_draws: 0,
+            render_visibility: 512,
+            render_camera: None,
             render_hide_native_weapon: false,
             render_hide_native_crosshair: false,
         })

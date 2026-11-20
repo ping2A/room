@@ -50,13 +50,128 @@ pub struct ModelDef {
     pub flags: Vec<String>,
     /// Sprite frame bindings.
     pub frames: Vec<ModelFrameBind>,
+    /// `Rotation-Speed` for `ROTATING` (turns per 200 tics; default 1).
+    pub rotation_speed: f32,
+    /// `Rotation-Vector`, in UZDoom's Y-up render axes (default `0 1 0`, up).
+    pub rotation_vector: [f32; 3],
+    /// `Rotation-Center` (model units).
+    pub rotation_center: [f32; 3],
+}
+
+/// UZDoom `MDL_*` bits (`A_SetModelFlag` / MODELDEF keywords).
+pub mod mdl {
+    /// `IGNORETRANSLATION`.
+    pub const IGNORETRANSLATION: u32 = 1;
+    /// `PITCHFROMMOMENTUM`.
+    pub const PITCHFROMMOMENTUM: u32 = 2;
+    /// `ROTATING`.
+    pub const ROTATING: u32 = 4;
+    /// `INTERPOLATEDOUBLEDFRAMES`.
+    pub const INTERPOLATEDOUBLEDFRAMES: u32 = 8;
+    /// `NOINTERPOLATION`.
+    pub const NOINTERPOLATION: u32 = 16;
+    /// `USEACTORPITCH` (and `INHERITACTORPITCH`).
+    pub const USEACTORPITCH: u32 = 32;
+    /// `USEACTORROLL` (and `INHERITACTORROLL`).
+    pub const USEACTORROLL: u32 = 64;
+    /// `BADROTATION` (old `INHERITACTOR*` sign).
+    pub const BADROTATION: u32 = 128;
+    /// `DONTCULLBACKFACES`.
+    pub const DONTCULLBACKFACES: u32 = 256;
+    /// `USEROTATIONCENTER`.
+    pub const USEROTATIONCENTER: u32 = 512;
+    /// `NOPERPIXELLIGHTING`.
+    pub const NOPERPIXELLIGHTING: u32 = 1024;
+    /// `SCALEWEAPONFOV`.
+    pub const SCALEWEAPONFOV: u32 = 2048;
+    /// `CORRECTPIXELSTRETCH`.
+    pub const CORRECTPIXELSTRETCH: u32 = 1 << 13;
+    /// `FORCECULLBACKFACES`.
+    pub const FORCECULLBACKFACES: u32 = 1 << 14;
+}
+
+impl ModelDef {
+    /// The block's flags as `MDL_*` bits.
+    #[must_use]
+    pub fn mdl_flags(&self) -> u32 {
+        self.flags
+            .iter()
+            .map(|f| match f.as_str() {
+                "IGNORETRANSLATION" => mdl::IGNORETRANSLATION,
+                "PITCHFROMMOMENTUM" => mdl::PITCHFROMMOMENTUM,
+                "ROTATING" => mdl::ROTATING,
+                "INTERPOLATEDOUBLEDFRAMES" => mdl::INTERPOLATEDOUBLEDFRAMES,
+                "NOINTERPOLATION" => mdl::NOINTERPOLATION,
+                "USEACTORPITCH" => mdl::USEACTORPITCH,
+                "USEACTORROLL" => mdl::USEACTORROLL,
+                // UZDoom: the INHERIT spellings keep the old sign.
+                "INHERITACTORPITCH" => mdl::USEACTORPITCH | mdl::BADROTATION,
+                "INHERITACTORROLL" => mdl::USEACTORROLL | mdl::BADROTATION,
+                "DONTCULLBACKFACES" => mdl::DONTCULLBACKFACES,
+                "USEROTATIONCENTER" => mdl::USEROTATIONCENTER,
+                "NOPERPIXELLIGHTING" => mdl::NOPERPIXELLIGHTING,
+                "SCALEWEAPONFOV" => mdl::SCALEWEAPONFOV,
+                "CORRECTPIXELSTRETCH" => mdl::CORRECTPIXELSTRETCH,
+                "FORCECULLBACKFACES" => mdl::FORCECULLBACKFACES,
+                _ => 0,
+            })
+            .fold(0, |a, b| a | b)
+    }
 }
 
 /// Compiled MODELDEF registry (later model for same actor wins).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelDefs {
-    /// Actor class (case-insensitive key) → definition.
+    /// Actor class (case-insensitive key) → definition (the last block).
     pub by_actor: BTreeMap<String, ModelDef>,
+    /// Actor class → every `Model` block for it, in load order. Mods often
+    /// split one actor's frames over several blocks, each with its own
+    /// models, skins and offsets.
+    pub blocks: BTreeMap<String, Vec<ModelDef>>,
+}
+
+impl ModelDefs {
+    /// Add a parsed block.
+    pub fn insert(&mut self, def: ModelDef) {
+        let key = def.actor.to_ascii_lowercase();
+        self.blocks
+            .entry(key.clone())
+            .or_default()
+            .push(def.clone());
+        self.by_actor.insert(key, def);
+    }
+
+    /// Merge another lump's definitions (later blocks win frame lookups).
+    pub fn extend(&mut self, other: ModelDefs) {
+        for (k, v) in other.blocks {
+            self.blocks.entry(k.clone()).or_default().extend(v);
+        }
+        for (k, v) in other.by_actor {
+            self.by_actor.insert(k, v);
+        }
+    }
+
+    /// UZDoom `FindModelFrame`: the block that binds `sprite` / `frame` for
+    /// `class` (the last one when several do) and its bindings, one per model
+    /// slot. `None` means the actor is drawn as a sprite in that frame.
+    #[must_use]
+    pub fn frame(
+        &self,
+        class: &str,
+        sprite: &str,
+        frame: char,
+    ) -> Option<(&ModelDef, Vec<&ModelFrameBind>)> {
+        let blocks = self.blocks.get(&class.to_ascii_lowercase())?;
+        let frame = frame.to_ascii_uppercase();
+        blocks.iter().rev().find_map(|def| {
+            let binds: Vec<&ModelFrameBind> = def
+                .frames
+                .iter()
+                .filter(|b| b.frame == frame && b.sprite.eq_ignore_ascii_case(sprite))
+                .collect();
+            (!binds.is_empty()).then_some((def, binds))
+        })
+    }
 }
 
 /// How much to enlarge a first-person weapon when `ViewModelFOV` is narrower
@@ -87,7 +202,7 @@ pub fn parse_modeldef(text: &str) -> Result<ModelDefs, DefsError> {
             Tok::Punct(Punct::Semi) => {}
             Tok::Ident(kw) if kw.eq_ignore_ascii_case("model") => {
                 let def = parse_model_block(&mut sc)?;
-                out.by_actor.insert(def.actor.to_ascii_lowercase(), def);
+                out.insert(def);
             }
             Tok::Ident(_) => {
                 // Skip unknown top-level (e.g. future keywords).
@@ -122,6 +237,8 @@ fn parse_model_block(sc: &mut Scanner<'_>) -> Result<ModelDef, DefsError> {
     let mut def = ModelDef {
         actor,
         scale: [1.0, 1.0, 1.0],
+        rotation_speed: 1.0,
+        rotation_vector: [0.0, 1.0, 0.0],
         ..Default::default()
     };
     loop {
@@ -129,7 +246,11 @@ fn parse_model_block(sc: &mut Scanner<'_>) -> Result<ModelDef, DefsError> {
             Tok::Punct(Punct::RBrace) | Tok::Eof => break,
             Tok::Punct(Punct::Semi) => {}
             Tok::Ident(key) => {
-                let k = key.to_ascii_lowercase();
+                let mut k = key.to_ascii_lowercase();
+                // `Rotation-Speed` and friends may scan as `Rotation - Speed`.
+                if k == "rotation" && sc.check_punct(Punct::Minus)? {
+                    k = format!("rotation-{}", read_name(sc)?.to_ascii_lowercase());
+                }
                 match k.as_str() {
                     "path" => def.path = read_name(sc)?,
                     "model" => {
@@ -159,6 +280,13 @@ fn parse_model_block(sc: &mut Scanner<'_>) -> Result<ModelDef, DefsError> {
                     "pitchoffset" => def.pitch_offset = read_f32(sc)?,
                     "rolloffset" => def.roll_offset = read_f32(sc)?,
                     "viewmodelfov" => def.view_model_fov = read_f32(sc)?,
+                    "rotation-speed" => def.rotation_speed = read_f32(sc)?,
+                    "rotation-vector" => {
+                        def.rotation_vector = [read_f32(sc)?, read_f32(sc)?, read_f32(sc)?];
+                    }
+                    "rotation-center" => {
+                        def.rotation_center = [read_f32(sc)?, read_f32(sc)?, read_f32(sc)?];
+                    }
                     "frameindex" => {
                         let sprite = read_name(sc)?.to_ascii_uppercase();
                         let frame = read_frame_letter(sc)?;
@@ -199,6 +327,8 @@ fn parse_model_block(sc: &mut Scanner<'_>) -> Result<ModelDef, DefsError> {
                     | "userotationcenter"
                     | "correctpixelstretch"
                     | "scaleweaponfov"
+                    | "noperpixellighting"
+                    | "forcecullbackfaces"
                     | "baseframe" => {
                         def.flags.push(k.to_ascii_uppercase());
                     }
@@ -293,9 +423,36 @@ fn skip_block(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn blocks_merge_and_frames_resolve() {
+        let text = r#"
+Model Imp { Path "models/imp" Model 0 "walk.md3" Skin 0 "imp.png" FrameIndex TROO A 0 0 FrameIndex TROO B 0 1 }
+Model Imp { Path "models/imp" Model 0 "attack.md3" Model 1 "fireball.md3" Rotating Rotation-Speed 2 FrameIndex TROO E 0 3 FrameIndex TROO E 1 0 }
+"#;
+        let defs = parse_modeldef(text).unwrap();
+        assert_eq!(defs.blocks["imp"].len(), 2);
+        let (def, binds) = defs.frame("IMP", "troo", 'b').unwrap();
+        assert_eq!(def.models[&0], "walk.md3");
+        assert_eq!(binds[0].keyframe, Some(1));
+        let (def, binds) = defs.frame("imp", "TROO", 'E').unwrap();
+        assert_eq!(binds.len(), 2);
+        assert_eq!(def.models[&1], "fireball.md3");
+        assert!((def.rotation_speed - 2.0).abs() < 1e-6);
+        assert_ne!(def.mdl_flags() & mdl::ROTATING, 0);
+        assert!(
+            defs.frame("imp", "TROO", 'C').is_none(),
+            "unbound frame draws the sprite"
+        );
+        let mut all = ModelDefs::default();
+        all.extend(defs.clone());
+        all.extend(defs);
+        assert_eq!(all.blocks["imp"].len(), 4);
+    }
 
     #[test]
     fn parses_frameindex_model() {

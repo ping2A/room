@@ -96,7 +96,7 @@ pub use fta::{findplayer_dist, movefta};
 pub use moveplayers::moveplayers;
 pub use player::{
     DUKE_FRICTION, DUKE_GC, DukeInput, INPUT_AUTO_AIM, INPUT_INVENTORY_LEFT, INPUT_INVENTORY_RIGHT,
-    INPUT_INVENTORY_USE, INPUT_OPEN, PHEIGHT, Player, TICS_PER_FRAME, apply_player_fall_z,
+    INPUT_INVENTORY_USE, INPUT_OPEN, INPUT_TURNAROUND, PHEIGHT, Player, TICS_PER_FRAME, apply_player_fall_z,
     processinput_move, sync_player_sprite,
 };
 pub use prelevel::{CYCLER, GPSPEED, prelevel_sprites};

@@ -9,8 +9,10 @@ use room_build_engine::world::{
     MAXSPRITES, MAXWALLS,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::Write as _;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use thiserror::Error;
 
 /// EDuke32 `MAXPLAYERS` storage extent used by CON per-player variables.
@@ -389,6 +391,393 @@ pub enum EdActorMember {
     SleepTime,
 }
 
+/// Gamevar name → id map.
+///
+/// Serializes and compares as the ordered map it wraps; a hashed index serves
+/// the VM's per-operand name lookups, which a `BTreeMap` answered with about
+/// ten string comparisons each (ED9). Every insert updates both.
+#[derive(Debug, Clone, Default)]
+pub struct VariableIds {
+    map: BTreeMap<String, usize>,
+    /// Id plus whether the name is engine-provided (see
+    /// [`SPECIAL_VARIABLE_NAMES`]), so ordinary reads skip those name tests.
+    index: HashMap<String, (usize, bool), BuildHasherDefault<NameHasher>>,
+    /// Layout generation for [`VarName`] slot caches: a fresh value after
+    /// every change (clones keep it, since their maps are equal); 0 = none.
+    tag: u32,
+}
+
+static VARIABLE_LAYOUT_GENERATION: AtomicU32 = AtomicU32::new(1);
+
+fn next_variable_layout_tag() -> u32 {
+    VARIABLE_LAYOUT_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .max(1)
+}
+
+/// A `state` label in a compiled `CallState`, caching its entry position.
+///
+/// A program's state table is fixed once compiled, so the first lookup's
+/// entry (stored `+ 1`; 0 = unresolved) serves every later call (ED9).
+/// Equality and serialization see only the label.
+#[derive(Default)]
+pub struct StateName {
+    name: String,
+    entry: AtomicUsize,
+}
+
+impl StateName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+
+    fn resolve(&self, states: &BTreeMap<String, usize>) -> Option<usize> {
+        match self.entry.load(Ordering::Relaxed) {
+            0 => {
+                let entry = states.get(&self.name).copied()?;
+                self.entry.store(entry.saturating_add(1), Ordering::Relaxed);
+                Some(entry)
+            }
+            cached => Some(cached - 1),
+        }
+    }
+}
+
+impl Clone for StateName {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            entry: AtomicUsize::new(self.entry.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl std::fmt::Debug for StateName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.name, f)
+    }
+}
+
+impl PartialEq for StateName {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for StateName {}
+
+impl PartialEq<str> for StateName {
+    fn eq(&self, other: &str) -> bool {
+        self.name == other
+    }
+}
+
+impl PartialEq<&str> for StateName {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl std::ops::Deref for StateName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl From<String> for StateName {
+    fn from(name: String) -> Self {
+        Self {
+            name,
+            entry: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl From<&str> for StateName {
+    fn from(name: &str) -> Self {
+        Self::from(name.to_owned())
+    }
+}
+
+impl Serialize for StateName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.name.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StateName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// Slot value for a name that is engine-provided or unknown (slow path).
+const NOT_ORDINARY_VARIABLE: u32 = u32::MAX;
+
+/// A gamevar name in compiled EDuke32 code, with a resolution cache.
+///
+/// The cache holds `(layout tag, id)` from the last VM that looked the name
+/// up; a VM whose [`VariableIds`] tag matches reads the id with one atomic
+/// load instead of hashing the name (ED9). Equality, hashing and
+/// serialization see only the name.
+#[derive(Default)]
+pub struct VarName {
+    name: String,
+    slot: AtomicU64,
+}
+
+impl VarName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+
+    fn cached(&self, tag: u32) -> Option<u32> {
+        let packed = self.slot.load(Ordering::Relaxed);
+        (tag != 0 && (packed >> 32) as u32 == tag).then_some(packed as u32)
+    }
+
+    fn store(&self, tag: u32, id: u32) {
+        if tag != 0 {
+            self.slot
+                .store((u64::from(tag) << 32) | u64::from(id), Ordering::Relaxed);
+        }
+    }
+}
+
+impl Clone for VarName {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            slot: AtomicU64::new(self.slot.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl std::fmt::Debug for VarName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.name, f)
+    }
+}
+
+impl std::fmt::Display for VarName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl PartialEq for VarName {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for VarName {}
+
+impl PartialEq<str> for VarName {
+    fn eq(&self, other: &str) -> bool {
+        self.name == other
+    }
+}
+
+impl PartialEq<&str> for VarName {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl std::ops::Deref for VarName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl From<String> for VarName {
+    fn from(name: String) -> Self {
+        Self {
+            name,
+            slot: AtomicU64::new(0),
+        }
+    }
+}
+
+impl From<&str> for VarName {
+    fn from(name: &str) -> Self {
+        Self::from(name.to_owned())
+    }
+}
+
+impl Serialize for VarName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.name.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for VarName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// Gamevar names the VM or host answers before the gamevar table.
+const SPECIAL_VARIABLE_NAMES: &[&str] = &[
+    "randomseed",
+    "numplayers",
+    "MULTIMODE",
+    "numsectors",
+    "NUMSECTORS",
+    "NUMWALLS",
+    "Numsprites",
+    "totalclock",
+    "windowx1",
+    "windowy1",
+    "windowx2",
+    "windowy2",
+    "xdim",
+    "ydim",
+    "RESPAWN_MONSTERS",
+    "RESPAWN_ITEMS",
+    "RESPAWN_INVENTORY",
+    "weapon_xoffset",
+    "gun_pos",
+    "looking_arc",
+    "looking_angSR1",
+    "gs",
+    "currentweapon",
+    "weaponcount",
+];
+
+fn is_special_variable_name(name: &str) -> bool {
+    SPECIAL_VARIABLE_NAMES.contains(&name)
+}
+
+impl VariableIds {
+    fn get(&self, name: &str) -> Option<&usize> {
+        self.index.get(name).map(|(id, _)| id)
+    }
+
+    /// Id of an ordinary (not engine-provided) gamevar.
+    fn ordinary(&self, name: &str) -> Option<usize> {
+        match self.index.get(name) {
+            Some(&(id, false)) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn contains_key(&self, name: &str) -> bool {
+        self.index.contains_key(name)
+    }
+
+    fn insert(&mut self, name: String, id: usize) {
+        let special = is_special_variable_name(&name);
+        self.index.insert(name.clone(), (id, special));
+        self.map.insert(name, id);
+        self.tag = next_variable_layout_tag();
+    }
+
+    /// [`Self::ordinary`] through the name's slot cache.
+    fn ordinary_cached(&self, name: &VarName) -> Option<usize> {
+        if let Some(id) = name.cached(self.tag) {
+            return (id != NOT_ORDINARY_VARIABLE).then_some(id as usize);
+        }
+        let id = self.ordinary(name.as_str());
+        name.store(
+            self.tag,
+            id.and_then(|id| u32::try_from(id).ok())
+                .filter(|&id| id != NOT_ORDINARY_VARIABLE)
+                .unwrap_or(NOT_ORDINARY_VARIABLE),
+        );
+        id
+    }
+}
+
+impl std::ops::Deref for VariableIds {
+    type Target = BTreeMap<String, usize>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl From<BTreeMap<String, usize>> for VariableIds {
+    fn from(map: BTreeMap<String, usize>) -> Self {
+        let index = map
+            .iter()
+            .map(|(name, id)| (name.clone(), (*id, is_special_variable_name(name))))
+            .collect();
+        Self {
+            map,
+            index,
+            tag: next_variable_layout_tag(),
+        }
+    }
+}
+
+impl FromIterator<(String, usize)> for VariableIds {
+    fn from_iter<I: IntoIterator<Item = (String, usize)>>(iter: I) -> Self {
+        Self::from(iter.into_iter().collect::<BTreeMap<_, _>>())
+    }
+}
+
+impl PartialEq for VariableIds {
+    fn eq(&self, other: &Self) -> bool {
+        self.map == other.map
+    }
+}
+
+impl Eq for VariableIds {}
+
+impl Serialize for VariableIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.map.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for VariableIds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        BTreeMap::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// 64-bit FNV-1a for short gamevar names (lookup only; never iterated).
+pub struct NameHasher(u64);
+
+impl Default for NameHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for NameHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        // Word-at-a-time multiply/rotate mix (FxHash style): gamevar names are
+        // hashed on every VM access, and byte-wise FNV dominated that cost.
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let word = <[u8; 8]>::try_from(chunk).map_or(0, u64::from_le_bytes);
+            self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(K);
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut tail = (rest.len() as u64) << 56;
+            for (shift, &byte) in rest.iter().enumerate() {
+                tail ^= u64::from(byte) << (8 * shift);
+            }
+            self.0 = (self.0.rotate_left(5) ^ tail).wrapping_mul(K);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 /// A value read by the EDuke32 VM core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdOperand {
@@ -428,13 +817,23 @@ pub enum EdOperand {
     /// Line of sight from the active actor to the active player (`ifcansee`).
     ActorCanSeePlayer,
     /// Gamevar value using the active player and actor context.
-    Variable(String),
+    Variable(VarName),
     /// Array value with a dynamically evaluated index.
     ArrayElement {
         /// Array identifier.
         name: String,
         /// Element expression.
         index: Box<EdOperand>,
+    },
+    /// A player- or actor-scoped gamevar of an explicit instance, read as an
+    /// operand: EDuke32 `actorvar[id].name` / `playervar[id].name`.
+    ScopedVariable {
+        /// Declared storage scope.
+        scope: EdVariableScope,
+        /// Gamevar name.
+        name: String,
+        /// Player or actor ID expression.
+        id: Box<EdOperand>,
     },
     /// Native structure field read through the active live host bridge.
     StructMember {
@@ -483,7 +882,7 @@ pub enum EdOperand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdLValue {
     /// Gamevar selected by the active player and actor context.
-    Variable(String),
+    Variable(VarName),
     /// Array element selected by a dynamically evaluated index.
     ArrayElement {
         /// Array identifier.
@@ -744,7 +1143,7 @@ pub enum EdInstruction {
     /// Call a named state and return to the next instruction afterwards.
     CallState {
         /// Exact state label spelling.
-        name: String,
+        name: StateName,
     },
     /// Return from a state, or finish the event when no state is active.
     Return,
@@ -1126,6 +1525,11 @@ pub struct EdukeProgram {
     pub states: BTreeMap<String, usize>,
 }
 
+/// Per-hook results of one event dispatch, inline up to 20 hooks so the
+/// per-sprite `EVENT_GAME` chain (18 appended hooks in Brutal Duke) does not
+/// allocate on every dispatch (ED9).
+pub type EdExecutions = smallvec::SmallVec<[EdExecution; 20]>;
+
 /// Result of running an EDuke32 instruction stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdExecution {
@@ -1315,6 +1719,12 @@ pub trait EdukeStructAccess {
     /// run at the exact CON instruction that created them.
     fn take_spawned_actor_ids(&mut self) -> Vec<i32> {
         Vec::new()
+    }
+
+    /// Whether [`Self::take_spawned_actor_ids`] would return anything; the
+    /// VM asks after every instruction, so this must stay cheap.
+    fn has_spawned_actor_ids(&self) -> bool {
+        false
     }
 
     /// Read an EDuke32 predefined value whose backing storage belongs to the
@@ -1762,7 +2172,7 @@ pub struct EdukeVmState {
     /// Mutable CON quote strings, serialized as script state.
     #[serde(default)]
     quotes: Vec<String>,
-    variable_ids: BTreeMap<String, usize>,
+    variable_ids: VariableIds,
     array_ids: BTreeMap<String, usize>,
     /// Serialized gameplay random state, kept separate from Build's `krand`.
     #[serde(default)]
@@ -1782,6 +2192,10 @@ pub struct EdukeVmState {
     /// Ephemeral CON console messages; output is deliberately excluded from saves.
     #[serde(skip)]
     console_output: VecDeque<String>,
+    /// Non-fatal script faults EDuke32 only prints (e.g. a struct member
+    /// subscript past its array), drained by the host's error log.
+    #[serde(skip)]
+    runtime_warnings: VecDeque<String>,
 }
 
 impl Default for EdukeVmState {
@@ -1790,7 +2204,7 @@ impl Default for EdukeVmState {
             variables: Vec::new(),
             arrays: Vec::new(),
             quotes: Vec::new(),
-            variable_ids: BTreeMap::new(),
+            variable_ids: VariableIds::default(),
             array_ids: BTreeMap::new(),
             game_random_seed: 0,
             display_random_seed: 0,
@@ -1798,6 +2212,7 @@ impl Default for EdukeVmState {
             multi_mode: default_num_players(),
             last_displayed_quote: None,
             console_output: VecDeque::new(),
+            runtime_warnings: VecDeque::new(),
         }
     }
 }
@@ -2311,6 +2726,9 @@ impl EdukeVmState {
         player: usize,
         actor: usize,
     ) -> Result<i32, EdukeVmError> {
+        if let Some(id) = self.variable_ids.ordinary(name) {
+            return self.read_variable_cell(id, player, actor);
+        }
         if name == "randomseed" {
             return Ok(self.game_random_seed);
         }
@@ -2320,12 +2738,42 @@ impl EdukeVmState {
         if name == "MULTIMODE" {
             return Ok(self.multi_mode);
         }
-        let cell = self.variable(name)?;
+        let id = self.variable_id(name)?;
+        self.read_variable_cell(id, player, actor)
+    }
+
+    fn read_variable_cell(
+        &self,
+        id: usize,
+        player: usize,
+        actor: usize,
+    ) -> Result<i32, EdukeVmError> {
+        let cell = &self.variables[id];
         match &cell.storage {
             EdVariableStorage::Global(value) => Ok(*value),
             EdVariableStorage::Player(values) => scoped_read("player", &cell.name, values, player),
             EdVariableStorage::Actor(values) => scoped_read("actor", &cell.name, values, actor),
         }
+    }
+
+    fn write_variable_cell(
+        &mut self,
+        id: usize,
+        player: usize,
+        actor: usize,
+        value: i32,
+    ) -> Result<(), EdukeVmError> {
+        let cell = &mut self.variables[id];
+        match &mut cell.storage {
+            EdVariableStorage::Global(slot) => *slot = value,
+            EdVariableStorage::Player(values) => {
+                scoped_write("player", &cell.name, values, player, value)?;
+            }
+            EdVariableStorage::Actor(values) => {
+                scoped_write("actor", &cell.name, values, actor, value)?;
+            }
+        }
+        Ok(())
     }
 
     /// Write a named gamevar using its global, player or actor scope.
@@ -2336,6 +2784,9 @@ impl EdukeVmState {
         actor: usize,
         value: i32,
     ) -> Result<(), EdukeVmError> {
+        if let Some(id) = self.variable_ids.ordinary(name) {
+            return self.write_variable_cell(id, player, actor, value);
+        }
         if name == "randomseed" {
             self.game_random_seed = value;
             return Ok(());
@@ -2349,17 +2800,7 @@ impl EdukeVmState {
             return Ok(());
         }
         let index = self.variable_id(name)?;
-        let cell = &mut self.variables[index];
-        match &mut cell.storage {
-            EdVariableStorage::Global(slot) => *slot = value,
-            EdVariableStorage::Player(values) => {
-                scoped_write("player", &cell.name, values, player, value)?;
-            }
-            EdVariableStorage::Actor(values) => {
-                scoped_write("actor", &cell.name, values, actor, value)?;
-            }
-        }
-        Ok(())
+        self.write_variable_cell(index, player, actor, value)
     }
 
     /// Read a gamevar at an explicit player or actor slot.
@@ -2542,7 +2983,7 @@ impl EdukeVmState {
         actor: usize,
         instruction_budget: usize,
         state_depth_limit: usize,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_registered_event_hooks_inner(
             image,
             event,
@@ -2567,7 +3008,7 @@ impl EdukeVmState {
         instruction_budget: usize,
         state_depth_limit: usize,
         access: &mut dyn EdukeStructAccess,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         self.execute_registered_event_hooks_inner(
             image,
             event,
@@ -2592,18 +3033,17 @@ impl EdukeVmState {
         sound_event_active: bool,
         spawn_event_depth: usize,
         mut access: Option<&mut dyn EdukeStructAccess>,
-    ) -> Result<Vec<EdExecution>, EdukeVmError> {
+    ) -> Result<EdExecutions, EdukeVmError> {
         if image.dialect != ConDialect::EDuke32 {
             return Err(EdukeVmError::WrongDialect);
         }
-        let event_key = normalize(event);
+        // Same as comparing `to_ascii_uppercase` keys, without allocating one
+        // per registered hook on every event (ED9).
+        let sound_event = sound_event_active || event.eq_ignore_ascii_case("EVENT_SOUND");
         let mut remaining = instruction_budget;
-        let mut executions = Vec::new();
-        for (_, entry, _) in image
-            .eduke_event_entries
-            .iter()
-            .filter(|(name, _, _)| normalize(name) == event_key)
-        {
+        let mut executions = EdExecutions::new();
+        for &hook in image.eduke_event_hooks(event) {
+            let entry = &image.eduke_event_entries[hook].1;
             let execution = match access.as_mut() {
                 Some(host) => self.execute_from(
                     &image.eduke_program,
@@ -2613,7 +3053,7 @@ impl EdukeVmState {
                     remaining,
                     state_depth_limit,
                     Some(image),
-                    sound_event_active || event_key == "EVENT_SOUND",
+                    sound_event,
                     spawn_event_depth,
                     Some(&mut **host),
                 )?,
@@ -2625,7 +3065,7 @@ impl EdukeVmState {
                     remaining,
                     state_depth_limit,
                     Some(image),
-                    sound_event_active || event_key == "EVENT_SOUND",
+                    sound_event,
                     spawn_event_depth,
                     None,
                 )?,
@@ -2820,6 +3260,39 @@ impl EdukeVmState {
     /// Drain messages emitted by CON `echo` instructions since the previous
     /// call. The queue keeps at most 256 messages so a script that echoes on
     /// every tic cannot grow VM memory without bound.
+    /// Drain non-fatal script faults (bounded; oldest dropped first).
+    pub fn take_runtime_warnings(&mut self) -> Vec<String> {
+        self.runtime_warnings.drain(..).collect()
+    }
+
+    /// EDuke32 prints an out-of-range struct member subscript and goes on:
+    /// reads give -1 and writes are skipped (`VM_GetPlayer` / `VM_SetPlayer`).
+    fn tolerate_member_subscript<T>(
+        &mut self,
+        result: Result<T, EdukeVmError>,
+        fallback: T,
+    ) -> Result<T, EdukeVmError> {
+        match result {
+            // EDuke32 `VM_GetPlayer` / `VM_SetPlayer` log an invalid player
+            // index, read -1 and skip the write; the script continues.
+            Err(
+                error @ (EdukeVmError::IndexOutOfBounds { kind: "member", .. }
+                | EdukeVmError::InvalidStructId {
+                    kind: EdStructKind::Player,
+                    ..
+                }),
+            ) => {
+                const MAX_RUNTIME_WARNINGS: usize = 64;
+                if self.runtime_warnings.len() == MAX_RUNTIME_WARNINGS {
+                    self.runtime_warnings.pop_front();
+                }
+                self.runtime_warnings.push_back(error.to_string());
+                Ok(fallback)
+            }
+            other => other,
+        }
+    }
+
     pub fn take_console_output(&mut self) -> Vec<String> {
         std::mem::take(&mut self.console_output)
             .into_iter()
@@ -2915,7 +3388,9 @@ impl EdukeVmState {
             });
         }
         let mut pc = start;
-        let mut calls = Vec::new();
+        // State return addresses; inline so hooks that call states do not
+        // allocate (ED9).
+        let mut calls: smallvec::SmallVec<[usize; 16]> = smallvec::SmallVec::new();
         let mut sprite_loops: Vec<EdSpriteLoopFrame> = Vec::new();
         let mut steps = 0usize;
         while pc < program.instructions.len() {
@@ -3144,10 +3619,7 @@ impl EdukeVmState {
                     if let Some(image) = image.filter(|image| {
                         image.dialect == ConDialect::EDuke32
                             && !sound_event_active
-                            && image
-                                .eduke_event_entries
-                                .iter()
-                                .any(|(name, _, _)| name.eq_ignore_ascii_case("EVENT_SOUND"))
+                            && image.has_eduke_event("EVENT_SOUND")
                     }) && let Some(host) = access.as_deref_mut()
                     {
                         // The room currently presents seat zero, matching
@@ -3639,11 +4111,11 @@ impl EdukeVmState {
                         .map_or(*default_target, |(_, target)| *target);
                 }
                 EdInstruction::CallState { name } => {
-                    let entry = program
-                        .states
-                        .get(name)
-                        .copied()
-                        .ok_or_else(|| EdukeVmError::UnknownState { name: name.clone() })?;
+                    let entry = name.resolve(&program.states).ok_or_else(|| {
+                        EdukeVmError::UnknownState {
+                            name: name.as_str().to_owned(),
+                        }
+                    })?;
                     if calls.len() >= state_depth_limit {
                         return Err(EdukeVmError::StateCallDepthExceeded {
                             limit: state_depth_limit,
@@ -3717,7 +4189,8 @@ impl EdukeVmState {
                     {
                         self.get_variable("RETURN", player, actor)?
                     } else {
-                        host.get_member(*kind, id, member, member_index)?
+                        let read = host.get_member(*kind, id, member, member_index);
+                        self.tolerate_member_subscript(read, -1)?
                     };
                     self.write_lvalue(target, player, actor, value, &mut access)?;
                     pc += 1;
@@ -3744,7 +4217,8 @@ impl EdukeVmState {
                     {
                         self.set_variable("RETURN", player, actor, value)?;
                     } else {
-                        host.set_member(*kind, id, member, member_index, value)?;
+                        let write = host.set_member(*kind, id, member, member_index, value);
+                        self.tolerate_member_subscript(write, ())?;
                     }
                     if *kind == EdStructKind::UserDef && member.eq_ignore_ascii_case("vm_sprite") {
                         if let Some(current_actor) = host.current_actor() {
@@ -4219,16 +4693,15 @@ impl EdukeVmState {
             }
             if image.is_some_and(|image| image.dialect == ConDialect::EDuke32)
                 && let Some(host) = access.as_deref_mut()
+                && host.has_spawned_actor_ids()
             {
                 let spawned = host.take_spawned_actor_ids();
                 if !spawned.is_empty() {
                     let mut nested_budget = instruction_budget.saturating_sub(steps);
                     for spawned_id in spawned {
                         let has_spawn_hooks = image.is_some_and(|image| {
-                            image.eduke_event_entries.iter().any(|(name, _, _)| {
-                                name.eq_ignore_ascii_case("EVENT_EGS")
-                                    || name.eq_ignore_ascii_case("EVENT_SPAWN")
-                            })
+                            image.has_eduke_event("EVENT_EGS")
+                                || image.has_eduke_event("EVENT_SPAWN")
                         });
                         if !has_spawn_hooks {
                             continue;
@@ -4250,12 +4723,9 @@ impl EdukeVmState {
                         let previous_actor = host.current_actor();
                         let dispatch_result = (|| {
                             for event in ["EVENT_EGS", "EVENT_SPAWN"] {
-                                let Some(image) = image.filter(|image| {
-                                    image
-                                        .eduke_event_entries
-                                        .iter()
-                                        .any(|(name, _, _)| name.eq_ignore_ascii_case(event))
-                                }) else {
+                                let Some(image) =
+                                    image.filter(|image| image.has_eduke_event(event))
+                                else {
                                     continue;
                                 };
                                 if nested_budget == 0 {
@@ -4293,7 +4763,7 @@ impl EdukeVmState {
             }
             if let Some(sprite) = pending_spawn_return {
                 self.write_lvalue(
-                    &EdLValue::Variable("RETURN".to_owned()),
+                    &EdLValue::Variable("RETURN".into()),
                     player,
                     actor,
                     sprite,
@@ -4653,37 +5123,11 @@ impl EdukeVmState {
                     .actor_weapon_reservation(player, actor, register)
                     .map(i32::from)
             }
-            EdOperand::Variable(name) => {
-                if matches!(
-                    name.as_str(),
-                    "numsectors"
-                        | "NUMSECTORS"
-                        | "NUMWALLS"
-                        | "Numsprites"
-                        | "totalclock"
-                        | "windowx1"
-                        | "windowy1"
-                        | "windowx2"
-                        | "windowy2"
-                        | "xdim"
-                        | "ydim"
-                        | "RESPAWN_MONSTERS"
-                        | "RESPAWN_ITEMS"
-                        | "RESPAWN_INVENTORY"
-                ) {
-                    return Ok(access
-                        .as_deref_mut()
-                        .and_then(|host| host.predefined_variable(name))
-                        .unwrap_or(0));
-                }
-                if name == "randomseed"
-                    && let Some(seed) = access
-                        .as_deref_mut()
-                        .and_then(|host| host.game_random_seed())
-                {
-                    return Ok(seed);
-                }
-                self.get_variable(name, player, actor)
+            EdOperand::Variable(name) => self.read_named_variable(name, player, actor, access),
+            EdOperand::ScopedVariable { scope, name, id } => {
+                let raw_index = self.read_operand(id, player, actor, access)?;
+                let index = scoped_index(raw_index, *scope, name)?;
+                self.get_scoped_variable(name, *scope, index)
             }
             EdOperand::ArrayElement { name, index } => {
                 let index = self.read_operand(index, player, actor, access)?;
@@ -4707,10 +5151,11 @@ impl EdukeVmState {
                     .as_ref()
                     .map(|index| self.read_operand(index, player, actor, access))
                     .transpose()?;
-                access
+                let read = access
                     .as_deref_mut()
                     .ok_or(EdukeVmError::StructAccessUnavailable)?
-                    .get_member(*kind, id, member, member_index)
+                    .get_member(*kind, id, member, member_index);
+                self.tolerate_member_subscript(read, -1)
             }
         }
     }
@@ -4723,9 +5168,7 @@ impl EdukeVmState {
         access: &mut Option<&mut dyn EdukeStructAccess>,
     ) -> Result<i32, EdukeVmError> {
         match target {
-            EdLValue::Variable(name) => {
-                self.read_operand(&EdOperand::Variable(name.clone()), player, actor, access)
-            }
+            EdLValue::Variable(name) => self.read_named_variable(name, player, actor, access),
             EdLValue::ArrayElement { name, index } => {
                 let index = self.read_operand(index, player, actor, access)?;
                 let extent = self.array(name)?.values.len();
@@ -4740,6 +5183,58 @@ impl EdukeVmState {
         }
     }
 
+    /// Read a named gamevar operand: ordinary gamevars straight from the
+    /// table, engine-provided names through the host or VM.
+    fn read_named_variable(
+        &self,
+        var: &VarName,
+        player: usize,
+        actor: usize,
+        access: &mut Option<&mut dyn EdukeStructAccess>,
+    ) -> Result<i32, EdukeVmError> {
+        if let Some(id) = self.variable_ids.ordinary_cached(var) {
+            return self.read_variable_cell(id, player, actor);
+        }
+        let name = var.as_str();
+        if matches!(
+            name,
+            "numsectors"
+                | "NUMSECTORS"
+                | "NUMWALLS"
+                | "Numsprites"
+                | "totalclock"
+                | "windowx1"
+                | "windowy1"
+                | "windowx2"
+                | "windowy2"
+                | "xdim"
+                | "ydim"
+                | "RESPAWN_MONSTERS"
+                | "RESPAWN_ITEMS"
+                | "RESPAWN_INVENTORY"
+                | "weapon_xoffset"
+                | "gun_pos"
+                | "looking_arc"
+                | "looking_angSR1"
+                | "gs"
+                | "currentweapon"
+                | "weaponcount"
+        ) {
+            return Ok(access
+                .as_deref_mut()
+                .and_then(|host| host.predefined_variable(name))
+                .unwrap_or(0));
+        }
+        if name == "randomseed"
+            && let Some(seed) = access
+                .as_deref_mut()
+                .and_then(|host| host.game_random_seed())
+        {
+            return Ok(seed);
+        }
+        self.get_variable(name, player, actor)
+    }
+
     fn write_lvalue(
         &mut self,
         target: &EdLValue,
@@ -4750,6 +5245,9 @@ impl EdukeVmState {
     ) -> Result<(), EdukeVmError> {
         match target {
             EdLValue::Variable(name) => {
+                if let Some(id) = self.variable_ids.ordinary_cached(name) {
+                    return self.write_variable_cell(id, player, actor, value);
+                }
                 if name == "randomseed"
                     && access
                         .as_deref_mut()
@@ -5267,10 +5765,6 @@ fn actor_tile_visibility_probes(
         ];
     }
     probes
-}
-
-fn normalize(name: &str) -> String {
-    name.to_ascii_uppercase()
 }
 
 fn event_actor_context(actor: i32) -> Result<usize, EdukeVmError> {
@@ -6168,6 +6662,90 @@ mod tests {
         assert_eq!(state.get_variable("player_copy", 0, 0), Ok(37));
         assert_eq!(state.get_array("values", 1), Ok(53));
         assert_eq!(state.get_variable("array_copy", 0, 0), Ok(53));
+    }
+
+    #[test]
+    fn nested_if_body_with_break_is_skipped_with_its_outer_if() {
+        // EDuke32: an `if` body is one statement, so a false outer `ife`
+        // skips the whole inner `ife ... break` and the state continues.
+        let image = crate::con::compile_with_options(
+            b"var a 1 0\nvar b 0 0\nvar reached 0 0\ndefstate s\nife a 0 ife b 0 break\nset reached 1\nends\nonevent EVENT_GAME\nstate s\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: crate::con::ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut vm = EdukeVmState::from_image(&image).unwrap();
+        vm.execute_registered_event_hooks(&image, "EVENT_GAME", 0, 0, 1000, 16)
+            .unwrap();
+        assert_eq!(vm.get_variable("reached", 0, 0), Ok(1));
+    }
+
+    #[test]
+    fn state_called_inside_a_block_returns_into_that_block() {
+        // Shape of Brutal Duke's `ak_begin_reload`: a `state` call nested in
+        // braces must resume right after the call.
+        let image = crate::con::compile_with_options(
+            b"var pair 0 0\nvar req -1 0\nvar r 0 0\nvar l 0 0\nvar dual 0 0\nvar t 0 0\nvar l2 0 0\ndefstate p\nset t 1\nifg r t set r t\nends\ndefstate b\nife pair 0\n{\nifn req 1\n{\nifg r 0 break\nife dual 1 ifg l 0 break\n}\nset req -1\nstate p\nife t 0 ife l2 0 break\nset pair 1\n}\nends\nonevent EVENT_GAME\nstate b\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: crate::con::ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut vm = EdukeVmState::from_image(&image).unwrap();
+        vm.execute_registered_event_hooks(&image, "EVENT_GAME", 0, 0, 1000, 16)
+            .unwrap();
+        assert_eq!(vm.get_variable("t", 0, 0), Ok(1));
+        assert_eq!(vm.get_variable("pair", 0, 0), Ok(1));
+    }
+
+    #[test]
+    fn false_outer_if_skips_a_nested_if_with_a_block_body() {
+        // `ife a 0 ife b 0 { ... }`: the inner if and its whole block are the
+        // outer if's single body statement (Brutal Duke's ak_finish_reload).
+        let image = crate::con::compile_with_options(
+            b"var a 1 0\nvar b 0 0\nvar x 0 0\nvar y 0 0\nonevent EVENT_GAME\nife a 0 ife b 0\n{\nset x 1\n}\nset y 1\nendevent\n",
+            &mut crate::con::NullIncludes,
+            crate::con::ConCompileOptions {
+                dialect: crate::con::ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut vm = EdukeVmState::from_image(&image).unwrap();
+        vm.execute_registered_event_hooks(&image, "EVENT_GAME", 0, 0, 1000, 16)
+            .unwrap();
+        assert_eq!(
+            vm.get_variable("x", 0, 0),
+            Ok(0),
+            "block ran under a false if"
+        );
+        assert_eq!(vm.get_variable("y", 0, 0), Ok(1));
+    }
+
+    #[test]
+    fn top_level_event_break_ends_only_its_appended_block() {
+        // EDuke32 compiles a top-level `break` to a jump to its block's end,
+        // retargeted to the next `appendevent` block, so later handlers run;
+        // a `break` inside a state only leaves that state.
+        let image = compile_with_options(
+            b"var first 0\nvar second 0\nvar after_state 0\ndefstate leave\nbreak\nends\nappendevent EVENT_GAME\nset first 1\nifvare first 1 break\nset first 99\nendevent\nappendevent EVENT_GAME\nstate leave\nset after_state 1\nset second 1\nendevent\n",
+            &mut NullIncludes,
+            ConCompileOptions {
+                dialect: ConDialect::EDuke32,
+            },
+        );
+        assert_eq!(image.errors, 0, "errors={:?}", image.eduke_error_heads);
+        let mut state = EdukeVmState::from_image(&image).expect("event chain");
+        let executions = state
+            .execute_registered_event_hooks(&image, "EVENT_GAME", 0, 0, 64, 8)
+            .expect("both blocks run");
+        assert_eq!(executions.len(), 2);
+        assert!(executions.iter().all(|execution| !execution.returned));
+        assert_eq!(state.get_variable("first", 0, 0), Ok(1));
+        assert_eq!(state.get_variable("after_state", 0, 0), Ok(1));
+        assert_eq!(state.get_variable("second", 0, 0), Ok(1));
     }
 
     #[test]

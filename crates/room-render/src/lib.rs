@@ -29,6 +29,7 @@ pub mod frame;
 pub mod fuzz;
 pub mod glsl_translate;
 pub mod hardware_shader;
+pub mod hq_resize;
 pub mod hw_post;
 pub mod iqm_anim;
 pub mod kvx;
@@ -45,6 +46,8 @@ pub mod particle_pass;
 pub mod particles;
 pub mod pass;
 pub mod pbr;
+pub mod player_colors;
+pub mod portal_view;
 pub mod post;
 pub mod render_style;
 pub mod scene;
@@ -110,8 +113,8 @@ pub use mod_zones::{
     ModZonePass, ZoneDraw, ZoneMeshes, ZoneVertex, build_zone_meshes, flags as mod_zone_flags,
 };
 pub use model_catalog::{
-    AnimRequest, ModelActorPose, ModelCatalog, actor_pose, append_actor_models, join_model_path,
-    posed_mesh, resolve_anim,
+    AnimRequest, FramedModel, ModelActorPose, ModelCatalog, actor_has_model, actor_pose,
+    actor_pose_lerp, append_actor_models, join_model_path, model_matrix, posed_mesh, resolve_anim,
 };
 pub use models::{
     IqmJoint, IqmModel, Md2Model, Md3Model, ModelError, ModelMesh, ModelVertex, append_model,
@@ -128,18 +131,20 @@ pub use particles::{
 };
 pub use pass::UnlitPass;
 pub use pbr::{MetalRough, fresnel_schlick, ggx_d, pbr_specular, specular_f0};
+pub use portal_view::{PortalCamera, PortalRenderer, portal_camera};
 pub use post::{
     PALETTE_LUT_SIZE, PostPass, PostUniforms, TonemapMode, build_palette_lut, quantize_playpal,
     tonemap_rgb, tonemap_rgb_pal,
 };
 pub use render_style::RenderStyle;
 pub use scene::{
-    DynLightInstance, LinkedPortalSurface, MaterialRange, MirrorSurface, PlaneReflectSurface,
-    SceneLists, append_sprites, apply_dyn_lights, apply_glow_fullbright, build_scene,
-    build_scene_from_visible, build_scene_from_visible_ex, build_scene_with_sky,
-    build_scene_with_sky_ex, build_scene_with_sky_ex_sized, clip_scene_to_mirror_line,
-    collect_shadow_occluders, is_sky_flat, mirror_clip_plane, mirror_tex_name,
-    plane_reflect_tex_name, portal_tex_name, portal_view_strips_portals,
+    DynLightInstance, LinkedPortalSurface, MaterialRange, MirrorSurface, PORTAL_STYLE,
+    PORTAL_STYLE_FLIP_X, PlaneReflectSurface, PortalView, PortalViewKind, SceneLists,
+    append_sprites, apply_dyn_lights, apply_glow_fullbright, build_scene, build_scene_from_visible,
+    build_scene_from_visible_ex, build_scene_with_sky, build_scene_with_sky_ex,
+    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, collect_shadow_occluders,
+    horizon_scene, is_sky_flat, mirror_clip_plane, mirror_tex_name, plane_reflect_tex_name,
+    portal_tex_name, portal_view_strips_portals, request_portal_view,
 };
 pub use settings::{AaMode, CrtPreset, GoreLevel, RenderSettings, SHADER_CVAR_NAMES};
 pub use skinning::{

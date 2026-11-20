@@ -2,7 +2,10 @@
 // The map document is the engine's `RawMap` as JSON; every change is pushed back with
 // `roomEditorUpdateMap`, which patches the running level in place when it can.
 
-import { install as installTools, HEXEN_LINE_SPECIALS } from "./editor-tools.js";
+import {
+  install as installTools, HEXEN_LINE_SPECIALS, SPECIAL_ARGS, LINE_EXT_FLAGS, SECTOR_EXT_FLAGS,
+  SECTOR_PORTAL_FLAGS, THING_EXT_FLAGS, THING_TYPE_HINTS,
+} from "./editor-tools.js";
 import { install as installPaint, paintNs } from "./editor-paint.js";
 import { install as installScripts, highlight, textLang, includesOf, zscriptClosure } from "./editor-scripts.js";
 
@@ -94,8 +97,10 @@ const DOOM_LINE_SPECIALS = { 0: "None", 1: "DR Door", 2: "W1 Door open stay", 3:
   136: "SR Yellow door open stay (fast)", 137: "S1 Yellow door open stay (fast)", 138: "SR Light 255",
   139: "SR Light 35", 140: "S1 Floor raise 512", 141: "W1 Silent crusher" };
 const CAT_COLORS = { player: "#4cc38a", monster: "#ff5a4a", weapon: "#f0a03c", pickup: "#5ab0ff",
-  obstacle: "#b48cff", decoration: "#9aa3ad", special: "#ffd24a" };
-const CAT_ORDER = ["player", "monster", "weapon", "pickup", "obstacle", "decoration", "special"];
+  obstacle: "#b48cff", decoration: "#9aa3ad", special: "#ffd24a", portal: "#e07bff" };
+const CAT_ORDER = ["player", "monster", "weapon", "pickup", "obstacle", "decoration", "special", "portal"];
+/** Portal overlay colours: line portals, plane portals (floor / ceiling). */
+const PORTAL_COLORS = { line: "#e07bff", floor: "#3fd6c6", ceiling: "#ff8fb8" };
 
 const S = {
   mod: null,
@@ -122,6 +127,9 @@ const S = {
   grid: 32,
   snap: true,
   textured: true,
+  showPortals: true,
+  /** Engine portal report for the open map (`roomEditorPortals`), refreshed on every sync. */
+  portals: null,
   dukeFloors: true,
   undo: [],
   redo: [],
@@ -288,6 +296,7 @@ function setSummary(json) {
     document.querySelector(".packs").hidden = true;
     document.querySelector(".layout").hidden = false;
     $("#textured").parentElement.hidden = true;
+    $("#portals-toggle").hidden = true;
     $("#duke-floor-toggle").hidden = false;
     ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = false; $(id).disabled = false; });
     const labels = { vertices: "Vertices", lines: "Walls", sectors: "Sectors", things: "Sprites", draw: "Draw" };
@@ -314,6 +323,7 @@ function setSummary(json) {
     document.querySelector(".packs").hidden = false;
     document.querySelector(".layout").hidden = false;
     $("#textured").parentElement.hidden = false;
+    $("#portals-toggle").hidden = false;
     $("#duke-floor-toggle").hidden = true;
     ["#btn-copy", "#btn-paste", "#btn-rotate", "#btn-mirror"].forEach((id) => { $(id).hidden = false; });
     const labels = { vertices: "Vertices", lines: "Lines", sectors: "Sectors", things: "Things", draw: "Draw" };
@@ -824,7 +834,7 @@ function loadMap(name) {
       S.dukeMapFile = null;
       S.dukePersistBefore = null;
     }
-    if (S.docs[name]) pushNow();
+    if (S.docs[name]) pushNow(); else refreshPortals();
     S.undo = []; S.redo = []; S.sel.clear(); S.pick3d = null; S.drawPts = [];
     S.version++;
     $("#map-select").value = name;
@@ -852,10 +862,24 @@ function pushNow() {
     const how = S.mod.roomEditorUpdateMap(JSON.stringify(S.doc));
     const label = { live: "live patch", restart: "level restarted", rebuild: "nodes rebuilt" }[how] || how;
     syncPill(how, label);
+    refreshPortals();
   } catch (e) {
     syncPill("error", "error");
     status(`Map error: ${errText(e)}`);
   }
+}
+
+/** Re-read the engine's portal report; repaint only when it changed. */
+function refreshPortals() {
+  const clear = () => { S.portals = null; S.portalsJson = null; };
+  if (S.dukeMap || typeof S.mod?.roomEditorPortals !== "function") { clear(); return; }
+  let json;
+  try { json = S.mod.roomEditorPortals(); } catch (_) { clear(); return; }
+  if (json === S.portalsJson) return;
+  S.portalsJson = json;
+  S.portals = JSON.parse(json);
+  render2d();
+  updatePortalInfo();
 }
 
 function snapshot() {
@@ -1713,6 +1737,104 @@ function render2d() {
   requestAnimationFrame(() => { renderQueued = false; draw2d(); });
 }
 
+/** Portal overlay: plane portals as dashed sector outlines, line portals as
+ * thick lines with an arrow to their destination, linked group numbers. */
+function drawPortalOverlay(ctx, geo, sc, dpr, W, H) {
+  const d = S.doc, rep = S.portals;
+  if (!rep.lines.length && !rep.planes.length && !rep.line_copies.length) {
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(10,12,16,0.75)";
+    const msg = isUdmf() || isHexen()
+      ? "No portals in this map — select two lines and press Make portal"
+      : "No portals in this map — Doom-format maps have none; convert to UDMF from the inspector";
+    const w = ctx.measureText(msg).width + 16;
+    ctx.fillRect(8, H - 30, w, 22);
+    ctx.fillStyle = PORTAL_COLORS.line;
+    ctx.fillText(msg, 16, H - 15);
+    return;
+  }
+  ctx.save();
+  ctx.setTransform(dpr * sc, 0, 0, -dpr * sc, dpr * (W / 2 - S.view.x * sc), dpr * (H / 2 + S.view.y * sc));
+  ctx.lineWidth = 2 / sc;
+  for (const p of rep.planes) {
+    const path = geo.paths[p.sector];
+    if (!path) continue;
+    const color = p.disabled ? "#8a8f98" : PORTAL_COLORS[p.plane];
+    ctx.setLineDash(p.plane === "floor" ? [6 / sc, 4 / sc] : [2 / sc, 4 / sc]);
+    ctx.lineDashOffset = p.plane === "floor" ? 0 : 3 / sc;
+    ctx.strokeStyle = color;
+    ctx.stroke(path);
+    if (!p.disabled && p.kind !== "sky") {
+      ctx.fillStyle = `${color}${p.linked ? "2e" : "1a"}`;
+      ctx.fill(path, "evenodd");
+    }
+  }
+  ctx.restore();
+  const mid = (li) => {
+    const l = d.linedefs[li];
+    const a = l && vtx(l.v1), b = l && vtx(l.v2);
+    return a && b ? toScreen((a.x + b.x) / 2, (a.y + b.y) / 2) : null;
+  };
+  const selLine = (li) => S.mode === "lines" && (S.sel.has(li) || S.hover === li);
+  ctx.lineCap = "round";
+  for (const [li] of rep.line_copies) {
+    const l = d.linedefs[li];
+    const a = l && vtx(l.v1), b = l && vtx(l.v2);
+    if (!a || !b) continue;
+    const [ax, ay] = toScreen(a.x, a.y), [bx, by] = toScreen(b.x, b.y);
+    ctx.strokeStyle = PORTAL_COLORS.floor; ctx.lineWidth = 3; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const p of rep.lines) {
+    const l = d.linedefs[p.line];
+    const a = l && vtx(l.v1), b = l && vtx(l.v2);
+    if (!a || !b) continue;
+    const [ax, ay] = toScreen(a.x, a.y), [bx, by] = toScreen(b.x, b.y);
+    const hot = selLine(p.line) || (p.target != null && selLine(p.target));
+    ctx.globalAlpha = hot ? 1 : 0.8;
+    ctx.strokeStyle = p.target == null && p.kind !== "horizon" && p.kind !== "mirror" ? "#ff5a4a" : PORTAL_COLORS.line;
+    ctx.lineWidth = p.passable ? 4 : 3;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    const m0 = mid(p.line), m1 = p.target != null ? mid(p.target) : null;
+    if (m0 && m1) {
+      ctx.globalAlpha = hot ? 1 : 0.45;
+      ctx.strokeStyle = PORTAL_COLORS.line;
+      ctx.lineWidth = hot ? 2 : 1.2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(m0[0], m0[1]); ctx.lineTo(m1[0], m1[1]); ctx.stroke();
+      ctx.setLineDash([]);
+      const ang = Math.atan2(m1[1] - m0[1], m1[0] - m0[0]);
+      const k = hot ? 10 : 7;
+      ctx.fillStyle = PORTAL_COLORS.line;
+      ctx.beginPath();
+      ctx.moveTo(m1[0], m1[1]);
+      ctx.lineTo(m1[0] - Math.cos(ang - 0.4) * k, m1[1] - Math.sin(ang - 0.4) * k);
+      ctx.lineTo(m1[0] - Math.cos(ang + 0.4) * k, m1[1] - Math.sin(ang + 0.4) * k);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.lineCap = "butt";
+  if (rep.groups.length && sc > 0.2) {
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    rep.groups.forEach((g, si) => {
+      const bb = geo.bbox[si];
+      if (!g || !bb || !Number.isFinite(bb[0])) return;
+      const [x, y] = toScreen((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2);
+      if (x < 0 || y < 0 || x > W || y > H) return;
+      ctx.fillStyle = "rgba(10,12,16,0.7)";
+      ctx.fillRect(x - 13, y - 8, 26, 16);
+      ctx.fillStyle = PORTAL_COLORS.floor;
+      ctx.fillText(`G${g}`, x, y);
+    });
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+  }
+}
+
 function draw2d() {
   const dpr = window.devicePixelRatio || 1;
   const W = cv.clientWidth, H = cv.clientHeight;
@@ -1788,6 +1910,7 @@ function draw2d() {
       ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx - nx * 6, my - ny * 6); ctx.stroke();
     }
   });
+  if (S.showPortals && S.portals) drawPortalOverlay(ctx, geo, sc, dpr, W, H);
   // Vertices.
   if (S.mode === "vertices" || S.mode === "lines" || S.mode === "draw" || sc > 0.6) {
     d.vertices.forEach((v, i) => {
@@ -2604,6 +2727,191 @@ function pollCamera() {
 
 // ---------------------------------------------------------------- inspector
 
+/** Doom-format maps: portals and UDMF flags need a conversion first. */
+function udmfNotice() {
+  return el("fieldset", {}, el("legend", {}, "Portals & UDMF"),
+    el("p", { class: "muted", style: "margin:0 0 6px" },
+      "This is a Doom-format map, which has no portal specials, line ids or UDMF flags. Convert it to UDMF to use them (Undo reverts)."),
+    el("button", { class: "btn small", onclick: convertToUdmf }, "Convert map to UDMF"));
+}
+
+function convertToUdmf() {
+  if (!S.doc || isUdmf()) return;
+  if (typeof S.mod?.roomEditorConvertToUdmf !== "function") { toast("Rebuild the editor (wasm) to convert maps", true); return; }
+  try {
+    const next = JSON.parse(S.mod.roomEditorConvertToUdmf(JSON.stringify(S.doc)));
+    snapshot();
+    S.doc = next;
+    commit();
+    toast(`${S.doc.name} is now a UDMF map — exports save it as TEXTMAP`);
+  } catch (e) {
+    toast(`Convert: ${errText(e)}`, true);
+  }
+}
+
+/** Highest line id in use (UDMF `id` / `moreids`, Hexen id-carrying specials). */
+function maxLineId() {
+  let m = 0;
+  for (const l of S.doc.linedefs) {
+    m = Math.max(m, l.tag || 0, ...(l.extra_ids || []));
+    if (isHexen() && l.special === 121) m = Math.max(m, l.args[0] + 256 * (l.args[4] || 0));
+    if (l.special === 156) m = Math.max(m, l.args[0], l.args[1]);
+  }
+  return m;
+}
+
+/** Two selected lines become a pair of `Line_SetPortal`s looking into each other. */
+function makePortalPair() {
+  const idx = [...S.sel];
+  if (S.mode !== "lines" || idx.length !== 2) { toast("Select exactly two lines (Shift+click), then Make portal", true); return; }
+  if (!isUdmf() && !isHexen()) { toast("Convert the map to UDMF first", true); return; }
+  const [a, b] = idx.map((i) => S.doc.linedefs[i]);
+  const two = a.side_back !== NO_SIDE && b.side_back !== NO_SIDE;
+  const type = two ? 2 : 0; // interactive needs a back sector; else visual
+  const ida = maxLineId() + 1, idb = ida + 1;
+  snapshot();
+  for (const [l, self, other] of [[a, ida, idb], [b, idb, ida]]) {
+    l.special = 156;
+    l.args = [other, self, type, 0, 0];
+    if (isUdmf()) l.tag = self;
+  }
+  commit();
+  toast(`Lines ${idx[0]} ↔ ${idx[1]}: ${two ? "interactive" : "visual"} portal (ids ${ida} / ${idb}); change the type in arg2`);
+}
+
+/** Thing TID / special / args (args named when the special is known). */
+function thingAction(objs) {
+  const fs = fieldset("Action", objs, ["tid", "special"], { fields: { special: { options: HEXEN_LINE_SPECIALS } } });
+  fs.append(namedArgs(objs, objs[0].special) || rowEl("args", fieldFor(objs, "args")));
+  return fs;
+}
+
+/** Arguments with names for the specials `SPECIAL_ARGS` explains. */
+function namedArgs(objs, special) {
+  const spec = SPECIAL_ARGS[special];
+  if (!spec || objs.some((o) => o.special !== special)) return null;
+  const wrap = el("div", { class: "named-args" });
+  spec.forEach((arg, j) => {
+    if (!arg) return;
+    const [label, options] = arg;
+    const v0 = objs[0].args?.[j] ?? 0;
+    const set = (v) => {
+      snapshot();
+      for (const o of objs) { o.args = [...(o.args || [0, 0, 0, 0, 0])]; o.args[j] = v; }
+      commit({ inspector: false });
+    };
+    let input;
+    if (options) {
+      input = el("select", {});
+      if (!(v0 in options)) input.append(el("option", { value: v0 }, `${v0} (custom)`));
+      for (const [k, name] of Object.entries(options)) input.append(el("option", { value: k, selected: Number(k) === v0 }, `${k} — ${name}`));
+      input.addEventListener("change", () => set(Number(input.value)));
+    } else {
+      input = el("input", { type: "number", value: v0 });
+      input.addEventListener("change", () => set(Math.round(Number(input.value) || 0)));
+    }
+    wrap.append(rowEl(`arg${j}: ${label}`, input));
+  });
+  return wrap;
+}
+
+/** Specials that make or change portals (show the Portal panel for them). */
+const PORTAL_SPECIALS = new Set([1, 5, 9, 57, 107, 156, 182, 301]);
+
+const LINE_PORTAL_NAMES = { visual: "Visual (see-through only)", teleport: "Teleport", interactive: "Interactive",
+  linked: "Linked (seamless)", horizon: "Horizon", mirror: "Mirror", other: "Other" };
+const PLANE_PORTAL_NAMES = { sky: "Sky", skybox: "Skybox viewpoint", stacked: "Stacked sectors", portal: "Copy portal",
+  linked: "Linked portal", plane: "Plane portal", horizon: "Horizon", other: "Other" };
+
+/** Engine view of the selected line's / sector's portals (refreshed live). */
+function portalInfo() {
+  const box = el("div", { id: "insp-portal-info", class: "portal-info" });
+  fillPortalInfo(box);
+  return box;
+}
+
+function updatePortalInfo() {
+  const box = document.getElementById("insp-portal-info");
+  if (box) { box.replaceChildren(); fillPortalInfo(box); }
+}
+
+function fillPortalInfo(box) {
+  const rep = S.portals;
+  const idx = [...S.sel];
+  if (!rep) { box.append(el("p", { class: "muted" }, "Portal info appears once the map is synced.")); return; }
+  if (idx.length !== 1) return;
+  const i = idx[0];
+  const go = (mode, j, label) => el("button", { class: "btn small", onclick: () => tools.show(mode, [j]) }, label);
+  if (S.mode === "lines") {
+    const p = rep.lines.find((x) => x.line === i);
+    const into = rep.lines.filter((x) => x.target === i);
+    const copy = rep.line_copies.find(([l]) => l === i);
+    const po = rep.polyobjects.find((x) => x.lines.includes(i));
+    if (p) {
+      box.append(el("div", { class: "row" }, el("label", {}, "portal"), el("span", {}, LINE_PORTAL_NAMES[p.kind] || p.kind)));
+      const flags = [p.visible && "visible", p.passable && "passable", p.interactive && "interactive", p.sound && "sound"].filter(Boolean);
+      box.append(el("div", { class: "row" }, el("label", {}, "behaviour"), el("span", { class: "muted" }, flags.join(" · ") || "none")));
+      if (p.kind === "linked" || p.align !== "absolute") box.append(el("div", { class: "row" }, el("label", {}, "anchor"), el("span", {}, p.align)));
+      if (p.target != null) box.append(el("div", { class: "row" }, el("label", {}, "destination"), el("div", { class: "tex-field" }, el("span", {}, `line ${p.target}`), go("lines", p.target, "Go to"))));
+      else if (p.kind !== "horizon" && p.kind !== "mirror") box.append(el("p", { class: "warn-text" }, "No destination line — set arg0 to a line id that exists."));
+    }
+    for (const q of into) box.append(el("div", { class: "row" }, el("label", {}, "seen from"), el("div", { class: "tex-field" }, el("span", {}, `line ${q.line} (${q.kind})`), go("lines", q.line, "Go to"))));
+    if (copy) box.append(el("div", { class: "row" }, el("label", {}, "shows"), el("span", {}, `sector portal #${copy[1]}`)));
+    if (po) box.append(el("div", { class: "row" }, el("label", {}, "polyobject"), el("span", {}, `#${po.id}${po.portal_lines.includes(i) ? " — portal moves with it" : ""}`)));
+    if (!p && !into.length && !copy && !po) box.append(el("p", { class: "muted" }, "Not a portal."));
+  } else if (S.mode === "sectors") {
+    const planes = rep.planes.filter((x) => x.sector === i);
+    for (const p of planes) {
+      const parts = [PLANE_PORTAL_NAMES[p.kind] || p.kind];
+      if (p.linked) parts.push("linked");
+      if (p.disabled) parts.push("disabled");
+      if (p.norender) parts.push("not drawn");
+      if (p.alpha < 1) parts.push(`alpha ${p.alpha.toFixed(2)}`);
+      const row = el("div", { class: "tex-field" }, el("span", {}, parts.join(" · ")));
+      if (p.destination != null && p.destination !== i) row.append(go("sectors", p.destination, `→ sector ${p.destination}`));
+      if (p.thing != null) row.append(go("things", p.thing, `thing ${p.thing}`));
+      box.append(el("div", { class: "row" }, el("label", { style: `color:${PORTAL_COLORS[p.plane]}` }, p.plane), row));
+    }
+    const g = rep.groups[i];
+    if (g) box.append(el("div", { class: "row" }, el("label", {}, "group"), el("span", {}, `linked group ${g} of ${rep.group_count - 1}`)));
+    if (!planes.length && !g) box.append(el("p", { class: "muted" }, "No portal planes."));
+  }
+}
+
+/** Editable `user_*` fields (UDMF), one `user_name = value` per line. */
+function userFields(objs) {
+  if (objs.length !== 1) return null;
+  const o = objs[0];
+  const bag = o.user || { ints: {}, fixed: {} };
+  const lines = [
+    ...Object.entries(bag.ints || {}).map(([k, v]) => `${k} = ${v}`),
+    ...Object.entries(bag.fixed || {}).map(([k, v]) => {
+      const t = String(Math.round((v / 65536) * 10000) / 10000);
+      return `${k} = ${t.includes(".") ? t : `${t}.0`}`;
+    }),
+  ];
+  const ta = el("textarea", { rows: Math.max(2, lines.length + 1), spellcheck: "false", placeholder: "user_score = 10\nuser_speed = 1.5" });
+  ta.value = lines.join("\n");
+  ta.addEventListener("change", () => {
+    const next = { ints: {}, fixed: {} };
+    for (const raw of ta.value.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      const m = /^(user_[a-z0-9_]+)\s*=\s*(true|false|-?\d+(?:\.\d*)?)\s*;?$/i.exec(line);
+      if (!m) { toast(`User field: "${line}" — use user_name = number`, true); return; }
+      const key = m[1].toLowerCase(), v = m[2].toLowerCase();
+      if (v === "true" || v === "false") next.ints[key] = v === "true" ? 1 : 0;
+      else if (v.includes(".")) next.fixed[key] = Math.round(Number(v) * 65536);
+      else next.ints[key] = Number(v) | 0;
+    }
+    snapshot();
+    if (Object.keys(next.ints).length || Object.keys(next.fixed).length) o.user = next; else delete o.user;
+    commit({ inspector: false });
+  });
+  return el("fieldset", {}, el("legend", {}, "User fields (user_*)"), ta,
+    el("p", { class: "muted", style: "margin:4px 0 0" }, "Read by ZScript and ACS (GetUserVariable / GetUDMFInt). Decimals are stored as fixed point."));
+}
+
 function rowEl(label, input, extra) {
   return el("div", { class: "row" }, el("label", { title: label }, label), extra ? el("div", { class: "tex-field" }, input, extra) : input);
 }
@@ -2717,7 +3025,7 @@ function fieldset(title, objs, keys, opts = {}) {
 }
 
 function advanced(title, objs, skip) {
-  const keys = Object.keys(objs[0]).filter((k) => !skip.includes(k));
+  const keys = Object.keys(objs[0]).filter((k) => !skip.includes(k) && k !== "ext" && k !== "user");
   if (!keys.length) return null;
   const det = el("details", {}, el("summary", { class: "muted", style: "cursor:pointer;margin:4px 0 8px" }, `${title} (${keys.length} fields)`));
   const fs = el("fieldset", {});
@@ -3136,9 +3444,13 @@ function renderInspector() {
         rowEl("type_id", fieldFor(objs, "type_id"))),
       fieldset("Placement", objs, ["x", "y", "z", "angle"], { fields: { angle: { options: angles } } }),
       el("fieldset", {}, el("legend", {}, "Flags"), fieldFor(objs, "flags", { flags: isHexen() ? HEXEN_THING_FLAGS : DOOM_THING_FLAGS })),
-      ...((isHexen() || isUdmf()) ? [fieldset("Action", objs, ["tid", "special", "args"], { fields: { special: { options: HEXEN_LINE_SPECIALS } } })] : []),
+      ...((isHexen() || isUdmf()) ? [thingAction(objs)] : []),
+      ...(isUdmf() ? [el("fieldset", {}, el("legend", {}, "UDMF flags"), fieldFor(objs, "ext", { flags: THING_EXT_FLAGS }))] : []),
+      ...(isUdmf() ? [userFields(objs)].filter(Boolean) : []),
       advanced("All fields", objs, ["x", "y", "z", "angle", "type_id", "flags", "tid", "special", "args"]),
     );
+    const hint = THING_TYPE_HINTS[objs[0].type_id];
+    if (hint && objs.every((o) => o.type_id === objs[0].type_id)) body.querySelector("fieldset")?.append(el("p", { class: "muted", style: "margin:6px 0 0" }, hint));
   } else if (S.mode === "lines") {
     const objs = idx.map((i) => d.linedefs[i]);
     title.textContent = n > 1 ? `${n} lines` : `Line ${idx[0]}`;
@@ -3146,13 +3458,14 @@ function renderInspector() {
       el("button", { class: "btn small", onclick: flipLines }, "Flip (F)"),
       el("button", { class: "btn small", onclick: splitLines }, "Split (X)"),
       el("button", { class: "btn small", title: "Align x offsets along connected walls with the same texture", onclick: () => tools.autoAlignSelection() }, "Auto-align (J)"),
+      ...(n === 2 ? [el("button", { class: "btn small", title: "Make the two selected lines a portal pair (Line_SetPortal)", onclick: makePortalPair }, "Make portal")] : []),
       el("button", { class: "btn small danger", onclick: deleteSelection }, "Delete"));
     body.append(actions);
     body.append(el("fieldset", {}, el("legend", {}, "Flags"), fieldFor(objs, "flags", { flags: isHexen() || isUdmf() ? HEXEN_LINE_FLAGS : DOOM_LINE_FLAGS })));
     const act = el("fieldset", {}, el("legend", {}, "Action"));
     act.append(rowEl("special", fieldFor(objs, "special", { options: isHexen() || isUdmf() ? HEXEN_LINE_SPECIALS : DOOM_LINE_SPECIALS })));
     act.append(rowEl("tag", fieldFor(objs, "tag")));
-    if (isHexen() || isUdmf()) act.append(rowEl("args", fieldFor(objs, "args")));
+    if (isHexen() || isUdmf()) act.append(namedArgs(objs, objs[0].special) || rowEl("args", fieldFor(objs, "args")));
     if (isUdmf()) act.append(el("div", { style: "margin-top:4px" }, fieldFor(objs, "activation", { flags: SPAC_BITS })));
     if (isHexen()) {
       const actSel = el("select", {});
@@ -3162,6 +3475,16 @@ function renderInspector() {
       act.append(rowEl("activation", actSel));
     }
     body.append(act);
+    const portalLine = objs.some((l) => PORTAL_SPECIALS.has(l.special))
+      || (n === 1 && S.portals && (S.portals.lines.some((p) => p.line === idx[0] || p.target === idx[0])
+        || S.portals.polyobjects.some((po) => po.lines.includes(idx[0]))));
+    if ((isHexen() || isUdmf()) && portalLine) body.append(el("fieldset", {}, el("legend", {}, "Portal"), portalInfo()));
+    if (!isHexen() && !isUdmf()) body.append(udmfNotice());
+    if (isUdmf()) {
+      body.append(el("fieldset", {}, el("legend", {}, "UDMF flags"), fieldFor(objs, "ext", { flags: LINE_EXT_FLAGS })));
+      const uf = userFields(objs);
+      if (uf) body.append(uf);
+    }
     const pick = S.pick3d?.kind === "wall" ? S.pick3d : null;
     for (const [sk, label] of [["side_front", "Front side"], ["side_back", "Back side"]]) {
       const sides = objs.map((l) => side(l[sk])).filter(Boolean);
@@ -3196,6 +3519,23 @@ function renderInspector() {
     body.append(fieldset("Light & action", objs, ["light", "special", "tag"], {
       fields: { light: { range: true, min: 0, max: 255 }, special: isHexen() || isUdmf() ? {} : { options: DOOM_SECTOR_SPECIALS } },
     }));
+    const portalSector = n === 1 && S.portals && (S.portals.planes.some((p) => p.sector === idx[0]) || S.portals.groups[idx[0]]);
+    if (isUdmf() || (isHexen() && portalSector)) {
+      const fs = el("fieldset", {}, el("legend", {}, "Portals"), portalInfo());
+      if (isUdmf()) {
+        for (const plane of ["floor", "ceiling"]) {
+          fs.append(rowEl(`${plane} portal`, fieldFor(objs, "ext", { flags: SECTOR_PORTAL_FLAGS[plane] })));
+          fs.append(rowEl(`${plane} alpha`, fieldFor(objs, `${plane}_alpha`, { min: 0, max: 1 })));
+        }
+      }
+      body.append(fs);
+    }
+    if (!isHexen() && !isUdmf()) body.append(udmfNotice());
+    if (isUdmf()) {
+      body.append(el("fieldset", {}, el("legend", {}, "UDMF flags"), fieldFor(objs, "ext", { flags: SECTOR_EXT_FLAGS })));
+      const uf = userFields(objs);
+      if (uf) body.append(uf);
+    }
     body.append(advanced("All fields", objs, ["floor_height", "ceiling_height", "floor_pic", "ceiling_pic", "light", "special", "tag"]));
   }
   updateCounts();
@@ -4408,6 +4748,7 @@ $("#btn-mute").addEventListener("click", () => applyMute(!(S.mod && S.mod.roomMu
 $("#grid").addEventListener("change", (e) => { S.grid = Number(e.target.value); render2d(); });
 $("#snap").addEventListener("change", (e) => { S.snap = e.target.checked; });
 $("#textured").addEventListener("change", (e) => { S.textured = e.target.checked; render2d(); });
+$("#show-portals").addEventListener("change", (e) => { S.showPortals = e.target.checked; render2d(); });
 $("#duke-floors").addEventListener("change", (e) => { S.dukeFloors = e.target.checked; render2d(); });
 $("#skill").addEventListener("change", (e) => { try { S.mod.roomEditorSetSkill(Number(e.target.value)); } catch (_) {} });
 

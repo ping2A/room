@@ -3311,15 +3311,42 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
                     actor.damage = dmg.max(0);
                 }
             }
-            room_zvm::ZsActorOp::SetEnvironment { id, name } => {
-                let at = world.actors.get(self_id).map(|a| (a.pos.x(), a.pos.y()));
-                if let Some(sector) =
-                    at.and_then(|(x, y)| crate::physics::sector_at_xy(world, x, y))
-                {
+            room_zvm::ZsActorOp::SetEnvironment {
+                at,
+                sector,
+                id,
+                name,
+            } => {
+                // A map `Sector` names itself, a `PointInSector` sector its
+                // point; `CurSector` is the caller's.
+                let at = at.or_else(|| world.actors.get(self_id).map(|a| (a.pos.x(), a.pos.y())));
+                let sector = sector
+                    .map(|s| s as usize)
+                    .filter(|&s| s < world.sectors.len())
+                    .or_else(|| at.and_then(|(x, y)| crate::physics::sector_at_xy(world, x, y)));
+                if let Some(sector) = sector {
                     match (id, name) {
                         (Some(id), _) => world.set_sector_environment(sector, id),
                         (None, Some(name)) => world.set_sector_environment_name(sector, &name),
                         (None, None) => {}
+                    }
+                }
+            }
+            room_zvm::ZsActorOp::SectorLight { sector, level } => {
+                if let Some(sec) = world.sectors.get_mut(sector as usize) {
+                    sec.light = i16::try_from(level.clamp(0, 255)).unwrap_or(0);
+                }
+            }
+            room_zvm::ZsActorOp::SectorTexture {
+                sector,
+                ceiling,
+                name,
+            } => {
+                if (sector as usize) < world.sectors.len() {
+                    if ceiling {
+                        world.sector_ceiling_pics.insert(sector, name);
+                    } else {
+                        world.sector_floor_pics.insert(sector, name);
                     }
                 }
             }
@@ -6221,6 +6248,12 @@ fn a_radius_give(world: &mut World, self_id: ActorId, args: &[String]) -> Action
         let a = world.actors.get(id)?;
         crate::deco_eval::class_is_a(world, a.class, "PlayerPawn", true).then_some(false)
     };
+    let qgroups = crate::portal::query_groups(
+        world,
+        DVec3::new(me.pos.x(), me.pos.y(), me.pos.z() - distance),
+        me.pos.z() + distance,
+        distance,
+    );
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     let mut given = 0;
     for id in ids {
@@ -6305,9 +6338,12 @@ fn a_radius_give(world: &mut World, self_id: ActorId, args: &[String]) -> Action
                 }
             }
         }
-        let dx = other.pos.x() - me.pos.x();
-        let dy = other.pos.y() - me.pos.y();
-        let dz = other.pos.z() + other.height * 0.5 - me.pos.z();
+        let Some(opos) = crate::portal::query_pos(world, &qgroups, other) else {
+            continue;
+        };
+        let dx = opos.x() - me.pos.x();
+        let dy = opos.y() - me.pos.y();
+        let dz = opos.z() + other.height * 0.5 - me.pos.z();
         if flags & RGF_CUBE != 0 {
             let (ax, ay, az) = (dx.abs(), dy.abs(), dz.abs());
             if ax > distance
@@ -7286,7 +7322,10 @@ pub(crate) fn check_missile_range(world: &mut World, self_id: ActorId, tid: Acto
         let Some(t) = world.actors.get(tid) else {
             return false;
         };
-        (s.pos.x(), s.pos.y(), t.pos.x(), t.pos.y(), s.class)
+        {
+            let tp = crate::portal::pos_seen_from(world, s, t);
+            (s.pos.x(), s.pos.y(), tp.x(), tp.y(), s.class)
+        }
     };
     let mut dist = approx_distance(Fixed::from_f64(sx - tx), Fixed::from_f64(sy - ty));
     dist = Fixed(dist.0 - 64 * FRACUNIT);
@@ -8075,7 +8114,8 @@ pub(crate) fn try_walk(world: &mut World, self_id: ActorId) -> bool {
 pub(crate) fn new_chase_dir(world: &mut World, self_id: ActorId, target: ActorId) {
     let Some((sx, sy, tx, ty, old_dir)) = world.actors.get(self_id).and_then(|s| {
         let t = world.actors.get(target)?;
-        Some((s.pos.x(), s.pos.y(), t.pos.x(), t.pos.y(), s.move_dir))
+        let tp = crate::portal::pos_seen_from(world, s, t);
+        Some((s.pos.x(), s.pos.y(), tp.x(), tp.y(), s.move_dir))
     }) else {
         return;
     };
@@ -8916,7 +8956,8 @@ fn face_actor(world: &mut World, self_id: ActorId, tid: ActorId) -> ActionResult
         let Some(t) = world.actors.get(tid) else {
             return ActionResult::Continue;
         };
-        (s.pos.x(), s.pos.y(), t.pos.x(), t.pos.y())
+        let tp = crate::portal::pos_seen_from(world, s, t);
+        (s.pos.x(), s.pos.y(), tp.x(), tp.y())
     };
     if let Some(a) = world.actors.get_mut(self_id) {
         a.angle = Angle::from_radians(dmath::atan2(ty - sy, tx - sx));
@@ -9176,8 +9217,9 @@ fn spawn_missile_aimed(
     let Some(dst) = world.actors.get(dest).cloned() else {
         return;
     };
-    let dx = dst.pos.x() - src.pos.x();
-    let dy = dst.pos.y() - src.pos.y();
+    let dpos = crate::portal::pos_seen_from(world, &src, &dst);
+    let dx = dpos.x() - src.pos.x();
+    let dy = dpos.y() - src.pos.y();
     let dist_xy = dmath::sqrt(dx * dx + dy * dy).max(1.0);
     let ang = Angle::from_radians(dmath::atan2(dy, dx));
     let rad = ang.radians();
@@ -9663,8 +9705,9 @@ pub(crate) fn home_toward(world: &mut World, self_id: ActorId, aim: ActorId, max
 fn angle_to_aim(world: &World, self_id: ActorId, aim: ActorId) -> Option<f64> {
     let self_a = world.actors.get(self_id)?;
     let target = world.actors.get(aim)?;
-    let dx = target.pos.x() - self_a.pos.x();
-    let dy = target.pos.y() - self_a.pos.y();
+    let tp = crate::portal::pos_seen_from(world, self_a, target);
+    let dx = tp.x() - self_a.pos.x();
+    let dy = tp.y() - self_a.pos.y();
     let desired = Angle::from_radians(dmath::atan2(dy, dx)).degrees();
     let mut delta = desired - self_a.angle.degrees();
     while delta > 180.0 {
@@ -11409,10 +11452,44 @@ fn noise_alert_ex_inner(world: &mut World, target: ActorId, emitter: ActorId, sp
         let Some(sec) = world.map.sectors.get(si) else {
             continue;
         };
+        // UZDoom `P_RecursiveSound`: through linked plane portals (sampled
+        // at each line's midpoint) and sound-passing line portals.
+        let portals = &world.map.setup.portals;
+        let check_above = portals.has_linked_planes
+            && !crate::portal::plane_blocks_sound(world, si, room_map::portals::PLANE_CEILING);
+        let check_below = portals.has_linked_planes
+            && !crate::portal::plane_blocks_sound(world, si, room_map::portals::PLANE_FLOOR);
         for lid in &sec.lines {
             let Some(line) = world.map.lines.get(lid.raw() as usize) else {
                 continue;
             };
+            if check_above || check_below || !portals.lines.is_empty() {
+                let v1 = world.map.vertices[line.v1.raw() as usize].pos;
+                let (mx, my) = (v1.x() + line.delta.x() / 2.0, v1.y() + line.delta.y() / 2.0);
+                for (check, plane) in [
+                    (check_above, room_map::portals::PLANE_CEILING),
+                    (check_below, room_map::portals::PLANE_FLOOR),
+                ] {
+                    if !check {
+                        continue;
+                    }
+                    let (dx, dy) = portals.plane_displacement(si, plane);
+                    if let Some(o) = crate::portal::sector_at(world, mx + dx, my + dy) {
+                        stack.push((o, blocks));
+                    }
+                }
+                if let Some(p) = portals.line(*lid)
+                    && p.passes_sound()
+                    && let Some(dst) = p.target
+                    && let Some(f) = world
+                        .map
+                        .lines
+                        .get(dst.raw() as usize)
+                        .and_then(|l| l.front_sector)
+                {
+                    stack.push((f.raw() as usize, blocks));
+                }
+            }
             let (Some(front), Some(back)) = (line.front_sector, line.back_sector) else {
                 continue;
             };
@@ -11512,8 +11589,8 @@ pub(crate) fn check_melee_range(world: &World, self_id: ActorId, tid: ActorId) -
         return false;
     };
     let dist = approx_distance(
-        Fixed::from_f64(t.pos.x() - s.pos.x()),
-        Fixed::from_f64(t.pos.y() - s.pos.y()),
+        Fixed::from_f64(crate::portal::pos_seen_from(world, s, t).x() - s.pos.x()),
+        Fixed::from_f64(crate::portal::pos_seen_from(world, s, t).y() - s.pos.y()),
     );
     let melee_mu = if s.melee_range > 0.0 {
         s.melee_range
@@ -11645,6 +11722,14 @@ pub(crate) fn radius_attack(
         .and_then(|a| a.target)
         .or(Some(source));
     let vanilla = world.math_mode == crate::vanilla::SimMathMode::VanillaFixed;
+    // Linked portals: the blast reaches the groups around it, at displaced
+    // positions (`FMultiBlockThingsIterator` in `P_RadiusAttack`).
+    let qgroups = crate::portal::query_groups(
+        world,
+        DVec3::new(origin.x(), origin.y(), origin.z() - distance),
+        origin.z() + distance,
+        distance,
+    );
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         if id == source {
@@ -11665,18 +11750,25 @@ pub(crate) fn radius_attack(
         if other_flags & crate::class::FLAG_SHOOTABLE == 0 {
             continue;
         }
-        let dx = other.pos.x() - origin.x();
-        let dy = other.pos.y() - origin.y();
+        let opos = match &qgroups {
+            None => other.pos,
+            Some((g, gs)) => match crate::portal::pos_in_groups(world, other, *g, gs) {
+                Some(p) => p,
+                None => continue,
+            },
+        };
+        let dx = opos.x() - origin.x();
+        let dy = opos.y() - origin.y();
         // Doom distance: Chebyshev to the thing's box edge.
         let flat = (dx.abs().max(dy.abs()) - other.radius).max(0.0);
         let len = if vanilla {
             flat
         } else {
             // GZDoom also counts the vertical gap to the thing's box.
-            let dz = if other.pos.z() > origin.z() {
-                other.pos.z() - origin.z()
-            } else if other.pos.z() + other.height < origin.z() {
-                origin.z() - (other.pos.z() + other.height)
+            let dz = if opos.z() > origin.z() {
+                opos.z() - origin.z()
+            } else if opos.z() + other.height < origin.z() {
+                origin.z() - (opos.z() + other.height)
             } else {
                 0.0
             };
@@ -12592,6 +12684,12 @@ fn a_radius_thrust(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
     let Some(origin) = world.actors.get(self_id).map(|a| a.pos) else {
         return ActionResult::Continue;
     };
+    let qgroups = crate::portal::query_groups(
+        world,
+        DVec3::new(origin.x(), origin.y(), origin.z() - distance),
+        origin.z() + distance,
+        distance,
+    );
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
         if id == self_id && !affect_source {
@@ -12608,8 +12706,11 @@ fn a_radius_thrust(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
         if (other_flags & crate::class::FLAG_DONTTHRUST) != 0 {
             continue;
         }
-        let dx = other.pos.x() - origin.x();
-        let dy = other.pos.y() - origin.y();
+        let Some(opos) = crate::portal::query_pos(world, &qgroups, other) else {
+            continue;
+        };
+        let dx = opos.x() - origin.x();
+        let dy = opos.y() - origin.y();
         let dist = dmath::sqrt(dx * dx + dy * dy);
         if dist >= distance || dist < 1e-6 {
             continue;
@@ -14519,12 +14620,26 @@ actor SlowWake : Actor 9201
             .unwrap();
         let _ = crate::damage::damage_mobj(&mut w, corpse, None, None, 999);
         assert!(w.actors.get(corpse).unwrap().health <= 0);
+        // Vanilla `PIT_VileCheck`: only a corpse on its last frame
+        // (`tics == -1`) can be raised, so let the death animation finish.
+        for _ in 0..200 {
+            if w.actors.get(corpse).unwrap().tics == -1 {
+                break;
+            }
+            w.tick();
+        }
+        assert_eq!(w.actors.get(corpse).unwrap().tics, -1);
         let kills = w.level.found_kills;
+        // Far enough not to block the raised body (`P_CheckPosition` on it),
+        // close enough that its next step west reaches it.
         let arch = w
-            .spawn_at(vile, DVec3::new(120.0, 64.0, 0.0), Angle::ZERO)
+            .spawn_at(vile, DVec3::new(150.0, 64.0, 0.0), Angle::ZERO)
             .unwrap();
         let heal = w.states.find_label(vile, "Heal").unwrap();
         let raise = w.states.find_label(zombie, "Raise").unwrap();
+        // Vanilla only looks for corpses while walking (`movedir != DI_NODIR`),
+        // at the spot of its next step: face west, toward the corpse.
+        w.actors.get_mut(arch).unwrap().move_dir = 4;
         assert_eq!(a_vile_chase(&mut w, arch), ActionResult::Jump(heal));
         let raised = w.actors.get(corpse).unwrap();
         assert_eq!(raised.health, classes.get(zombie).unwrap().health);
@@ -16585,6 +16700,8 @@ actor ZombieMan : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let mut w = World::from_map_with_classes(map, classes, states).unwrap();
@@ -17166,40 +17283,55 @@ actor NoisySame : Actor 9998
             &mut w,
             id,
             "A_StartSoundIfNotSame",
-            &["weapons/pistol".into()],
+            &["weapons/pistol".into(), "weapons/pistol".into()],
         );
+        // UZDoom: (whattoplay, checkagainst, slot = CHAN_BODY (4), …).
         let body = w
             .sound_events
             .iter()
-            .filter(|e| e.name.eq_ignore_ascii_case("weapons/pistol") && e.channel == 0)
+            .filter(|e| {
+                e.name.eq_ignore_ascii_case("weapons/pistol")
+                    && e.channel == 4
+                    && e.adjust == crate::world::SimSoundAdjust::Start
+            })
             .count();
+        // The "if not same" call goes out as such; the mixer skips it
+        // while the same sound still plays on that channel.
+        assert!(w.sound_events.iter().any(|e| {
+            e.adjust == crate::world::SimSoundAdjust::StartIfNotSame && e.channel == 4
+        }));
         assert_eq!(body, 1, "{:?}", w.sound_events);
         let _ = call_action_args(
             &mut w,
             id,
             "A_StartSoundIfNotSame",
-            &["weapons/pistol".into(), "5".into()],
+            &["weapons/pistol".into(), "weapons/pistol".into(), "5".into()],
         );
         assert!(w.sound_events.iter().any(|e| {
             e.name.eq_ignore_ascii_case("weapons/pistol")
                 && e.channel == 5
-                && e.adjust == crate::world::SimSoundAdjust::Start
+                && e.adjust == crate::world::SimSoundAdjust::StartIfNotSame
         }));
         let _ = call_action_args(
             &mut w,
             id,
             "A_StartSoundIfNotSame",
-            &["weapons/shotgf".into()],
+            &["weapons/shotgf".into(), "weapons/shotgf".into()],
         );
         assert!(
             w.sound_events
                 .iter()
-                .any(|e| e.name == "weapons/shotgf" && e.channel == 0)
+                .any(|e| e.name == "weapons/shotgf" && e.channel == 4)
         );
+        // Still only the one plain start on the body channel.
         assert_eq!(
             w.sound_events
                 .iter()
-                .filter(|e| e.name.eq_ignore_ascii_case("weapons/pistol") && e.channel == 0)
+                .filter(|e| {
+                    e.name.eq_ignore_ascii_case("weapons/pistol")
+                        && e.channel == 4
+                        && e.adjust == crate::world::SimSoundAdjust::Start
+                })
                 .count(),
             1
         );
@@ -18692,7 +18824,10 @@ actor PlayerPawn : Actor 0
   +SHOOTABLE
   States { Spawn: PLAY A -1 Stop }
 }
-actor Clip : Actor 2007
+actor Inventory : Actor
+{
+}
+actor Clip : Inventory 2007
 {
   Inventory.Amount 10
   Inventory.MaxAmount 200

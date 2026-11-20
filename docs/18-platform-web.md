@@ -84,6 +84,24 @@ Platforms: Windows 10+ (x86-64, aarch64), macOS 11+ (aarch64, x86-64), Linux (x8
 
 **Static site package.** `./scripts/package-web.sh` (optional `--zip`, `--iwad freedoom`) writes a self-contained tree under `dist/room-web` with the WASM client, play/editor assets, and `mods/*.wad` (survival / bounty / royale, plus voxel when present). Upload that folder (or the zip) to any static HTTPS host. Commercial IWADs are never included unless you pass `--iwad /path/to.wad` yourself. Visitors can still switch to retail Doom (or Duke) with the **IWAD** control in the game bar — the file stays in the browser. Local preview still uses `./scripts/play-web.sh`.
 
+### 3.8 Map editor: portals and UDMF extras
+
+- `roomEditorPortals()` returns `room_map::portal_report` for the open map as
+  JSON; `editor.js` re-reads it after each `roomEditorUpdateMap` and repaints
+  only when it changed.
+- The 2D view's Portals toggle draws line portals with an arrow to their
+  destination, portal planes as dashed sector outlines (floor teal, ceiling
+  pink) and linked group numbers.
+- The line and sector inspectors show what the engine made of the portal
+  specials (Go to buttons for destinations), name the arguments of portal
+  and polyobject specials (`SPECIAL_ARGS` in `editor-tools.js`), and edit the
+  UDMF `ext` flags and `user_*` fields; the map checker lists portal problems.
+- Doom-format maps have no portal specials: the inspector offers
+  `roomEditorConvertToUdmf` (`RawMap::convert_to_udmf`), and with two lines
+  selected **Make portal** writes a `Line_SetPortal` pair.
+- `tests/editor_portals.test.mjs` checks the editor's flag bits and portal
+  numbers against `room-map`.
+
 ## 4. Headless (`room-game::Headless`)
 
 No window/GPU/audio: `NullAudio`, no renderer, in-memory stores. Used by tests, demo verification, bots/AI research, and a future dedicated packet-server relay (`room-cli serve` — S). Must compile on `wasm32-unknown-unknown` too (used by the determinism CI on Node).

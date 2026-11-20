@@ -4,8 +4,8 @@ use js_sys::{ArrayBuffer, Uint8Array};
 use room_net::{NetTicCmd as NetNetTicCmd, PeerId, TimedCmd, Transport};
 use room_proto::{
     BinaryMsg, ControlMsg, DukeSyncCmdMsg, DukeSyncFrameMsg, DukeSyncInput, HelloMsg, NetTicCmd,
-    RosterSeat, TicCmdMsg, TicFrameMsg, WelcomeMsg, WelcomeRoom, encode_binary, encode_control,
-    parse_binary, parse_control,
+    RosterSeat, TicChecksum, TicCmdMsg, TicFrameMsg, WelcomeMsg, WelcomeRoom, encode_binary,
+    encode_control, parse_binary, parse_control,
 };
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -56,6 +56,8 @@ struct Shared {
     seat_pings: std::collections::BTreeMap<u8, u16>,
     /// Server / admin `notice` lines not yet shown.
     notices: VecDeque<String>,
+    /// First tic the server reported a checksum mismatch at.
+    desync_tic: Option<u32>,
     /// `(code, reason)` of the server's `bye` (room closed).
     bye: Option<(String, String)>,
 }
@@ -111,6 +113,7 @@ impl WsV2Transport {
             frame_times: VecDeque::new(),
             seat_pings: std::collections::BTreeMap::new(),
             notices: VecDeque::new(),
+            desync_tic: None,
             bye: None,
         }));
         let outbox: Outbox = Rc::new(RefCell::new(VecDeque::new()));
@@ -345,6 +348,11 @@ impl WsV2Transport {
     }
 
     /// Drain server `notice` lines.
+    /// First tic the server reported a desync at, if any.
+    pub fn desync_tic(&self) -> Option<u32> {
+        self.shared.borrow().desync_tic
+    }
+
     pub fn take_notices(&mut self) -> Vec<String> {
         self.shared.borrow_mut().notices.drain(..).collect()
     }
@@ -404,6 +412,15 @@ impl WsV2Transport {
             s.cmds_tx = s.cmds_tx.saturating_add(1);
         }
         self.send_bin(bytes);
+    }
+
+    /// Report the world checksum after `tic` frames (server compares seats
+    /// and answers a mismatch with `Desync`).
+    pub fn send_checksum(&mut self, tic: u32, checksum: u64) {
+        self.send_bin(encode_binary(&BinaryMsg::Checksum(TicChecksum {
+            tic,
+            checksum,
+        })));
     }
 
     /// Send one native Build `input` record for the server's Duke lockstep.
@@ -549,6 +566,19 @@ fn on_text(shared: &Rc<RefCell<Shared>>, text: &str) {
             let mut s = shared.borrow_mut();
             if s.notices.len() < 16 {
                 s.notices.push_back(text);
+            }
+        }
+        ControlMsg::Desync { tic, seats } => {
+            let mut s = shared.borrow_mut();
+            if s.desync_tic.is_none() {
+                s.desync_tic = Some(tic);
+                let seats: Vec<String> = seats.iter().map(|seat| (seat + 1).to_string()).collect();
+                if s.notices.len() < 16 {
+                    s.notices.push_back(format!(
+                        "Network desync at tic {tic}: player {} out of step",
+                        seats.join(", ")
+                    ));
+                }
             }
         }
         ControlMsg::Rtc { .. } => {

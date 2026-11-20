@@ -339,6 +339,10 @@ pub const MAX_KILL_EVENTS: usize = 64;
 pub(crate) type ZscriptSynced = Vec<(ActorId, room_zvm::ObjHandle, crate::zscript::ActorFieldSnap)>;
 
 /// Playsim world (GZDoom `FLevelLocals` + thinkers subset).
+///
+/// `Clone` exists for rollback snapshots; use [`World::snapshot`], which
+/// refuses worlds whose WASM play modules cannot be copied.
+#[derive(Clone)]
 pub struct World {
     /// Class registry (DECORATE / builtins).
     pub classes: Arc<ClassRegistry>,
@@ -753,6 +757,12 @@ pub struct World {
     /// (`LENB A 0 … LENB A 2 bright; stop`, respawned every 2 tics) lived one
     /// tic and blinked on/off instead of glowing steadily.
     pub(crate) zero_tic_spawned: std::collections::HashSet<ActorId>,
+    /// Actors moved through a portal this tic, for render interpolation
+    /// (cleared at the start of each tic; not part of the checksum).
+    pub portal_moves: Vec<crate::portal::PortalMove>,
+    /// Actors spawned in a `NoDelay` state whose first tick has not run yet
+    /// (GZDoom `MF7_HANDLENODELAY`).
+    pub(crate) no_delay_pending: std::collections::HashSet<ActorId>,
     /// Player body FIFO (vanilla `bodyque`, size 32).
     pub body_queue: std::collections::VecDeque<ActorId>,
     /// Max retained player corpses.
@@ -2008,6 +2018,8 @@ impl World {
             corpse_queue: std::collections::VecDeque::new(),
             corpse_queue_size: DEFAULT_CORPSE_QUEUE_SIZE,
             zero_tic_spawned: std::collections::HashSet::new(),
+            portal_moves: Vec::new(),
+            no_delay_pending: std::collections::HashSet::new(),
             body_queue: std::collections::VecDeque::new(),
             body_queue_size: DEFAULT_BODY_QUEUE_SIZE,
             compat: CompatFlags::default(),
@@ -2073,6 +2085,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, player_number, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let _ = self.zscript.notify_player_entered(player_number, from_hub);
         let grants = self.zscript.take_grants();
         let Some(mo) = self
@@ -2108,6 +2121,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, player_number, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let _ = self.zscript.notify_player_spawned(player_number);
         crate::action::apply_zscript_actor_ops(self, mo);
         for (cookie, item, amount) in self.zscript.take_grants() {
@@ -2123,6 +2137,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, player_number, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let _ = self.zscript.notify_player_respawned(player_number);
         crate::action::apply_zscript_actor_ops(self, mo);
         for (cookie, item, amount) in self.zscript.take_grants() {
@@ -2136,6 +2151,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, player_number, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let allowed = self
             .zscript
             .notify_player_respawning(player_number)
@@ -2153,6 +2169,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, player_number, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let _ = self.zscript.notify_player_died(player_number);
         crate::action::apply_zscript_actor_ops(self, mo);
         for (cookie, item, amount) in self.zscript.take_grants() {
@@ -2169,6 +2186,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         if !self.zscript.map_handlers_active {
             let _ = self.zscript.activate_map_handlers();
         }
@@ -2192,6 +2210,7 @@ impl World {
         }
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         let _ = self.zscript.unload_map_handlers();
         let grants = self.zscript.take_grants();
         if let Some(player) = self.players.first().and_then(Option::as_ref)
@@ -2231,6 +2250,7 @@ impl World {
         let inflictor_info = inflictor.and_then(|id| self.zscript_actor_event_info(id));
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         if !self.zscript.map_handlers_active {
             let _ = self.zscript.activate_map_handlers();
         }
@@ -2256,6 +2276,7 @@ impl World {
         };
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         if !self.zscript.map_handlers_active {
             let _ = self.zscript.activate_map_handlers();
         }
@@ -2277,6 +2298,7 @@ impl World {
         let class_name = thing_info.class_name.clone();
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         if self
             .zscript
             .resolve_method(&class_name, "OnRevive")
@@ -2319,6 +2341,7 @@ impl World {
         let source_info = source.and_then(|id| self.zscript_actor_event_info(id));
         self.zscript.sync_host(self.skill, 0, 0);
         self.zscript.set_level_checksum(self.map.md5);
+        self.zscript_publish_level();
         if !self.zscript.map_handlers_active {
             let _ = self.zscript.activate_map_handlers();
         }
@@ -2369,6 +2392,7 @@ impl World {
         for id in monsters {
             self.zscript.sync_host(self.skill, 0, 0);
             self.zscript.set_level_checksum(self.map.md5);
+            self.zscript_publish_level();
             if let Some(info) = self.zscript_actor_event_info(id) {
                 let _ = self.zscript.notify_thing_spawned(&info);
             }
@@ -2993,6 +3017,20 @@ impl World {
         }
     }
 
+    /// A full copy of this world for rollback (speculative play ahead of the
+    /// confirmed lockstep), ZScript VM included, or `None` when part of it
+    /// cannot be copied: loaded WASM play modules.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<World> {
+        self.can_snapshot().then(|| self.clone())
+    }
+
+    /// [`Self::snapshot`] would succeed.
+    #[must_use]
+    pub fn can_snapshot(&self) -> bool {
+        self.scripts.is_empty()
+    }
+
     /// Live human (non-bot) players with health left.
     #[must_use]
     pub fn humans_alive(&self) -> usize {
@@ -3170,8 +3208,22 @@ impl World {
         let own: i16 = match seat {
             0..=3 => seat as i16 + 1,
             4..=7 => 4001 + (seat as i16 - 4),
-            // Seats past 8 have no start of their own.
-            _ => i16::MIN,
+            // Seats past 8 have no start of their own: share the free player
+            // starts round-robin (seat 9 → the first free one, …) instead of
+            // all piling onto Player 1's.
+            _ => {
+                let free: Vec<_> = self
+                    .map
+                    .things
+                    .iter()
+                    .filter(|t| is_player_start(t.type_id))
+                    .filter(ok)
+                    .collect();
+                if !free.is_empty() {
+                    return Some(free[(seat - 8) % free.len()].clone());
+                }
+                i16::MIN
+            }
         };
         self.map
             .things
@@ -3605,7 +3657,7 @@ impl World {
             ripper_level: def.ripper_level,
             rip_level_min: def.rip_level_min,
             rip_level_max: def.rip_level_max,
-            // State entered via `set_state` below so Spawn actions / 0-tic chains run (ZS3/BD3).
+            // Spawn state entered by `enter_spawn_state` below (no action).
             state: None,
             tics: 0,
             sprite,
@@ -3665,17 +3717,7 @@ impl World {
         self.thinkers.link_default(id);
         self.live_ids.push(id);
         if let Some(sid) = spawn_state {
-            // GZDoom `P_SpawnMobj` → `SetState(Spawn)` so 0-tic / anon Spawn actions run.
-            let zero_tic = self.states.get(sid).is_some_and(|st| st.tics == 0);
-            self.set_state(id, Some(sid), true);
-            if zero_tic
-                && self
-                    .actors
-                    .get(id)
-                    .is_some_and(|a| !a.destroyed && a.tics > 0)
-            {
-                self.zero_tic_spawned.insert(id);
-            }
+            self.enter_spawn_state(id, sid);
         }
         if (def.flags & crate::class::FLAG_COUNTKILL) != 0 {
             self.level.total_kills = self.level.total_kills.saturating_add(1);
@@ -3702,6 +3744,7 @@ impl World {
                 // GS_LEVEL is 0 in the host stub. Skill comes from the world.
                 self.zscript.sync_host(self.skill, 0, 0);
                 self.zscript.set_level_checksum(self.map.md5);
+                self.zscript_publish_level();
                 if let Some(info) = self.zscript_actor_event_info(id) {
                     let _ = self.zscript.notify_thing_spawned(&info);
                 }
@@ -4022,6 +4065,55 @@ impl World {
         })
     }
 
+    /// Publish the level to the ZScript VM: portals, and the map objects
+    /// (`level.Sectors`, `level.Lines`, …) refreshed once per tic.
+    pub(crate) fn zscript_publish_level(&mut self) {
+        self.zscript.set_portals(&self.map);
+        let tic = self.level.maptime;
+        if !self.zscript.map_objects_due(self.map.md5, tic) {
+            return;
+        }
+        let n = self.map.sectors.len();
+        let plane = |w: &World, s: usize, floor: bool| {
+            let z0 = crate::physics::sector_z_at_pub(w, s, 0.0, 0.0, floor);
+            room_zvm::ZsPlane {
+                z0,
+                gx: crate::physics::sector_z_at_pub(w, s, 1.0, 0.0, floor) - z0,
+                gy: crate::physics::sector_z_at_pub(w, s, 0.0, 1.0, floor) - z0,
+            }
+        };
+        let planes = (0..n)
+            .map(|s| [plane(self, s, true), plane(self, s, false)])
+            .collect();
+        let light = (0..n)
+            .map(|s| self.sectors.get(s).map_or(0, |d| i32::from(d.light)))
+            .collect();
+        let flats = (0..n)
+            .map(|s| {
+                let si = s as u32;
+                let sec = &self.map.sectors[s];
+                [
+                    self.sector_floor_pics
+                        .get(&si)
+                        .cloned()
+                        .unwrap_or_else(|| sec.floor_pic.clone()),
+                    self.sector_ceiling_pics
+                        .get(&si)
+                        .cloned()
+                        .unwrap_or_else(|| sec.ceiling_pic.clone()),
+                ]
+            })
+            .collect();
+        let sync = crate::zscript::MapSync {
+            map: &self.map,
+            planes,
+            light,
+            flats,
+            tic,
+        };
+        self.zscript.sync_map_objects(&sync);
+    }
+
     /// Mirror `id`'s native fields, and those of the actors its pointers name
     /// (`target`, `tracer`, `master`, …), into their script objects.
     pub(crate) fn zscript_sync_in(&mut self, id: ActorId) -> ZscriptSynced {
@@ -4036,7 +4128,15 @@ impl World {
             .map(|(index, generation, _)| ActorId::from_raw(*index, *generation))
             .filter(|&other| other != id)
             .collect();
+        let caller = self
+            .actors
+            .get(id)
+            .map(|a| [a.pos.x(), a.pos.y(), a.pos.z()]);
+        self.zscript.set_caller_pos(caller);
+        self.zscript_publish_level();
         if let Some(h) = self.zscript.write_actor_fields(&snap) {
+            let sector = caller.and_then(|p| crate::physics::sector_at_xy(self, p[0], p[1]));
+            self.zscript.set_cur_sector(h, sector);
             out.push((id, h, snap));
         }
         for other in others {
@@ -7238,6 +7338,7 @@ impl World {
         self.scripts.sync_from_world(self);
         self.sound_heard = self.sound_events.iter().map(|e| e.name.clone()).collect();
         self.sound_events.clear();
+        self.portal_moves.clear();
         // Kept until drained: text pushed between tics (map start, mods) must
         // reach the shell. Bounded for hosts that never drain.
         if self.messages.len() > 64 {
@@ -7326,6 +7427,7 @@ impl World {
             {
                 continue;
             }
+            self.check_no_delay(id);
             // Player pawns already applied cmd velocity this tic; still run XY for monsters.
             crate::physics::xy_movement(self, id);
             crate::physics::z_movement(self, id);
@@ -7355,6 +7457,7 @@ impl World {
             {
                 continue;
             }
+            self.check_no_delay(id);
             crate::physics::xy_movement(self, id);
             crate::physics::z_movement(self, id);
             // Player pawns spawned after the map's things (bots, late
@@ -7425,6 +7528,60 @@ impl World {
         crate::pickup::touch_specials(self, &mut p, id);
         self.taken_player = None;
         self.players[pi] = Some(p);
+    }
+
+    /// GZDoom `ConstructActor` / vanilla `P_SpawnMobj`: take the spawn state
+    /// without calling its action ("action routines can't be called yet").
+    /// A 0-tic spawn state moves on in the actor's first tick, and a
+    /// `NoDelay` one has its action called then (`AActor::CheckNoDelay`).
+    fn enter_spawn_state(&mut self, id: ActorId, sid: room_core::StateId) {
+        let Some(st) = self.states.get(sid) else {
+            return;
+        };
+        let (tics, fast, nodelay) = (i32::from(st.tics), st.fast, st.nodelay);
+        let (sprite, frame) = (st.sprite.clone(), st.frame);
+        let fast_monsters = self.fast_monsters;
+        let Some(a) = self.actors.get_mut(id) else {
+            return;
+        };
+        a.state = Some(sid);
+        let always_fast = a.extra_flags.get_name("ALWAYSFAST");
+        a.tics = if (fast_monsters || always_fast) && fast && tics > 0 {
+            tics - (tics >> 1)
+        } else {
+            tics
+        };
+        if !sprite.is_empty() && !crate::state::sprite_unchanged(&sprite) {
+            a.sprite = sprite;
+        }
+        if frame != crate::state::FRAME_NOCHANGE {
+            a.frame = frame;
+        }
+        note_stealth_state(self, id, Some(sid));
+        if nodelay {
+            self.no_delay_pending.insert(id);
+        }
+    }
+
+    /// GZDoom `AActor::CheckNoDelay`, at the start of an actor's tick: the
+    /// first tick after spawning in a `NoDelay` state runs that state's
+    /// action (and any jump it makes).
+    fn check_no_delay(&mut self, id: ActorId) {
+        if self.no_delay_pending.is_empty() || !self.no_delay_pending.remove(&id) {
+            return;
+        }
+        let Some(sid) = self.actors.get(id).and_then(|a| a.state) else {
+            return;
+        };
+        let tics = self.actors.get(id).map(|a| a.tics);
+        self.set_state(id, Some(sid), true);
+        // The action ran, but the state's own timer keeps counting from
+        // where it was (only a jump starts a new one).
+        if let (Some(tics), Some(a)) = (tics, self.actors.get_mut(id))
+            && a.state == Some(sid)
+        {
+            a.tics = tics;
+        }
     }
 
     /// Enter a state, optionally running its action (`AActor::SetState`).
@@ -7686,6 +7843,11 @@ impl World {
         let Some(actor) = self.actors.get_mut(id) else {
             return;
         };
+        // A class with no states at all (bare test maps, script stubs) has
+        // nothing to advance to; ending a chain is what destroys an actor.
+        if actor.state.is_none() {
+            return;
+        }
         actor.tick_state_timer();
         if actor.tics != 0 {
             return;
@@ -8376,6 +8538,29 @@ mod tests {
     use room_testkit::{MapBuilder, rect};
 
     #[test]
+    fn seats_past_eight_share_the_free_player_starts() {
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 1024.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .thing(2, 320.0, 64.0, 0)
+            .thing(3, 576.0, 64.0, 0)
+            .thing(4, 832.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let w = World::from_map(map).unwrap();
+        let xs: Vec<i16> = (8..12)
+            .map(|seat| w.respawn_spot(seat).unwrap().x)
+            .collect();
+        let mut sorted = xs.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        // No pawn stands on any start yet, so four seats past 8 get the four
+        // starts instead of everyone landing on Player 1's.
+        assert_eq!(sorted.len(), 4, "spread over the free starts: {xs:?}");
+    }
+
+    #[test]
     fn zero_tic_tnt1_keeps_the_picture_already_showing() {
         let ir = parse_decorate(
             r#"
@@ -8867,6 +9052,8 @@ actor ZombieMan : Actor 3004
             fast_speed: 20.0,
             jump_z: 9.0,
             attack_z_offset: 8.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let w = World::from_map_with_classes(map, classes, states).unwrap();
@@ -8976,6 +9163,8 @@ actor QuietZombie : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         map.things.push(room_map::RawThing {
             tid: 0,
@@ -9019,6 +9208,8 @@ actor QuietZombie : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let w = World::from_map_with_classes(map, classes, states).unwrap();
@@ -9218,6 +9409,8 @@ actor MBFHelperDog : Actor 888
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             });
         }
         apply_nodes(&mut map);
@@ -9351,6 +9544,8 @@ actor ZombieMan : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let easy =
@@ -9426,6 +9621,8 @@ actor ZombieMan : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let w = World::from_map_with_classes(map, classes, states).unwrap();
@@ -10001,6 +10198,8 @@ actor ZombieMan : Actor 3004
             fast_speed: -1.0,
             jump_z: -1.0,
             attack_z_offset: -1.0,
+            ext: 0,
+            user: Default::default(),
         });
         apply_nodes(&mut map);
         let mut w = World::from_map_with_classes(map, classes, states).unwrap();

@@ -110,6 +110,22 @@ pub(crate) const PROJECTILE_FLAG_NOAIM: i32 = 4096;
 pub(crate) const PROJECTILE_FLAG_RPG_IMPACT: i32 = 32_768;
 /// EDuke32 `PROJECTILE_FLAG_FORCEIMPACT` (`PROJ_WORKSLIKE` bit 18).
 pub(crate) const PROJECTILE_FLAG_FORCEIMPACT: i32 = 262_144;
+/// EDuke32 `PROJECTILE_BLOOD`: a randomly aimed wall blood-splat shot.
+pub(crate) const PROJECTILE_FLAG_BLOOD: i32 = 1024;
+/// EDuke32 `PROJECTILE_ACCURATE_AUTOAIM`: no spread on an auto-aimed shot.
+pub(crate) const PROJECTILE_FLAG_ACCURATE_AUTOAIM: i32 = 131_072;
+/// EDuke32 `PROJECTILE_ACCURATE`: never add hitscan spread.
+pub(crate) const PROJECTILE_FLAG_ACCURATE: i32 = 1_048_576;
+/// EDuke32 `PROJECTILE_NOSETOWNERSHADE`: firing leaves the shooter's shade.
+pub(crate) const PROJECTILE_FLAG_NOSETOWNERSHADE: i32 = 2_097_152;
+/// EDuke32 `PROJECTILE_RPG_IMPACT_DAMAGE`: an impact also adds `extra`.
+pub(crate) const PROJECTILE_FLAG_RPG_IMPACT_DAMAGE: i32 = 4_194_304;
+/// EDuke32 `PROJECTILE_HITRADIUS_ADDITIVE`: radius damage adds to the
+/// queued hit instead of replacing it.
+pub(crate) const PROJECTILE_FLAG_HITRADIUS_ADDITIVE: i32 = 16_777_216;
+/// EDuke32 `PROJECTILE_RADIUS_PICNUM_EX`: radius hits carry the projectile
+/// tile, like `PROJECTILE_RADIUS_PICNUM`.
+pub(crate) const PROJECTILE_FLAG_RADIUS_PICNUM_EX: i32 = 1_073_741_824;
 
 /// Chocolate `FindDistance2D` (Build approx — not `ksqrt` / not manhattan).
 #[must_use]
@@ -747,6 +763,8 @@ fn checkhitsprite_shotgun(
         actor_temps[iu].hit_extra = actor_temps[iu].hit_extra.saturating_add(sprites[su].extra);
         actor_temps[iu].hit_ang = sprites[su].ang;
         actor_temps[iu].hit_owner = sprites[su].owner;
+        actor_temps[iu].hit_source = su as i16;
+        actor_temps[iu].hit_radius = crate::con::direct_hit_payload();
         return;
     }
     // Chocolate `checkhitsprite`: this specific debris spawn is suppressed
@@ -884,6 +902,8 @@ fn checkhitsprite_shotgun(
         actor_temps[iu].hit_extra = actor_temps[iu].hit_extra.saturating_add(sprites[su].extra);
         actor_temps[iu].hit_ang = sprites[su].ang;
         actor_temps[iu].hit_owner = sprites[su].owner;
+        actor_temps[iu].hit_source = su as i16;
+        actor_temps[iu].hit_radius = crate::con::direct_hit_payload();
     }
     let _ = spawn_blood;
 }
@@ -1108,6 +1128,48 @@ pub(crate) fn shoot_defined_hitscan(
     }
     sprites[projectile_index].xrepeat = 0;
     sprites[projectile_index].yrepeat = 0;
+
+    // EDuke32 `Proj_InsertShotspark`: a defined hitscan's impact is a
+    // SHOTSPARK1 (shade -15, size 10 for players and 24 for actors, hidden
+    // on a player hit), tagged with the projectile tile in `yvel`, which
+    // remembers what it hit; the target's hit tile is SHOTSPARK1 too.
+    if hit.hitsect >= 0 {
+        let projectile_tile = sprites[projectile_index].picnum;
+        let shotspark = script_tile_or(script, "SHOTSPARK1", SHOTSPARK1);
+        let size = if sprites[owner_index].picnum == APLAYER {
+            10
+        } else {
+            24
+        };
+        let hit_player = usize::try_from(hit.hitsprite)
+            .ok()
+            .and_then(|target| sprites.get(target))
+            .is_some_and(|target| target.picnum == APLAYER);
+        let spark = &mut sprites[projectile_index];
+        spark.picnum = shotspark;
+        spark.shade = -15;
+        spark.xrepeat = if hit_player { 0 } else { size };
+        spark.yrepeat = spark.xrepeat;
+        if picnum_out.len() <= projectile_index {
+            picnum_out.resize(projectile_index + 1, 0);
+        }
+        picnum_out[projectile_index] = shotspark;
+        if let Some(image) = script {
+            let (_, temps) = crate::con::init_actor_temps_from_script(image, shotspark);
+            if actor_temps.len() <= projectile_index {
+                actor_temps.resize_with(projectile_index + 1, ActorConTemps::default);
+            }
+            actor_temps[projectile_index] = temps;
+        }
+        set_eduke_spark_hit_data(
+            sprites,
+            actor_temps,
+            script,
+            projectile_index,
+            &hit,
+            projectile_tile,
+        );
+    }
 
     if hit.hitsprite >= 0 {
         let random_damage = if damage_random > 0 {
@@ -1714,6 +1776,7 @@ pub fn shoot_shotgun_player(
     }
     let ku = k as usize;
     sprites[ku].extra = atwith_extra.wrapping_add((krand_step(randomseed) % 6) as i16);
+    set_eduke_spark_hit_data(sprites, actor_temps, script, ku, &hit, weapon_picnum);
 
     let mut did_blood = false;
     if hit.hitwall < 0 && hit.hitsprite < 0 {
@@ -1735,9 +1798,17 @@ pub fn shoot_shotgun_player(
                 script,
                 randomseed,
                 hit.hitsect,
+                k,
                 body_i,
                 pending_sound_ids,
             );
+        } else if zvel > 0
+            && sectors
+                .get(hit.hitsect as usize)
+                .is_some_and(|sector| sector.floorstat & 1 == 0)
+        {
+            // EDuke32 `Proj_MaybeDamageCF2`: a non-parallax floor hit.
+            crate::weapons_move::queue_floor_damage(script, sectors, k, hit.hitsect);
         }
         spawn_smallsmoke(
             lists,
@@ -1898,9 +1969,75 @@ pub fn shoot_shotgun_player(
     did_blood
 }
 
+/// EDuke32 `A_SetHitData` (and `Proj_InsertShotspark`'s weapon tag): the
+/// spark remembers what it hit in `t_data[6..9]` and, under EDuke32, the
+/// firing tile in `yvel`.
+pub(crate) fn set_eduke_spark_hit_data(
+    sprites: &mut [SpriteT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    spark: usize,
+    hit: &room_build_engine::geom::HitScan,
+    atwith: i16,
+) {
+    if !script.is_some_and(|image| image.dialect == crate::con::ConDialect::EDuke32) {
+        return;
+    }
+    if actor_temps.len() <= spark {
+        actor_temps.resize_with(spark + 1, ActorConTemps::default);
+    }
+    actor_temps[spark].t_data_extra = [
+        i32::from(hit.hitwall),
+        i32::from(hit.hitsect),
+        i32::from(hit.hitsprite),
+        0,
+    ];
+    if let Some(sprite) = sprites.get_mut(spark) {
+        sprite.yvel = atwith;
+    }
+}
+
+/// Chocolate `checkhitceiling` for a hit by sprite `source_i`. With an
+/// EDuke32 script that hooks EVENT_DAMAGEHPLANE, or EVENT_DAMAGECEILING for a
+/// `damageeventtile` ceiling, the hit is deferred to the session, which runs
+/// the events and then [`check_hit_ceiling_unchecked`] unless one cancels.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_hit_ceiling(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    sector_index: i16,
+    source_i: i16,
+    owner: i16,
+    pending_sound_ids: &mut Vec<u16>,
+) {
+    if crate::weapons_move::defer_ceiling_damage(script, sectors, source_i, sector_index, owner) {
+        return;
+    }
+    check_hit_ceiling_unchecked(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        script,
+        randomseed,
+        sector_index,
+        owner,
+        pending_sound_ids,
+    );
+}
+
 /// Chocolate `checkhitceiling`: break the Atomic ceiling-light tiles, spawn
 /// glass with the vanilla RNG order, and signal linked SE 12 / SE 3 markers.
-pub(crate) fn check_hit_ceiling(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_hit_ceiling_unchecked(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &mut [SectorT],
@@ -2246,6 +2383,8 @@ fn shoot_knee_player(
         };
         temp.hit_owner = p.sprite_i;
         temp.hit_ang = p.ang.wrapping_add(15);
+        temp.hit_source = p.sprite_i;
+        temp.hit_radius = crate::con::direct_hit_payload();
     }
     Some(KneeHit {
         wall: (hit.hitwall >= 0).then_some(hit.hitwall),
@@ -2292,81 +2431,20 @@ pub fn process_weapons_rpg(
     }
     p.kickback_pic += 1;
     if p.kickback_pic == 2 {
-        if let Some(body) = (p.sprite_i >= 0)
-            .then_some(p.sprite_i as usize)
-            .filter(|&i| i < sprites.len())
-        {
-            let source = sprites[body];
-            let mut shot_ang = i32::from(p.ang);
-            let mut z = p.posz + p.pyoff + (4 << 8);
-            let target = aim(
-                &source,
-                AUTO_AIM_ANGLE,
-                p.auto_aim == 2,
-                lists,
-                sprites,
-                sectors,
-                walls,
-                actortype,
-                Some(p),
-            );
-            let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
-            if target >= 0 {
-                let target_sprite = &sprites[target as usize];
-                let height = tile_meta
-                    .get(target_sprite.picnum.max(0) as usize)
-                    .map_or(0, |meta| i32::from(meta.height));
-                let dal = (i32::from(target_sprite.xrepeat) * height * 2) + (8 << 8);
-                zvel = ((target_sprite.z - z - dal) * 644) / ldist(&source, target_sprite).max(1);
-                if target_sprite.picnum != RECON {
-                    shot_ang = getangle(
-                        target_sprite.x.wrapping_sub(p.posx),
-                        target_sprite.y.wrapping_sub(p.posy),
-                    );
-                }
-            }
-            z += 3 << 8;
-            let sect = source.sectnum;
-            if sect >= 0 && (sect as usize) < sectors.len() {
-                let k = lists.insertsprite(sect, STAT_PROJECTILE);
-                if k >= 0 && (k as usize) < sprites.len() {
-                    let i = k as usize;
-                    let projectile_z = z - (1 << 8);
-                    let (base_extra, temps) = script
-                        .map(|s| crate::con::init_actor_temps_from_script(s, rpg_tile))
-                        .unwrap_or_default();
-                    sprites[i] = SpriteT {
-                        x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
-                        y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
-                        z: projectile_z,
-                        ang: shot_ang as i16,
-                        sectnum: sect,
-                        picnum: rpg_tile,
-                        shade: if source.extra >= 0 { -96 } else { 0 },
-                        xrepeat: 16,
-                        yrepeat: 16,
-                        xvel: 644,
-                        zvel: zvel as i16,
-                        owner: p.sprite_i,
-                        yvel: target,
-                        cstat: 128,
-                        clipdist: 4,
-                        extra: base_extra.saturating_add((krand_step(randomseed) & 7) as i16),
-                        ..Default::default()
-                    };
-                    if picnum_out.len() <= i {
-                        picnum_out.resize(i + 1, 0);
-                    }
-                    picnum_out[i] = rpg_tile;
-                    if actor_temps.len() <= i {
-                        actor_temps.resize_with(i + 1, ActorConTemps::default);
-                    }
-                    actor_temps[i] = temps;
-                } else if k >= 0 {
-                    let _ = lists.deletesprite(k);
-                }
-            }
-        }
+        let _ = shoot_rpg_player(
+            p,
+            rpg_tile,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            picnum_out,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+        );
         p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
         if p.ammo[WEAPON as usize] == 0 {
             checkavailweapon(p);
@@ -2375,6 +2453,416 @@ pub fn process_weapons_rpg(
     if p.kickback_pic >= 20 {
         p.kickback_pic = 0;
     }
+}
+
+/// Chocolate `shoot(RPG)` for a player: the aimed rocket projectile.
+/// Returns the new sprite, or -1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoot_rpg_player(
+    p: &Player,
+    rpg_tile: i16,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+) -> i16 {
+    let mut shot = -1;
+    if let Some(body) = (p.sprite_i >= 0)
+        .then_some(p.sprite_i as usize)
+        .filter(|&i| i < sprites.len())
+    {
+        let source = sprites[body];
+        let mut shot_ang = i32::from(p.ang);
+        let mut z = p.posz + p.pyoff + (4 << 8);
+        let target = aim(
+            &source,
+            AUTO_AIM_ANGLE,
+            p.auto_aim == 2,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actortype,
+            Some(p),
+        );
+        let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
+        if target >= 0 {
+            let target_sprite = &sprites[target as usize];
+            let height = tile_meta
+                .get(target_sprite.picnum.max(0) as usize)
+                .map_or(0, |meta| i32::from(meta.height));
+            let dal = (i32::from(target_sprite.xrepeat) * height * 2) + (8 << 8);
+            zvel = ((target_sprite.z - z - dal) * 644) / ldist(&source, target_sprite).max(1);
+            if target_sprite.picnum != RECON {
+                shot_ang = getangle(
+                    target_sprite.x.wrapping_sub(p.posx),
+                    target_sprite.y.wrapping_sub(p.posy),
+                );
+            }
+        }
+        z += 3 << 8;
+        let sect = source.sectnum;
+        if sect >= 0 && (sect as usize) < sectors.len() {
+            let k = lists.insertsprite(sect, STAT_PROJECTILE);
+            if k >= 0 && (k as usize) < sprites.len() {
+                let i = k as usize;
+                shot = k;
+                let projectile_z = z - (1 << 8);
+                let (base_extra, temps) = script
+                    .map(|s| crate::con::init_actor_temps_from_script(s, rpg_tile))
+                    .unwrap_or_default();
+                sprites[i] = SpriteT {
+                    x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
+                    y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
+                    z: projectile_z,
+                    ang: shot_ang as i16,
+                    sectnum: sect,
+                    picnum: rpg_tile,
+                    shade: if source.extra >= 0 { -96 } else { 0 },
+                    xrepeat: 16,
+                    yrepeat: 16,
+                    xvel: 644,
+                    zvel: zvel as i16,
+                    owner: p.sprite_i,
+                    yvel: target,
+                    cstat: 128,
+                    clipdist: 4,
+                    extra: base_extra.saturating_add((krand_step(randomseed) & 7) as i16),
+                    ..Default::default()
+                };
+                if picnum_out.len() <= i {
+                    picnum_out.resize(i + 1, 0);
+                }
+                picnum_out[i] = rpg_tile;
+                if actor_temps.len() <= i {
+                    actor_temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                actor_temps[i] = temps;
+            } else if k >= 0 {
+                let _ = lists.deletesprite(k);
+            }
+        }
+    }
+    shot
+}
+
+/// Chocolate `shoot(FREEZEBLAST)` for a player. Returns the new sprite,
+/// or -1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoot_freezeblast_player(
+    p: &Player,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+) -> i16 {
+    let mut shot = -1;
+    if let Some(body) = (p.sprite_i >= 0)
+        .then_some(p.sprite_i as usize)
+        .filter(|&i| i < sprites.len())
+    {
+        let source = sprites[body];
+        let mut shot_ang = i32::from(p.ang);
+        let mut z = p.posz + p.pyoff + (7 << 8);
+        let target = aim(
+            &source,
+            AUTO_AIM_ANGLE,
+            p.auto_aim == 2,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actortype,
+            Some(p),
+        );
+        let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
+        if target >= 0 {
+            let target = &sprites[target as usize];
+            let height = tile_meta
+                .get(target.picnum.max(0) as usize)
+                .map_or(0, |meta| i32::from(meta.height));
+            let dal = (i32::from(target.xrepeat) * height * 2) + (8 << 8);
+            let distance = ldist(&source, target).max(1);
+            zvel = ((target.z - z - dal) * 644) / distance;
+            if target.picnum != RECON {
+                shot_ang = getangle(target.x.wrapping_sub(p.posx), target.y.wrapping_sub(p.posy));
+            }
+        }
+        z += 3 << 8;
+        let sect = source.sectnum;
+        if sect >= 0 && (sect as usize) < sectors.len() {
+            let k = lists.insertsprite(sect, STAT_PROJECTILE);
+            if k >= 0 && (k as usize) < sprites.len() {
+                let i = k as usize;
+                shot = k;
+                let projectile_z = z - (1 << 8);
+                let (extra, temps) = script
+                    .map(|s| crate::con::init_actor_temps_from_script(s, FREEZEBLAST))
+                    .unwrap_or_default();
+                sprites[i] = SpriteT {
+                    x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
+                    y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
+                    z: projectile_z,
+                    ang: shot_ang as i16,
+                    sectnum: sect,
+                    picnum: FREEZEBLAST,
+                    shade: -127,
+                    xrepeat: 7,
+                    yrepeat: 7,
+                    xvel: 644,
+                    zvel: (zvel - (2 << 4)) as i16,
+                    owner: p.sprite_i,
+                    cstat: 128,
+                    clipdist: 4,
+                    yvel: script
+                        .and_then(|image| {
+                            let index = if image.con_version == crate::con::ConVersion::V15 {
+                                26
+                            } else {
+                                24
+                            };
+                            image.gamestartup.get(index).copied()
+                        })
+                        .unwrap_or(3)
+                        .clamp(0, i32::from(i16::MAX)) as i16,
+                    extra: extra.saturating_add((krand_step(randomseed) & 7) as i16),
+                    ..Default::default()
+                };
+                if picnum_out.len() <= i {
+                    picnum_out.resize(i + 1, 0);
+                }
+                picnum_out[i] = FREEZEBLAST;
+                if actor_temps.len() <= i {
+                    actor_temps.resize_with(i + 1, ActorConTemps::default);
+                }
+                actor_temps[i] = temps;
+            } else if k >= 0 {
+                let _ = lists.deletesprite(k);
+            }
+        }
+    }
+    shot
+}
+
+/// Chocolate `shoot(SHRINKER)` (a moving SHRINKSPARK) or `shoot(GROWSPARK)`
+/// (a hitscan with its one-tic impact cue) for a player. Returns the
+/// SHRINKSPARK or impact sprite, or -1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoot_shrink_grow_player(
+    p: &Player,
+    grower: bool,
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum_out: &mut Vec<i16>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+) -> i16 {
+    const SHRINKER: i16 = 6;
+    const GROWER: i16 = 11;
+    let weapon = if grower { GROWER } else { SHRINKER };
+    let mut shot = -1;
+    let body = (p.sprite_i >= 0)
+        .then_some(p.sprite_i as usize)
+        .filter(|&i| i < sprites.len());
+    if let Some(body) = body {
+        let source = sprites[body];
+        let mut shot_ang = i32::from(p.ang);
+        let (mut sin, mut cos) = sincos_q14(shot_ang);
+        let base_z = p.posz + p.pyoff + (4 << 8);
+        let target = aim(
+            &source,
+            AUTO_AIM_ANGLE,
+            p.auto_aim == 2,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actortype,
+            Some(p),
+        );
+        let mut zvel;
+        if target >= 0 {
+            let target_sprite = &sprites[target as usize];
+            shot_ang = getangle(
+                target_sprite.x.wrapping_sub(p.posx),
+                target_sprite.y.wrapping_sub(p.posy),
+            );
+            let height = tile_meta
+                .get(target_sprite.picnum.max(0) as usize)
+                .map_or(0, |meta| i32::from(meta.height));
+            let mut dal = (i32::from(target_sprite.xrepeat) * height * 2)
+                + if weapon == GROWER { 5 << 8 } else { 0 };
+            if weapon == GROWER && matches!(target_sprite.picnum, 2370..=2377 | 2360) {
+                dal -= 8 << 8;
+            }
+            let distance = ldist(&source, target_sprite).max(1);
+            zvel = if weapon == GROWER {
+                ((target_sprite.z - base_z - dal) << 8) / distance
+            } else {
+                ((target_sprite.z - base_z - dal - (4 << 8)) * 768) / distance
+            };
+            (sin, cos) = sincos_q14(shot_ang);
+        } else if weapon == GROWER {
+            shot_ang += 16 - (krand_step(randomseed) & 31);
+            zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) << 5;
+            zvel += 128 - (krand_step(randomseed) & 255);
+            (sin, cos) = sincos_q14(shot_ang);
+        } else {
+            zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 98;
+        }
+        let z = if weapon == GROWER {
+            base_z - (2 << 8)
+        } else {
+            base_z
+        };
+        if weapon == SHRINKER {
+            let sect = source.sectnum;
+            if sect >= 0 && (sect as usize) < sectors.len() {
+                let k = lists.insertsprite(sect, STAT_PROJECTILE);
+                if k >= 0 && (k as usize) < sprites.len() {
+                    let i = k as usize;
+                    shot = k;
+                    let (extra, temps) = script
+                        .map(|s| crate::con::init_actor_temps_from_script(s, SHRINKSPARK))
+                        .unwrap_or_default();
+                    sprites[i] = SpriteT {
+                        x: source.x - sincos_q14(shot_ang).0 / 4096,
+                        y: source.y + sincos_q14(shot_ang + 348).0 / 4096,
+                        z: z + (2 << 8),
+                        ang: shot_ang as i16,
+                        sectnum: sect,
+                        picnum: SHRINKSPARK,
+                        shade: -16,
+                        xrepeat: 28,
+                        yrepeat: 28,
+                        xvel: 768,
+                        zvel: zvel as i16,
+                        owner: p.sprite_i,
+                        cstat: 128,
+                        clipdist: 32,
+                        extra,
+                        ..Default::default()
+                    };
+                    if picnum_out.len() <= i {
+                        picnum_out.resize(i + 1, 0);
+                    }
+                    picnum_out[i] = SHRINKSPARK;
+                    if actor_temps.len() <= i {
+                        actor_temps.resize_with(i + 1, ActorConTemps::default);
+                    }
+                    actor_temps[i] = temps;
+                } else if k >= 0 {
+                    let _ = lists.deletesprite(k);
+                }
+            }
+        } else {
+            let sec_walls: Vec<SectorWalls> = sectors
+                .iter()
+                .map(|s| SectorWalls {
+                    wallptr: s.wallptr,
+                    wallnum: s.wallnum,
+                })
+                .collect();
+            let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+            let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+            let sprite_hits: Vec<SpriteHit> = sprites
+                .iter()
+                .enumerate()
+                .map(|(index, s)| {
+                    let meta = tile_meta
+                        .get(s.picnum.max(0) as usize)
+                        .copied()
+                        .unwrap_or_default();
+                    let mut hit = SpriteHit::cylinder(
+                        s.x,
+                        s.y,
+                        s.z,
+                        s.sectnum,
+                        i32::from(s.clipdist) << 2,
+                        s.cstat,
+                    );
+                    hit.face_span = i32::from(meta.width) * i32::from(s.xrepeat);
+                    hit.face_height = (i32::from(meta.height) * i32::from(s.yrepeat)) << 2;
+                    if index == body {
+                        hit.cstat &= !257;
+                    }
+                    hit
+                })
+                .collect();
+            let hit = hitscan_full(
+                source.x,
+                source.y,
+                z,
+                source.sectnum,
+                cos,
+                sin,
+                zvel << 6,
+                CLIPMASK1,
+                &sec_walls,
+                &wall_xy,
+                &sprite_hits,
+                Some(&sec_z),
+            );
+            if hit.hitsect >= 0 {
+                let effect = egs(
+                    lists,
+                    sprites,
+                    picnum_out,
+                    actor_temps,
+                    script,
+                    hit.hitsect,
+                    hit.hitx,
+                    hit.hity,
+                    hit.hitz,
+                    GROWSPARK,
+                    -16,
+                    1,
+                    1,
+                    shot_ang as i16,
+                    0,
+                    0,
+                    p.sprite_i,
+                    STAT_PROJECTILE,
+                );
+                if effect >= 0 {
+                    shot = effect;
+                    let ei = effect as usize;
+                    sprites[ei].pal = 2;
+                    sprites[ei].cstat |= 130;
+                }
+                if hit.hitsprite >= 0 {
+                    let target = hit.hitsprite as usize;
+                    if target < sprites.len() {
+                        if actor_temps.len() <= target {
+                            actor_temps.resize_with(target + 1, ActorConTemps::default);
+                        }
+                        actor_temps[target].hit_picnum = GROWSPARK;
+                        actor_temps[target].hit_extra = 0;
+                        actor_temps[target].hit_owner = p.sprite_i;
+                        actor_temps[target].hit_ang = shot_ang as i16;
+                    }
+                }
+            }
+        }
+    }
+    shot
 }
 
 /// Advance Atomic's Freezethrower cadence (weapon slot 9). Chocolate fires
@@ -2421,90 +2909,19 @@ pub fn process_weapons_freezer(
         p.kickback_pic += 1;
     }
     if p.kickback_pic == 3 {
-        if let Some(body) = (p.sprite_i >= 0)
-            .then_some(p.sprite_i as usize)
-            .filter(|&i| i < sprites.len())
-        {
-            let source = sprites[body];
-            let mut shot_ang = i32::from(p.ang);
-            let mut z = p.posz + p.pyoff + (7 << 8);
-            let target = aim(
-                &source,
-                AUTO_AIM_ANGLE,
-                p.auto_aim == 2,
-                lists,
-                sprites,
-                sectors,
-                walls,
-                actortype,
-                Some(p),
-            );
-            let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
-            if target >= 0 {
-                let target = &sprites[target as usize];
-                let height = tile_meta
-                    .get(target.picnum.max(0) as usize)
-                    .map_or(0, |meta| i32::from(meta.height));
-                let dal = (i32::from(target.xrepeat) * height * 2) + (8 << 8);
-                let distance = ldist(&source, target).max(1);
-                zvel = ((target.z - z - dal) * 644) / distance;
-                if target.picnum != RECON {
-                    shot_ang =
-                        getangle(target.x.wrapping_sub(p.posx), target.y.wrapping_sub(p.posy));
-                }
-            }
-            z += 3 << 8;
-            let sect = source.sectnum;
-            if sect >= 0 && (sect as usize) < sectors.len() {
-                let k = lists.insertsprite(sect, STAT_PROJECTILE);
-                if k >= 0 && (k as usize) < sprites.len() {
-                    let i = k as usize;
-                    let projectile_z = z - (1 << 8);
-                    let (extra, temps) = script
-                        .map(|s| crate::con::init_actor_temps_from_script(s, FREEZEBLAST))
-                        .unwrap_or_default();
-                    sprites[i] = SpriteT {
-                        x: p.posx + sincos_q14(shot_ang + 348).1 / 448,
-                        y: p.posy + sincos_q14(shot_ang + 348).0 / 448,
-                        z: projectile_z,
-                        ang: shot_ang as i16,
-                        sectnum: sect,
-                        picnum: FREEZEBLAST,
-                        shade: -127,
-                        xrepeat: 7,
-                        yrepeat: 7,
-                        xvel: 644,
-                        zvel: (zvel - (2 << 4)) as i16,
-                        owner: p.sprite_i,
-                        cstat: 128,
-                        clipdist: 4,
-                        yvel: script
-                            .and_then(|image| {
-                                let index = if image.con_version == crate::con::ConVersion::V15 {
-                                    26
-                                } else {
-                                    24
-                                };
-                                image.gamestartup.get(index).copied()
-                            })
-                            .unwrap_or(3)
-                            .clamp(0, i32::from(i16::MAX)) as i16,
-                        extra: extra.saturating_add((krand_step(randomseed) & 7) as i16),
-                        ..Default::default()
-                    };
-                    if picnum_out.len() <= i {
-                        picnum_out.resize(i + 1, 0);
-                    }
-                    picnum_out[i] = FREEZEBLAST;
-                    if actor_temps.len() <= i {
-                        actor_temps.resize_with(i + 1, ActorConTemps::default);
-                    }
-                    actor_temps[i] = temps;
-                } else if k >= 0 {
-                    let _ = lists.deletesprite(k);
-                }
-            }
-        }
+        let _ = shoot_freezeblast_player(
+            p,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            picnum_out,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+        );
         p.ammo[WEAPON as usize] = p.ammo[WEAPON as usize].saturating_sub(1);
         if p.ammo[WEAPON as usize] == 0 {
             checkavailweapon(p);
@@ -2584,188 +3001,20 @@ pub fn process_weapons_shrink_grow(
     // post-increment edge is one greater than its pre-increment threshold.
     let fire_tic = if weapon == GROWER { 5 } else { 12 };
     if p.kickback_pic == fire_tic {
-        let body = (p.sprite_i >= 0)
-            .then_some(p.sprite_i as usize)
-            .filter(|&i| i < sprites.len());
-        if let Some(body) = body {
-            let source = sprites[body];
-            let mut shot_ang = i32::from(p.ang);
-            let (mut sin, mut cos) = sincos_q14(shot_ang);
-            let base_z = p.posz + p.pyoff + (4 << 8);
-            let target = aim(
-                &source,
-                AUTO_AIM_ANGLE,
-                p.auto_aim == 2,
-                lists,
-                sprites,
-                sectors,
-                walls,
-                actortype,
-                Some(p),
-            );
-            let mut zvel;
-            if target >= 0 {
-                let target_sprite = &sprites[target as usize];
-                shot_ang = getangle(
-                    target_sprite.x.wrapping_sub(p.posx),
-                    target_sprite.y.wrapping_sub(p.posy),
-                );
-                let height = tile_meta
-                    .get(target_sprite.picnum.max(0) as usize)
-                    .map_or(0, |meta| i32::from(meta.height));
-                let mut dal = (i32::from(target_sprite.xrepeat) * height * 2)
-                    + if weapon == GROWER { 5 << 8 } else { 0 };
-                if weapon == GROWER && matches!(target_sprite.picnum, 2370..=2377 | 2360) {
-                    dal -= 8 << 8;
-                }
-                let distance = ldist(&source, target_sprite).max(1);
-                zvel = if weapon == GROWER {
-                    ((target_sprite.z - base_z - dal) << 8) / distance
-                } else {
-                    ((target_sprite.z - base_z - dal - (4 << 8)) * 768) / distance
-                };
-                (sin, cos) = sincos_q14(shot_ang);
-            } else if weapon == GROWER {
-                shot_ang += 16 - (krand_step(randomseed) & 31);
-                zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) << 5;
-                zvel += 128 - (krand_step(randomseed) & 255);
-                (sin, cos) = sincos_q14(shot_ang);
-            } else {
-                zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 98;
-            }
-            let z = if weapon == GROWER {
-                base_z - (2 << 8)
-            } else {
-                base_z
-            };
-            if weapon == SHRINKER {
-                let sect = source.sectnum;
-                if sect >= 0 && (sect as usize) < sectors.len() {
-                    let k = lists.insertsprite(sect, STAT_PROJECTILE);
-                    if k >= 0 && (k as usize) < sprites.len() {
-                        let i = k as usize;
-                        let (extra, temps) = script
-                            .map(|s| crate::con::init_actor_temps_from_script(s, SHRINKSPARK))
-                            .unwrap_or_default();
-                        sprites[i] = SpriteT {
-                            x: source.x - sincos_q14(shot_ang).0 / 4096,
-                            y: source.y + sincos_q14(shot_ang + 348).0 / 4096,
-                            z: z + (2 << 8),
-                            ang: shot_ang as i16,
-                            sectnum: sect,
-                            picnum: SHRINKSPARK,
-                            shade: -16,
-                            xrepeat: 28,
-                            yrepeat: 28,
-                            xvel: 768,
-                            zvel: zvel as i16,
-                            owner: p.sprite_i,
-                            cstat: 128,
-                            clipdist: 32,
-                            extra,
-                            ..Default::default()
-                        };
-                        if picnum_out.len() <= i {
-                            picnum_out.resize(i + 1, 0);
-                        }
-                        picnum_out[i] = SHRINKSPARK;
-                        if actor_temps.len() <= i {
-                            actor_temps.resize_with(i + 1, ActorConTemps::default);
-                        }
-                        actor_temps[i] = temps;
-                    } else if k >= 0 {
-                        let _ = lists.deletesprite(k);
-                    }
-                }
-            } else {
-                let sec_walls: Vec<SectorWalls> = sectors
-                    .iter()
-                    .map(|s| SectorWalls {
-                        wallptr: s.wallptr,
-                        wallnum: s.wallnum,
-                    })
-                    .collect();
-                let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-                let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
-                let sprite_hits: Vec<SpriteHit> = sprites
-                    .iter()
-                    .enumerate()
-                    .map(|(index, s)| {
-                        let meta = tile_meta
-                            .get(s.picnum.max(0) as usize)
-                            .copied()
-                            .unwrap_or_default();
-                        let mut hit = SpriteHit::cylinder(
-                            s.x,
-                            s.y,
-                            s.z,
-                            s.sectnum,
-                            i32::from(s.clipdist) << 2,
-                            s.cstat,
-                        );
-                        hit.face_span = i32::from(meta.width) * i32::from(s.xrepeat);
-                        hit.face_height = (i32::from(meta.height) * i32::from(s.yrepeat)) << 2;
-                        if index == body {
-                            hit.cstat &= !257;
-                        }
-                        hit
-                    })
-                    .collect();
-                let hit = hitscan_full(
-                    source.x,
-                    source.y,
-                    z,
-                    source.sectnum,
-                    cos,
-                    sin,
-                    zvel << 6,
-                    CLIPMASK1,
-                    &sec_walls,
-                    &wall_xy,
-                    &sprite_hits,
-                    Some(&sec_z),
-                );
-                if hit.hitsect >= 0 {
-                    let effect = egs(
-                        lists,
-                        sprites,
-                        picnum_out,
-                        actor_temps,
-                        script,
-                        hit.hitsect,
-                        hit.hitx,
-                        hit.hity,
-                        hit.hitz,
-                        GROWSPARK,
-                        -16,
-                        1,
-                        1,
-                        shot_ang as i16,
-                        0,
-                        0,
-                        p.sprite_i,
-                        STAT_PROJECTILE,
-                    );
-                    if effect >= 0 {
-                        let ei = effect as usize;
-                        sprites[ei].pal = 2;
-                        sprites[ei].cstat |= 130;
-                    }
-                    if hit.hitsprite >= 0 {
-                        let target = hit.hitsprite as usize;
-                        if target < sprites.len() {
-                            if actor_temps.len() <= target {
-                                actor_temps.resize_with(target + 1, ActorConTemps::default);
-                            }
-                            actor_temps[target].hit_picnum = GROWSPARK;
-                            actor_temps[target].hit_extra = 0;
-                            actor_temps[target].hit_owner = p.sprite_i;
-                            actor_temps[target].hit_ang = shot_ang as i16;
-                        }
-                    }
-                }
-            }
-        }
+        let _ = shoot_shrink_grow_player(
+            p,
+            weapon == GROWER,
+            lists,
+            sprites,
+            sectors,
+            walls,
+            actor_temps,
+            picnum_out,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+        );
         p.ammo[weapon as usize] = p.ammo[weapon as usize].saturating_sub(1);
         if p.ammo[weapon as usize] == 0 {
             checkavailweapon(p);
@@ -3003,7 +3252,7 @@ pub fn process_weapons_devastator(
 
     p.kickback_pic += 1;
     if p.kickback_pic & 1 != 0 {
-        spawn_devastator_projectile(
+        let _ = spawn_devastator_projectile(
             p,
             lists,
             sprites,
@@ -3276,7 +3525,7 @@ fn script_tile_is_bigforce(tile: i16) -> bool {
     tile == 230
 }
 
-fn spawn_devastator_projectile(
+pub(crate) fn spawn_devastator_projectile(
     p: &Player,
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -3288,24 +3537,24 @@ fn spawn_devastator_projectile(
     script: Option<&ScriptImage>,
     actortype: &[u8],
     randomseed: &mut i32,
-) {
+) -> i16 {
     let Some(body_i) = (p.sprite_i >= 0)
         .then_some(p.sprite_i as usize)
         .filter(|&i| i < sprites.len())
     else {
-        return;
+        return -1;
     };
     let source = sprites[body_i];
     let sect = source.sectnum;
     if sect < 0 || sect as usize >= sectors.len() {
-        return;
+        return -1;
     }
     let k = lists.insertsprite(sect, crate::stat::STAT_PROJECTILE);
     if k < 0 || k as usize >= sprites.len() {
         if k >= 0 {
             let _ = lists.deletesprite(k);
         }
-        return;
+        return -1;
     }
     let i = k as usize;
     // Chocolate `shoot(pi, RPG)`: acquire within the 48-unit aim cone, then
@@ -3393,6 +3642,7 @@ fn spawn_devastator_projectile(
         actor_temps.resize_with(i + 1, ActorConTemps::default);
     }
     actor_temps[i] = temps;
+    k
 }
 
 pub fn process_weapons_shotgun(
@@ -3685,7 +3935,7 @@ pub fn process_weapons_chaingun(
 }
 
 /// Chocolate `spawn(player, SHOTGUNSHELL)` + immediate `ssp` (kickback_pic == 24).
-fn spawn_player_shell(
+pub(crate) fn spawn_player_shell(
     p: &Player,
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -4123,6 +4373,7 @@ pub(crate) fn shoot_enemy(
         let ku = k as usize;
         // `sprite[k].extra = *actorscrptr[atwith]`.
         sprites[ku].extra = init_actor_temps_from_script(script, atwith).0;
+        set_eduke_spark_hit_data(sprites, actor_temps, Some(script), ku, &hit, atwith);
         if hit.hitsprite >= 0 {
             checkhitsprite_shotgun(
                 lists,

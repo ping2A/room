@@ -94,6 +94,88 @@ pub struct SoftTiles {
     sky_offsets: BTreeMap<i16, [i16; 8]>,
     /// Per-sky Duke `parallaxyscale` (16.16; absent = 65536).
     sky_yscale: BTreeMap<i16, i32>,
+    /// Source colors of DEF RGB tile images (`0xFFRRGGBB`, `0` transparent),
+    /// laid out like the matching `tiles` entry; drawn in true colour (ED7).
+    true_color: BTreeMap<i16, Arc<[u32]>>,
+    /// Source colors of DEF RGB palette-branch images.
+    palette_true_color: BTreeMap<(i16, u8), Arc<[u32]>>,
+    /// Base palette as 8-bit RGB, for blending true-colour translucency.
+    palette_rgb: Option<Box<[u8; 768]>>,
+    /// DEF `tint` per palette, applied to true-colour images (Polymost
+    /// `hictinting`).
+    tints: BTreeMap<u8, HicTint>,
+}
+
+/// One DEF `tint` (EDuke32 `polytint_t` colour and `HICTINT_*` flags).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HicTint {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub flags: u16,
+}
+
+impl HicTint {
+    const GRAYSCALE: u16 = 1;
+    const INVERT: u16 = 2;
+    const COLORIZE: u16 = 4;
+    const APPLY_OVER_ALT_PAL: u16 = 32;
+    const BLEND_MASK: u16 = 64 | 128;
+    const BLEND_SCREEN: u16 = 64;
+    const BLEND_OVERLAY: u16 = 128;
+    const BLEND_HARDLIGHT: u16 = 192;
+    /// Effects EDuke32 bakes into the texture (`HICTINT_IN_MEMORY`).
+    const IN_MEMORY: u16 = Self::GRAYSCALE | Self::INVERT | Self::COLORIZE | Self::BLEND_MASK;
+
+    /// Tint one `0xAARRGGBB` texel as Polymost does: the in-memory effects
+    /// (`hictinting_applypixcolor`), then, unless the tint was precomputed
+    /// (colorize/blend), the `hictinting_apply` colour multiply.
+    #[must_use]
+    pub fn apply(self, color: u32) -> u32 {
+        if color == 0 {
+            return 0;
+        }
+        let alpha = color & 0xFF00_0000;
+        let mut r = i32::try_from((color >> 16) & 0xFF).unwrap_or(0);
+        let mut g = i32::try_from((color >> 8) & 0xFF).unwrap_or(0);
+        let mut b = i32::try_from(color & 0xFF).unwrap_or(0);
+        let (tr, tg, tb) = (i32::from(self.r), i32::from(self.g), i32::from(self.b));
+        if self.flags & Self::GRAYSCALE != 0 {
+            // EDuke32's coefficient order, verbatim.
+            let gray = (f64::from(b) * 0.3 + f64::from(g) * 0.59 + f64::from(r) * 0.11) as i32;
+            (r, g, b) = (gray, gray, gray);
+        }
+        if self.flags & Self::INVERT != 0 {
+            (r, g, b) = (255 - r, 255 - g, 255 - b);
+        }
+        if self.flags & Self::COLORIZE != 0 {
+            r = ((r * tr) >> 6).min(255);
+            g = ((g * tg) >> 6).min(255);
+            b = ((b * tb) >> 6).min(255);
+        }
+        let blend = |c: i32, t: i32| match self.flags & Self::BLEND_MASK {
+            Self::BLEND_SCREEN => 255 - (((255 - c) * (255 - t)) >> 8),
+            Self::BLEND_OVERLAY if c < 128 => (c * t) >> 7,
+            Self::BLEND_OVERLAY => 255 - (((255 - c) * (255 - t)) >> 7),
+            Self::BLEND_HARDLIGHT if t < 128 => (c * t) >> 7,
+            Self::BLEND_HARDLIGHT => 255 - (((255 - c) * (255 - t)) >> 7),
+            _ => c,
+        };
+        (r, g, b) = (blend(r, tr), blend(g, tg), blend(b, tb));
+        if self.flags & (Self::COLORIZE | Self::BLEND_MASK) == 0 {
+            // Fixed-function colour multiply, rounded like an 8-bit target.
+            let multiply = |c: i32, t: i32| (c * t + 127) / 255;
+            (r, g, b) = (multiply(r, tr), multiply(g, tg), multiply(b, tb));
+        }
+        let channel = |c: i32| u32::try_from(c.clamp(0, 255)).unwrap_or(0);
+        alpha | (channel(r) << 16) | (channel(g) << 8) | channel(b)
+    }
+
+    /// Whether Polymost tints an image loaded for this very palette (only
+    /// in-memory effects or `HICTINT_APPLYOVERALTPAL` do).
+    fn applies_over_own_palette(self) -> bool {
+        self.flags & (Self::IN_MEMORY | Self::APPLY_OVER_ALT_PAL) != 0
+    }
 }
 
 impl SoftTiles {
@@ -104,6 +186,100 @@ impl SoftTiles {
     /// Insert tile `picnum` (column-major palette indices, Build layout).
     pub fn insert(&mut self, picnum: i16, width: u16, height: u16, pixels: Vec<u8>) {
         self.tiles.insert(picnum, (width, height, pixels));
+        self.true_color.remove(&picnum);
+    }
+
+    /// Attach source colors to the tile just inserted at `picnum`; ignored
+    /// unless they match its texel count.
+    pub fn set_true_color(&mut self, picnum: i16, colors: Option<Arc<[u32]>>) {
+        match colors {
+            Some(colors)
+                if self
+                    .tiles
+                    .get(&picnum)
+                    .is_some_and(|(_, _, pixels)| pixels.len() == colors.len()) =>
+            {
+                self.true_color.insert(picnum, colors);
+            }
+            _ => {
+                self.true_color.remove(&picnum);
+            }
+        }
+    }
+
+    /// Attach source colors to a DEF palette-branch image.
+    pub fn set_palette_true_color(&mut self, picnum: i16, palette: u8, colors: Option<Arc<[u32]>>) {
+        match colors {
+            Some(colors)
+                if self
+                    .palette_tiles
+                    .get(&(picnum, palette))
+                    .is_some_and(|(_, _, pixels)| pixels.len() == colors.len()) =>
+            {
+                self.palette_true_color.insert((picnum, palette), colors);
+            }
+            _ => {
+                self.palette_true_color.remove(&(picnum, palette));
+            }
+        }
+    }
+
+    /// Whether any tile or skybox carries true-colour source data.
+    #[must_use]
+    pub fn has_true_color(&self) -> bool {
+        !self.true_color.is_empty()
+            || !self.palette_true_color.is_empty()
+            || self
+                .skyboxes
+                .values()
+                .any(|skybox| skybox.faces.iter().any(|face| face.true_color.is_some()))
+    }
+
+    /// Install the DEF `tint` for `palette` (later declarations win).
+    pub fn set_tint(&mut self, palette: u8, tint: HicTint) {
+        self.tints.insert(palette, tint);
+    }
+
+    /// Base palette (8-bit RGB) used to blend true-colour translucency.
+    pub fn set_palette_rgb(&mut self, rgb: &[u8; 768]) {
+        self.palette_rgb = Some(Box::new(*rgb));
+    }
+
+    /// 8-bit RGB of palette index `index` as `0xFFRRGGBB`, if known.
+    #[must_use]
+    pub fn palette_color(&self, index: u8) -> Option<u32> {
+        let rgb = self.palette_rgb.as_deref()?;
+        let i = usize::from(index) * 3;
+        Some(room_build::def::pack_true_color([
+            rgb[i],
+            rgb[i + 1],
+            rgb[i + 2],
+        ]))
+    }
+
+    /// EDuke32 Polymost `getshadefactor`: scale a true-colour texel by
+    /// `(numshades - clamp(shade, 0, numshades)) / numshades`.
+    #[must_use]
+    pub fn shade_true_color(&self, color: u32, shade: i8) -> u32 {
+        if color == 0 || self.shade_count == 0 {
+            return color;
+        }
+        let shades = self.shade_count as u32;
+        let keep = shades - u32::try_from(shade.max(0)).unwrap_or(0).min(shades);
+        let channel = |shift: u32| (((color >> shift) & 0xFF) * keep / shades) << shift;
+        0xFF00_0000 | channel(16) | channel(8) | channel(0)
+    }
+
+    /// Blend two true-colour pixels like Polymost translucency: the
+    /// foreground keeps 2/3 (`cstat 2`) or 1/3 (with `cstat 512`).
+    #[must_use]
+    pub fn blend_true_color(background: u32, foreground: u32, reverse: bool) -> u32 {
+        let (fg, bg) = if reverse { (1, 2) } else { (2, 1) };
+        let channel = |shift: u32| {
+            ((((foreground >> shift) & 0xFF) * fg + ((background >> shift) & 0xFF) * bg) / 3)
+                << shift
+        };
+        0xFF00_0000 | channel(16) | channel(8) | channel(0)
     }
 
     /// Insert a Build-layout tile and its sprite origin offsets.
@@ -132,6 +308,7 @@ impl SoftTiles {
         if palette != 0 && usize::from(width).saturating_mul(usize::from(height)) == pixels.len() {
             self.palette_tiles
                 .insert((picnum, palette), (width, height, pixels));
+            self.palette_true_color.remove(&(picnum, palette));
         }
     }
 
@@ -152,6 +329,14 @@ impl SoftTiles {
             return false;
         };
         self.tiles.insert(destination, tile);
+        match self.true_color.get(&source).cloned() {
+            Some(colors) => {
+                self.true_color.insert(destination, colors);
+            }
+            None => {
+                self.true_color.remove(&destination);
+            }
+        }
         let variants: Vec<_> = self
             .palette_tiles
             .iter()
@@ -159,7 +344,17 @@ impl SoftTiles {
             .map(|((_, palette), tile)| ((*palette), tile.clone()))
             .collect();
         for (palette, tile) in variants {
+            let colors = self.palette_true_color.get(&(source, palette)).cloned();
             self.palette_tiles.insert((destination, palette), tile);
+            match colors {
+                Some(colors) => {
+                    self.palette_true_color
+                        .insert((destination, palette), colors);
+                }
+                None => {
+                    self.palette_true_color.remove(&(destination, palette));
+                }
+            }
         }
         if let Some(offset) = self.sprite_offsets.get(&source).copied() {
             self.sprite_offsets.insert(destination, offset);
@@ -253,6 +448,8 @@ impl SoftTiles {
             w: usize::from(*w),
             h: usize::from(*h),
             pix,
+            rgb: self.true_color.get(&resolved).map(|colors| &colors[..]),
+            tint: None,
         })
     }
 
@@ -264,15 +461,69 @@ impl SoftTiles {
         clock_120hz: u32,
     ) -> Option<TileRef<'_>> {
         let resolved = self.animated_picnum(picnum, clock_120hz);
-        let (w, h, pix) = self
-            .palette_tiles
-            .get(&(resolved, palette))
-            .or_else(|| self.tiles.get(&resolved))?;
+        // True colour follows the image actually drawn: a palette branch's
+        // own colors, or the base image's only when `palette` does not remap
+        // it through LOOKUP.DAT (then the indexed path keeps the tint).
+        // A DEF `tint` for `palette` keeps the base image's true colour and
+        // tints it, as Polymost draws a hightile under another palette.
+        let tint = (palette != 0)
+            .then(|| self.tints.get(&palette).copied())
+            .flatten();
+        let (tile, rgb, tint) = match self.palette_tiles.get(&(resolved, palette)) {
+            Some(tile) => (
+                tile,
+                self.palette_true_color.get(&(resolved, palette)),
+                tint.filter(|tint| tint.applies_over_own_palette()),
+            ),
+            None => (
+                self.tiles.get(&resolved)?,
+                self.true_color.get(&resolved).filter(|_| {
+                    palette == 0 || tint.is_some() || !self.palette_lookups.contains_key(&palette)
+                }),
+                tint,
+            ),
+        };
+        let (w, h, pix) = tile;
+        let rgb = rgb.map(|colors| &colors[..]);
         (*w != 0 && *h != 0).then_some(TileRef {
             w: usize::from(*w),
             h: usize::from(*h),
             pix,
+            tint: tint.filter(|_| rgb.is_some()),
+            rgb,
         })
+    }
+
+    /// Shaded true color of a base tile texel as drawn by HUD paths that
+    /// sample the base image (`sample`) and remap `palette` through
+    /// LOOKUP.DAT: `0` when there is no source color or the palette remaps
+    /// without a DEF `tint` (a tint keeps the colour and tints it).
+    #[must_use]
+    pub fn base_true_color_at(&self, picnum: i16, palette: u8, shade: i8, u: u32, v: u32) -> u32 {
+        let tint = (palette != 0)
+            .then(|| self.tints.get(&palette).copied())
+            .flatten();
+        if palette != 0 && tint.is_none() && self.palette_lookups.contains_key(&palette) {
+            return 0;
+        }
+        self.resolve(picnum, 0).map_or(0, |tile| {
+            let color = tile.at_rgb(i64::from(u), i64::from(v));
+            self.shade_true_color(tint.map_or(color, |tint| tint.apply(color)), shade)
+        })
+    }
+
+    /// True-colour texel (`0` = none) for sampling outside span drawing.
+    #[must_use]
+    pub fn true_color_at_for_palette(
+        &self,
+        picnum: i16,
+        palette: u8,
+        u: u32,
+        v: u32,
+        clock_120hz: u32,
+    ) -> u32 {
+        self.resolve_for_palette(picnum, palette, clock_120hz)
+            .map_or(0, |tile| tile.at_rgb(i64::from(u), i64::from(v)))
     }
 
     /// Whether this frame has an explicit DEF image for the requested palette.
@@ -520,6 +771,23 @@ impl SoftTiles {
         height: i32,
         horizon: i32,
     ) -> Option<u8> {
+        self.sample_skybox_color_at(base, palette, angle_q16, col, width, y, height, horizon)
+            .map(|(pixel, _)| pixel)
+    }
+
+    /// [`Self::sample_skybox_at`] plus the face's source color (`0` = none).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sample_skybox_color_at(
+        &self,
+        base: i16,
+        palette: u8,
+        angle_q16: i32,
+        col: i32,
+        width: i32,
+        y: i32,
+        height: i32,
+        horizon: i32,
+    ) -> Option<(u8, u32)> {
         if width <= 0 || height <= 0 {
             return None;
         }
@@ -542,22 +810,28 @@ impl SoftTiles {
 
         // Cubemap coordinates are expressed as signed face-local values and
         // converted to [0, 1] only after selecting the dominant direction.
+        // Face placement follows EDuke32 Polymost's sky cube (`skywal` corners
+        // (-512,-512) → (512,-512) → (512,512) → (-512,512), wall i using DEF
+        // face i): front is Build north (-y), right east (+x), back south
+        // (+y), left west (-x); each wall's u runs from `skywal[i]` to
+        // `skywal[i+1]` and v from top to bottom. The ceiling maps u/v to
+        // world +x/+y and the floor to +x/-y (Polymost's floor y-flip).
         let (face, u_axis, v_axis, dominant) = if abs_x >= abs_y && abs_x >= abs_up {
             if ray_x >= 0 {
-                (0, ray_y, -ray_up, abs_x) // front (+X)
+                (1, ray_y, -ray_up, abs_x) // right (+X, east)
             } else {
-                (2, -ray_y, -ray_up, abs_x) // back (-X)
+                (3, -ray_y, -ray_up, abs_x) // left (-X, west)
             }
         } else if abs_y >= abs_up {
             if ray_y >= 0 {
-                (1, -ray_x, -ray_up, abs_y) // right (+Y)
+                (2, -ray_x, -ray_up, abs_y) // back (+Y, south)
             } else {
-                (3, ray_x, -ray_up, abs_y) // left (-Y)
+                (0, ray_x, -ray_up, abs_y) // front (-Y, north)
             }
         } else if ray_up >= 0 {
-            (4, ray_y, -ray_x, abs_up) // top (+Z)
+            (4, ray_x, ray_y, abs_up) // up
         } else {
-            (5, ray_y, ray_x, abs_up) // down (-Z)
+            (5, ray_x, -ray_y, abs_up) // down
         };
         if dominant == 0 {
             return None;
@@ -570,13 +844,19 @@ impl SoftTiles {
         }
         let u = (u64::from(texture_coordinate(u_axis)) * u64::from(face.width) >> 16) as usize;
         let v = (u64::from(texture_coordinate(v_axis)) * u64::from(face.height) >> 16) as usize;
-        face.pixels
-            .get(
-                u.min(usize::from(face.width) - 1) * usize::from(face.height)
-                    + v.min(usize::from(face.height) - 1),
-            )
+        let offset = u.min(usize::from(face.width) - 1) * usize::from(face.height)
+            + v.min(usize::from(face.height) - 1);
+        let pixel = face
+            .pixels
+            .get(offset)
             .copied()
-            .filter(|pixel| *pixel != room_build::art::TRANSPARENT)
+            .filter(|pixel| *pixel != room_build::art::TRANSPARENT)?;
+        let color = face
+            .true_color
+            .as_ref()
+            .and_then(|colors| colors.get(offset).copied())
+            .unwrap_or(0);
+        Some((pixel, color))
     }
 
     /// Build `parascan`: the sky is a wall at fixed distance whose middle
@@ -658,6 +938,10 @@ pub(crate) struct TileRef<'a> {
     pub w: usize,
     pub h: usize,
     pub pix: &'a [u8],
+    /// Source colors of a DEF RGB image, same layout as `pix`.
+    pub rgb: Option<&'a [u32]>,
+    /// DEF `tint` applied to `rgb` samples.
+    pub tint: Option<HicTint>,
 }
 
 impl TileRef<'_> {
@@ -671,6 +955,18 @@ impl TileRef<'_> {
             .copied()
             .unwrap_or(room_build::art::TRANSPARENT)
     }
+
+    /// Source color at wrapped `(u, v)` (`0` without true-colour data).
+    #[inline]
+    pub fn at_rgb(&self, u: i64, v: i64) -> u32 {
+        let Some(rgb) = self.rgb else {
+            return 0;
+        };
+        let x = u.rem_euclid(self.w as i64) as usize;
+        let y = v.rem_euclid(self.h as i64) as usize;
+        let color = rgb.get(x * self.h + y).copied().unwrap_or(0);
+        self.tint.map_or(color, |tint| tint.apply(color))
+    }
 }
 
 /// 8-bit indexed framebuffer (palette indices; 0 = clear).
@@ -679,6 +975,9 @@ pub struct SoftFrame {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    /// Optional true-colour layer (`0xFFRRGGBB`; `0` shows `pixels`), set
+    /// where DEF RGB images were drawn (ED7).
+    pub true_color: Option<Vec<u32>>,
     deferred_translucency: Option<Vec<TranslucentPixel>>,
 }
 
@@ -691,6 +990,8 @@ pub(super) struct TranslucentPixel {
     pub(super) foreground: u8,
     pub(super) reverse: bool,
     pub(super) blend_table: u8,
+    /// True color of the foreground (`0` = indexed only).
+    pub(super) true_color: u32,
 }
 
 const MAX_DEFERRED_TRANSLUCENT_PIXELS: usize = 2_000_000;
@@ -709,8 +1010,50 @@ impl SoftFrame {
             width,
             height,
             pixels,
+            true_color: None,
             deferred_translucency: None,
         }
+    }
+
+    /// Start recording true-colour pixels (all indexed until written).
+    pub fn enable_true_color(&mut self) {
+        self.true_color = Some(vec![0; self.pixels.len()]);
+    }
+
+    /// Final color of pixel `index`: its true color, else `palette`'s entry.
+    #[must_use]
+    pub fn pixel_color(&self, index: usize, palette: &[u8; 768]) -> [u8; 3] {
+        let color = self
+            .true_color
+            .as_ref()
+            .and_then(|colors| colors.get(index).copied())
+            .unwrap_or(0);
+        if color != 0 {
+            return [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+        }
+        let i = usize::from(self.pixels.get(index).copied().unwrap_or(0)) * 3;
+        [palette[i], palette[i + 1], palette[i + 2]]
+    }
+
+    /// Set (or with `0`, clear) the true color of pixel `index`; a no-op
+    /// when this frame has no true-colour layer.
+    #[inline]
+    pub fn set_true_color(&mut self, index: usize, color: u32) {
+        if let Some(colors) = self.true_color.as_mut()
+            && let Some(slot) = colors.get_mut(index)
+        {
+            *slot = color;
+        }
+    }
+
+    /// Put an indexed pixel with its true color (`0` = indexed only).
+    pub(crate) fn put_rgb(&mut self, x: i32, y: i32, c: u8, color: u32) {
+        if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
+            return;
+        }
+        let index = (y as u32 * self.width + x as u32) as usize;
+        self.pixels[index] = c;
+        self.set_true_color(index, color);
     }
 
     pub(super) fn begin_deferred_translucency(&mut self) {
@@ -742,17 +1085,59 @@ impl SoftFrame {
             if pixel.index >= zbuf.len() || pixel.depth >= zbuf[pixel.index] {
                 continue;
             }
+            let background = self.pixels[pixel.index];
             let color = tiles.composite_layer_with_table(
-                self.pixels[pixel.index],
+                background,
                 pixel.foreground,
                 true,
                 pixel.reverse,
                 pixel.blend_table,
             );
             self.pixels[pixel.index] = color;
+            self.blend_true_color_pixel(
+                tiles,
+                pixel.index,
+                background,
+                pixel.foreground,
+                pixel.true_color,
+                pixel.reverse,
+            );
         }
     }
 
+    /// Mirror an indexed translucent write in the true-colour layer: blend
+    /// in RGB when either side is true colour, else stay indexed.
+    pub fn blend_true_color_pixel(
+        &mut self,
+        tiles: &SoftTiles,
+        index: usize,
+        background: u8,
+        foreground: u8,
+        foreground_color: u32,
+        reverse: bool,
+    ) {
+        let Some(colors) = self.true_color.as_ref() else {
+            return;
+        };
+        let background_color = colors.get(index).copied().unwrap_or(0);
+        if background_color == 0 && foreground_color == 0 {
+            return;
+        }
+        let (Some(bg), Some(fg)) = (
+            (background_color != 0)
+                .then_some(background_color)
+                .or_else(|| tiles.palette_color(background)),
+            (foreground_color != 0)
+                .then_some(foreground_color)
+                .or_else(|| tiles.palette_color(foreground)),
+        ) else {
+            self.set_true_color(index, 0);
+            return;
+        };
+        self.set_true_color(index, SoftTiles::blend_true_color(bg, fg, reverse));
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn draw_sprite_pixel(
         &mut self,
         tiles: Option<&SoftTiles>,
@@ -761,6 +1146,7 @@ impl SoftFrame {
         foreground: u8,
         cstat: u16,
         blend_table: u8,
+        true_color: u32,
     ) {
         const TRANSLUCENT: u16 = 2;
         const REVERSE_TRANSLUCENT: u16 = 512;
@@ -772,21 +1158,41 @@ impl SoftFrame {
                 foreground,
                 reverse: cstat & REVERSE_TRANSLUCENT != 0,
                 blend_table,
+                true_color,
             })
         {
             return;
         }
+        let background = self.pixels[index];
         let color = tiles.map_or(foreground, |tiles| {
-            tiles.composite_sprite(self.pixels[index], foreground, cstat, blend_table)
+            tiles.composite_sprite(background, foreground, cstat, blend_table)
         });
         self.pixels[index] = color;
+        if is_translucent {
+            if let Some(tiles) = tiles {
+                self.blend_true_color_pixel(
+                    tiles,
+                    index,
+                    background,
+                    foreground,
+                    true_color,
+                    cstat & REVERSE_TRANSLUCENT != 0,
+                );
+            } else {
+                self.set_true_color(index, 0);
+            }
+        } else {
+            self.set_true_color(index, true_color);
+        }
     }
 
     fn put(&mut self, x: i32, y: i32, c: u8) {
         if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
             return;
         }
-        self.pixels[(y as u32 * self.width + x as u32) as usize] = c;
+        let index = (y as u32 * self.width + x as u32) as usize;
+        self.pixels[index] = c;
+        self.set_true_color(index, 0);
     }
 
     /// Bresenham line in palette index `c`.
@@ -826,10 +1232,11 @@ fn sprite_fog_shade(world: Option<&BuildWorld>, shade: i8, depth: i64, sect: i16
     let v = world
         .and_then(|w| w.sectors.get(sect as usize))
         .map_or(0, |s| s.visibility);
+    let global = i64::from(world.map_or(512, |w| w.render_visibility).max(0));
     let globvis = if v == 0 {
-        512_i64
+        global
     } else {
-        (512 * i64::from(v.wrapping_add(16))) >> 4
+        (global * i64::from(v.wrapping_add(16))) >> 4
     };
     (i64::from(shade) + ((depth.max(0) * globvis) >> 19)).clamp(0, 127) as i8
 }
@@ -1081,6 +1488,9 @@ fn render_fp_mirror_at(
         wall.nextsector,
     );
     let mut reflected_frame = SoftFrame::new(frame.width, frame.height);
+    if frame.true_color.is_some() {
+        reflected_frame.enable_true_color();
+    }
     let mirror_world = mirror_render_world(world);
     let mirror_world = mirror_world.as_ref().unwrap_or(world);
     let _ = render_fp_textured_without_mirrors_at_with_sprite_angle_offsets(
@@ -1278,6 +1688,12 @@ fn draw_mirror_triangle(
             // mirrored left-right before it lands in the mirror window.
             let source = y as usize * width + (width - 1 - x as usize);
             target.pixels[index] = reflected.pixels[source];
+            let color = reflected
+                .true_color
+                .as_ref()
+                .and_then(|colors| colors.get(source).copied())
+                .unwrap_or(0);
+            target.set_true_color(index, color);
         }
     }
 }
@@ -1983,11 +2399,29 @@ pub fn render_fp_sprites_at_with_angle_offsets_and_voxels(
             continue;
         }
         if sp.cstat & CSTAT_WALL_ALIGN != 0 {
-            render_wall_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz, blend_table);
+            render_wall_aligned_sprite(
+                world,
+                view,
+                frame,
+                tiles,
+                zbuf,
+                sp,
+                clock_120hz,
+                blend_table,
+            );
             continue;
         }
         if sp.cstat & CSTAT_FLOOR_ALIGN != 0 {
-            render_floor_aligned_sprite(view, frame, tiles, zbuf, sp, clock_120hz, blend_table);
+            render_floor_aligned_sprite(
+                world,
+                view,
+                frame,
+                tiles,
+                zbuf,
+                sp,
+                clock_120hz,
+                blend_table,
+            );
             continue;
         }
         let Some((rx, ry, rz)) = cam_project(view, sin, cos, sp.x, sp.y, sp.z) else {
@@ -2059,15 +2493,18 @@ pub fn render_fp_sprites_at_with_angle_offsets_and_voxels(
                 if sp.cstat & CSTAT_YFLIP != 0 {
                     v = th - 1 - v.min(th - 1);
                 }
-                let pix = match tile.map(|t| t.at(u, v)) {
-                    Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                    Some(pixel) => {
+                let (pix, color) = match tile.map(|t| (t.at(u, v), t)) {
+                    Some((pixel, _)) if pixel == room_build::art::TRANSPARENT => continue,
+                    Some((pixel, t)) => {
                         let p = pal_table.map_or(pixel, |t| t[usize::from(pixel)]);
-                        shade_row.map_or(p, |r| r[usize::from(p)])
+                        (
+                            shade_row.map_or(p, |r| r[usize::from(p)]),
+                            tiles.map_or(0, |ts| ts.shade_true_color(t.at_rgb(u, v), fog)),
+                        )
                     }
-                    None => flat,
+                    None => (flat, 0),
                 };
-                frame.draw_sprite_pixel(tiles, depth_index, z, pix, sp.cstat, blend_table);
+                frame.draw_sprite_pixel(tiles, depth_index, z, pix, sp.cstat, blend_table, color);
                 if sp.cstat & CSTAT_TRANSLUCENT == 0 {
                     zbuf[depth_index] = z;
                 }
@@ -2300,7 +2737,15 @@ fn render_def_voxel_sprite(
             continue;
         }
         let pixel = sprite_pixels[depth_index];
-        frame.draw_sprite_pixel(tiles, depth_index, depth, pixel, sprite.cstat, blend_table);
+        frame.draw_sprite_pixel(
+            tiles,
+            depth_index,
+            depth,
+            pixel,
+            sprite.cstat,
+            blend_table,
+            0,
+        );
         if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
             zbuf[depth_index] = depth;
         }
@@ -2483,6 +2928,7 @@ fn finite_i32(value: f64) -> Option<i32> {
 /// Build's floor-aligned tiles lie in the XY plane, with their dimensions
 /// scaled by the sprite repeats (four Build units per texel/repeat unit).
 fn render_floor_aligned_sprite(
+    world: &BuildWorld,
     view: &BuildView,
     frame: &mut SoftFrame,
     tiles: Option<&SoftTiles>,
@@ -2593,6 +3039,7 @@ fn render_floor_aligned_sprite(
     }
     let flat = wall_color(sprite.picnum, sprite.shade);
     draw_sprite_triangle(
+        world,
         tiles,
         frame,
         zbuf,
@@ -2603,6 +3050,7 @@ fn render_floor_aligned_sprite(
         [projected[0], projected[1], projected[2]],
     );
     draw_sprite_triangle(
+        world,
         tiles,
         frame,
         zbuf,
@@ -2615,6 +3063,7 @@ fn render_floor_aligned_sprite(
 }
 
 fn draw_sprite_triangle(
+    world: &BuildWorld,
     tiles: &SoftTiles,
     frame: &mut SoftFrame,
     zbuf: &mut [i32],
@@ -2666,20 +3115,36 @@ fn draw_sprite_triangle(
                 .clamp(0, 63);
             let v = ((w0 * i64::from(v0) + w1 * i64::from(v1) + w2 * i64::from(v2)) / area)
                 .clamp(0, 63);
-            let pixel = match tile.map(|t| t.at(u * t.w as i64 / 64, v * t.h as i64 / 64)) {
-                Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                Some(pixel) => {
+            let texel = tile.map(|t| (t, u * t.w as i64 / 64, v * t.h as i64 / 64));
+            let (pixel, color) = match texel.map(|(t, tu, tv)| (t.at(tu, tv), t, tu, tv)) {
+                Some((pixel, ..)) if pixel == room_build::art::TRANSPARENT => continue,
+                Some((pixel, t, tu, tv)) => {
                     let p = pal_table.map_or(pixel, |t| t[usize::from(pixel)]);
-                    let shade =
-                        sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum);
-                    tiles.shade_row(shade).map_or(p, |r| r[usize::from(p)])
+                    let shade = sprite_fog_shade(
+                        Some(world),
+                        sprite.shade,
+                        i64::from(depth),
+                        sprite.sectnum,
+                    );
+                    (
+                        tiles.shade_row(shade).map_or(p, |r| r[usize::from(p)]),
+                        tiles.shade_true_color(t.at_rgb(tu, tv), shade),
+                    )
                 }
-                None => flat,
+                None => (flat, 0),
             };
             if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
                 zbuf[index] = depth;
             }
-            frame.draw_sprite_pixel(Some(tiles), index, depth, pixel, sprite.cstat, blend_table);
+            frame.draw_sprite_pixel(
+                Some(tiles),
+                index,
+                depth,
+                pixel,
+                sprite.cstat,
+                blend_table,
+                color,
+            );
         }
     }
 }
@@ -2692,6 +3157,7 @@ fn draw_sprite_triangle(
 /// perspective correction, translucency and one-sided backface rejection are
 /// still handled by the eventual full Build renderer.
 fn render_wall_aligned_sprite(
+    world: &BuildWorld,
     view: &BuildView,
     frame: &mut SoftFrame,
     tiles: Option<&SoftTiles>,
@@ -2842,26 +3308,40 @@ fn render_wall_aligned_sprite(
             } else {
                 v0
             };
-            let pix = match wall_tile.map(|t| t.at(u, v)) {
-                Some(pixel) if pixel == room_build::art::TRANSPARENT => continue,
-                Some(pixel) => {
+            let (pix, color) = match wall_tile.map(|t| (t.at(u, v), t)) {
+                Some((pixel, _)) if pixel == room_build::art::TRANSPARENT => continue,
+                Some((pixel, t)) => {
                     let palette_pixel =
                         if tiles.has_palette_variant(sprite.picnum, sprite.pal, clock_120hz) {
                             pixel
                         } else {
                             tiles.remap_palette(sprite.pal, pixel)
                         };
-                    tiles.shade_palette(
-                        sprite_fog_shade(None, sprite.shade, i64::from(depth), sprite.sectnum),
-                        palette_pixel,
+                    let shade = sprite_fog_shade(
+                        Some(world),
+                        sprite.shade,
+                        i64::from(depth),
+                        sprite.sectnum,
+                    );
+                    (
+                        tiles.shade_palette(shade, palette_pixel),
+                        tiles.shade_true_color(t.at_rgb(u, v), shade),
                     )
                 }
-                None => flat,
+                None => (flat, 0),
             };
             if sprite.cstat & CSTAT_TRANSLUCENT == 0 {
                 zbuf[index] = depth;
             }
-            frame.draw_sprite_pixel(Some(tiles), index, depth, pix, sprite.cstat, blend_table);
+            frame.draw_sprite_pixel(
+                Some(tiles),
+                index,
+                depth,
+                pix,
+                sprite.cstat,
+                blend_table,
+                color,
+            );
         }
     }
     let _ = &mut reverse_u;
@@ -3238,6 +3718,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: std::sync::Arc::from(vec![77]),
+            true_color: None,
         };
         let mut tiles = SoftTiles::new();
         tiles.insert_skybox(room_build::def::ImportedSkybox {
@@ -3285,6 +3766,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: std::sync::Arc::from(vec![pixel]),
+            true_color: None,
         };
         let mut tiles = SoftTiles::new();
         tiles.insert_skybox(room_build::def::ImportedSkybox {
@@ -3294,13 +3776,201 @@ mod tests {
         });
         let center = |angle| tiles.sample_skybox_at(42, 0, angle << 16, 1, 2, 1, 4, 1);
 
-        assert_eq!(center(0), Some(10)); // front
-        assert_eq!(center(512), Some(20)); // right
-        assert_eq!(center(1024), Some(30)); // back
-        assert_eq!(center(1536), Some(40)); // left
-        assert_eq!(tiles.sample_skybox_at(42, 5, 0, 1, 2, 1, 4, 1), Some(10));
+        // EDuke32 Polymost: front faces Build north (angle 1536), right east.
+        assert_eq!(center(1536), Some(10)); // front
+        assert_eq!(center(0), Some(20)); // right
+        assert_eq!(center(512), Some(30)); // back
+        assert_eq!(center(1024), Some(40)); // left
+        assert_eq!(tiles.sample_skybox_at(42, 5, 0, 1, 2, 1, 4, 1), Some(20));
         assert_eq!(tiles.sample_skybox_at(42, 0, 0, 1, 2, 0, 4, 3), Some(50)); // top
         assert_eq!(tiles.sample_skybox_at(42, 0, 0, 1, 2, 3, 4, 0), Some(60)); // down
+    }
+
+    #[test]
+    fn def_skybox_faces_follow_polymost_texture_orientation() {
+        // Column-major faces: walls are 2×1 (u0, u1); top/bottom are 1×2 (v0, v1).
+        let wall = |left, right| room_build::def::ImportedSkyboxFace {
+            width: 2,
+            height: 1,
+            pixels: std::sync::Arc::from(vec![left, right]),
+            true_color: None,
+        };
+        let flat = |top, bottom| room_build::def::ImportedSkyboxFace {
+            width: 1,
+            height: 2,
+            pixels: std::sync::Arc::from(vec![top, bottom]),
+            true_color: None,
+        };
+        let mut tiles = SoftTiles::new();
+        tiles.insert_skybox(room_build::def::ImportedSkybox {
+            tile: 42,
+            palette: 0,
+            faces: [
+                wall(1, 2),
+                wall(3, 4),
+                wall(5, 6),
+                wall(7, 8),
+                flat(9, 10),
+                flat(11, 12),
+            ],
+        });
+        // Screen-right of center on an 8-wide view, at the horizon.
+        let right_of_center =
+            |angle: i32| tiles.sample_skybox_at(42, 0, angle << 16, 7, 8, 4, 8, 4);
+        // Each wall's u runs along Polymost `skywal[i]` → `skywal[i + 1]`,
+        // which is left → right as seen from inside the cube.
+        assert_eq!(right_of_center(1536), Some(2)); // front, facing north
+        assert_eq!(right_of_center(0), Some(4)); // right, facing east
+        assert_eq!(right_of_center(512), Some(6)); // back, facing south
+        assert_eq!(right_of_center(1024), Some(8)); // left, facing west
+        // Looking steeply up: the ceiling's v grows towards world +y (south).
+        let up = |angle: i32| tiles.sample_skybox_at(42, 0, angle << 16, 4, 8, 0, 64, 40);
+        assert_eq!(up(1536), Some(9)); // facing north: the north (top) row
+        assert_eq!(up(512), Some(10)); // facing south: the south (bottom) row
+        // Looking steeply down: the floor is y-flipped, v grows towards -y.
+        let down = |angle: i32| tiles.sample_skybox_at(42, 0, angle << 16, 4, 8, 63, 64, 24);
+        assert_eq!(down(1536), Some(12));
+        assert_eq!(down(512), Some(11));
+    }
+
+    #[test]
+    fn true_color_follows_the_drawn_image_and_palette_remaps() {
+        let mut tiles = SoftTiles::new();
+        tiles.insert(9000, 1, 2, vec![12, 13]);
+        tiles.set_true_color(9000, Some(Arc::from(vec![0xFF11_2233, 0xFF44_5566])));
+        // Wrong-sized colors are refused rather than misaligned.
+        tiles.set_true_color(9001, Some(Arc::from(vec![1, 2, 3])));
+        let mut lookup = [0_u8; 256];
+        for (index, slot) in lookup.iter_mut().enumerate() {
+            *slot = index as u8;
+        }
+        tiles.set_palette_lookup(21, lookup);
+
+        let base = tiles.resolve_for_palette(9000, 0, 0).unwrap();
+        assert_eq!(base.at_rgb(0, 1), 0xFF44_5566);
+        // A LOOKUP.DAT palette keeps the indexed tint (no true colour) ...
+        assert!(
+            tiles
+                .resolve_for_palette(9000, 21, 0)
+                .unwrap()
+                .rgb
+                .is_none()
+        );
+        // ... while a palette without a lookup draws the base image's colors.
+        assert!(tiles.resolve_for_palette(9000, 7, 0).unwrap().rgb.is_some());
+        // A DEF palette branch carries its own colors.
+        tiles.insert_palette_variant(9000, 21, 1, 1, vec![40]);
+        tiles.set_palette_true_color(9000, 21, Some(Arc::from(vec![0xFF77_8899])));
+        assert_eq!(
+            tiles.resolve_for_palette(9000, 21, 0).unwrap().at_rgb(0, 0),
+            0xFF77_8899
+        );
+        // Re-inserting a tile drops stale colors.
+        tiles.insert(9000, 1, 2, vec![12, 13]);
+        assert!(tiles.resolve(9000, 0).unwrap().rgb.is_none());
+        assert!(tiles.has_true_color());
+    }
+
+    #[test]
+    fn def_tint_follows_polymost_hictinting() {
+        let tint = |r, g, b, flags| HicTint { r, g, b, flags };
+        // flags 0: colour multiply.
+        assert_eq!(tint(255, 128, 0, 0).apply(0xFF80_FF40), 0xFF80_8000);
+        // flags 1: grayscale (EDuke32 coefficient order) then multiply.
+        let gray = (f64::from(0x40) * 0.3 + f64::from(0x80) * 0.59 + f64::from(0x20) * 0.11) as u32;
+        assert_eq!(
+            tint(255, 255, 255, 1).apply(0xFF20_8040),
+            0xFF00_0000 | (gray << 16) | (gray << 8) | gray
+        );
+        // flags 2: invert.
+        assert_eq!(tint(255, 255, 255, 2).apply(0xFF00_FF10), 0xFFFF_00EF);
+        // Colorize replaces the multiply: c * t >> 6, clamped.
+        assert_eq!(tint(64, 128, 32, 4).apply(0xFF10_FF40), 0xFF10_FF20);
+        // Screen blend.
+        assert_eq!(tint(255, 0, 128, 64).apply(0xFF00_8080), 0xFFFF_81C0);
+        // Transparent texels stay transparent.
+        assert_eq!(tint(1, 2, 3, 0).apply(0), 0);
+
+        let mut tiles = SoftTiles::new();
+        tiles.insert(9000, 1, 1, vec![12]);
+        tiles.set_true_color(9000, Some(Arc::from(vec![0xFF80_8080])));
+        let mut lookup = [0_u8; 256];
+        for (index, slot) in lookup.iter_mut().enumerate() {
+            *slot = index as u8;
+        }
+        tiles.set_palette_lookup(21, lookup);
+        assert!(
+            tiles
+                .resolve_for_palette(9000, 21, 0)
+                .unwrap()
+                .rgb
+                .is_none()
+        );
+        // A tinted palette keeps the base image's true colour and tints it.
+        tiles.set_tint(21, tint(255, 0, 128, 0));
+        assert_eq!(
+            tiles.resolve_for_palette(9000, 21, 0).unwrap().at_rgb(0, 0),
+            0xFF80_0040
+        );
+        assert_eq!(tiles.base_true_color_at(9000, 21, 0, 0, 0), 0xFF80_0040);
+        // Palette 0 is never tinted.
+        tiles.set_tint(0, tint(0, 0, 0, 0));
+        assert_eq!(
+            tiles.resolve_for_palette(9000, 0, 0).unwrap().at_rgb(0, 0),
+            0xFF80_8080
+        );
+        // A palette's own image is tinted only by in-memory effects.
+        tiles.insert_palette_variant(9000, 21, 1, 1, vec![40]);
+        tiles.set_palette_true_color(9000, 21, Some(Arc::from(vec![0xFF77_8899])));
+        assert_eq!(
+            tiles.resolve_for_palette(9000, 21, 0).unwrap().at_rgb(0, 0),
+            0xFF77_8899
+        );
+        tiles.set_tint(21, tint(255, 255, 255, 2));
+        assert_eq!(
+            tiles.resolve_for_palette(9000, 21, 0).unwrap().at_rgb(0, 0),
+            0xFF88_7766
+        );
+    }
+
+    #[test]
+    fn true_color_shading_and_translucency_follow_polymost() {
+        let mut tiles = SoftTiles::new();
+        // Without shade tables a color passes through unchanged.
+        assert_eq!(tiles.shade_true_color(0xFF80_4020, 16), 0xFF80_4020);
+        tiles.set_shade_tables(32, vec![0; 32 * 256]);
+        assert_eq!(tiles.shade_true_color(0xFF80_4020, 0), 0xFF80_4020);
+        assert_eq!(tiles.shade_true_color(0xFF80_4020, 16), 0xFF40_2010);
+        assert_eq!(tiles.shade_true_color(0xFF80_4020, 40), 0xFF00_0000);
+        assert_eq!(tiles.shade_true_color(0xFF80_4020, -8), 0xFF80_4020);
+        // Polymost alpha: 2/3 foreground, or 1/3 with the reverse bit.
+        assert_eq!(
+            SoftTiles::blend_true_color(0xFF00_0000, 0xFF96_9696, false),
+            0xFF64_6464
+        );
+        assert_eq!(
+            SoftTiles::blend_true_color(0xFF00_0000, 0xFF96_9696, true),
+            0xFF32_3232
+        );
+
+        let mut palette = [0_u8; 768];
+        palette[3 * 5..3 * 5 + 3].copy_from_slice(&[30, 60, 90]);
+        tiles.set_palette_rgb(&palette);
+        let mut frame = SoftFrame::new(2, 1);
+        frame.enable_true_color();
+        frame.pixels[0] = 5;
+        // Opaque sprite texel: its true color replaces the pixel.
+        frame.draw_sprite_pixel(Some(&tiles), 0, 10, 9, 0, 0, 0xFF96_9696);
+        assert_eq!(frame.true_color.as_ref().unwrap()[0], 0xFF96_9696);
+        // An indexed write clears the true color underneath it.
+        frame.put(0, 0, 3);
+        assert_eq!(frame.true_color.as_ref().unwrap()[0], 0);
+        // Translucent texel over an indexed pixel blends with its palette RGB.
+        frame.pixels[1] = 5;
+        frame.draw_sprite_pixel(Some(&tiles), 1, 10, 9, 2, 0, 0xFF96_9696);
+        assert_eq!(frame.true_color.as_ref().unwrap()[1], 0xFF6E_7882);
+        assert_eq!(frame.pixel_color(1, &palette), [0x6E, 0x78, 0x82]);
+        assert_eq!(frame.pixel_color(0, &palette), [0, 0, 0]);
     }
 
     #[test]
@@ -3338,9 +4008,10 @@ mod tests {
                 foreground: 20,
                 reverse: false,
                 blend_table: 0,
+                true_color: 0,
             }],
         );
-        frame.draw_sprite_pixel(Some(&tiles), 0, 100, 30, CSTAT_TRANSLUCENT, 201);
+        frame.draw_sprite_pixel(Some(&tiles), 0, 100, 30, CSTAT_TRANSLUCENT, 201, 0);
         frame.finish_deferred_translucency(&tiles, &[200]);
 
         assert_eq!(frame.pixels, [41]);
@@ -3490,6 +4161,65 @@ mod tests {
         let (_, _, far_depth) =
             cam_project(&view, sin, cos, sprites[1].x, sprites[1].y, sprites[1].z).unwrap();
         assert_eq!(depth[pixel], far_depth as i32);
+    }
+
+    #[test]
+    fn aligned_sprites_fog_with_the_render_visibility() {
+        // Shade row `n` maps every colour to `n`, so a drawn pixel reads back
+        // its fog shade.
+        let mut shade_tables = Vec::with_capacity(64 * 256);
+        for row in 0..64_u8 {
+            shade_tables.extend(std::iter::repeat_n(row, 256));
+        }
+        let mut tiles = SoftTiles::new();
+        tiles.insert(7, 8, 8, vec![10; 64]);
+        tiles.set_shade_tables(64, shade_tables);
+        let view = BuildView {
+            posx: 0,
+            posy: 0,
+            posz: 0,
+            ang: 0,
+            ang_q16: 0,
+            horiz: 100,
+            horiz_q16: 100 << 16,
+            sect: 0,
+            visible_sectors: vec![0],
+        };
+        let max_shade = |cstat: u16, visibility: i32| {
+            let sprite = SpriteT {
+                x: 1500,
+                y: 0,
+                z: if cstat == 32 { 32 << 8 } else { 0 },
+                cstat,
+                picnum: 7,
+                xrepeat: 255,
+                yrepeat: 255,
+                sectnum: 0,
+                statnum: 0,
+                ..SpriteT::default()
+            };
+            let mut world = BuildWorld::load_arrays(
+                vec![SectorT::default()],
+                Vec::new(),
+                &[sprite],
+                [0, 0, 0],
+                0,
+                0,
+                1,
+            )
+            .unwrap();
+            world.render_visibility = visibility;
+            let mut frame = SoftFrame::new(64, 48);
+            frame.pixels.fill(255);
+            let mut depth = vec![i32::MAX; frame.pixels.len()];
+            render_fp_sprites_at(&world, &view, &mut frame, Some(&tiles), &mut depth, 0);
+            frame.pixels.iter().copied().filter(|&p| p != 255).max()
+        };
+        for cstat in [16, 32] {
+            assert_eq!(max_shade(cstat, 0), Some(0), "cstat {cstat} without fog");
+            let fogged = max_shade(cstat, 4096).expect("aligned sprite should draw");
+            assert!(fogged > 0, "cstat {cstat} ignores render visibility");
+        }
     }
 
     #[test]

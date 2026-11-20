@@ -353,7 +353,58 @@ fn apply_blend_table_operations(
 
 /// Rotate the palette frame around its center using Build-angle fixed-point
 /// trig. Outside pixels use palette index zero, matching a clipped screen edge.
-fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> Vec<u8> {
+/// The viewer as left by EDuke32's `EVENT_DISPLAYSTART` for this frame.
+fn apply_render_camera(player: &Player, camera: room_build_engine::world::RenderCamera) -> Player {
+    let mut player = player.clone();
+    macro_rules! set {
+        ($($field:ident),*) => {
+            $(if let Some(value) = camera.$field {
+                player.$field = value;
+            })*
+        };
+    }
+    set!(
+        posz,
+        oposz,
+        horiz,
+        previous_horiz,
+        horizoff,
+        previous_horizoff,
+        q16_horiz,
+        previous_q16_horiz,
+        q16_horizoff,
+        previous_q16_horizoff,
+        pyoff,
+        previous_pyoff,
+        rotscrnang,
+        previous_rotscrnang
+    );
+    player
+}
+
+/// Draw one captured EDuke32 HUD command onto the HUD page.
+fn draw_hud_command(
+    page: &mut crate::ui_page::UiPage<'_>,
+    draw: &room_build_engine::world::HudDrawCommand,
+) {
+    match draw {
+        room_build_engine::world::HudDrawCommand::Sprite(sprite)
+        | room_build_engine::world::HudDrawCommand::Crosshair(sprite) => page.rotatesprite(*sprite),
+        room_build_engine::world::HudDrawCommand::Text(text) => page.draw_minitext(text),
+        room_build_engine::world::HudDrawCommand::GameText(text) => page.draw_gametext(text),
+        room_build_engine::world::HudDrawCommand::ScreenText(text) => page.draw_screentext(text),
+        room_build_engine::world::HudDrawCommand::Number(number) => {
+            page.draw_digitalnumber(*number)
+        }
+    }
+}
+
+fn rotate_palette_frame<T: Copy + Default>(
+    pixels: &[T],
+    width: u32,
+    height: u32,
+    angle: i16,
+) -> Vec<T> {
     let width = width as usize;
     let height = height as usize;
     let Some(expected) = width.checked_mul(height) else {
@@ -363,7 +414,7 @@ fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> V
         return pixels.to_vec();
     }
     let (sin, cos) = room_build_engine::helpers::sincos_q14(i32::from(angle));
-    let mut rotated = vec![0; expected];
+    let mut rotated = vec![T::default(); expected];
     let center_x2 = width as i64 - 1;
     let center_y2 = height as i64 - 1;
     for y in 0..height {
@@ -382,6 +433,9 @@ fn rotate_palette_frame(pixels: &[u8], width: u32, height: u32, angle: i16) -> V
     rotated
 }
 
+/// EDuke32's `ANIMPAL` base-palette id.
+const ANIMATION_PALETTE: u8 = 6;
+
 /// Reusable CPU renderer with the palette and ART tiles owned by an Atomic GRP.
 pub struct DukeSoftRenderer {
     palette: Palette,
@@ -390,6 +444,9 @@ pub struct DukeSoftRenderer {
     custom_base_palettes: BTreeMap<u8, [u8; 768]>,
     /// Full-screen palette variants generated from LOOKUP.DAT remap tables.
     game_palette_tables: BTreeMap<u8, [u8; 768]>,
+    /// EDuke32 `ANIMPAL` (palette 6): the palette of the last `.ANM` shown.
+    /// The title's `LOGO.ANM` sets it, as EDuke32's startup logo does.
+    animation_palette: Option<[u8; 768]>,
     /// Atomic `BRITABLE`, indexed by brightness (0..15) and six-bit channel.
     brightness_table: [[u8; 64]; 16],
     /// Atomic's default `ud.brightness` is 16, i.e. BRITABLE row 4.
@@ -481,6 +538,9 @@ impl DukeSoftRenderer {
                 })
                 .collect()
         });
+        let animation_palette = grp
+            .get("LOGO.ANM")
+            .and_then(|data| room_build::anm_palette(data).ok());
         let brightness_table = tables_dat
             .or_else(|| grp.get("TABLES.DAT"))
             .and_then(room_build_engine::helpers::britable_from_tables_dat)
@@ -572,6 +632,7 @@ impl DukeSoftRenderer {
             base_palettes,
             custom_base_palettes: BTreeMap::new(),
             game_palette_tables,
+            animation_palette,
             brightness_table,
             brightness: Cell::new(4),
             tiles: RefCell::new(tiles),
@@ -699,8 +760,14 @@ impl DukeSoftRenderer {
         let mut skyboxes = Vec::new();
         let mut base_palette_operations = Vec::new();
         let mut blend_table_operations = Vec::new();
+        let mut tints = Vec::new();
         let expanded_defs = expand_def_sources(def_files)?;
         for (name, document) in &expanded_defs {
+            tints.extend(
+                document
+                    .tints()
+                    .map_err(|error| format!("{name}: {error}"))?,
+            );
             base_palette_operations.extend(
                 document
                     .base_palette_operations()
@@ -834,6 +901,18 @@ impl DukeSoftRenderer {
             actions.extend(operations.into_iter().map(TileAction::Operation));
         }
         let mut soft_tiles = self.tiles.borrow_mut();
+        soft_tiles.set_palette_rgb(&import_palette.rgb);
+        for tint in &tints {
+            soft_tiles.set_tint(
+                tint.palette,
+                room_build_engine::soft::HicTint {
+                    r: tint.rgb[0],
+                    g: tint.rgb[1],
+                    b: tint.rgb[2],
+                    flags: tint.flags,
+                },
+            );
+        }
         apply_blend_table_operations(
             &mut soft_tiles,
             &blend_table_operations,
@@ -846,6 +925,7 @@ impl DukeSoftRenderer {
         for action in actions {
             match action {
                 TileAction::Import(tile) => {
+                    let true_color = tile.true_color.map(Arc::from);
                     if let Some(palette) = tile.palette {
                         soft_tiles.insert_palette_variant(
                             tile.tile,
@@ -854,6 +934,7 @@ impl DukeSoftRenderer {
                             tile.height,
                             tile.pixels,
                         );
+                        soft_tiles.set_palette_true_color(tile.tile, palette, true_color);
                     } else {
                         soft_tiles.insert_with_offset(
                             tile.tile,
@@ -863,6 +944,7 @@ impl DukeSoftRenderer {
                             tile.x_offset,
                             tile.y_offset,
                         );
+                        soft_tiles.set_true_color(tile.tile, true_color);
                     }
                 }
                 TileAction::Operation(room_build::def::TileOperation::Copy {
@@ -903,6 +985,12 @@ impl DukeSoftRenderer {
 
     /// Set Atomic `curbrightness` (0..15). The native F11 control uses rows
     /// 0..14 in steps of two; the setup menu can reach row 15.
+    /// Record the palette of an `.ANM` that was just shown, as EDuke32's
+    /// `Anim_Play` does for `ANIMPAL` (palette 6).
+    pub fn set_animation_palette(&mut self, rgb: [u8; 768]) {
+        self.animation_palette = Some(rgb);
+    }
+
     pub fn set_brightness(&self, row: u8) {
         self.brightness.set(row.min(15));
     }
@@ -926,6 +1014,15 @@ impl DukeSoftRenderer {
     ) -> Option<&'a [u8; 768]> {
         if player.game_palette != 0 {
             let palette_id = u8::try_from(player.game_palette).ok();
+            if palette_id == Some(ANIMATION_PALETTE) {
+                // EDuke32 `ANIMPAL`: an `.ANM` palette overwrites any DEF
+                // table; with neither, `videoSetPalette` uses palette 0.
+                return self
+                    .animation_palette
+                    .as_ref()
+                    .or_else(|| self.custom_base_palettes.get(&ANIMATION_PALETTE))
+                    .or_else(|| self.custom_base_palettes.get(&0));
+            }
             if let Some(palette) =
                 palette_id.and_then(|palette_id| self.custom_base_palettes.get(&palette_id))
             {
@@ -1139,6 +1236,15 @@ impl DukeSoftRenderer {
         tic: u32,
         earthquake_time: u8,
     ) -> Vec<u8> {
+        // EDuke32 `EVENT_DISPLAYSTART` camera writes for this frame (render-only).
+        let event_camera_player;
+        let player = match world.render_camera {
+            Some(camera) => {
+                event_camera_player = apply_render_camera(player, camera);
+                &event_camera_player
+            }
+            None => player,
+        };
         let original_tiles = player.remote_camera.map(|_| self.tiles.borrow().clone());
         let mut camera_world = None;
         if let Some((camera_x, camera_y, camera_z, camera_ang, camera_sector)) =
@@ -1228,6 +1334,11 @@ impl DukeSoftRenderer {
         }
         let render_world = camera_world.as_ref().unwrap_or(world);
         let mut frame = SoftFrame::new(width, height);
+        // DEF RGB images (Brutal Duke's hi-res tiles and skyboxes) keep their
+        // source colors in a true-colour layer beside the indexed frame.
+        if self.tiles.borrow().has_true_color() {
+            frame.enable_true_color();
+        }
         let mut view_z = player.posz;
         let mut view_ang = player.view_ang();
         let mut view_ang_q16 = player
@@ -1404,67 +1515,85 @@ impl DukeSoftRenderer {
         // combining `dead_flag` with the player's floor-relative height. The
         // simulation stores the random death direction in `dead_flag`; derive
         // the live roll here so rendering remains a read-only view operation.
-        let screen_roll = if player.dead_flag != 0 && player.remote_camera.is_none() {
-            render_world
-                .sectors
-                .get(usize::try_from(player.cursectnum).unwrap_or(usize::MAX))
-                .map(|sector| {
-                    (i32::from(player.dead_flag)
-                        .wrapping_add(sector.floorz.wrapping_add(player.posz) >> 7)
-                        & 2047) as i16
-                })
-                .unwrap_or(player.rotscrnang)
-        } else {
-            player.rotscrnang
-        };
+        let screen_roll =
+            if let Some(roll) = world.render_camera.and_then(|camera| camera.rotscrnang) {
+                // An `EVENT_DISPLAYSTART` hook set this frame's roll explicitly.
+                roll
+            } else if player.dead_flag != 0 && player.remote_camera.is_none() {
+                render_world
+                    .sectors
+                    .get(usize::try_from(player.cursectnum).unwrap_or(usize::MAX))
+                    .map(|sector| {
+                        (i32::from(player.dead_flag)
+                            .wrapping_add(sector.floorz.wrapping_add(player.posz) >> 7)
+                            & 2047) as i16
+                    })
+                    .unwrap_or(player.rotscrnang)
+            } else {
+                player.rotscrnang
+            };
         let mut palette_pixels = rotate_palette_frame(&frame.pixels, width, height, screen_roll);
+        let mut true_color = frame
+            .true_color
+            .as_ref()
+            .map(|colors| rotate_palette_frame(colors, width, height, screen_roll));
         // The status HUD is screen space: it never rolls with the view.
         if player.remote_camera.is_none() || !render_world.render_hud_draws.is_empty() {
             let mut hud =
                 SoftFrame::with_pixels(width, height, std::mem::take(&mut palette_pixels));
+            hud.true_color = true_color.take();
+            // EDuke32 order: the weapon display (`P_DisplayWeapon` and its
+            // `EVENT_DISPLAYWEAPON` draws) belongs to the 3D view, under the
+            // status bar; crosshair and `EVENT_DISPLAYREST` draws go on top.
+            let weapon_draws = render_world
+                .render_hud_weapon_draws
+                .min(render_world.render_hud_draws.len());
+            let (under_status_bar, over_status_bar) =
+                render_world.render_hud_draws.split_at(weapon_draws);
+            if !under_status_bar.is_empty() {
+                let tiles = self.tiles.borrow();
+                let mut page = crate::ui_page::UiPage::new(&tiles, &mut hud);
+                for draw in under_status_bar {
+                    draw_hud_command(&mut page, draw);
+                }
+            }
             if player.remote_camera.is_none() {
                 self.draw_mini_hud(&mut hud, player, !render_world.render_hide_native_crosshair);
             }
-            if !render_world.render_hud_draws.is_empty() {
+            if !over_status_bar.is_empty() {
                 let tiles = self.tiles.borrow();
                 let mut page = crate::ui_page::UiPage::new(&tiles, &mut hud);
-                for draw in &render_world.render_hud_draws {
-                    match draw {
-                        room_build_engine::world::HudDrawCommand::Sprite(sprite) => {
-                            page.rotatesprite(*sprite);
-                        }
-                        room_build_engine::world::HudDrawCommand::Text(text) => {
-                            page.draw_minitext(text);
-                        }
-                        room_build_engine::world::HudDrawCommand::GameText(text) => {
-                            page.draw_gametext(text);
-                        }
-                        room_build_engine::world::HudDrawCommand::ScreenText(text) => {
-                            page.draw_screentext(text);
-                        }
-                        room_build_engine::world::HudDrawCommand::Number(number) => {
-                            page.draw_digitalnumber(*number);
-                        }
-                        room_build_engine::world::HudDrawCommand::Crosshair(sprite) => {
-                            page.rotatesprite(*sprite);
-                        }
-                    }
+                for draw in over_status_bar {
+                    draw_hud_command(&mut page, draw);
                 }
             }
             palette_pixels = hud.pixels;
+            true_color = hud.true_color;
         }
         // Chocolate `player.c::setpal` chooses the screen DAC palette from
         // heat vision, the FLOORSLIME ceiling, or an underwater sector.
         // Keep this render-only: the snapshot and playsim remain untouched.
         let screen_palette = self.screen_palette_for_player(render_world, player);
+        // A screen palette (water, slime, heat vision, CON `setgamepalette`)
+        // recolors the whole view, so the true-colour layer yields to it.
+        let true_color = true_color.filter(|_| screen_palette.is_none());
         let mut rgba = Vec::with_capacity(palette_pixels.len() * 4);
-        for index in palette_pixels {
-            let i = usize::from(index) * 3;
-            let rgb = screen_palette.unwrap_or(&self.palette.rgb);
+        for (pixel, index) in palette_pixels.into_iter().enumerate() {
+            let color = true_color
+                .as_ref()
+                .and_then(|colors| colors.get(pixel).copied())
+                .unwrap_or(0);
+            let (r, g, b) = if color != 0 {
+                ((color >> 16) as u8, (color >> 8) as u8, color as u8)
+            } else {
+                let i = usize::from(index) * 3;
+                let rgb = screen_palette.unwrap_or(&self.palette.rgb);
+                (rgb[i], rgb[i + 1], rgb[i + 2])
+            };
             rgba.extend_from_slice(&[
-                self.brighten_channel(rgb[i]),
-                self.brighten_channel(rgb[i + 1]),
-                self.brighten_channel(rgb[i + 2]),
+                self.brighten_channel(r),
+                self.brighten_channel(g),
+                self.brighten_channel(b),
                 255,
             ]);
         }
@@ -1806,7 +1935,9 @@ impl DukeSoftRenderer {
                         continue;
                     }
                     let p = tiles.shade_palette(shade, tiles.remap_palette(pal, p));
-                    frame.pixels[dy as usize * frame.width as usize + dx as usize] = p;
+                    let index = dy as usize * frame.width as usize + dx as usize;
+                    frame.pixels[index] = p;
+                    frame.set_true_color(index, tiles.base_true_color_at(pic, pal, shade, u, v));
                 }
             }
         };
@@ -2071,11 +2202,11 @@ impl DukeSoftRenderer {
             digital(frame, 20, 200 - 17, i32::from(player.last_extra.max(0)));
             blit(frame, AMMOBOX, 37, 200 - 28, 0, 21);
             let weapon = if player.curr_weapon == HANDREMOTE_WEAPON {
-                HANDBOMB_WEAPON
+                HANDBOMB_WEAPON as i16
             } else {
-                player.curr_weapon.clamp(0, 11) as usize
+                player.curr_weapon
             };
-            digital(frame, 53, 200 - 17, i32::from(player.ammo[weapon]));
+            digital(frame, 53, 200 - 17, i32::from(player.weapon_ammo(weapon)));
             if player.inventory_icon != 0 {
                 let o = 158;
                 let icon = match player.inventory_icon {
@@ -2212,7 +2343,12 @@ impl DukeSoftRenderer {
                         continue;
                     }
                     let pixel = tiles.shade_palette(d.shade, tiles.remap_palette(d.pal, pixel));
-                    frame.pixels[dy as usize * frame.width as usize + dx as usize] = pixel;
+                    let index = dy as usize * frame.width as usize + dx as usize;
+                    frame.pixels[index] = pixel;
+                    frame.set_true_color(
+                        index,
+                        tiles.base_true_color_at(d.tile, d.pal, d.shade, u, v),
+                    );
                 }
             }
         }
@@ -2287,7 +2423,12 @@ impl DukeSoftRenderer {
                         if pixel != room_build::art::TRANSPARENT {
                             let pixel = tiles.remap_palette(pal, pixel);
                             let pixel = tiles.shade_palette(body.shade.min(24), pixel);
-                            frame.pixels[dy as usize * frame.width as usize + dx as usize] = pixel;
+                            let index = dy as usize * frame.width as usize + dx as usize;
+                            frame.pixels[index] = pixel;
+                            frame.set_true_color(
+                                index,
+                                tiles.base_true_color_at(tile, pal, body.shade.min(24), sx, sy),
+                            );
                         }
                     }
                 }
@@ -2576,6 +2717,30 @@ mod tests {
             .screen_palette_for_player(&BuildWorld::new(), &player)
             .expect("lookup palette is present");
         assert_eq!(&selected[..3], &renderer.palette.rgb[255 * 3..255 * 3 + 3]);
+    }
+
+    #[test]
+    fn animation_palette_six_uses_the_last_anm_palette_not_a_lookup_remap() {
+        // LOOKUP.DAT defines a sprite remap with id 6; EDuke32's palette 6 is
+        // `ANIMPAL`, never that remap.
+        let grp = mini_grp_with_lookup(Some(6));
+        let mut renderer = DukeSoftRenderer::from_grp(&grp).unwrap();
+        let mut player = Player::default();
+        player.game_palette = 6;
+        assert!(
+            renderer
+                .screen_palette_for_player(&BuildWorld::new(), &player)
+                .is_none(),
+            "no .ANM shown: palette 6 falls back to the base palette"
+        );
+
+        let mut anm_rgb = [0; 768];
+        anm_rgb[..3].copy_from_slice(&[40, 50, 60]);
+        renderer.set_animation_palette(anm_rgb);
+        let selected = renderer
+            .screen_palette_for_player(&BuildWorld::new(), &player)
+            .expect("the shown .ANM palette is palette 6");
+        assert_eq!(&selected[..3], &[40, 50, 60]);
     }
 
     #[test]

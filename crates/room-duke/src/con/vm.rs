@@ -46,6 +46,12 @@ pub struct ActorConTemps {
     /// `g_t[0]` count, `g_t[1]` move ptr, `g_t[2]`/`g_t[3]` action counters,
     /// `g_t[4]` action ptr, `g_t[5]` ai ptr.
     pub g_t: [i32; 6],
+    /// EDuke32 `t_data[6..10]` (Atomic has six slots): `A_SetHitData`
+    /// stores a bullet spark's hit wall, sector and sprite in slots 6–8,
+    /// which scripts read as `htg_t 6`..`8` (Brutal Duke's blood decals and
+    /// bullet holes).
+    #[serde(default)]
+    pub t_data_extra: [i32; 4],
     /// Atomic SAV pointer-kind bits for T2/T5/T6 (g_t[1]/[4]/[5]).
     #[serde(default)]
     pub script_pointer_mask: u8,
@@ -118,6 +124,16 @@ pub struct ActorConTemps {
     /// Chocolate `hittype[].ang` / `owner` for knockback / ownership.
     pub hit_ang: i16,
     pub hit_owner: i16,
+    /// EDuke32 damage source of the queued hit: the projectile, bullet spark
+    /// or exploding sprite that dealt it (`THISACTOR` in EVENT_DAMAGESPRITE /
+    /// EVENT_POSTDAMAGESPRITE); `-1` when the native site does not record it.
+    #[serde(default = "minus_one_i16")]
+    pub hit_source: i16,
+    /// EDuke32 radius-damage payload of the queued hit (`ud.returnvar`,
+    /// `userdef.return 1`..`5`): `{radius, dmg1, dmg2, dmg3, dmg4}`, or a
+    /// negative radius for a direct hit.
+    #[serde(default = "direct_hit_payload")]
+    pub hit_radius: [i32; 5],
     /// Chocolate `hittype[].tempang` — saved sprite palette.
     pub tempang: i16,
     /// EDuke32 `hittype[].floorzoffset`, exposed as `htfloorzoffset`.
@@ -356,10 +372,20 @@ pub struct PendingHitRadius {
     pub damage: [i32; 4],
 }
 
+fn minus_one_i16() -> i16 {
+    -1
+}
+
+/// [`ActorConTemps::hit_radius`] for a direct (non-radius) hit.
+pub fn direct_hit_payload() -> [i32; 5] {
+    [-1, 0, 0, 0, 0]
+}
+
 impl Default for ActorConTemps {
     fn default() -> Self {
         Self {
             g_t: [0; 6],
+            t_data_extra: [0; 4],
             script_pointer_mask: 0,
             timetosleep: 0,
             cgg: 0,
@@ -390,6 +416,8 @@ impl Default for ActorConTemps {
             hit_extra: -1,
             hit_ang: 0,
             hit_owner: -1,
+            hit_source: -1,
+            hit_radius: direct_hit_payload(),
             tempang: 0,
             floor_z_offset: 0,
             water_z_offset: 0,
@@ -665,6 +693,9 @@ pub struct ConVm<'a> {
     pub cansee_sprites: Option<&'a [SpriteHit]>,
     /// `sprite[].picnum` lookup matching `cansee_sprites` indices.
     pub cansee_picnums: Option<&'a [i16]>,
+    /// Lazily built sight view; when set it replaces `cansee_sprites` /
+    /// `cansee_picnums` (most actor runs never cast a sight ray).
+    pub cansee_lazy: Option<&'a dyn CanseeLazy>,
     /// Current `STAT_PROJECTILE` list for Chocolate `ifbulletnear` / `dodge`.
     pub projectiles: Option<&'a [ConProjectile]>,
     /// Mutable angle, including an in-parse `dodge()` turn.
@@ -702,11 +733,24 @@ pub struct ConVm<'a> {
 impl<'a> ConVm<'a> {
     /// Chocolate `hitasprite()` for the three `ifcanshoottarget` sight rays.
     fn hitasprite(&self, e: ConSpriteEnv, angle: i16) -> (i32, i16, bool) {
+        let Some(lazy) = self.cansee_lazy else {
+            return self.hitasprite_in(e, angle, self.cansee_sprites.unwrap_or(&[]));
+        };
+        let mut out = (i32::MAX, -1, false);
+        lazy.with(&mut |sprites, _| out = self.hitasprite_in(e, angle, sprites));
+        out
+    }
+
+    fn hitasprite_in(
+        &self,
+        e: ConSpriteEnv,
+        angle: i16,
+        sprites: &[SpriteHit],
+    ) -> (i32, i16, bool) {
         let (Some(sectors), Some(walls)) = (self.cansee_sectors, self.cansee_walls) else {
             return (i32::MAX, -1, false);
         };
         let sector_walls: Vec<SectorWalls> = sectors.iter().map(|sector| sector.walls()).collect();
-        let sprites = self.cansee_sprites.unwrap_or(&[]);
         let (sin, cos) = sincos_q14(i32::from(angle) & 2047);
         let z_offset = if e.actor_is_badguy {
             42 << 8
@@ -760,10 +804,19 @@ impl<'a> ConVm<'a> {
             (768, 16)
         };
         let same_actor_type = |hit_sprite: i16| {
-            usize::try_from(hit_sprite)
-                .ok()
-                .and_then(|index| self.cansee_picnums?.get(index))
-                .is_some_and(|picnum| *picnum == self.sprite_picnum)
+            let Ok(index) = usize::try_from(hit_sprite) else {
+                return false;
+            };
+            let same =
+                |picnums: &[i16]| picnums.get(index).is_some_and(|p| *p == self.sprite_picnum);
+            match self.cansee_lazy {
+                Some(lazy) => {
+                    let mut out = false;
+                    lazy.with(&mut |_, picnums| out = same(picnums));
+                    out
+                }
+                None => self.cansee_picnums.is_some_and(same),
+            }
         };
         let (first_distance, first_sprite, first_forcefield) = self.hitasprite(e, self.sprite_ang);
         if first_forcefield {
@@ -834,6 +887,7 @@ impl<'a> ConVm<'a> {
             cansee_walls: None,
             cansee_sprites: None,
             cansee_picnums: None,
+            cansee_lazy: None,
             projectiles: None,
             sprite_ang: 0,
             sprite_extra: 0,
@@ -887,8 +941,12 @@ impl<'a> ConVm<'a> {
             self.temps.lastvy = e.player_y;
         } else {
             // Chocolate: distance compare is a no-op when j==0; always try furthest.
-            let sprs = self.cansee_sprites.unwrap_or(&[]);
-            ok = self.furthestcanseepoint(e, secs, walls, sprs);
+            if let Some(lazy) = self.cansee_lazy {
+                lazy.with(&mut |sprs, _| ok = self.furthestcanseepoint(e, secs, walls, sprs));
+            } else {
+                let sprs = self.cansee_sprites.unwrap_or(&[]);
+                ok = self.furthestcanseepoint(e, secs, walls, sprs);
+            }
         }
         if ok {
             // Chocolate SLEEPTIME for STAT_ACTOR / STANDABLE — we only execute actors.
@@ -2460,6 +2518,19 @@ pub(crate) fn tick_action_frames(
     }
 }
 
+/// EDuke32 `VM_UpdateAnim`: the same action-frame tick, skipped (sprite
+/// `lotag` untouched) when the action pointer or its five words fall outside
+/// the script.
+pub(crate) fn eduke_update_anim(script: &[i32], temps: &mut ActorConTemps, sprite_lotag: &mut i16) {
+    let Ok(action) = usize::try_from(temps.g_t[4]) else {
+        return;
+    };
+    if action == 0 || action.saturating_add(4) >= script.len() {
+        return;
+    }
+    tick_action_frames(script, temps, sprite_lotag);
+}
+
 /// Execute actor/state script at `entry` until break/ends.
 pub fn execute(
     image: &ScriptImage,
@@ -2586,7 +2657,25 @@ fn getincangle(a: i16, na: i16) -> i16 {
     }
 }
 
+/// Sight view (`ifcansee` fallback, `ifcanshoottarget`) built on first use.
+///
+/// `with` must show the sprites as they were when the actor's code started.
+pub trait CanseeLazy {
+    /// Run `f` with the index-aligned sprite hits and picnums.
+    fn with(&self, f: &mut dyn FnMut(&[SpriteHit], &[i16]));
+}
+
+/// Where [`execute_actor_with`] gets the sight view from.
+#[derive(Clone, Copy)]
+pub enum CanseeInput<'a> {
+    /// Prebuilt index-aligned hits and picnums.
+    Slices(&'a [SpriteHit], &'a [i16]),
+    /// Built on first sight ray.
+    Lazy(&'a dyn CanseeLazy),
+}
+
 /// Chocolate `execute` for STAT_ACTOR: player dist / `ifp` / `ifcanseetarget`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn execute_actor<'a>(
     image: &'a ScriptImage,
     entry: usize,
@@ -2602,6 +2691,48 @@ pub fn execute_actor<'a>(
     cansee_walls: &'a [WallXY],
     cansee_sprites: &'a [SpriteHit],
     cansee_picnums: &'a [i16],
+    projectiles: &'a [ConProjectile],
+    active_sound_owners: &'a mut [Option<i16>],
+    shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
+    fall_now: Option<&'a mut (dyn FnMut(&mut ActorConTemps, &mut i32, &mut i16) + 'a)>,
+) -> ConStop {
+    execute_actor_with(
+        image,
+        entry,
+        randomseed,
+        temps,
+        sprite,
+        sprite_i,
+        sector,
+        hit_floorz,
+        hit_ceilingz,
+        env_player,
+        cansee_sectors,
+        cansee_walls,
+        CanseeInput::Slices(cansee_sprites, cansee_picnums),
+        projectiles,
+        active_sound_owners,
+        shoot_now,
+        fall_now,
+    )
+}
+
+/// [`execute_actor`] with a choice of eager or lazy sight view.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_actor_with<'a>(
+    image: &'a ScriptImage,
+    entry: usize,
+    randomseed: &mut i32,
+    temps: &'a mut ActorConTemps,
+    sprite: &mut SpriteT,
+    sprite_i: i16,
+    sector: &SectorT,
+    hit_floorz: i32,
+    hit_ceilingz: i32,
+    env_player: ConSpriteEnv,
+    cansee_sectors: &'a [SectorZ],
+    cansee_walls: &'a [WallXY],
+    cansee: CanseeInput<'a>,
     projectiles: &'a [ConProjectile],
     active_sound_owners: &'a mut [Option<i16>],
     shoot_now: Option<&'a mut (dyn FnMut(i16, i16, &mut i32) -> bool + 'a)>,
@@ -2642,8 +2773,13 @@ pub fn execute_actor<'a>(
     vm.env = Some(env);
     vm.cansee_sectors = Some(cansee_sectors);
     vm.cansee_walls = Some(cansee_walls);
-    vm.cansee_sprites = Some(cansee_sprites);
-    vm.cansee_picnums = Some(cansee_picnums);
+    match cansee {
+        CanseeInput::Slices(sprites, picnums) => {
+            vm.cansee_sprites = Some(sprites);
+            vm.cansee_picnums = Some(picnums);
+        }
+        CanseeInput::Lazy(lazy) => vm.cansee_lazy = Some(lazy),
+    }
     vm.projectiles = Some(projectiles);
     vm.sprite_ang = sprite.ang;
     vm.hitag = i32::from(sprite.hitag);

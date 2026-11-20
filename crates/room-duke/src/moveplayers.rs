@@ -660,7 +660,7 @@ fn apply_player_weapon_hits(
         // while armor is present.
         let health = if health > 0 {
             let mut damage = health.wrapping_sub(player.last_extra);
-            if damage < 0 && player.shield_amount > 0 {
+            if damage < 0 && player.shield_amount > 0 && !player.eduke_skip_incur_damage {
                 let shield_percent = 20 + room_build_engine::numeric::krand_step(randomseed) % 30;
                 let shield_damage = (i32::from(damage).wrapping_mul(shield_percent) / 100) as i16;
                 damage = damage.wrapping_sub(shield_damage);

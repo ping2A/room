@@ -607,6 +607,8 @@ mod tests {
                 fast_speed: -1.0,
                 jump_z: -1.0,
                 attack_z_offset: -1.0,
+                ext: 0,
+                user: Default::default(),
             }],
             blockmap: crate::blockmap::Blockmap {
                 origin_x: 0,

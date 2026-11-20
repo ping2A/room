@@ -13,7 +13,10 @@ pub struct ActorFlags([u64; FLAG_WORDS]);
 
 /// `DEFINE_FLAG` names from UZDoom `thingdef_data.cpp` (`67bdb4b7`), in order.
 pub static UZDOOM_FLAGS: &[&str] = &[
-    "name",
+    // Bit 0 is unused: the generator once took the table's `name` header
+    // for a flag, and saves since then store bits by these indices, so the
+    // slot stays reserved (it cannot match any `+FLAG`).
+    RESERVED_FLAG_SLOT,
     "INCHASE",
     "UNMORPHED",
     "FLY",
@@ -336,11 +339,21 @@ pub static UZDOOM_FLAGS: &[&str] = &[
     "ROOMSCALEDCOLLISION",
 ];
 
+/// Placeholder for [`UZDOOM_FLAGS`] bit 0.
+const RESERVED_FLAG_SLOT: &str = "<reserved>";
+
+/// Room-only flags appended after the UZDoom names.
+#[cfg(test)]
+const ROOM_ONLY_FLAGS: usize = 1;
+
 impl ActorFlags {
     /// Bit index of `name`, if it is a UZDoom flag.
     #[must_use]
     pub fn index_of(name: &str) -> Option<u16> {
         let upper = name.trim().trim_start_matches('+').to_ascii_uppercase();
+        if upper.is_empty() || upper.starts_with('<') {
+            return None;
+        }
         UZDOOM_FLAGS
             .iter()
             .position(|n| n.eq_ignore_ascii_case(&upper))
@@ -412,11 +425,16 @@ mod tests {
 
     #[test]
     fn every_define_flag_has_a_bit() {
-        assert_eq!(UZDOOM_FLAGS.len(), 315);
+        // Reserved bit 0 + the UZDoom `DEFINE_FLAG` names + Room-only tail.
+        let uzdoom = UZDOOM_FLAGS.len() - 1 - ROOM_ONLY_FLAGS;
+        assert_eq!(uzdoom, 314);
+        assert_eq!(UZDOOM_FLAGS[UZDOOM_FLAGS.len() - 1], "ROOMSCALEDCOLLISION");
         assert!(UZDOOM_FLAGS.len() <= FLAG_WORDS * 64);
-        for (i, name) in UZDOOM_FLAGS.iter().enumerate() {
+        for (i, name) in UZDOOM_FLAGS.iter().enumerate().skip(1) {
             assert_eq!(ActorFlags::index_of(name), Some(i as u16), "{name}");
         }
+        assert_eq!(ActorFlags::index_of("name"), None, "the old header row");
+        assert_eq!(ActorFlags::index_of(RESERVED_FLAG_SLOT), None);
     }
 
     #[test]

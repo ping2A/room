@@ -356,6 +356,9 @@ pub fn movetransports(
                     sprites[ju].sectnum = osect;
                 }
                 sync_player_sprite(p, sprites);
+                // EDuke32 `P_FinishWaterChange` → `P_UpdateScreenPal`: an
+                // explicit CON game palette yields to the new water state.
+                p.game_palette = 0;
                 // Chocolate `if( (TRAND&255) < 32 ) spawn(j,WATERSPLASH2);`
                 if krand_step(randomseed) & 255 < 32 {
                     let _ = spawn_water_splash2(

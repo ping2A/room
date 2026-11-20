@@ -535,6 +535,86 @@ pub fn line_attack_with_slope(
             distance: 0.0,
         };
     };
+    line_attack_from(world, source, origin, angle, range, damage, aim_slope, 0)
+}
+
+/// Where a shot first leaves through a portal before `limit`: a passable
+/// line portal crossed from its front (`isLinePortal`), or a working
+/// linked plane portal. Returns the run to it and the shot's new origin / angle on the
+/// other side.
+fn shot_portal_exit(
+    world: &World,
+    origin: DVec3,
+    dir_x: f64,
+    dir_y: f64,
+    aim_slope: f64,
+    angle: Angle,
+    limit: f64,
+) -> Option<(f64, DVec3, Angle)> {
+    let t = &world.map.setup.portals;
+    let mut best: Option<(f64, DVec3, Angle)> = None;
+    if !t.lines.is_empty() {
+        let p0 = DVec2::new(origin.x(), origin.y());
+        let p1 = DVec2::new(origin.x() + dir_x * limit, origin.y() + dir_y * limit);
+        if let Some((p, frac)) = crate::portal::crossed_line_portal(world, p0, p1) {
+            let d = frac * limit;
+            if d > 1e-6 {
+                let at = DVec3::new(
+                    origin.x() + dir_x * d,
+                    origin.y() + dir_y * d,
+                    origin.z() + aim_slope * d,
+                );
+                let out = crate::portal::translate_through(world, &p, at);
+                let turn = if p.is_linked() { 0.0 } else { p.angle_diff };
+                best = Some((
+                    d,
+                    out,
+                    Angle::from_degrees(angle.degrees() + turn).normalized(),
+                ));
+            }
+        }
+    }
+    if t.has_linked_planes && aim_slope.abs() > 1e-9 {
+        let plane = if aim_slope > 0.0 {
+            room_map::portals::PLANE_CEILING
+        } else {
+            room_map::portals::PLANE_FLOOR
+        };
+        for si in 0..world.sectors.len() {
+            if crate::portal::plane_blocks_movement(world, si, plane) {
+                continue;
+            }
+            let pz = t.plane_z(si, plane);
+            let d = (pz - origin.z()) / aim_slope;
+            if d <= 1e-6 || d > limit || best.is_some_and(|(b, _, _)| d >= b) {
+                continue;
+            }
+            let (hx, hy) = (origin.x() + dir_x * d, origin.y() + dir_y * d);
+            if crate::portal::sector_at(world, hx, hy) != Some(si) {
+                continue;
+            }
+            let (dx, dy) = t.plane_displacement(si, plane);
+            // Nudge past the plane so the next leg starts on its far side.
+            let nz = pz + aim_slope.signum() * 0.01;
+            best = Some((d, DVec3::new(hx + dx, hy + dy, nz), angle));
+        }
+    }
+    best
+}
+
+/// [`line_attack_with_slope`] from a given origin; continues through
+/// portals (UZDoom `P_LineAttack` → `Trace`, up to 4 portals).
+#[allow(clippy::too_many_arguments)]
+fn line_attack_from(
+    world: &mut World,
+    source: ActorId,
+    origin: DVec3,
+    angle: Angle,
+    range: f64,
+    damage: i32,
+    aim_slope: f64,
+    depth: u32,
+) -> TraceHit {
     let (tdx, tdy) = finesine_dir(angle, range);
     let dir_x = tdx / range;
     let dir_y = tdy / range;
@@ -609,6 +689,31 @@ pub fn line_attack_with_slope(
         .into_iter()
         .flatten()
         .fold(f64::INFINITY, f64::min);
+    if depth < 4
+        && (world.map.setup.portals.has_linked_planes || !world.map.setup.portals.lines.is_empty())
+        && let Some((d, out, out_angle)) = shot_portal_exit(
+            world,
+            origin,
+            dir_x,
+            dir_y,
+            aim_slope,
+            angle,
+            nearest.min(range),
+        )
+    {
+        let mut hit = line_attack_from(
+            world,
+            source,
+            out,
+            out_angle,
+            (range - d).max(1.0),
+            damage,
+            aim_slope,
+            depth + 1,
+        );
+        hit.distance += d;
+        return hit;
+    }
     if thing_dist == Some(nearest) {
         let (id, dist, pos) = best.unwrap();
         if std::env::var_os("ROOM_TRACE_WALL").is_some()

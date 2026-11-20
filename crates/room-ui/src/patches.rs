@@ -27,7 +27,30 @@ pub struct SoftPatch {
     pub rgba: Option<Vec<u8>>,
 }
 
+fn flat_key(name: &str) -> String {
+    format!("\u{1}FLAT {}", name.to_ascii_uppercase())
+}
+
 impl SoftPatch {
+    /// RGBA of texel (`x`, `y`), wrapping; `None` where transparent.
+    #[must_use]
+    pub fn texel_wrapped(&self, x: i32, y: i32, palette: &[[u8; 3]; 256]) -> Option<[u8; 4]> {
+        let (w, h) = (i32::from(self.width), i32::from(self.height));
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let i = (y.rem_euclid(h) * w + x.rem_euclid(w)) as usize;
+        if self.alpha.get(i).copied().unwrap_or(0) == 0 {
+            return None;
+        }
+        if let Some(rgba) = &self.rgba {
+            let p = rgba.get(i * 4..i * 4 + 4)?;
+            return Some([p[0], p[1], p[2], p[3]]);
+        }
+        let [r, g, b] = palette[usize::from(*self.indices.get(i)?)];
+        Some([r, g, b, 255])
+    }
+
     fn from_patch(p: Patch) -> Self {
         let (indices, alpha) = p.to_indices_masked();
         Self {
@@ -390,6 +413,46 @@ impl PatchCache {
         };
         self.patches.insert(key.clone(), patch);
         self.patches.get(&key)
+    }
+
+    /// Load the flat `name` (`F_START` raw 64×64 or an image lump) for
+    /// [`crate::DrawCmd::FlatPoly`]; cached apart from patches of the same name.
+    pub fn ensure_flat(&mut self, vfs: &Vfs, name: &str) -> Option<&SoftPatch> {
+        let key = flat_key(name);
+        if !self.patches.contains_key(&key) {
+            let up = name.to_ascii_uppercase();
+            let id = vfs
+                .find(&up, Namespace::Flats)
+                .or_else(|| vfs.find(&up, Namespace::NewTextures))
+                .or_else(|| vfs.find_any_ns(&up))?;
+            let bytes = vfs.read(id).ok()?;
+            let patch = if let Ok(img) = room_formats::decode_image(&bytes) {
+                SoftPatch::from_image(img)?
+            } else {
+                // Raw flat: a square of palette indices.
+                let side = (bytes.len() as f64).sqrt() as usize;
+                if side == 0 || side * side > bytes.len() || side > usize::from(u16::MAX) {
+                    return None;
+                }
+                SoftPatch {
+                    width: side as u16,
+                    height: side as u16,
+                    left_offset: 0,
+                    top_offset: 0,
+                    indices: bytes[..side * side].to_vec(),
+                    alpha: vec![255; side * side],
+                    rgba: None,
+                }
+            };
+            self.patches.insert(key.clone(), patch);
+        }
+        self.patches.get(&key)
+    }
+
+    /// A flat loaded by [`Self::ensure_flat`].
+    #[must_use]
+    pub fn get_flat(&self, name: &str) -> Option<&SoftPatch> {
+        self.patches.get(&flat_key(name))
     }
 
     /// Replace (or add) the cached picture for `name` (editor live edits).

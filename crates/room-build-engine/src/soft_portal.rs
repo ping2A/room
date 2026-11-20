@@ -177,10 +177,13 @@ impl Ctx<'_> {
             .sectors
             .get(sect as usize)
             .map_or(0, |s| s.visibility);
+        // Global visibility (`g_visibility`, 512 by default), scaled by a
+        // nonzero sector visibility as Build `mulscale4(globvis, vis + 16)`.
+        let global = i64::from(self.world.render_visibility.max(0));
         let globvis = if v == 0 {
-            512_i64
+            global
         } else {
-            (512 * (i64::from(v.wrapping_add(16)))) >> 4
+            (global * (i64::from(v.wrapping_add(16)))) >> 4
         };
         // Build `wallscan`: `swall ≈ 32·depth`, so `mulscale16(swall, globvis) >> 8`
         // adds one shade per 1024 units at visibility 512.
@@ -582,8 +585,8 @@ impl Ctx<'_> {
             );
             let height = i64::from(self.h.max(1));
             for y in y0..y1 {
-                let p = tiles
-                    .sample_skybox_at(
+                let (p, color) = tiles
+                    .sample_skybox_color_at(
                         picnum,
                         pal,
                         self.view.ang_q16,
@@ -601,15 +604,15 @@ impl Ctx<'_> {
                                 + i64::from(ypan) * th / 256;
                             let pixel = tile.at(u, v);
                             if pixel == room_build::art::TRANSPARENT {
-                                flat
+                                (flat, 0)
                             } else {
-                                pixel
+                                (pixel, tile.at_rgb(u, v))
                             }
                         })
                     })
-                    .unwrap_or(flat);
+                    .unwrap_or((flat, 0));
                 self.zbuf[y as usize * w + col as usize] = i32::MAX - 1;
-                self.frame.put(col, y, p);
+                self.frame.put_rgb(col, y, p, color);
             }
             return;
         }
@@ -718,15 +721,18 @@ impl Ctx<'_> {
             let u = (tx * su + pu) >> 8;
             let v = (ty * sv + pv) >> 8;
             let texel = tile.at(u, v);
-            let p = if texel == room_build::art::TRANSPARENT {
-                flat
+            let (p, color) = if texel == room_build::art::TRANSPARENT {
+                (flat, 0)
             } else {
                 let p = pal_table.map_or(texel, |t| t[usize::from(texel)]);
                 let shade = self.fog_shade(shade, depth, sect);
-                tiles.shade_row(shade).map_or(p, |r| r[usize::from(p)])
+                (
+                    tiles.shade_row(shade).map_or(p, |r| r[usize::from(p)]),
+                    tiles.shade_true_color(tile.at_rgb(u, v), shade),
+                )
             };
             self.zbuf[idx] = depth.min(i64::from(i32::MAX - 1)) as i32;
-            self.frame.put(col, y, p);
+            self.frame.put_rgb(col, y, p, color);
         }
     }
 
@@ -786,23 +792,33 @@ impl Ctx<'_> {
             if wall.cstat & 256 != 0 {
                 v = th - 1 - v.rem_euclid(th);
             }
-            let pix = match tile.map(|t| t.at(u, v)) {
-                Some(p) if p != room_build::art::TRANSPARENT => {
+            let (pix, color) = match tile.map(|t| (t.at(u, v), t)) {
+                Some((p, t)) if p != room_build::art::TRANSPARENT => {
                     let p = pal_table.map_or(p, |t| t[usize::from(p)]);
-                    shade_row.map_or(p, |r| r[usize::from(p)])
+                    (
+                        shade_row.map_or(p, |r| r[usize::from(p)]),
+                        tiles.shade_true_color(t.at_rgb(u, v), shade),
+                    )
                 }
-                _ => flat,
+                _ => (flat, 0),
             };
             if wall.cstat & 128 != 0 {
-                self.defer_translucent(idx, depth_i, pix, wall.cstat & 512 != 0);
+                self.defer_translucent(idx, depth_i, pix, wall.cstat & 512 != 0, color);
             } else {
                 self.zbuf[idx] = depth_i;
-                self.frame.put(col, y, pix);
+                self.frame.put_rgb(col, y, pix, color);
             }
         }
     }
 
-    fn defer_translucent(&mut self, index: usize, depth: i32, foreground: u8, reverse: bool) {
+    fn defer_translucent(
+        &mut self,
+        index: usize,
+        depth: i32,
+        foreground: u8,
+        reverse: bool,
+        true_color: u32,
+    ) {
         let frame_pixels = (self.w.max(0) as usize).saturating_mul(self.h.max(0) as usize);
         let limit = frame_pixels
             .saturating_mul(8)
@@ -814,6 +830,7 @@ impl Ctx<'_> {
                 foreground,
                 reverse,
                 blend_table: 0,
+                true_color,
             });
         }
     }
@@ -869,11 +886,16 @@ impl Ctx<'_> {
                         self.tiles.remap_palette(wall.pal, p)
                     },
                 );
+                let color = self.tiles.shade_true_color(
+                    self.tiles
+                        .true_color_at_for_palette(pic, wall.pal, u, v, self.clock),
+                    shade,
+                );
                 if wall.cstat & 128 != 0 {
-                    self.defer_translucent(idx, m.depth, p, wall.cstat & 512 != 0);
+                    self.defer_translucent(idx, m.depth, p, wall.cstat & 512 != 0, color);
                 } else {
                     self.zbuf[idx] = m.depth;
-                    self.frame.put(m.col, y, p);
+                    self.frame.put_rgb(m.col, y, p, color);
                 }
             }
         }
@@ -905,6 +927,7 @@ mod tests {
                     foreground: 30,
                     reverse: false,
                     blend_table: 0,
+                    true_color: 0,
                 },
                 TranslucentPixel {
                     index: 0,
@@ -912,6 +935,7 @@ mod tests {
                     foreground: 20,
                     reverse: false,
                     blend_table: 0,
+                    true_color: 0,
                 },
                 TranslucentPixel {
                     index: 0,
@@ -919,6 +943,7 @@ mod tests {
                     foreground: 40,
                     reverse: false,
                     blend_table: 0,
+                    true_color: 0,
                 },
             ],
         );
