@@ -26,10 +26,26 @@ pub const INPUT_FIRE: u32 = 1 << 2;
 pub const INPUT_AUTO_AIM: u32 = 1 << 6;
 /// Chocolate inventory controls packed in `sync.bits`.
 pub const INPUT_INVENTORY_USE: u32 = 1 << 30;
+/// Inventory: select the previous item.
 pub const INPUT_INVENTORY_LEFT: u32 = 1 << 20;
+/// Inventory: select the next item.
 pub const INPUT_INVENTORY_RIGHT: u32 = 1 << 27;
 /// Chocolate `sync.bits` bit 28: `gamefunc_TurnAround` (quick 180° turn).
 pub const INPUT_TURNAROUND: u32 = 1 << 28;
+/// `sync.bits` bit 23: mouse aiming (Chocolate `GameMouseAiming`).
+pub const INPUT_MOUSE_AIM: u32 = 1 << 23;
+
+/// Chocolate `checksectors` head: `aim_mode` follows input bit 23 every tic,
+/// and turning mouse aiming off starts the view's return to centre. With
+/// aim mode on, `processinput` applies `sync.horz >> 1` to `horiz` (DEMO1
+/// records bit 23 set; without this its first mouse-look at tic 788 drifted).
+pub fn checksectors_aim_mode(player: &mut Player, bits: u32) {
+    let was = player.aim_mode;
+    player.aim_mode = u8::from(bits & INPUT_MOUSE_AIM != 0);
+    if player.aim_mode < was {
+        player.return_to_center = 9;
+    }
+}
 
 /// Chocolate `CLIPMASK0`.
 pub const CLIPMASK0: u32 = (1 << 16) + 1;
@@ -37,7 +53,9 @@ pub const CLIPMASK0: u32 = (1 << 16) + 1;
 /// Per-tic sync input (Chocolate `input` / `sync[]`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DukeInput {
+    /// Forward velocity (`sync.fvel`).
     pub fvel: i16,
+    /// Strafe velocity (`sync.svel`).
     pub svel: i16,
     /// Angular velocity (signed); applied as `avel << 1`.
     pub avel: i8,
@@ -140,16 +158,22 @@ pub fn sprite_z_clip(s: &SpriteT, tile_meta: &[TileZMeta]) -> SpriteZClip {
 /// Player pose + XY momentum (subset of `player_struct`).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Player {
+    /// Player X (`ps[].posx`).
     pub posx: i32,
+    /// Player Y (`ps[].posy`).
     pub posy: i32,
+    /// Player Z, eye height (`ps[].posz`).
     pub posz: i32,
     /// Previous-tic pose for `findplayer` (Chocolate `opos*`).
     pub oposx: i32,
+    /// Previous-tic Y (`oposy`).
     pub oposy: i32,
+    /// Previous-tic Z (`oposz`).
     pub oposz: i32,
     /// Previous-tic player angle (`oang`).
     #[serde(default)]
     pub previous_ang: i16,
+    /// Facing angle, 0..2047 (`ps[].ang`).
     pub ang: i16,
     /// EDuke32 high-precision Build angle (16.16 fixed point).
     #[serde(default)]
@@ -189,6 +213,7 @@ pub struct Player {
     /// (x, y, z, angle, sector). `None` means the player view is active.
     #[serde(default)]
     pub remote_camera: Option<(i32, i32, i32, i16, i16)>,
+    /// View pitch (`ps[].horiz`; 100 looks straight ahead).
     pub horiz: i16,
     /// EDuke32 high-precision view horizon (16.16 fixed point).
     #[serde(default = "default_q16_horiz")]
@@ -222,11 +247,13 @@ pub struct Player {
     /// Chocolate `hittype[p->i].floorz` / `ceilingz` from processinput's getzrange.
     #[serde(default)]
     pub hit_floorz: i32,
+    /// Chocolate `hittype[p->i].ceilingz` from the same `getzrange`.
     #[serde(default)]
     pub hit_ceilingz: i32,
     /// Chocolate player-body `sprite[p->i].xvel`, set early in `processinput`.
     #[serde(default)]
     pub body_xvel: i16,
+    /// Chocolate `bobposy`, the Y half of `bobposx`.
     pub bobposy: i32,
     /// EDuke32 `spritebridge`: the player stands on a floor-aligned sprite.
     #[serde(default)]
@@ -234,13 +261,17 @@ pub struct Player {
     /// EDuke32 `sbs`: supporting floor sprite, or -1 when there is none.
     #[serde(default = "no_sprite_index")]
     pub bridge_sprite: i16,
+    /// Sector the player is in (`ps[].cursectnum`).
     pub cursectnum: i16,
+    /// X momentum (`ps[].posxv`).
     pub posxv: i32,
+    /// Y momentum (`ps[].posyv`).
     pub posyv: i32,
     /// Delayed world-axis force from moving sector effectors, consumed by
     /// the next local input sample like Chocolate's `fricxv` / `fricyv`.
     #[serde(default)]
     pub effector_force_x: i32,
+    /// Y half of `effector_force_x`.
     #[serde(default)]
     pub effector_force_y: i32,
     /// Vertical velocity (Chocolate `poszv`).
@@ -261,6 +292,7 @@ pub struct Player {
     pub return_to_center: i16,
     /// Sprite index for the player body (`ps[].i`), or `-1`.
     pub sprite_i: i16,
+    /// Health (the body sprite's `extra`).
     pub extra: i16,
     /// Previous health snapshot used by Chocolate's damage/healing logic.
     pub last_extra: i16,
@@ -282,16 +314,22 @@ pub struct Player {
     /// Atomic inventory counters used by CON `ifpinventory` / `addinventory`.
     #[serde(default)]
     pub steroids_amount: i16,
+    /// Scuba gear charge (`scuba_amount`).
     #[serde(default)]
     pub scuba_amount: i16,
+    /// Holoduke charge (`holoduke_amount`).
     #[serde(default)]
     pub holoduke_amount: i16,
+    /// Jetpack fuel (`jetpack_amount`).
     #[serde(default)]
     pub jetpack_amount: i16,
+    /// Night-vision charge (`heat_amount`).
     #[serde(default)]
     pub heat_amount: i16,
+    /// Portable medkit charge (`firstaid_amount`).
     #[serde(default)]
     pub firstaid_amount: i16,
+    /// Protective boots charge (`boot_amount`).
     #[serde(default)]
     pub boot_amount: i16,
     /// Remaining Atomic footprint placements from a blood pool or water landing.
@@ -396,6 +434,11 @@ pub struct Player {
     pub end_of_game: bool,
     /// Co-op mode gates Chocolate's weapon reservation handshake.
     pub coop_mode: bool,
+    /// Playing an Atomic v27/v28/v116/v117 `.DMO`: Chocolate's `aim` then
+    /// auto-aims whatever the auto-aim mode (its old-demo compatibility
+    /// rule), as the DOS game always did.
+    #[serde(default)]
+    pub legacy_demo_autoaim: bool,
     /// Atomic `ud.coop` mode (0 = DukeMatch, 1 = co-op, 2 = no-spawn DukeMatch).
     #[serde(default)]
     pub game_mode: u8,
@@ -404,6 +447,7 @@ pub struct Player {
     pub friendly_fire: bool,
     /// Chocolate `weaprecs` / `weapreccnt` (max 16 reserved weapon actors).
     pub weapon_reservations: [i16; 16],
+    /// Entries used in `weapon_reservations` (Chocolate `weapreccnt`).
     pub weapon_reservation_count: u8,
     /// Chocolate `weapon_ang` adjustment while aiming the displayed weapon.
     #[serde(default)]
@@ -416,6 +460,7 @@ pub struct Player {
     pub fta_enabled: bool,
     /// Chocolate `tipincs`; consumed by the Duke HUD tip animation.
     pub tip_timer: u8,
+    /// Selected weapon (`curr_weapon`).
     pub curr_weapon: i16,
     /// Chocolate `wantweaponfire`, a weapon requested while the current one fires.
     pub want_weapon_fire: i16,
@@ -425,6 +470,7 @@ pub struct Player {
     pub hbomb_on: bool,
     /// Chocolate `rapid_fire_hold`, latched when the pipebomb is held through tic 6.
     pub rapid_fire_hold: bool,
+    /// Ammo per weapon (`ammo_amount[MAX_WEAPONS]`).
     pub ammo: [i16; 12],
     /// Chocolate `gotweapon[MAX_WEAPONS]`.
     pub gotweapon: [bool; 12],
@@ -516,8 +562,10 @@ pub struct Player {
     /// (Room's native shotgun spawns it for the first enemy hit only).
     #[serde(skip)]
     pub eduke_round_blood_spawned: bool,
+    /// EDuke32 `gotweapon` for the extra (13th) weapon slot.
     #[serde(default)]
     pub extra_weapon_got: bool,
+    /// EDuke32 `max_ammo_amount` for the extra weapon slot.
     #[serde(default)]
     pub extra_weapon_max_ammo: i16,
     /// Set for one tic when EDuke32 EVENT_INCURDAMAGE returned non-zero:
@@ -567,8 +615,10 @@ pub struct Player {
     /// Multiplayer use-button edge consumed by Chocolate's dead-player respawn menu.
     #[serde(default)]
     pub respawn_use_was_down: bool,
+    /// Inventory-left edge latch (Chocolate `checksectors` path).
     #[serde(default)]
     pub inventory_left_was_down: bool,
+    /// Inventory-right edge latch (Chocolate `checksectors` path).
     #[serde(default)]
     pub inventory_right_was_down: bool,
 }
@@ -780,6 +830,7 @@ impl Default for Player {
             custom_exit_sound: -1,
             end_of_game: false,
             coop_mode: false,
+            legacy_demo_autoaim: false,
             game_mode: 0,
             friendly_fire: false,
             weapon_reservations: [0; 16],
@@ -879,31 +930,37 @@ impl Player {
             Self::q16_or_integer(self.previous_q16_horizoff, self.previous_horizoff);
     }
 
+    /// View angle in 16.16 fixed point (falls back to `ang` when stale).
     #[must_use]
     pub fn q16_angle(&self) -> i32 {
         Self::q16_or_integer(self.q16_ang, self.ang)
     }
 
+    /// Previous-tic view angle in 16.16 fixed point.
     #[must_use]
     pub fn q16_previous_angle(&self) -> i32 {
         Self::q16_or_integer(self.previous_q16_ang, self.previous_ang)
     }
 
+    /// View horizon in 16.16 fixed point (falls back to `horiz` when stale).
     #[must_use]
     pub fn q16_horizon(&self) -> i32 {
         Self::q16_or_integer(self.q16_horiz, self.horiz)
     }
 
+    /// Previous-tic view horizon in 16.16 fixed point.
     #[must_use]
     pub fn q16_previous_horizon(&self) -> i32 {
         Self::q16_or_integer(self.previous_q16_horiz, self.previous_horiz)
     }
 
+    /// Horizon offset in 16.16 fixed point (falls back to `horizoff`).
     #[must_use]
     pub fn q16_horizon_offset(&self) -> i32 {
         Self::q16_or_integer(self.q16_horizoff, self.horizoff)
     }
 
+    /// Previous-tic horizon offset in 16.16 fixed point.
     #[must_use]
     pub fn q16_previous_horizon_offset(&self) -> i32 {
         Self::q16_or_integer(self.previous_q16_horizoff, self.previous_horizoff)
@@ -1143,10 +1200,14 @@ pub(crate) fn processinput_move_with_lists_clipping_eduke(
     {
         let dx_bob = p.posx.wrapping_sub(p.bobposx);
         let dy_bob = p.posy.wrapping_sub(p.bobposy);
+        // C arithmetic: the 32-bit square sum wraps, and Build `ksqrt` is
+        // `nsqrtasm((uint32_t)num)`; the result is stored in a `short`. A
+        // water warp (which keeps `bobpos`) therefore gives Chocolate's
+        // wrapped `xvel` and `bobcounter` step (DEMO1 tic 896).
         let dist2_bob = dx_bob
-            .saturating_mul(dx_bob)
-            .saturating_add(dy_bob.saturating_mul(dy_bob));
-        p.body_xvel = room_build_engine::numeric::ksqrt(dist2_bob) as i16;
+            .wrapping_mul(dx_bob)
+            .wrapping_add(dy_bob.wrapping_mul(dy_bob));
+        p.body_xvel = room_build_engine::numeric::nsqrtasm(dist2_bob as u32) as i16;
         if p.on_ground {
             p.bob_counter = p.bob_counter.wrapping_add(i32::from(p.body_xvel) >> 1);
         }

@@ -331,6 +331,8 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
                 if Scanner::compare(name, "monster")
                     || Scanner::compare(name, "projectile")
                     || Scanner::compare(name, "skip_super")
+                    // GZDoom flag-like property without a value.
+                    || Scanner::compare(name, "donthurtshooter")
                 {
                     properties.push(PropertyStmt {
                         name: name.to_owned(),

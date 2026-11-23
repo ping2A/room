@@ -1,7 +1,7 @@
 //! 2D canvas for HUD / menus (CPU command list; GPU later).
 
 /// One 2D draw command.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CanvasCmd {
     /// Clear the 2D layer.
     Clear {

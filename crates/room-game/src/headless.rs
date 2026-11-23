@@ -1814,6 +1814,8 @@ impl Headless {
         }
     }
 
+    /// Fill co-op seats from `first` on with bots (`fill_bots`), or hand them
+    /// back to players.
     pub fn set_bot_seats(&mut self, fill_bots: bool, first: u8) {
         self.options.fill_bots = fill_bots;
         self.options.bot_first_seat = first;

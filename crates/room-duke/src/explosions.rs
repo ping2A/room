@@ -234,8 +234,27 @@ pub fn moveexplosions(
                     continue;
                 }
             }
-            let (_, floorz) = getzsofslope(s.sectnum, s.x, s.y, &sector_z, &wall_xy);
-            sprites[iu].z = floorz - (4 << 8);
+            // `makeitfall(i)` then `s->z = hittype[i].floorz - FOURSLEIGHT`. A
+            // STAT_MISC sprite's `hittype` planes are the sector's flat
+            // `ceilingz` / `floorz` (no slope, no getzrange), so the pool sits
+            // 256 units above the unsloped floor.
+            let mut fallen = sprites[iu];
+            crate::spawn::makeitfall(
+                &mut fallen,
+                sectors,
+                walls,
+                &[],
+                &[],
+                crate::player::DUKE_GC,
+                false,
+            );
+            if let Some(sector) = sectors.get(s.sectnum as usize) {
+                actor_temps[iu].hit_ceilingz = sector.ceilingz;
+                actor_temps[iu].hit_floorz = sector.floorz;
+                fallen.z = sector.floorz - (1 << 8);
+            }
+            sprites[iu].z = fallen.z;
+            sprites[iu].zvel = fallen.zvel;
             if actor_temps[iu].g_t[2] < 32 {
                 actor_temps[iu].g_t[2] += 1;
                 let max_repeat = if actor_temps[iu].hit_picnum == TIRE {
@@ -789,8 +808,8 @@ fn step_waterbubble(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
-    sector_walls: &[SectorWalls],
-    wall_xy: &[WallXY],
+    _sector_walls: &[SectorWalls],
+    _wall_xy: &[WallXY],
     randomseed: &mut i32,
     actor_temps: &mut Vec<ActorConTemps>,
     script: Option<&ScriptImage>,

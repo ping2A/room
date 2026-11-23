@@ -145,7 +145,7 @@ More specific filters are applied after less specific ones (so they override).
 
 ## 6. IWAD detection
 
-Data comes from the `IWADINFO` lump in `room.pk3` (same syntax as GZDoom's `wadsrc/static/iwadinfo.txt`):
+Data comes from the `IWADINFO` lump in `room.pk3` (`wadsrc/room/IWADINFO`). Since 2026-11-21 it is GZDoom's `wadsrc_extra/static/iwadinfo.txt` cut to the Doom-engine records, copied unchanged: FreeDM, the three Freedoom records, and every id Doom, Doom II and Final Doom edition (BFG, KEX, Unity, Xbox, WadSmoosh, French Doom II). Heretic, Hexen, Strife, Chex Quest and the other games stay out until Room plays them. The parser takes GZDoom's whole syntax: `key = value[, value…]`, bare flags (`SkipBexStringsIfLanguage`), `IWADName = "doom.wad", 1` (file plus rank), `MustContain` over several lines, one global `Names { }` list of file names to try, and `Order { }` by display name. Detection uses `Name`, `Autoname`, `Game`, `Config`, `MustContain`, `IWADName`, `Load` and `Required`; the rest (`Mapinfo`, `Compatibility`, `BannerColors`, `SupportWAD`, …) is parsed and skipped for now.
 
 ```
 IWad
@@ -161,13 +161,13 @@ IWad
     Load = "..."          // optional extra lumps/files
     Required = "..."      // e.g. a PWAD-based IWAD needing a base IWAD
 }
-Names { "doom2.wad", "doom2f.wad", ... }
-Order { "...", ... }      // preference order shown in the picker
+Names { "doom2.wad" "doom.wad" ... }   // every file name worth trying
+Order { "DOOM 2: Hell on Earth" ... }  // picker order, by display name
 ```
 
 Algorithm:
 1. Collect candidate files from search paths (`DOOMWADDIR`, `DOOMWADPATH`, config paths, exe dir, cwd, platform data dirs, known Steam/GOG/Microsoft Store install paths — list maintained in `room-app/src/iwad_paths.rs`; also check `.ipk3`/`.iwad` files).
-2. For each candidate, open its directory only and test every IWADINFO record's `MustContain` list; choose the **most specific** match (the record with the most `MustContain` entries satisfied — GZDoom iterates records in file order and picks the first full match, so order IWADINFO from most to least specific).
+2. For each candidate, open its directory only and test every IWADINFO record's `MustContain` list; take the first record, in file order, whose `MustContain` lumps are all present (as GZDoom does), so IWADINFO lists records from most to least specific. Freedoom's records also require its marker lump (`FREEDOOM`, or `FREEDM` for FreeDM) and come before id's: the Freedoom WADs contain every lump a Doom II check uses, and without the marker `doom2.wad` was detected as Freedoom: Phase 2 (fixed 2026-11-21).
 3. `-iwad` forces a file. If several IWADs are found and none forced, show the picker (native: in-engine picker UI before the main window if `queryiwad` is true; web: file picker / OPFS library screen).
 4. Store chosen IWAD's `Autoname`, `Game`, `Config` and the derived filter list on `GameInfo`.
 
@@ -185,6 +185,10 @@ Implementations: `FileSource` (std::fs, positioned reads), `MemorySource` (`Byte
 ## 8. Writing (tools only)
 
 `room-vfs::write` provides a `WadWriter` and `ZipWriter` wrapper for tools (`room-cli` extract/repack, savegame containers). Never used by the engine at runtime except for saves.
+
+## 8.1 Inspecting files (`room inspect`)
+
+`room inspect <paths…> [--json] [--lumps] [--all-maps]` (`crates/room-cli/src/inspect.rs`) describes any file Room loads: WAD (IWAD / PWAD), zip (PK3 / IPK3 / PKE / ZIP), 7z (PK7 / IPK7 / 7Z), directories, Duke Nukem 3D GRP (read with `room-build`, not mounted), Build `.MAP` and `.ART`, DeHackEd patches and other loose files. It reports the type, size, MD5, entry count, the game or release (IWADs: a table of known release MD5s, then `IWADINFO` with Freedoom records also requiring the `FREEDOOM` lump; GRPs: Duke Nukem 3D or the other Build game it belongs to), `GAMEINFO` keys, embedded WADs, content counts by namespace (and, in plain WADs, music / sounds / Doom pictures / demos by header), `TEXTURE1/2` and `PNAMES` counts, known definition lumps (MAPINFO, DECORATE, ZSCRIPT, SNDINFO, GLDEFS…), and every map with its format (Doom / Hexen / UDMF / Build), things, lines and sectors from the lump sizes, node kind and title (MAPINFO / ZMAPINFO / UMAPINFO; Duke: USER.CON). `room wad info` stays as the terse container listing.
 
 ## 9. Tests
 

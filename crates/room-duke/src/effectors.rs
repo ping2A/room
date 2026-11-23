@@ -4814,6 +4814,7 @@ fn sector_shades(sector: SectorT, walls: &[WallT]) -> i32 {
         .max(0)
 }
 
+#[allow(dead_code, reason = "shade ramp helper for effectors not ported yet")]
 fn shade_step(current: i8, step: i32, min: i8, max: i32) -> i8 {
     let next = i32::from(current).saturating_add(step);
     if next < i32::from(min) {

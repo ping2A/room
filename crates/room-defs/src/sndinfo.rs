@@ -132,6 +132,7 @@ fn rest_of_line(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
     Ok(out)
 }
 
+/// Parse a SNDINFO lump into the logical-name → lump sound registry.
 pub fn parse_sndinfo(text: &str) -> Result<SoundRegistry, DefsError> {
     let mut sc = Scanner::from_str(
         text,

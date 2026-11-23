@@ -34,43 +34,73 @@ pub const REACTOR: i16 = 1088;
 
 /// `names.h` markers / standables used in status classify.
 pub const ACTIVATOR: i16 = 2;
+/// Atomic `TOUCHPLATE` tile.
 pub const TOUCHPLATE: i16 = 3;
+/// Atomic `ACTIVATORLOCKED` tile.
 pub const ACTIVATORLOCKED: i16 = 4;
+/// Atomic `MUSICANDSFX` tile.
 pub const MUSICANDSFX: i16 = 5;
+/// Atomic `LOCATORS` tile.
 pub const LOCATORS: i16 = 6;
+/// Atomic `MASTERSWITCH` tile.
 pub const MASTERSWITCH: i16 = 8;
+/// Atomic `RESPAWN` tile.
 pub const RESPAWN: i16 = 9;
 /// Atomic red/yellow/green item-respawn marker tiles (`names.h`).
 pub const RESPAWNMARKERRED: i16 = 3190;
+/// Atomic `RESPAWNMARKERYELLOW` tile.
 pub const RESPAWNMARKERYELLOW: i16 = 3200;
+/// Atomic `RESPAWNMARKERGREEN` tile.
 pub const RESPAWNMARKERGREEN: i16 = 3210;
 /// Atomic `TRANSPORTERSTAR` tile.
 pub const TRANSPORTERSTAR: i16 = 1630;
+/// Atomic `BOLT1` tile.
 pub const BOLT1: i16 = 634;
+/// Atomic `WATERBUBBLE` tile.
 pub const WATERBUBBLE: i16 = 661;
+/// Atomic `WATERBUBBLEMAKER` tile.
 pub const WATERBUBBLEMAKER: i16 = 662;
+/// Atomic `FIREEXT` tile.
 pub const FIREEXT: i16 = 916;
+/// Atomic `SEENINE` tile.
 pub const SEENINE: i16 = 1247;
+/// Atomic `OOZFILTER` tile.
 pub const OOZFILTER: i16 = 1079;
+/// Atomic `CRACK1` tile.
 pub const CRACK1: i16 = 546;
+/// Atomic `VIEWSCREEN` tile.
 pub const VIEWSCREEN: i16 = 502;
 /// Duke Atomic alternate monitor tile.
 pub const VIEWSCREEN2: i16 = 499;
 /// Duke Atomic live-camera monitor texture.
 pub const STATIC: i16 = 351;
+/// Atomic `CONE` tile.
 pub const CONE: i16 = 978;
+/// Atomic `CAMERA1` tile.
 pub const CAMERA1: i16 = 621;
+/// Atomic `NUKEBUTTON` tile.
 pub const NUKEBUTTON: i16 = 142;
+/// Atomic `GREENSLIME` tile.
 pub const GREENSLIME: i16 = 2370;
+/// Atomic `RECON` tile.
 pub const RECON: i16 = 1960;
+/// Atomic `CANWITHSOMETHING` tile.
 pub const CANWITHSOMETHING: i16 = 1232;
+/// Atomic `TREE1` tile.
 pub const TREE1: i16 = 908;
+/// Atomic `WATERFOUNTAIN` tile.
 pub const WATERFOUNTAIN: i16 = 563;
+/// Atomic `TOILET` tile.
 pub const TOILET: i16 = 569;
+/// Atomic `STALL` tile.
 pub const STALL: i16 = 571;
+/// Atomic `PLUG` tile.
 pub const PLUG: i16 = 1069;
+/// Atomic `TREE2` tile.
 pub const TREE2: i16 = 910;
+/// Atomic `TIRE` tile.
 pub const TIRE: i16 = 990;
+/// Atomic `BOX` tile.
 pub const BOX: i16 = 951;
 
 /// Inventory / ammo pics that share Chocolate's SP `pal != 0` / skill soft-cull
@@ -128,6 +158,7 @@ const DUMMY_ENEMIES: &[i16] = &[
 /// Face flames: Chocolate default `actor` → STAT_ACTOR; CON AI is hardcoded
 /// in `moveactors`, so Room skips script `killit` until that lands.
 pub const FIRE: i16 = 2271;
+/// Atomic `FIRE2` tile.
 pub const FIRE2: i16 = 2311;
 
 /// Reclassify sprite statuses after map load.

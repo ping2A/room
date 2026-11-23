@@ -215,6 +215,178 @@ fn ifp_flags(xvel: i16, bits: u32) -> (bool, bool, bool, bool, bool) {
     (pstanding, pwalking, prunning, pwalkingback, prunningback)
 }
 
+/// APLAYER action labels used by the emulated GAME.CON action blocks.
+#[derive(Clone, Copy)]
+struct PlayerActions {
+    pstand: i32,
+    pwalk: i32,
+    prun: i32,
+    pwalkback: i32,
+    prunback: i32,
+    pjumping: i32,
+    pfalling: i32,
+    pducking: i32,
+    pcrawling: i32,
+    pakicking: i32,
+}
+
+/// Chocolate `ifp` predicates (gamedef.c `case 51`) for one player.
+#[derive(Clone, Copy)]
+struct PlayerIfp {
+    standing: bool,
+    walking: bool,
+    running: bool,
+    walkingback: bool,
+    runningback: bool,
+    /// `pducking`: on the ground with crouch held (`sync.bits & 2`).
+    ducking: bool,
+    /// `pfalling`: airborne, not jumping, `poszv > 2048`.
+    falling: bool,
+    /// `pjumping`: `jumping_counter > 348`.
+    jumping: bool,
+    /// `pkicking`: quick kick, or the knee mid-swing.
+    kicking: bool,
+    on_ground: bool,
+    /// `ifgapzl 48` on the body's `hittype` planes.
+    gap_below_48: bool,
+}
+
+/// GAME.CON `state check_pstandard`.
+fn check_pstandard(temps: &mut ActorConTemps, a: &PlayerActions, f: &PlayerIfp) {
+    if f.walking {
+        set_action(temps, a.pwalk);
+    } else if f.kicking {
+        set_action(temps, a.pakicking);
+    } else if f.walkingback {
+        set_action(temps, a.pwalkback);
+    } else if f.running {
+        set_action(temps, a.prun);
+    } else if f.runningback {
+        set_action(temps, a.prunback);
+    } else if f.jumping {
+        set_action(temps, a.pjumping);
+    } else if f.ducking {
+        set_action(temps, a.pducking);
+    }
+}
+
+/// The APLAYER blocks after `ifinwater` (GAME.CON from `ifaction PFALLING`
+/// to `enda`) on dry land: they only pick the body's action, so their
+/// action count and frame timer have Chocolate's phase when the player next
+/// enters water (DEMO1 tic 450). Keep in step with GAME.CON; this goes away
+/// when APLAYER runs through the CON VM.
+fn aplayer_dry_actions(temps: &mut ActorConTemps, a: &PlayerActions, f: &PlayerIfp) {
+    let moving = f.walking || f.walkingback || f.running || f.runningback;
+    if temps.g_t[4] == a.pfalling {
+        if f.on_ground {
+            set_action(temps, a.pstand);
+        } else if f.falling {
+            return; // `ifp pfalling break`
+        } else {
+            check_pstandard(temps, a, f);
+        }
+    }
+    let action = temps.g_t[4];
+    if action == a.pducking {
+        if f.gap_below_48 || f.ducking {
+            if moving {
+                set_action(temps, a.pcrawling);
+            }
+        } else if f.standing {
+            set_action(temps, a.pstand);
+        } else {
+            check_pstandard(temps, a, f);
+        }
+    } else if action == a.pcrawling {
+        if f.gap_below_48 {
+            if f.standing {
+                set_action(temps, a.pcrawling);
+            }
+        } else if f.ducking {
+            if f.standing {
+                set_action(temps, a.pducking);
+            }
+        } else if f.standing {
+            set_action(temps, a.pstand);
+        } else {
+            check_pstandard(temps, a, f);
+        }
+    } else if f.gap_below_48 {
+        set_action(temps, a.pducking);
+    } else if action == a.pjumping {
+        if f.on_ground {
+            set_action(temps, a.pstand);
+        } else if temps.g_t[2] >= 4 && f.falling {
+            set_action(temps, a.pfalling);
+        }
+    }
+    let action = temps.g_t[4];
+    // In `ifp ... else ifaction X` chains the first true test wins.
+    let pick = |temps: &mut ActorConTemps, choices: [(bool, i32); 6]| {
+        if let Some(&(_, next)) = choices.iter().find(|(hit, _)| *hit) {
+            set_action(temps, next);
+        }
+    };
+    if f.falling {
+        set_action(temps, a.pfalling);
+    } else if action == a.pstand {
+        check_pstandard(temps, a, f);
+    } else if action == a.pakicking {
+        if temps.g_t[2] >= 2 {
+            set_action(temps, a.pstand);
+        }
+    } else if action == a.pwalk {
+        // `ifp pfalling` here is already false (tested just above).
+        pick(
+            temps,
+            [
+                (f.standing, a.pstand),
+                (f.running, a.prun),
+                (f.walkingback, a.pwalkback),
+                (f.runningback, a.prunback),
+                (f.jumping, a.pjumping),
+                (f.ducking, a.pducking),
+            ],
+        );
+    } else if action == a.prun {
+        pick(
+            temps,
+            [
+                (f.standing, a.pstand),
+                (f.walking, a.pwalk),
+                (f.walkingback, a.pwalkback),
+                (f.runningback, a.prunback),
+                (f.jumping, a.pjumping),
+                (f.ducking, a.pducking),
+            ],
+        );
+    } else if action == a.pwalkback {
+        pick(
+            temps,
+            [
+                (f.standing, a.pstand),
+                (f.walking, a.pwalk),
+                (f.running, a.prun),
+                (f.runningback, a.prunback),
+                (f.jumping, a.pjumping),
+                (f.ducking, a.pducking),
+            ],
+        );
+    } else if action == a.prunback {
+        pick(
+            temps,
+            [
+                (f.standing, a.pstand),
+                (f.walking, a.pwalk),
+                (f.running, a.prun),
+                (f.walkingback, a.pwalkback),
+                (f.jumping, a.pjumping),
+                (f.ducking, a.pducking),
+            ],
+        );
+    }
+}
+
 /// Chocolate `moveplayers` subset: APLAYER `ifinwater` swim bubbles.
 pub fn moveplayers(
     lists: &mut SpriteLists,
@@ -227,8 +399,20 @@ pub fn moveplayers(
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
     script: Option<&ScriptImage>,
-    emit_tic: u32,
+    _emit_tic: u32,
 ) {
+    // Bodies whose `ifhitweapon` fires this tic: APLAYER handles the hit and
+    // `break`s before its action blocks.
+    let hit_bodies: Vec<i16> = players
+        .iter()
+        .filter(|player| {
+            usize::try_from(player.sprite_i).is_ok_and(|i| {
+                sprites.get(i).is_some_and(|body| body.extra >= 0)
+                    && actor_temps.get(i).is_some_and(|temps| temps.hit_extra >= 0)
+            })
+        })
+        .map(|player| player.sprite_i)
+        .collect();
     apply_player_weapon_hits(
         lists,
         sprites,
@@ -293,6 +477,22 @@ pub fn moveplayers(
     let pswim = label(img, "PSWIMMING");
     let pswim_go = label(img, "PSWIMMINGGO");
     let pswim_wait = label(img, "PSWIMMINGWAIT");
+    let pstand = label(img, "PSTAND");
+    let pjphouver = label(img, "PJPHOUVER");
+    let pfrozen = label(img, "PFROZEN");
+    let pflintching = label(img, "PFLINTCHING");
+    let actions = PlayerActions {
+        pstand,
+        pwalk: label(img, "PWALK"),
+        prun: label(img, "PRUN"),
+        pwalkback: label(img, "PWALKBACK"),
+        prunback: label(img, "PRUNBACK"),
+        pjumping: label(img, "PJUMPING"),
+        pfalling: label(img, "PFALLING"),
+        pducking: label(img, "PDUCKING"),
+        pcrawling: label(img, "PCRAWLING"),
+        pakicking: label(img, "PAKICKING"),
+    };
     let sector_z: Vec<SectorZ> = sectors
         .iter()
         .map(|sector| SectorZ {
@@ -374,15 +574,67 @@ pub fn moveplayers(
             i = next;
             continue;
         }
-        let in_water = sectors[sect as usize].lotag == 2;
-        if !in_water {
+        // Chocolate `execute` ticks action frames before every parse.
+        tick_action_frames(&img.script, &mut actor_temps[iu], &mut sprites[iu].lotag);
+        // Blocks before `ifinwater` that end in `break`: dead (`ifdead`),
+        // frozen, hit this tic, flinching.
+        let action = actor_temps[iu].g_t[4];
+        if sprites[iu].extra <= 0 || action == pfrozen || hit_bodies.contains(&i) {
             sprites[iu].ang = p.ang;
             i = next;
             continue;
         }
-
-        // Chocolate `execute` ticks action frames before parse.
-        tick_action_frames(&img.script, &mut actor_temps[iu], &mut sprites[iu].lotag);
+        if action == pflintching {
+            if actor_temps[iu].g_t[2] >= 2 {
+                set_action(&mut actor_temps[iu], pstand);
+            }
+            sprites[iu].ang = p.ang;
+            i = next;
+            continue;
+        }
+        let in_water = sectors[sect as usize].lotag == 2;
+        if !in_water {
+            if p.jetpack_on != 0 {
+                // `ifaction PJPHOUVER { ifactioncount 4 resetactioncount }
+                // else action PJPHOUVER`, then `break`.
+                if action == pjphouver {
+                    if actor_temps[iu].g_t[2] >= 4 {
+                        actor_temps[iu].g_t[2] = 0;
+                    }
+                } else {
+                    set_action(&mut actor_temps[iu], pjphouver);
+                }
+            } else {
+                // Leaving water drops any swim action to PSTAND, so on
+                // re-entry the body starts in PTREDWATER (DEMO1 tic 436).
+                if action == ptred || action == pswim || action == pswim_wait || action == pswim_go
+                {
+                    set_action(&mut actor_temps[iu], pstand);
+                } else if action == pjphouver {
+                    set_action(&mut actor_temps[iu], actions.pfalling);
+                }
+                let (standing, walking, running, walkingback, runningback) =
+                    ifp_flags(sprites[iu].xvel, bits);
+                let flags = PlayerIfp {
+                    standing,
+                    walking,
+                    running,
+                    walkingback,
+                    runningback,
+                    ducking: p.on_ground && bits & 2 != 0,
+                    falling: p.jumping_counter == 0 && !p.on_ground && p.poszv > 2048,
+                    jumping: p.jumping_counter > 348,
+                    kicking: p.quick_kick > 0
+                        || (p.curr_weapon == crate::weapons::KNEE_WEAPON && p.kickback_pic > 0),
+                    on_ground: p.on_ground,
+                    gap_below_48: (p.hit_floorz.wrapping_sub(p.hit_ceilingz) >> 8) < 48,
+                };
+                aplayer_dry_actions(&mut actor_temps[iu], &actions, &flags);
+            }
+            sprites[iu].ang = p.ang;
+            i = next;
+            continue;
+        }
 
         let (pstanding, pwalking, prunning, pwalkingback, prunningback) =
             ifp_flags(sprites[iu].xvel, bits);

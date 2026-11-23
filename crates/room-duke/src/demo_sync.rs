@@ -13,9 +13,10 @@ use crate::con::{
 };
 use crate::player::{DukeInput, TileZMeta};
 use crate::session::DukeSession;
+#[cfg(test)]
+use crate::trace::format_trace;
 use crate::trace::{
-    TraceDiff, TraceFile, TracePlayer, TraceTic, diff_traces, format_trace, hash_sprites,
-    load_trace,
+    TraceDiff, TraceFile, TracePlayer, TraceTic, diff_traces, hash_sprites, load_trace,
 };
 
 /// Build Atomic map lump name from a demo (`E3L11.MAP`).
@@ -253,6 +254,11 @@ pub fn session_from_grp_demo_layers(
 ) -> Result<(DukeSession, DmoDemo), String> {
     let demo = DmoDemo::parse(dmo_bytes).map_err(|e| format!("DMO: {e}"))?;
     let map_name = duke_map_lump(&demo);
+    // Chocolate `aim`: `ud.playing_demo_rev` 27, 28, 116 or 117 keeps
+    // auto-aim on regardless of the recorded auto-aim mode.
+    let legacy_autoaim = dmo_bytes
+        .get(4)
+        .is_some_and(|v| matches!(v, 27 | 28 | 116 | 117));
     let mut session = session_from_grp_layers(grp_layers, &map_name, demo.skill)?;
     session.configure_multiplayer_mode(
         usize::from(demo.players),
@@ -267,6 +273,7 @@ pub fn session_from_grp_demo_layers(
             if let Some(&aim_mode) = demo.aim_modes.get(seat) {
                 player.aim_mode = aim_mode & 1;
             }
+            player.legacy_demo_autoaim = legacy_autoaim;
             if let Some(&weapon_choices) = demo.weapon_choices.get(seat) {
                 player.weapon_choices = weapon_choices;
             }
@@ -405,6 +412,9 @@ pub fn align_rng_pre_tic0(session: &mut DukeSession, _choc: &TraceFile) {
     session.trace_fixups = true;
 }
 
+/// DEMO1 sync check with the reference fix-ups on (seed adoption, krand pads,
+/// `// TEMP` snaps; see [`demo1_frontier_real`] for the honest one): the first
+/// tic where Room's trace differs from the Chocolate one, or `None`.
 pub fn demo1_frontier(
     grp_path: &Path,
     demo_path: &Path,
@@ -459,7 +469,7 @@ mod tests {
     /// Honest-mode floor: native DEMO1 playback (no fixups, no RNG pads)
     /// matches the Chocolate trace for at least this many tics. Raise it as
     /// the frontier moves; never lower it to make a change pass.
-    const DEMO1_REAL_SYNC_TICS: usize = 436;
+    const DEMO1_REAL_SYNC_TICS: usize = 960;
 
     #[test]
     fn grp_map_loader_initializes_eduke_vm_before_level_setup() {

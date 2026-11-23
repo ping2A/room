@@ -2848,9 +2848,9 @@ class PortalProbe : Actor
         &room_testkit::linked_line_portal_rooms(3).textmap(),
     )
     .unwrap();
-    let mut w_light = 0;
-    let mut n_sectors = 0;
-    let mut own = 0;
+    let w_light;
+    let n_sectors;
+    let own;
     let a = {
         let deco = format!(
             "{}\n{}",

@@ -70,6 +70,28 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
             };
             Some((amount, max))
         }
+        // Any other `Health` (Brutal Doom's `Medikit2 : Health`): `Amount`
+        // up to `MaxAmount`, or the player's max health when that is 0
+        // (GZDoom `Health.TryPickup` / `GetMaxHealth`).
+        _ if world.classes.inherits_from(class, "Health") => {
+            let own_max = world
+                .classes
+                .get(class)
+                .map_or(0, |c| c.inventory_max_amount);
+            let player_max = world
+                .actors
+                .get(toucher)
+                .and_then(|a| world.classes.get(a.class))
+                .map_or(0, |c| c.ext.player_max_health);
+            let max = if own_max > 1 {
+                own_max
+            } else if player_max > 0 {
+                player_max
+            } else {
+                100
+            };
+            Some((amount, max))
+        }
         _ => None,
     };
     let is_berserk = class_name == "berserk";
@@ -115,10 +137,18 @@ pub fn try_pickup(world: &mut World, toucher: ActorId, item: ActorId) -> bool {
                 low_message = Some(msg);
             }
         }
+        let always = world
+            .classes
+            .get(class)
+            .is_some_and(|c| c.ext.has_qualified_flag("INVENTORY.ALWAYSPICKUP"));
         if class_name == "megasphere" {
             a.health = max_hp;
         } else if a.health >= max_hp {
-            return false;
+            // Full: left on the floor, unless `+INVENTORY.ALWAYSPICKUP`
+            // (taken without healing).
+            if !always {
+                return false;
+            }
         } else {
             a.health = (a.health + heal).min(max_hp);
         }
@@ -1355,6 +1385,7 @@ fn touch_specials_inner(world: &mut World, toucher: ActorId) {
                 | "infrared"
                 | "backpack"
         );
+        let is_health = is_health || world.classes.inherits_from(other.class, "Health");
         let is_key = matches!(
             kind.as_str(),
             "bluecard" | "yellowcard" | "redcard" | "blueskull" | "yellowskull" | "redskull"
@@ -1430,6 +1461,48 @@ mod tests {
     use room_nodebuild::apply_nodes;
     use room_testkit::{MapBuilder, rect};
     use std::sync::Arc;
+
+    /// A mod's own `Health` subclass (Brutal Doom `Medikit2 : Health`)
+    /// heals `Amount` up to the player's max health when `MaxAmount` is 0,
+    /// up to its `MaxAmount` otherwise; at the cap it stays on the floor
+    /// unless `+INVENTORY.ALWAYSPICKUP`.
+    #[test]
+    fn health_subclasses_heal_up_to_their_max() {
+        let src = format!(
+            "{}\n{}",
+            include_str!("../../../wadsrc/room/actors/doom.txt"),
+            r#"
+actor Kit2 : Health { Inventory.Amount 25 }
+actor Bonus2 : Health { Inventory.Amount 5 Inventory.MaxAmount 150 +INVENTORY.ALWAYSPICKUP }
+"#
+        );
+        let file = parse_decorate(&src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 128.0, 128.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let player = w.players[0].as_ref().unwrap().mo.unwrap();
+        let kit = classes.find_name("Kit2").unwrap();
+        let bonus = classes.find_name("Bonus2").unwrap();
+        let at = DVec3::new(40.0, 32.0, 0.0);
+        let mut take = |w: &mut World, class| {
+            let item = w.spawn_at(class, at, Angle::ZERO).unwrap();
+            let taken = try_pickup(w, player, item);
+            (taken, w.actors.get(player).unwrap().health)
+        };
+        w.actors.get_mut(player).unwrap().health = 50;
+        assert_eq!(take(&mut w, kit), (true, 75));
+        assert_eq!(take(&mut w, kit), (true, 100), "capped at max health");
+        assert_eq!(take(&mut w, kit), (false, 100), "left on the floor when full");
+        assert_eq!(take(&mut w, bonus), (true, 105), "its own MaxAmount");
+        w.actors.get_mut(player).unwrap().health = 150;
+        assert_eq!(take(&mut w, bonus), (true, 150), "ALWAYSPICKUP: taken at the cap");
+    }
 
     #[test]
     fn picks_up_shell_rocket_cell_boxes() {

@@ -186,6 +186,8 @@ The UI produces a `UiDrawList` (`16-ui.md`) of commands in virtual coordinates; 
 
 Separate crate `room-render-soft` implementing the vanilla column/span renderer (visplanes → drawsegs → masked) with ZDoom extensions (slopes via `R_DrawTiltedSpan`, 3D floors, portals, sprites clipping), outputting an 8-bit or 32-bit framebuffer uploaded as a texture each frame. Reference: GZDoom's `swrenderer` (the "zdoom" software renderer). Multi-threaded slices on native. Not required for 1.0.
 
+Planned in detail in [`40-software-renderer.md`](40-software-renderer.md): uses, references, design and milestones **SR0–SR10** (tracked in `docs/21`).
+
 ## 13. Other features
 
 - Screenshots (`screenshot` command): PNG of the final image (`png` crate), path per config.

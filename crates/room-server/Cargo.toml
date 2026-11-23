@@ -25,6 +25,9 @@ legacy-ftrl = []
 builtin-turn = ["room-sfu/builtin-turn"]
 ## In-process str0m UDP SFU (`--sfu-udp`).
 rtp = ["room-sfu/rtp"]
+## Map thumbnails from the software renderer (`GET /api/presets/{id}/thumbnail.png`,
+## docs/40 SR10). Off by default: it pulls in the renderer crates.
+thumbnails = ["dep:room-render-soft", "dep:room-vfs"]
 ## Headless `room-game` verifier (`--iwad` + `--enable-verifier`).
 verifier = [
   "dep:room-game",
@@ -56,6 +59,7 @@ room-build = { path = "../room-build", optional = true }
 room-decorate = { path = "../room-decorate", optional = true }
 room-sim = { path = "../room-sim", optional = true }
 room-duke = { path = "../room-duke", optional = true }
+room-render-soft = { path = "../room-render-soft", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

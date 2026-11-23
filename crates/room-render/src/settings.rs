@@ -956,8 +956,51 @@ pub const SHADER_CVAR_NAMES: &[&str] = &[
     "r_gpuprofile",
 ];
 
+/// World render size for a `w`×`h` screen at 3D scale `scale` (Settings →
+/// 3D scale, `vid_scalefactor`): `scale` is clamped to 0.25–1, `1` is the
+/// screen size, and a scaled size keeps at least 160×100 (never more than
+/// the screen).
+#[must_use]
+pub fn world_render_size(w: u32, h: u32, scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() {
+        scale.clamp(0.25, 1.0)
+    } else {
+        1.0
+    };
+    if scale >= 0.999 {
+        return (w.max(1), h.max(1));
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let dim = |v: u32, min: u32| ((v as f32 * scale).round() as u32).max(min.min(v)).max(1);
+    (dim(w, 160), dim(h, 100))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_render_size_scales_and_clamps() {
+        use super::world_render_size as size;
+        assert_eq!(size(1920, 1080, 1.0), (1920, 1080));
+        assert_eq!(size(1920, 1080, 0.5), (960, 540));
+        assert_eq!(size(1920, 1080, 0.75), (1440, 810));
+        assert_eq!(size(1920, 1080, 0.1), (480, 270), "clamped to a quarter");
+        assert_eq!(
+            size(1920, 1080, 7.0),
+            (1920, 1080),
+            "never above the screen"
+        );
+        assert_eq!(size(1920, 1080, f32::NAN), (1920, 1080));
+        assert_eq!(size(320, 200, 0.25), (160, 100), "keeps a usable minimum");
+        assert_eq!(size(100, 60, 0.5), (100, 60), "a tiny screen stays whole");
+        assert_eq!(size(0, 0, 1.0), (1, 1));
+        // Aspect is kept within a pixel.
+        let (w, h) = size(2560, 1080, 0.66);
+        assert!((f64::from(w) / f64::from(h) - 2560.0 / 1080.0).abs() < 0.01);
+    }
     use super::*;
 
     #[test]

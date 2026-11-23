@@ -171,7 +171,7 @@ impl PolyMap {
     #[must_use]
     pub fn textmap(&self) -> String {
         let mut verts: Vec<(f64, f64)> = Vec::new();
-        let mut vid = |p: (f64, f64), verts: &mut Vec<(f64, f64)>| -> usize {
+        let vid = |p: (f64, f64), verts: &mut Vec<(f64, f64)>| -> usize {
             if let Some(i) = verts
                 .iter()
                 .position(|v| (v.0 - p.0).abs() < 1e-6 && (v.1 - p.1).abs() < 1e-6)

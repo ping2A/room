@@ -945,14 +945,14 @@ fn move_greenslime(ctx: &mut CActorCtx<'_>, i: usize) {
             return;
         }
         let t1 = ctx.temps[i].g_t[1];
-        ctx.sprites[i].xvel = (64 - (sintable((t1 + 512) & 2047)) >> 9) as i16;
+        ctx.sprites[i].xvel = (64 - (sintable((t1 + 512) & 2047) >> 9)) as i16;
         let player = &ctx.players[p];
         let s = ctx.sprites[i];
         let goal = getangle(player.posx - s.x, player.posy - s.y);
         ctx.sprites[i].ang =
             ((i32::from(s.ang) + (getincangle(i32::from(s.ang), goal) >> 3)) & 2047) as i16;
-        ctx.sprites[i].xrepeat = (36 + (sintable((t1 + 512) & 2047)) >> 11) as u8;
-        ctx.sprites[i].yrepeat = (16 + (sintable(t1 & 2047)) >> 13) as u8;
+        ctx.sprites[i].xrepeat = (36 + (sintable((t1 + 512) & 2047) >> 11)) as u8;
+        ctx.sprites[i].yrepeat = (16 + (sintable(t1 & 2047) >> 13)) as u8;
         if rnd(ctx, 4)
             && sector.ceilingstat & 1 == 0
             && (ctx.temps[i].hit_floorz - ctx.temps[i].hit_ceilingz).abs() < (192 << 8)

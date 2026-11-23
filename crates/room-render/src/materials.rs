@@ -24,6 +24,10 @@ pub struct MaterialCatalog {
     /// `TX_START` textures (uppercase) → pixel size; these replace TEXTUREX
     /// composites of the same name (GZDoom precedence).
     tx_sizes: BTreeMap<String, (u32, u32)>,
+    /// [`Self::wall_texel_sizes`] built once per [`Self::load_texturex`]: the
+    /// scene asks for it every frame, and with a big mod (Brutal Doom) the
+    /// map has thousands of entries.
+    wall_sizes_cache: std::sync::OnceLock<std::sync::Arc<BTreeMap<String, (f32, f32)>>>,
     /// Base texture (uppercase) → brightmap lump name (GLDEFS).
     brightmaps: BTreeMap<String, String>,
     /// Base texture → normal / specular / PBR map lump names (GLDEFS `material`).
@@ -75,6 +79,7 @@ impl MaterialCatalog {
             pnames: None,
             texturex: BTreeMap::new(),
             tx_sizes: BTreeMap::new(),
+            wall_sizes_cache: std::sync::OnceLock::new(),
             brightmaps: BTreeMap::new(),
             pbr_maps: BTreeMap::new(),
             sampler: None,
@@ -198,6 +203,7 @@ impl MaterialCatalog {
             }
         }
         self.tx_sizes.clear();
+        self.wall_sizes_cache = std::sync::OnceLock::new();
         for (_, info) in vfs.iter() {
             if info.namespace != Namespace::NewTextures {
                 continue;
@@ -232,6 +238,20 @@ impl MaterialCatalog {
     /// replacements override TEXTUREX.
     #[must_use]
     pub fn wall_texel_sizes(&self) -> BTreeMap<String, (f32, f32)> {
+        BTreeMap::clone(&self.wall_texel_sizes_shared())
+    }
+
+    /// [`Self::wall_texel_sizes`] without the copy: built once per
+    /// [`Self::load_texturex`], for the per-frame scene build.
+    #[must_use]
+    pub fn wall_texel_sizes_shared(&self) -> std::sync::Arc<BTreeMap<String, (f32, f32)>> {
+        std::sync::Arc::clone(
+            self.wall_sizes_cache
+                .get_or_init(|| std::sync::Arc::new(self.build_wall_texel_sizes())),
+        )
+    }
+
+    fn build_wall_texel_sizes(&self) -> BTreeMap<String, (f32, f32)> {
         let mut out: BTreeMap<String, (f32, f32)> = self
             .texturex
             .iter()

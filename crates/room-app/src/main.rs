@@ -44,7 +44,7 @@ use room_render::{
     PostChain, PostChainInputs, RenderSettings, SceneLists, SpriteInstance, SpriteOrient,
     TextureAnimator, UnlitPass, VoxelActorPose, VoxelCatalog, ZoneDraw, ZoneMeshes,
     append_actor_models, append_decals, append_particles_animated, apply_glow_fullbright,
-    build_scene, build_scene_with_sky_ex_sized, build_zone_meshes, particle_tint_tex_name,
+    build_scene, build_scene_with_sky_ex_shared, build_zone_meshes, particle_tint_tex_name,
     read_rgba, read_texture_rgba, render_offscreen, scroll_sky_u, soft_disc_rgba,
     sprite_lump_candidates_rot, sprite_offset_delta, sprite_rotation_digit, voxel_spin_degrees,
     voxel_view_angles,
@@ -68,8 +68,8 @@ use room_ui::{
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use screen_capture::GifRecorder;
 use shader_cvars::{
-    cycle_cvar, graphics_menu, render_settings_from_cvars, reset_shaders_to_defaults,
-    toggle_float_cvar,
+    cycle_cvar, graphics_menu, next_rendermode, render_settings_from_cvars,
+    reset_shaders_to_defaults, software_rendermode, swap_cvar, toggle_float_cvar,
 };
 use soundfont::load_first_soundfont;
 use std::path::PathBuf;
@@ -846,6 +846,7 @@ fn main() {
         duke_session,
         duke_start_state,
         duke_renderer,
+        soft_world: None,
         duke_sound_bank,
         duke_campaign_content,
         duke_demo_recorder: None,
@@ -2644,6 +2645,9 @@ struct ViewerApp {
     duke_session: Option<room_duke::DukeSession>,
     duke_start_state: Option<Vec<u8>>,
     duke_renderer: Option<room_duke::DukeSoftRenderer>,
+    /// Classic software renderer for the current map (`vid_rendermode` 0,
+    /// `docs/40` SR3), keyed by map and `vid_softscale`; built on first use.
+    soft_world: Option<((usize, u32), room_render_soft::sim::SoftWorldView)>,
     /// VOC samples indexed by native Duke CON sound id.
     duke_sound_bank: SampleBank,
     /// GRP/CON layers needed to load subsequent Atomic campaign maps.
@@ -4971,8 +4975,15 @@ impl ViewerApp {
             }
         }
         self.refresh_camera_textures();
+        // `vid_rendermode` 0 / 1: the software renderer draws the world into
+        // the HUD canvas and the GPU world lists stay empty (`docs/40` §6).
+        let software_view = software_rendermode(&self.console.cvars) && self.ensure_soft_world();
         // Mirror canvases need the current scene's mirror list — updated after build.
-        let live_sprites = self.collect_live_sprites();
+        let live_sprites = if software_view {
+            None
+        } else {
+            self.collect_live_sprites()
+        };
         let acs_sky = self
             .play
             .as_ref()
@@ -4989,15 +5000,21 @@ impl ViewerApp {
         } else {
             Some(self.sky_texture.as_str())
         };
-        let tex_sizes = self.materials.wall_texel_sizes();
-        let mut scene: SceneLists = build_scene_with_sky_ex_sized(
-            &self.map,
-            &self.camera,
-            live_sprites.as_deref(),
-            sky,
-            self.sky_cubemap.as_ref(),
-            Some(&tex_sizes),
-        );
+        let tex_sizes = self.materials.wall_texel_sizes_shared();
+        let mut scene: SceneLists = if software_view {
+            SceneLists::default()
+        } else {
+            // The player's own view: leave out what solid walls hide.
+            build_scene_with_sky_ex_shared(
+                &self.map,
+                &self.camera,
+                live_sprites.as_deref(),
+                sky,
+                self.sky_cubemap.as_ref(),
+                Some(std::sync::Arc::clone(&tex_sizes)),
+                true,
+            )
+        };
         let tic = self
             .play
             .as_ref()
@@ -5250,6 +5267,11 @@ impl ViewerApp {
         } else {
             None
         };
+        let soft_frame = if software_view {
+            self.draw_soft_world()
+        } else {
+            None
+        };
         if let (Some(gpu), Some(vfs), Some(frame_color)) = (
             self.gpu.as_ref(),
             self.vfs.as_ref(),
@@ -5337,13 +5359,15 @@ impl ViewerApp {
                 let voxels = &mut self.voxels;
                 let voxel_poses = &self.voxel_poses;
                 let mut build = |cam: &room_render::Camera, _depth: u32, _skybox: bool| {
-                    let mut s = build_scene_with_sky_ex_sized(
+                    // Portal eyes sit behind walls: no occlusion culling.
+                    let mut s = build_scene_with_sky_ex_shared(
                         map,
                         cam,
                         live_sprites.as_deref(),
                         sky,
                         cubemap,
-                        Some(&tex_sizes),
+                        Some(std::sync::Arc::clone(&tex_sizes)),
+                        false,
                     );
                     tex_anim.apply(&mut s, tic);
                     s.dyn_lights = dyn_lights.clone();
@@ -5388,6 +5412,9 @@ impl ViewerApp {
 
             let mut hud = Canvas::new();
             hud.clear([0.0, 0.0, 0.0, 0.0]);
+            if let Some((width, height, rgba)) = soft_frame {
+                hud.blit_rgba(0.0, 0.0, width, height, rgba);
+            }
             if let Some((width, height, rgba)) = duke_frame {
                 hud.blit_rgba(0.0, 0.0, width, height, rgba);
             }
@@ -6939,7 +6966,7 @@ impl ViewerApp {
             };
             let color_view = &present_tex.1;
             {
-                canvas_gpu.rasterize(&hud, None);
+                canvas_gpu.rasterize_frame(hud, None);
                 let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("hud"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -10013,6 +10040,156 @@ impl ViewerApp {
     }
 
     /// Live actor billboards for play mode (`None` in free-fly viewer).
+    /// Software view for the current level (`vid_rendermode` 0): build it
+    /// when the map or `vid_softscale` changed. `false` keeps the GPU path
+    /// (Duke, no level, or a map without BSP nodes).
+    fn ensure_soft_world(&mut self) -> bool {
+        if self.duke_session.is_some() {
+            return false;
+        }
+        let Some(world) = self
+            .play
+            .as_ref()
+            .filter(|g| g.state == GameState::Level)
+            .and_then(|g| g.world())
+        else {
+            return false;
+        };
+        let Some(vfs) = self.vfs.as_ref() else {
+            return false;
+        };
+        let scale = match self.console.cvars.get("vid_softscale") {
+            Some(room_console::CvarValue::Int(k)) => (*k).clamp(1, 4) as u32,
+            _ => 2,
+        };
+        let key = (Arc::as_ptr(&world.map) as usize, scale);
+        if self.soft_world.as_ref().is_some_and(|(k, _)| *k == key) {
+            return true;
+        }
+        match room_render_soft::sim::SoftWorldView::new(vfs, &world.map, 320 * scale, 200 * scale) {
+            Some(mut view) => {
+                // SR7: ANIMDEFS camera textures.
+                view.set_camera_canvases(
+                    self.camera_tex_sizes
+                        .iter()
+                        .map(|(n, &(w, h))| (n.clone(), w, h)),
+                );
+                // SR8: VOXELDEF.
+                view.set_voxeldefs(self.voxeldefs.clone());
+                self.soft_world = Some((key, view));
+                true
+            }
+            None => {
+                if self.soft_world.take().is_some() || self.frames % 350 == 0 {
+                    eprintln!("room: software renderer needs BSP nodes; using hardware");
+                }
+                false
+            }
+        }
+    }
+
+    /// Draw the level with the software renderer, scaled to the window.
+    fn draw_soft_world(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        let (width, height) = self
+            .config
+            .as_ref()
+            .map_or((640, 400), |c| (c.width.max(1), c.height.max(1)));
+        // SR8: dynamic lights for true colour (collected before borrowing
+        // the view).
+        let lights = if matches!(
+            self.console.cvars.get("vid_rendermode"),
+            Some(room_console::CvarValue::Int(1))
+        ) {
+            self.collect_dyn_lights()
+        } else {
+            Vec::new()
+        };
+        let vfs = self.vfs.as_ref()?;
+        let game = self.play.as_ref()?;
+        let world = game.world()?;
+        let (_, view) = self.soft_world.as_mut()?;
+        // SR5: as wide as the window (vanilla-shaped pixels), `fov`,
+        // true colour for `vid_rendermode 1`, `r_visibility`.
+        let float = |name: &str, default: f64| match self.console.cvars.get(name) {
+            Some(room_console::CvarValue::Float(v)) => *v,
+            Some(room_console::CvarValue::Int(v)) => f64::from(*v),
+            _ => default,
+        };
+        let soft_h = 200
+            * match self.console.cvars.get("vid_softscale") {
+                Some(room_console::CvarValue::Int(k)) => (*k).clamp(1, 4) as u32,
+                _ => 2,
+            };
+        let soft_w = ((f64::from(width) / f64::from(height)) * f64::from(soft_h) * 1.2)
+            .round()
+            .clamp(2.0, 8192.0) as u32;
+        let truecolor = matches!(
+            self.console.cvars.get("vid_rendermode"),
+            Some(room_console::CvarValue::Int(1))
+        );
+        view.set_view(soft_w, soft_h, float("fov", 90.0), truecolor);
+        view.view.renderer.visibility = float("r_visibility", 8.0) / 8.0;
+        // SR9: vertical slices on the machine's threads.
+        view.view.renderer.threads = match self.console.cvars.get("r_scene_multithreaded") {
+            Some(room_console::CvarValue::Bool(false)) | Some(room_console::CvarValue::Int(0)) => 1,
+            _ => std::thread::available_parallelism().map_or(1, usize::from),
+        };
+        let player = world
+            .players
+            .get(usize::from(self.local_seat))
+            .and_then(|p| p.as_ref());
+        let forward = self.camera.forward;
+        let tic = 1.0 / game.tic_rate() as f32;
+        let cam = room_render_soft::sim::SoftCamera {
+            x: f64::from(self.camera.eye.x),
+            y: f64::from(self.camera.eye.y),
+            z: f64::from(self.camera.eye.z),
+            angle_deg: f64::from(forward.y.atan2(forward.x).to_degrees()),
+            extralight: player.map_or(0, |p| p.extralight),
+            fixed_colormap: player.map_or(0, room_sim::Player::fixed_colormap),
+            hide: player.and_then(|p| p.mo),
+            sky: self.sky_texture.clone(),
+            plane_lerp: Some(f64::from((self.tic_accum / tic).clamp(0.0, 1.0))),
+            pitch_deg: f64::from(
+                forward
+                    .z
+                    .atan2((forward.x * forward.x + forward.y * forward.y).sqrt())
+                    .to_degrees(),
+            ),
+        };
+        // SR8: particles, and dynamic lights in true colour.
+        view.particles = room_render_soft::soft_particles(&self.particles);
+        view.lights = if truecolor {
+            room_render_soft::soft_lights(&lights)
+        } else {
+            Vec::new()
+        };
+        // SR6: the shell's decals on walls and floors.
+        view.decals.clear();
+        view.decals.extend(
+            self.decals
+                .decals
+                .iter()
+                .map(|d| room_render_soft::SoftDecal {
+                    picture: d.name.clone(),
+                    x: f64::from(d.pos.x),
+                    y: f64::from(d.pos.y),
+                    z: f64::from(d.pos.z),
+                    width: f64::from(d.width),
+                    height: f64::from(d.height),
+                    line: d.line,
+                    flat: d.on_floor,
+                    light: None,
+                    alpha: (d.alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    ..room_render_soft::SoftDecal::default()
+                }),
+        );
+        // The frame reuses every buffer but the one the canvas takes.
+        let mut rgba = Vec::new();
+        view.draw_fit(vfs, world, &self.map, &cam, width, height, &mut rgba);
+        Some((width, height, rgba))
+    }
+
     fn collect_live_sprites(&mut self) -> Option<Vec<SpriteInstance>> {
         self.fill_voxel_poses();
         self.fill_model_actors();
@@ -11044,6 +11221,21 @@ impl ViewerApp {
                         let lo: i32 = parts[1].parse().unwrap_or(0);
                         let hi: i32 = parts[2].parse().unwrap_or(lo);
                         let v = cycle_cvar(&mut self.console.cvars, name, lo, hi);
+                        self.messages.push(format!("{name} = {v}"), 35);
+                        self.refresh_graphics_menu();
+                    }
+                } else if action == "optionrendermode" {
+                    let v = next_rendermode(&mut self.console.cvars);
+                    self.messages.push(format!("vid_rendermode = {v}"), 35);
+                    self.refresh_graphics_menu();
+                } else if let Some(rest) = action.strip_prefix("optionswap ") {
+                    // `optionswap <cvar> <a> <b>`
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let name = parts[0];
+                        let a: i32 = parts[1].parse().unwrap_or(0);
+                        let b: i32 = parts[2].parse().unwrap_or(a);
+                        let v = swap_cvar(&mut self.console.cvars, name, a, b);
                         self.messages.push(format!("{name} = {v}"), 35);
                         self.refresh_graphics_menu();
                     }

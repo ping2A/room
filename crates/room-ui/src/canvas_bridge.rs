@@ -29,6 +29,12 @@ pub trait CanvasSink {
             }
         }
     }
+
+    /// [`Self::blit_rgba`] handing over the pixels: a sink that keeps them
+    /// (a canvas command list) takes them without another copy.
+    fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+        self.blit_rgba(x, y, w, h, &pixels);
+    }
 }
 
 use crate::draw::{DrawCmd, UiDrawList, Vec2};
@@ -293,19 +299,19 @@ pub fn blit_draw_list_full(
                             let offs = corners.map(|c| (c.x * sx, c.y * sy));
                             let (out, qw, qh, ox, oy) =
                                 warp_rgba(&pixels, dw, dh, offs, *angle, *pivot_x, *pivot_y);
-                            sink.blit_rgba(x0 + ox, y0 + oy, qw, qh, &out);
+                            sink.blit_rgba_owned(x0 + ox, y0 + oy, qw, qh, out);
                         } else if angle.abs() > 0.01 {
                             let (rotated, rw, rh, ox, oy) =
                                 rotate_rgba(&pixels, dw, dh, *angle, *pivot_x, *pivot_y);
-                            sink.blit_rgba(x0 + ox, y0 + oy, rw, rh, &rotated);
+                            sink.blit_rgba_owned(x0 + ox, y0 + oy, rw, rh, rotated);
                         } else if let Some([cx0, cy0, cx1, cy1]) = clip {
                             if let Some((bx, by, bw, bh, cropped)) =
                                 crop_rgba(&pixels, x0, y0, dw, dh, [cx0, cy0, cx1, cy1])
                             {
-                                sink.blit_rgba(bx, by, bw, bh, &cropped);
+                                sink.blit_rgba_owned(bx, by, bw, bh, cropped);
                             }
                         } else {
-                            sink.blit_rgba(x0, y0, dw, dh, &pixels);
+                            sink.blit_rgba_owned(x0, y0, dw, dh, pixels);
                         }
                         continue;
                     }
@@ -341,7 +347,7 @@ pub fn blit_draw_list_full(
                         fb_clip[3].min(fb_h),
                     ],
                 ) {
-                    sink.blit_rgba(x0, y0, w, h, &px);
+                    sink.blit_rgba_owned(x0, y0, w, h, px);
                 }
             }
             DrawCmd::Line {

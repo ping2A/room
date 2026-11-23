@@ -424,6 +424,10 @@ pub(crate) fn kdfread_array(
 }
 
 /// Advance past one Ken `kdfread` blob without keeping the payload.
+#[allow(
+    dead_code,
+    reason = "kept for demo formats that skip compressed blocks"
+)]
 pub(crate) fn kdfskip_one(src: &[u8], pos: &mut usize) -> bool {
     if *pos + 2 > src.len() {
         return false;

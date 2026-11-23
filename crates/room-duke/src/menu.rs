@@ -16,11 +16,17 @@ const CREDITS_FIRST: i16 = 2504;
 /// Menu navigation input (one press).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKey {
+    /// Move the cursor up.
     Up,
+    /// Move the cursor down.
     Down,
+    /// Left arrow.
     Left,
+    /// Right arrow.
     Right,
+    /// Select.
     Enter,
+    /// Back / close.
     Escape,
     /// `Y` on a yes/no page.
     Yes,
@@ -31,17 +37,24 @@ pub enum MenuKey {
 /// What the host should do after a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
+    /// Nothing for the host to do.
     None,
     /// Close the menu and resume play.
     Resume,
     /// Chocolate `newgame(volume, 0, skill)`; `skill` is `ud.player_skill` (1–4).
     NewGame {
+        /// Episode, 0-based.
         volume: u8,
+        /// Skill (`ud.player_skill`, 1–4).
         skill: u8,
     },
+    /// Open the save page.
     OpenSave,
+    /// Open the load page.
     OpenLoad,
+    /// Open the options page.
     OpenOptions,
+    /// Open the help screens.
     OpenHelp,
     /// Menu 503 confirmed: leave the game for the title menu.
     QuitToTitle,
@@ -52,18 +65,26 @@ pub enum MenuAction {
 /// Current Chocolate `current_menu` page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuPage {
+    /// Title menu.
     Main,
+    /// Menu opened during play.
     InGame,
+    /// Episode choice.
     Episode,
+    /// Skill choice.
     Skill,
+    /// Credits screen (page index).
     Credits(u8),
+    /// "Quit the game?" (menu 501/502).
     QuitConfirm,
+    /// "Quit to title?" (menu 503).
     QuitToTitleConfirm,
 }
 
 /// Native Duke menu state.
 #[derive(Clone, Debug)]
 pub struct DukeMenu {
+    /// Page shown now.
     pub page: MenuPage,
     probey: usize,
     in_game: bool,

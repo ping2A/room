@@ -18,8 +18,12 @@ pub struct IwadRecord {
     pub config: String,
     /// Required lump short names (all must be present).
     pub must_contain: Vec<String>,
-    /// Candidate file names (from `Names { }`).
+    /// The record's file name (`IWADName`), when it has one.
     pub names: Vec<String>,
+    /// Files to load after the IWAD (`Load`, e.g. `extras.wad`).
+    pub load: Vec<String>,
+    /// Display name of an IWAD this one needs first (`Required`).
+    pub required: String,
 }
 
 /// Parsed IWADINFO lump.
@@ -27,11 +31,18 @@ pub struct IwadRecord {
 pub struct IwadInfo {
     /// Records in file order (most specific first recommended).
     pub records: Vec<IwadRecord>,
-    /// Preference order for the picker.
+    /// Preference order for the picker (display names, as in GZDoom).
     pub order: Vec<String>,
+    /// File names worth trying as IWADs (the global `Names { }` list).
+    pub names: Vec<String>,
 }
 
-/// Parse a GZDoom-style IWADINFO text lump (subset sufficient for detection).
+/// Parse a GZDoom-style IWADINFO text lump.
+///
+/// Every GZDoom key is accepted: `key = value[, value…]` or a bare flag
+/// (`SkipBexStringsIfLanguage`). Detection uses `Name`, `Autoname`, `Game`,
+/// `Config`, `MustContain`, `IWADName`, `Load` and `Required`; the other keys
+/// (`Mapinfo`, `Compatibility`, `BannerColors`, …) are skipped.
 pub fn parse_iwadinfo(text: &str) -> Result<IwadInfo, VfsError> {
     let mut info = IwadInfo::default();
     let mut chars = text.chars().peekable();
@@ -106,23 +117,26 @@ pub fn parse_iwadinfo(text: &str) -> Result<IwadInfo, VfsError> {
                 let mut rec = IwadRecord::default();
                 while i < tokens.len() && tokens[i] != Tok::RBrace {
                     let key = ident(&tokens, &mut i)?;
-                    if tokens.get(i) == Some(&Tok::Eq) {
+                    // A bare flag has no `=` and no value.
+                    let values = if tokens.get(i) == Some(&Tok::Eq) {
                         i += 1;
-                    }
-                    if key.eq_ignore_ascii_case("MustContain") {
-                        rec.must_contain = parse_string_list(&tokens, &mut i)?;
+                        parse_values(&tokens, &mut i)?
                     } else {
-                        let val = string_or_ident(&tokens, &mut i)?;
-                        match key.to_ascii_lowercase().as_str() {
-                            "name" => rec.name = val,
-                            "autoname" => rec.autoname = val,
-                            "game" => rec.game = val,
-                            "config" => rec.config = val,
-                            _ => {}
-                        }
-                        if tokens.get(i) == Some(&Tok::Comma) {
-                            i += 1;
-                        }
+                        Vec::new()
+                    };
+                    let first = values.first().cloned().unwrap_or_default();
+                    match key.to_ascii_lowercase().as_str() {
+                        "name" => rec.name = first,
+                        "autoname" => rec.autoname = first,
+                        "game" => rec.game = first,
+                        "config" => rec.config = first,
+                        "mustcontain" => rec.must_contain = values,
+                        // `IWADName = "doom.wad", 1`: the number is a
+                        // preference rank, not a file.
+                        "iwadname" if !first.is_empty() => rec.names = vec![first],
+                        "load" => rec.load = values,
+                        "required" => rec.required = first,
+                        _ => {}
                     }
                 }
                 expect(&tokens, &mut i, &Tok::RBrace)?;
@@ -131,11 +145,8 @@ pub fn parse_iwadinfo(text: &str) -> Result<IwadInfo, VfsError> {
             Tok::Ident(name) if name.eq_ignore_ascii_case("Names") => {
                 i += 1;
                 expect(&tokens, &mut i, &Tok::LBrace)?;
-                let names = parse_string_list(&tokens, &mut i)?;
+                info.names = parse_string_list(&tokens, &mut i)?;
                 expect(&tokens, &mut i, &Tok::RBrace)?;
-                if let Some(last) = info.records.last_mut() {
-                    last.names = names;
-                }
             }
             Tok::Ident(name) if name.eq_ignore_ascii_case("Order") => {
                 i += 1;
@@ -188,6 +199,18 @@ fn string_or_ident(tokens: &[Tok], i: &mut usize) -> Result<String, VfsError> {
     }
 }
 
+/// `value[, value…]` after a key's `=`: stops at the first token that is
+/// not preceded by a comma, so the next key is left alone.
+fn parse_values(tokens: &[Tok], i: &mut usize) -> Result<Vec<String>, VfsError> {
+    let mut out = vec![string_or_ident(tokens, i)?];
+    while tokens.get(*i) == Some(&Tok::Comma) {
+        *i += 1;
+        out.push(string_or_ident(tokens, i)?);
+    }
+    Ok(out)
+}
+
+/// The strings of a `Names { }` / `Order { }` block, commas optional.
 fn parse_string_list(tokens: &[Tok], i: &mut usize) -> Result<Vec<String>, VfsError> {
     let mut out = Vec::new();
     while *i < tokens.len() {
@@ -313,28 +336,152 @@ Names { "doom2.wad" }
         assert!(m.filters.iter().any(|f| f == "game-doom"));
     }
 
-    #[test]
-    fn detect_freedoom2_from_room_iwadinfo() {
+    /// Detect a real IWAD from `testdata/` with Room's IWADINFO; `None` when
+    /// the file is not there.
+    fn detect_testdata(rel: &str) -> Option<IwadMatch> {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testdata/freedoom/freedoom2.wad");
+            .join("../../testdata")
+            .join(rel);
         if !path.is_file() {
-            return;
+            return None;
         }
-        let iwadinfo = include_str!("../../../wadsrc/room/IWADINFO");
-        let info = parse_iwadinfo(iwadinfo).unwrap();
-        assert!(
-            info.records
-                .iter()
-                .any(|r| r.autoname == "doom.freedoom.phase2")
-        );
+        let info = parse_iwadinfo(include_str!("../../../wadsrc/room/IWADINFO")).unwrap();
         let vfs = VfsBuilder::new()
             .mount_path(&path)
             .unwrap()
             .build()
             .unwrap();
-        let m = detect_iwad(&vfs, &info).unwrap();
-        assert_eq!(m.record.autoname, "doom.freedoom.phase2");
-        assert!(m.filters.iter().any(|f| f == "game-doom"));
+        Some(detect_iwad(&vfs, &info).expect("an IWADINFO record matches"))
+    }
+
+    #[test]
+    fn detect_freedoom_from_room_iwadinfo() {
+        if let Some(m) = detect_testdata("freedoom/freedoom2.wad") {
+            assert_eq!(m.record.autoname, "doom.freedoom.phase2");
+            assert!(m.filters.iter().any(|f| f == "game-doom"));
+        }
+        if let Some(m) = detect_testdata("freedoom/freedoom1.wad") {
+            assert_eq!(m.record.autoname, "doom.freedoom.phase1");
+        }
+    }
+
+    /// Doom II holds every lump the Freedoom: Phase 2 record used to require;
+    /// it must be detected as Doom II, not Freedoom.
+    #[test]
+    fn detect_doom2_from_room_iwadinfo() {
+        if let Some(m) = detect_testdata("doom/doom2.wad") {
+            assert_eq!(m.record.autoname, "doom.id.doom2.commercial");
+        }
+    }
+
+    /// `testdata/doom/doom1.wad` holds The Ultimate Doom's content (all four
+    /// episodes) despite its name and PWAD header; every lump the Ultimate
+    /// record requires is there, and no earlier record matches it.
+    #[test]
+    fn detect_ultimate_doom_from_room_iwadinfo() {
+        if let Some(m) = detect_testdata("doom/doom1.wad") {
+            assert_eq!(m.record.autoname, "doom.id.doom1.ultimate");
+        }
+    }
+
+    /// GZDoom's syntax: bare flags, multi-value keys, `IWADName` with a
+    /// rank, `MustContain` over several lines, global `Names`, `Order` by
+    /// display name.
+    #[test]
+    fn parses_gzdoom_syntax() {
+        let info = parse_iwadinfo(
+            r#"
+IWad
+{
+	Name = "Final Doom: TNT - Evilution: KEX Edition"
+	Autoname = "doom.id.doom2.tnt.kex"
+	Game = "Doom"
+	IWADName = "tntkex.wad", 2
+	Compatibility = "Shorttex", "Stairs"
+	MustContain = "MAP01",
+	              "REDTNT2", "GAMECONF"
+	BannerColors = "a8 00 00", "a8 a8 a8"
+	Load = "extras.wad", "soundtrack"
+	SkipBexStringsIfLanguage
+	IgnoreTitlePatches = 1
+	Required = "DOOM 2: Hell on Earth"
+}
+Names
+{
+	"tntkex.wad"
+	"doom2.wad"
+}
+Order	// Order in the IWAD selection box
+{
+	"Final Doom: TNT - Evilution: KEX Edition"
+}
+"#,
+        )
+        .unwrap();
+        let r = &info.records[0];
+        assert_eq!(r.autoname, "doom.id.doom2.tnt.kex");
+        assert_eq!(r.must_contain, ["MAP01", "REDTNT2", "GAMECONF"]);
+        assert_eq!(r.names, ["tntkex.wad"]);
+        assert_eq!(r.load, ["extras.wad", "soundtrack"]);
+        assert_eq!(r.required, "DOOM 2: Hell on Earth");
+        assert_eq!(info.names, ["tntkex.wad", "doom2.wad"]);
+        assert_eq!(info.order, ["Final Doom: TNT - Evilution: KEX Edition"]);
+    }
+
+    /// Room's IWADINFO: every record parses whole, and every Order entry
+    /// names a record.
+    #[test]
+    fn room_iwadinfo_records_are_complete() {
+        let info = parse_iwadinfo(include_str!("../../../wadsrc/room/IWADINFO")).unwrap();
+        assert!(info.records.len() >= 24, "{} records", info.records.len());
+        for r in &info.records {
+            assert!(
+                !r.name.is_empty() && !r.autoname.is_empty() && !r.must_contain.is_empty(),
+                "incomplete record {r:?}"
+            );
+            assert_eq!(r.game, "Doom", "{}", r.name);
+        }
+        let ultimate = info
+            .records
+            .iter()
+            .find(|r| r.autoname == "doom.id.doom1.ultimate")
+            .unwrap();
+        assert_eq!(ultimate.must_contain.len(), 25);
+        assert_eq!(ultimate.names, ["doom.wad"]);
+        assert_eq!(
+            info.records.last().map(|r| r.autoname.as_str()),
+            Some("doom.id.doom2.commercial")
+        );
+        for name in &info.order {
+            assert!(
+                info.records.iter().any(|r| &r.name == name),
+                "Order: {name}"
+            );
+        }
+    }
+
+    /// same WAD with `FREEDOOM` is Freedoom: Phase 2.
+    #[test]
+    fn freedoom_needs_its_marker_lump() {
+        let info = parse_iwadinfo(include_str!("../../../wadsrc/room/IWADINFO")).unwrap();
+        let detect = |marker: bool| {
+            let mut w = WadWriter::iwad();
+            w.add("PLAYPAL", vec![0; 768]);
+            for n in ["TITLEPIC", "MAP01", "MAP02"] {
+                w.add(n, vec![1]);
+            }
+            if marker {
+                w.add("FREEDOOM", vec![1]);
+            }
+            let vfs = VfsBuilder::new()
+                .mount_memory("x.wad", w.finish().unwrap())
+                .unwrap()
+                .build()
+                .unwrap();
+            detect_iwad(&vfs, &info).unwrap().record.autoname
+        };
+        assert_eq!(detect(false), "doom.id.doom2.commercial");
+        assert_eq!(detect(true), "doom.freedoom.phase2");
     }
 
     #[test]
@@ -377,32 +524,12 @@ Names { "doom2.wad" }
                 "synthetic {} missing lumps",
                 record.autoname
             );
-            // Matched record must be this one, or an earlier record whose MustContain
-            // is a subset of this synthetic WAD (GZDoom picks first in file order).
-            let matched_idx = info
-                .records
-                .iter()
-                .position(|r| r.autoname == m.record.autoname)
-                .unwrap();
-            let self_idx = info
-                .records
-                .iter()
-                .position(|r| r.autoname == record.autoname)
-                .unwrap();
-            assert!(
-                matched_idx <= self_idx,
-                "expected match at or before {}, got {}",
-                record.autoname,
-                m.record.autoname
-            );
-            assert!(
-                m.record.must_contain.iter().all(|n| record
-                    .must_contain
-                    .iter()
-                    .any(|x| x.eq_ignore_ascii_case(n))),
-                "matched {} MustContain not subset of synthetic {}",
-                m.record.autoname,
-                record.autoname
+            // Records go from most to least specific, so a WAD holding just
+            // one record's MustContain lumps selects exactly that record.
+            assert_eq!(
+                m.record.autoname, record.autoname,
+                "{}'s own lumps matched {}: an earlier record is less specific",
+                record.autoname, m.record.autoname
             );
         }
     }

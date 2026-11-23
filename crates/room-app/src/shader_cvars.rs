@@ -272,6 +272,21 @@ pub fn graphics_menu(cvars: &CvarStore) -> ListMenu {
             format!("{}X", int_val(cvars, "gl_texture_hqresizemult").clamp(1, 6)),
         ),
         tog(cvars, "AUTOMAP FLATS", "am_textured"),
+        MenuItem::text(
+            format!(
+                "RENDERER: {}",
+                match int_val(cvars, "vid_rendermode") {
+                    0 => "SOFTWARE",
+                    1 => "SOFTWARE TRUE COLOR",
+                    _ => "HARDWARE",
+                }
+            ),
+            "optionrendermode".to_owned(),
+        ),
+        cycle(cvars, "SOFTWARE RES", "vid_softscale", 1, 4, {
+            let k = int_val(cvars, "vid_softscale").clamp(1, 4);
+            format!("{}X{}", 320 * k, 200 * k)
+        }),
         tog(cvars, "HEAT HAZE", "r_heathaze"),
         tog(cvars, "PARALLAX", "r_parallax"),
         tog(cvars, "SSR", "r_ssr"),
@@ -344,6 +359,30 @@ pub fn cycle_cvar(cvars: &mut CvarStore, name: &str, lo: i32, hi: i32) -> i32 {
     if name.eq_ignore_ascii_case("r_quality") {
         cvars.apply_quality_preset(next);
     }
+    next
+}
+
+/// `vid_rendermode` picks the software renderer (0 or 1; 4 = hardware).
+#[must_use]
+pub fn software_rendermode(cvars: &CvarStore) -> bool {
+    matches!(cvars.get("vid_rendermode"), Some(CvarValue::Int(0 | 1)))
+}
+
+/// `vid_rendermode` hardware (4) → software (0) → software true colour (1).
+pub fn next_rendermode(cvars: &mut CvarStore) -> i32 {
+    let next = match cvars.get("vid_rendermode") {
+        Some(CvarValue::Int(4)) | None => 0,
+        Some(CvarValue::Int(0)) => 1,
+        _ => 4,
+    };
+    let _ = cvars.set("vid_rendermode", &next.to_string());
+    next
+}
+
+/// Set an int CVar to `b` when it is `a`, else to `a`.
+pub fn swap_cvar(cvars: &mut CvarStore, name: &str, a: i32, b: i32) -> i32 {
+    let next = if int_val(cvars, name) == a { b } else { a };
+    let _ = cvars.set(name, &next.to_string());
     next
 }
 

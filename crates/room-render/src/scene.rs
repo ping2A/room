@@ -147,7 +147,7 @@ pub struct SceneLists {
     /// Side / sector → surface index.
     pub lightmap_bindings: LightmapBindings,
     /// TEXTUREX sizes (uppercase name → w,h) for wall UV; empty = assume 128×128.
-    pub(crate) wall_tex_sizes: std::collections::BTreeMap<String, (f32, f32)>,
+    pub(crate) wall_tex_sizes: std::sync::Arc<std::collections::BTreeMap<String, (f32, f32)>>,
 }
 
 /// One dynamic light for the frame (CPU → future clustered shading).
@@ -461,9 +461,56 @@ pub fn build_scene_with_sky_ex_sized(
     cubemap: Option<&CubemapFaces>,
     wall_tex_sizes: Option<&std::collections::BTreeMap<String, (f32, f32)>>,
 ) -> SceneLists {
+    build_scene_with_sky_ex_shared(
+        map,
+        camera,
+        live_sprites,
+        sky_texture,
+        cubemap,
+        wall_tex_sizes.map(|m| std::sync::Arc::new(m.clone())),
+        false,
+    )
+}
+
+/// Extra angle (radians, ~3°) kept on each side of the view when culling by
+/// direction: headroom for a camera nudged after the scene is built (view
+/// bob, interpolation) and for walls whose edge sits right at the border.
+const VIEW_ARC_MARGIN: f64 = 0.05;
+
+/// [`build_scene_with_sky_ex_sized`] taking the sizes as a shared map
+/// (`MaterialCatalog::wall_texel_sizes_shared`), so a per-frame caller does
+/// not copy thousands of entries every frame.
+///
+/// `occlusion_cull` leaves out what solid walls hide from the eye
+/// ([`crate::walk_bsp_occluded`]): for the player's own view only. Portal
+/// and mirror views put their eye behind walls and must pass `false`. It is
+/// also ignored when the eye is outside its sector's floor-to-ceiling
+/// range (a free camera above the map sees over the walls). It also leaves
+/// out what lies outside the camera's horizontal view
+/// ([`Camera::horizontal_view_arc`]).
+#[must_use]
+pub fn build_scene_with_sky_ex_shared(
+    map: &MapGeometry,
+    camera: &Camera,
+    live_sprites: Option<&[SpriteInstance]>,
+    sky_texture: Option<&str>,
+    cubemap: Option<&CubemapFaces>,
+    wall_tex_sizes: Option<std::sync::Arc<std::collections::BTreeMap<String, (f32, f32)>>>,
+    occlusion_cull: bool,
+) -> SceneLists {
     let (vx, vy) = camera.map_xy();
-    let vis = walk_bsp(map, vx, vy);
-    let mut lists = build_scene_from_visible_ex(map, &vis, wall_tex_sizes);
+    let vis = if occlusion_cull && eye_inside_open_sector(map, vx, vy, f64::from(camera.eye.z)) {
+        crate::bsp_walk::walk_bsp_occluded_in_view(
+            map,
+            vx,
+            vy,
+            camera.horizontal_view_arc(VIEW_ARC_MARGIN),
+        )
+    } else {
+        walk_bsp(map, vx, vy)
+    };
+    let mut lists = build_scene_from_visible_shared(map, &vis, wall_tex_sizes);
+    capacity_hint_record(&lists);
     // One draw (and bind) per material instead of one per subsector/seg.
     coalesce_by_material(&mut lists.flats, &mut lists.flat_ranges);
     coalesce_by_material(&mut lists.opaque_walls, &mut lists.wall_ranges);
@@ -1049,17 +1096,30 @@ pub fn build_scene_from_visible_ex(
     vis: &VisibleSet,
     wall_tex_sizes: Option<&std::collections::BTreeMap<String, (f32, f32)>>,
 ) -> SceneLists {
+    build_scene_from_visible_shared(
+        map,
+        vis,
+        wall_tex_sizes.map(|m| std::sync::Arc::new(m.clone())),
+    )
+}
+
+fn build_scene_from_visible_shared(
+    map: &MapGeometry,
+    vis: &VisibleSet,
+    wall_tex_sizes: Option<std::sync::Arc<std::collections::BTreeMap<String, (f32, f32)>>>,
+) -> SceneLists {
     let mut lists = SceneLists {
         visible_subsectors: vis.subsectors.clone(),
         shadow_occluders: collect_shadow_occluders(map),
-        wall_tex_sizes: wall_tex_sizes.cloned().unwrap_or_default(),
+        wall_tex_sizes: wall_tex_sizes.unwrap_or_default(),
         ..Default::default()
     };
+    capacity_hint_reserve(&mut lists);
     let Some(nodes) = map.game_nodes.as_ref() else {
         emit_polyobj_walls(map, &mut lists);
         emit_ffloor_sides(map, &mut lists);
         // Tall closed shell: old height 1024 only covered ~±7° vertical FOV.
-        lists.sky_parts = cylinder_sky(4096.0, 8192.0, 32, 1.0);
+        lists.sky_parts = default_sky_shell();
         return lists;
     };
     // Walls from BSP segs. Floors from each visible subsector's leaf polygon:
@@ -1067,6 +1127,7 @@ pub fn build_scene_from_visible_ex(
     // convex hull of seg endpoints recovers the leaf (or a safe inner approx).
     // Sector-outline ear-clip is only for sectors that got zero leaf area.
     let mut flats_needed = vec![false; map.sectors.len()];
+    flat_tri_cache_begin(map, nodes);
     let skip_lines = skip_wall_line_set(map);
     let parents = BspParents::new(map, nodes);
     for &ss in &vis.subsectors {
@@ -1100,8 +1161,17 @@ pub fn build_scene_from_visible_ex(
     emit_polyobj_walls(map, &mut lists);
     emit_ffloor_sides(map, &mut lists);
     // Classic sky shell centred on origin; translated to the eye after build.
-    lists.sky_parts = cylinder_sky(4096.0, 8192.0, 32, 1.0);
+    lists.sky_parts = default_sky_shell();
     lists
+}
+
+/// The classic sky shell (`cylinder_sky(4096, 8192, 32, 1)`), built once:
+/// every scene build used to redo its trigonometry.
+fn default_sky_shell() -> Vec<WallVertex> {
+    static SHELL: std::sync::OnceLock<Vec<WallVertex>> = std::sync::OnceLock::new();
+    SHELL
+        .get_or_init(|| cylinder_sky(4096.0, 8192.0, 32, 1.0))
+        .clone()
 }
 
 fn skip_wall_line_set(map: &MapGeometry) -> std::collections::BTreeSet<u32> {
@@ -1903,14 +1973,10 @@ fn emit_flats_for_sector(
         portal_flat_overlay(map, sector_i, 0, floor_portal.is_some()),
         portal_flat_overlay(map, sector_i, 1, ceil_portal.is_some()),
     ];
-    let want = room_core::SectorId(sector_i as u32);
-    for tri in earclip_tris(&ring) {
+    // Strict: outline rings are sector-shaped but ear-clip still spills across
+    // steps into neighbours (transparent risers when high floor overhangs).
+    for &tri in owned_flat_tris(map, sector_i, &ring).iter() {
         let [(xa, ya), (xb, yb), (xc, yc)] = tri;
-        // Strict: outline rings are sector-shaped but ear-clip still spills across
-        // steps into neighbours (transparent risers when high floor overhangs).
-        if !tri_belongs_to_sector(map, want, (xa, ya), (xb, yb), (xc, yc)) {
-            continue;
-        }
         push_floor_ceil_tri(
             lists,
             sec,
@@ -2027,12 +2093,8 @@ fn emit_flats_for_sector_trusted(
         portal_flat_overlay(map, sector_i, 0, floor_portal.is_some()),
         portal_flat_overlay(map, sector_i, 1, ceil_portal.is_some()),
     ];
-    let want = room_core::SectorId(sector_i as u32);
-    for tri in earclip_tris(&ring) {
+    for &tri in owned_flat_tris(map, sector_i, &ring).iter() {
         let [(xa, ya), (xb, yb), (xc, yc)] = tri;
-        if !tri_belongs_to_sector(map, want, (xa, ya), (xb, yb), (xc, yc)) {
-            continue;
-        }
         push_floor_ceil_tri(
             lists,
             sec,
@@ -2052,6 +2114,146 @@ fn emit_flats_for_sector_trusted(
         );
     }
     emit_ffloor_flats(map, sector_i, &ring, lists);
+}
+
+/// The eye is between the floor and the ceiling of the sector it stands in,
+/// where solid walls hide everything behind them.
+fn eye_inside_open_sector(map: &MapGeometry, x: f64, y: f64, z: f64) -> bool {
+    let Some(sector) = room_nodebuild::point_in_sector(map, x, y) else {
+        return false;
+    };
+    let si = sector.raw() as usize;
+    let floor = sector_z_at(map, si, x, y, false);
+    let ceiling = sector_z_at(map, si, x, y, true);
+    z >= floor - 1.0 && z <= ceiling + 1.0 && ceiling > floor
+}
+
+thread_local! {
+    /// Lengths of the last frame's biggest lists: the next frame reserves
+    /// them up front instead of regrowing (and copying) each list a dozen
+    /// times while it fills.
+    static LIST_CAPACITY_HINT: std::cell::Cell<[usize; 5]> = const { std::cell::Cell::new([0; 5]) };
+}
+
+fn capacity_hint_reserve(lists: &mut SceneLists) {
+    let [walls, flats, wall_ranges, flat_ranges, sky] = LIST_CAPACITY_HINT.get();
+    lists.opaque_walls.reserve(walls);
+    lists.flats.reserve(flats);
+    lists.wall_ranges.reserve(wall_ranges);
+    lists.flat_ranges.reserve(flat_ranges);
+    lists.sky_walls.reserve(sky);
+}
+
+fn capacity_hint_record(lists: &SceneLists) {
+    LIST_CAPACITY_HINT.set([
+        lists.opaque_walls.len(),
+        lists.flats.len(),
+        lists.wall_ranges.len(),
+        lists.flat_ranges.len(),
+        lists.sky_walls.len(),
+    ]);
+}
+
+/// Flat triangles of one ring after ear-clipping and the sector ownership
+/// filter.
+type FlatTris = std::rc::Rc<[[(f64, f64); 3]]>;
+
+/// Per-thread cache of [`owned_flat_tris`]. Both steps only read the map's 2D
+/// layout, which does not change while a level is played, yet they cost
+/// about seven BSP point lookups per triangle: rebuilding them for every
+/// visible leaf each frame was most of the scene build (27 ms per frame
+/// natively on Freedoom MAP10, far more in the browser).
+#[derive(Default)]
+struct FlatTriCache {
+    /// [`flat_layout_key`] of the map the entries belong to.
+    key: u64,
+    tris: std::collections::HashMap<u64, FlatTris>,
+}
+
+thread_local! {
+    static FLAT_TRI_CACHE: std::cell::RefCell<FlatTriCache> =
+        std::cell::RefCell::new(FlatTriCache::default());
+}
+
+/// FNV-1a over 64-bit words (fast, deterministic, no allocation).
+#[derive(Clone, Copy)]
+struct Fnv(u64);
+
+impl Fnv {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn word(&mut self, v: u64) {
+        for b in v.to_le_bytes() {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// Everything [`tri_belongs_to_sector`] reads: vertex positions (polyobjects
+/// move them), line sectors and the BSP. Any edit (map change, editor,
+/// polyobject) gives a new key and drops the old entries.
+fn flat_layout_key(map: &MapGeometry, nodes: &GameNodes) -> u64 {
+    let mut h = Fnv::new();
+    h.word(map.vertices.len() as u64);
+    for v in &map.vertices {
+        h.word(v.pos.x().to_bits());
+        h.word(v.pos.y().to_bits());
+    }
+    h.word(map.lines.len() as u64);
+    for line in &map.lines {
+        h.word(
+            u64::from(line.front_sector.map_or(u32::MAX, |s| s.raw()))
+                | (u64::from(line.back_sector.map_or(u32::MAX, |s| s.raw())) << 32),
+        );
+    }
+    h.word(nodes.nodes.len() as u64);
+    h.word(nodes.subsectors.len() as u64);
+    h.word(nodes.segs.len() as u64);
+    for b in map.md5 {
+        h.word(u64::from(b));
+    }
+    h.0
+}
+
+/// Point the flat cache at `map`, dropping entries of any other layout.
+fn flat_tri_cache_begin(map: &MapGeometry, nodes: &GameNodes) {
+    let key = flat_layout_key(map, nodes);
+    FLAT_TRI_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        // The bound only guards against unbounded growth (an editor dragging
+        // vertices keys new rings every frame).
+        if cache.key != key || cache.tris.len() > 1 << 18 {
+            cache.key = key;
+            cache.tris.clear();
+        }
+    });
+}
+
+/// Ear-clip `ring` (already counter-clockwise) and keep the triangles that
+/// belong to `sector_i`, cached per layout (see [`FlatTriCache`]).
+fn owned_flat_tris(map: &MapGeometry, sector_i: usize, ring: &[(f64, f64)]) -> FlatTris {
+    let mut h = Fnv::new();
+    h.word(sector_i as u64);
+    h.word(ring.len() as u64);
+    for &(x, y) in ring {
+        h.word(x.to_bits());
+        h.word(y.to_bits());
+    }
+    let ring_key = h.0;
+    if let Some(hit) = FLAT_TRI_CACHE.with(|cache| cache.borrow().tris.get(&ring_key).cloned()) {
+        return hit;
+    }
+    let want = room_core::SectorId(sector_i as u32);
+    let tris: FlatTris = earclip_tris(ring)
+        .into_iter()
+        .filter(|&[a, b, c]| tri_belongs_to_sector(map, want, a, b, c))
+        .collect();
+    FLAT_TRI_CACHE.with(|cache| {
+        cache.borrow_mut().tris.insert(ring_key, tris.clone());
+    });
+    tris
 }
 
 fn tri_belongs_to_sector(
@@ -3325,10 +3527,17 @@ struct WallQuad {
 }
 
 fn wall_texel_wh(lists: &SceneLists, tex: &str) -> (f32, f32) {
-    let key = tex.to_ascii_uppercase();
-    lists
-        .wall_tex_sizes
-        .get(&key)
+    // Keys are uppercase and map names usually are too: look up as-is first
+    // and only allocate an uppercase copy for a mixed-case name.
+    let sizes = &lists.wall_tex_sizes;
+    sizes
+        .get(tex)
+        .or_else(|| {
+            tex.bytes()
+                .any(|b| b.is_ascii_lowercase())
+                .then(|| sizes.get(&tex.to_ascii_uppercase()))
+                .flatten()
+        })
         .copied()
         .unwrap_or((WALL_TEXEL, WALL_TEXEL))
 }
@@ -3562,15 +3771,17 @@ pub fn coalesce_by_material<V: Copy>(verts: &mut Vec<V>, ranges: &mut Vec<Materi
 }
 
 fn push_range(ranges: &mut Vec<MaterialRange>, name: &str, start: u32, count: u32) {
-    let key = name.trim().to_ascii_uppercase();
+    // Called for every triangle and quad: extend the last range without
+    // allocating; only a new range stores an uppercase copy of the name.
+    let trimmed = name.trim();
     if let Some(last) = ranges.last_mut() {
-        if last.name == key && last.start + last.count == start {
+        if last.start + last.count == start && last.name.eq_ignore_ascii_case(trimmed) {
             last.count += count;
             return;
         }
     }
     ranges.push(MaterialRange {
-        name: key,
+        name: trimmed.to_ascii_uppercase(),
         start,
         count,
         flags: 0,
@@ -3845,7 +4056,7 @@ mod tests {
     fn lower_dontpegbottom_shows_texture_bottom() {
         // E1M1 SW1COMP: 48mu step, 128-tall tex, y_offset=8 → LED near V=0.56.
         let mut lists = SceneLists::default();
-        lists.wall_tex_sizes.insert("SW1COMP".into(), (64.0, 128.0));
+        std::sync::Arc::make_mut(&mut lists.wall_tex_sizes).insert("SW1COMP".into(), (64.0, 128.0));
         push_wall_quad(
             &mut lists,
             "SW1COMP",
@@ -4315,6 +4526,17 @@ mod tests {
             nz_neg, 0,
             "floor tris must have +Z normal, got {nz_neg} negative"
         );
+    }
+
+    #[test]
+    fn cached_sky_shell_matches_a_fresh_one() {
+        let fresh = cylinder_sky(4096.0, 8192.0, 32, 1.0);
+        let a = default_sky_shell();
+        let b = default_sky_shell();
+        assert_eq!(a.len(), fresh.len());
+        for (x, y) in a.iter().zip(&fresh).chain(b.iter().zip(&fresh)) {
+            assert_eq!((x.pos, x.uv), (y.pos, y.uv));
+        }
     }
 
     #[test]

@@ -25,11 +25,17 @@ const FIST: i16 = 1640;
 /// One `myospal` call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WeaponDraw {
+    /// Screen X.
     pub x: i32,
+    /// Screen Y.
     pub y: i32,
+    /// ART tile.
     pub tile: i16,
+    /// Shade.
     pub shade: i8,
+    /// Palette.
     pub pal: u8,
+    /// Mirrored horizontally.
     pub flip: bool,
 }
 
@@ -38,9 +44,13 @@ pub struct WeaponDraw {
 pub struct WeaponViewEnv {
     /// Body sprite shade (clamped to 24 like Chocolate's `gs`).
     pub body_shade: i8,
+    /// Body sprite palette.
     pub body_pal: u8,
+    /// Body sprite `xrepeat`.
     pub body_xrepeat: u8,
+    /// Body sprite `xvel`.
     pub body_xvel: i16,
+    /// Body sprite `extra` (health).
     pub body_extra: i16,
     /// `sector[cursectnum].floorpal`.
     pub floorpal: u8,

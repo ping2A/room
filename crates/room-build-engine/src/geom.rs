@@ -926,6 +926,9 @@ pub fn clipmove_xy_at_z_sprites(
 /// Chocolate `clipmove` with optional live sector-list ordering for sprite
 /// candidates. When supplied, candidates are visited sector-by-sector in the
 /// exact `headspritesect` / `nextspritesect` order used by the engine.
+///
+/// Walls block on `cstat & 1` (the wall half of `CLIPMASK0`); use
+/// [`clipmove_xy_at_z_cliptype`] for another clip type such as `CLIPMASK1`.
 #[allow(clippy::too_many_arguments)]
 pub fn clipmove_xy_at_z_sprites_with_lists(
     x: &mut i32,
@@ -944,6 +947,49 @@ pub fn clipmove_xy_at_z_sprites_with_lists(
     dasprclipmask: u16,
     sprite_lists: Option<&SpriteLists>,
 ) -> i32 {
+    clipmove_xy_at_z_cliptype(
+        x,
+        y,
+        z,
+        sect,
+        xvect,
+        yvect,
+        walldist,
+        ceildist,
+        flordist,
+        sectors,
+        walls,
+        sector_z,
+        sprites,
+        (u32::from(dasprclipmask) << 16) | 1,
+        sprite_lists,
+    )
+}
+
+/// [`clipmove_xy_at_z_sprites_with_lists`] with Chocolate's whole `cliptype`:
+/// walls block on `cstat & (cliptype & 0xffff)` and sprites on
+/// `cstat & (cliptype >> 16)`. Projectiles and pool balls move with
+/// `CLIPMASK1` (`(256 << 16) | 64`), so walls marked only blocking (`cstat`
+/// bit 1) do not stop them.
+#[allow(clippy::too_many_arguments)]
+pub fn clipmove_xy_at_z_cliptype(
+    x: &mut i32,
+    y: &mut i32,
+    z: i32,
+    sect: &mut i16,
+    xvect: i32,
+    yvect: i32,
+    walldist: i32,
+    ceildist: i32,
+    flordist: i32,
+    sectors: &[SectorWalls],
+    walls: &[WallXY],
+    sector_z: Option<&[SectorZ]>,
+    sprites: &[SpriteZClip],
+    cliptype: u32,
+    sprite_lists: Option<&SpriteLists>,
+) -> i32 {
+    let dasprclipmask = (cliptype >> 16) as u16;
     if (xvect | yvect) == 0 || *sect < 0 {
         return 0;
     }
@@ -965,7 +1011,7 @@ pub fn clipmove_xy_at_z_sprites_with_lists(
     let ymin = cy.wrapping_sub(rad);
     let xmax = cx.wrapping_add(rad);
     let ymax = cy.wrapping_add(rad);
-    let dawalclipmask: u16 = 1;
+    let dawalclipmask = (cliptype & 0xffff) as u16;
 
     let mut clipit: Vec<(i32, i32, i32, i32)> = Vec::with_capacity(256);
     let mut clipobjectval: Vec<i32> = Vec::with_capacity(256);

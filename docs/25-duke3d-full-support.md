@@ -68,7 +68,7 @@ The only number that counts is the honest one —
 
 | Demo | Map | Tics | Honest frontier | First divergence |
 |------|-----|------|-----------------|------------------|
-| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–435** (2026-11-13; was 0–269) | tic 436 randomseed |
+| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–959** (2026-11-21; was 0–435) | tic 960 player `extra` 92 vs 0 (own RPG) |
 | DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `numsprites` 1104 vs 1068 (load) |
 | DEMO3 | E4L2 skill 2 | 1,657 | 0 | tic 0 randomseed: 3 fewer krands at load |
 
@@ -150,7 +150,38 @@ corner probe; the corner probes chain the sector hint.
 tile snapshots prevent stale sprite ids from deleting a different actor after
 slot reuse. The queue is saved in `.fsave` and reset when a new world is loaded.
 
-Next divergence (tic 436): Room's hand-written APLAYER CON emulation
+Fixed on the way from tic 436 to tic 960 (2026-11-21, same method, no
+fixups):
+
+- **APLAYER dry-land actions.** `moveplayers.rs` now emulates the
+`GAME.CON` APLAYER block from `ifaction PFALLING` to `enda` (`pstandard`:
+stand/walk/run/back/jump/fall/duck/crawl/kick, PJPHOUVER, swim → stand)
+with Chocolate's `ifp` flag sources, and `tick_action_frames` runs every
+tic, so the swim-bubble `ifrnd` is drawn only where Chocolate draws it.
+- **Mouse aim bit.** `checksectors` reads input bit 23 into `aim_mode`
+(`return_to_center = 9` when it turns off) before the player moves.
+- **Legacy demo autoaim.** DMO versions 27/28/116/117 aim the RPG even with
+autoaim off (`legacy_demo_autoaim`); the RPG fires at `kickback_pic == 4`.
+- **Walking sounds.** `DUKE_WALKINDUCTS` on PANNEL floors and the
+`DUKE_ONWATER` `krand&1` in shallow water, with `walking_snd_toggle`.
+- **Bob counter.** Body `xvel` uses C's wrapping arithmetic and `nsqrtasm`,
+not Room's saturating `ksqrt`.
+- Drowning damage runs before the air counter; the floor teleporter also
+moves `bobposx/y`.
+- `clipmove` takes a full `cliptype`: COOLEXPLOSION1 clips with
+`(256<<16)|64`, pool balls with `CLIPMASK1`; projectile `globalz` uses
+getzrange with the owner's plane fallback.
+- BLOODPOOL lands with `makeitfall` at `floorz - 256`; GREENSLIME's size and
+offset math use C operator precedence.
+
+Next divergence (tic 960): Room's vanilla RPG still flies through the
+hitscan sweep (`advance_projectile_with_sweeps`), which only excludes the
+owner for custom RPGs, so the rocket hits the player at launch. Chocolate
+moves RPG, SPIT, FIRELASER, SHRINKSPARK and COOLEXPLOSION1 with
+`movesprite` (CLIPMASK1, walldist 8, `getglobalz`, 256-unit target check,
+half speed under water). The rocket must also spawn at 14×14, shade 0.
+
+Earlier divergence (tic 436, fixed above): Room's hand-written APLAYER CON emulation
 (`moveplayers.rs`) draws the trailing swim-bubble `ifrnd` where Chocolate's
 real APLAYER script took another branch, and drone #63 skips its `cansee`
 path. The first needs APLAYER to run through the CON VM (the D5/D6

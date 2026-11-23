@@ -95,6 +95,17 @@ cargo run --release -p room-cli -- mod check ~/mods/my-mod.pk3 \
   --iwad ~/games/doom/doom2.wad --md mod-report.md
 ```
 
+To see what a file is and what it holds (game or release, maps with their
+format, size and title, content counts, definition lumps, GAMEINFO,
+embedded WADs), for any file Room loads: IWAD / PWAD, PK3 / IPK3 / PKE /
+ZIP, PK7 / 7Z, a mod directory, a Duke Nukem 3D GRP, Build `.MAP` / `.ART`
+files and DeHackEd patches:
+
+```sh
+cargo run --release -p room-cli -- inspect ~/games/doom/doom2.wad ~/mods/my-mod.pk3
+# --lumps lists every lump, --all-maps every map, --json for scripts
+```
+
 ### Brutal Doom
 
 The launcher recognizes Brutal Doom by file name or by its `GAMEINFO` and

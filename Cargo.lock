@@ -4809,6 +4809,7 @@ dependencies = [
  "room-nodebuild",
  "room-python-host",
  "room-render",
+ "room-render-soft",
  "room-sim",
  "room-testkit",
  "room-ui",
@@ -4868,6 +4869,7 @@ dependencies = [
  "room-map",
  "room-mapgen",
  "room-nodebuild",
+ "room-render-soft",
  "room-sim",
  "room-vfs",
  "room-zscript",
@@ -5114,6 +5116,22 @@ dependencies = [
 [[package]]
 name = "room-render-soft"
 version = "0.1.0"
+dependencies = [
+ "glam",
+ "png 0.17.16",
+ "pollster",
+ "room-core",
+ "room-decorate",
+ "room-defs",
+ "room-formats",
+ "room-map",
+ "room-nodebuild",
+ "room-render",
+ "room-sim",
+ "room-testkit",
+ "room-vfs",
+ "wgpu",
+]
 
 [[package]]
 name = "room-sc"
@@ -5182,6 +5200,7 @@ dependencies = [
  "room-net",
  "room-nodebuild",
  "room-proto",
+ "room-render-soft",
  "room-sfu",
  "room-sim",
  "room-vfs",
@@ -5313,6 +5332,7 @@ dependencies = [
  "room-nodebuild",
  "room-proto",
  "room-render",
+ "room-render-soft",
  "room-script",
  "room-sim",
  "room-testkit",

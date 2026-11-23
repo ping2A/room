@@ -349,6 +349,7 @@ impl WsV2Transport {
 
     /// Drain server `notice` lines.
     /// First tic the server reported a desync at, if any.
+    #[allow(dead_code)]
     pub fn desync_tic(&self) -> Option<u32> {
         self.shared.borrow().desync_tic
     }

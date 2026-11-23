@@ -74,7 +74,7 @@ mod browser {
     use room_render::{
         Camera, Canvas, CanvasGpu, GpuContext, LightMode, ModZonePass, PostChain, PostChainInputs,
         RenderSettings, SceneLists, UnlitPass, ZoneDraw, build_scene_with_sky,
-        build_scene_with_sky_ex_sized, build_zone_meshes,
+        build_scene_with_sky_ex_shared, build_zone_meshes,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -138,6 +138,18 @@ mod browser {
         scene_color: Option<(wgpu::Texture, wgpu::TextureView)>,
         post_ping: Option<(wgpu::Texture, wgpu::TextureView)>,
         post_ldr: Option<(wgpu::Texture, wgpu::TextureView)>,
+        /// Size of the world targets (`depth`, `stencil_aux`, `scene_color`,
+        /// `post_ping`): the canvas size times the 3D scale.
+        world_size: (u32, u32),
+        /// `vid_rendermode` (4 hardware, 0 / 1 software; `docs/40` SR3).
+        rendermode: i32,
+        /// `vid_softscale`: software view is 320×200 times this.
+        softscale: u32,
+        /// `fov` / `r_visibility` for the software view (SR5).
+        soft_fov: f64,
+        soft_visibility: f64,
+        /// Software renderer for the current map, kept between frames.
+        soft: Option<((usize, u32), room_render_soft::sim::SoftWorldView)>,
     }
 
     /// WebGPU canvas preferred format is non-sRGB (`bgra8unorm`). Pipelines
@@ -327,10 +339,53 @@ mod browser {
         static NET_CONTENT: RefCell<NetContentState> = const { RefCell::new(NetContentState::Idle) };
         /// Soft cap on the longest canvas edge (Settings → Resolution). 0 = device max.
         static RENDER_CAP: Cell<u32> = const { Cell::new(0) };
+        /// Settings → 3D scale: the world renders at this fraction of the
+        /// canvas size and is stretched onto it; the HUD stays sharp.
+        static WORLD_SCALE: Cell<f32> = const { Cell::new(1.0) };
         /// Phone performance mode (`roomSetLowPower`): no dynamic lights.
         static LOW_POWER: Cell<bool> = const { Cell::new(false) };
         /// CSS playfield scale vs fitted viewport (Settings → Window size). 1.0 = full.
         static WINDOW_SCALE: Cell<f64> = const { Cell::new(1.0) };
+        /// Settings → Show frame times: per-stage CPU frame times in `#fps`.
+        static PERF_ON: Cell<bool> = const { Cell::new(false) };
+        /// Graphics API and backing-store size, for the frame-time readout.
+        static PERF_INFO: RefCell<(String, u32, u32)> = const { RefCell::new((String::new(), 0, 0)) };
+        /// CPU milliseconds per stage since the last `#fps` update.
+        static PERF_TOTALS: RefCell<FramePerf> = const { RefCell::new(FramePerf::ZERO) };
+    }
+
+    /// CPU time spent in [`draw_frame_inner`], split by stage (milliseconds).
+    #[derive(Clone, Copy)]
+    struct FramePerf {
+        /// Input, game tics, audio and camera.
+        sim: f64,
+        /// Scene build, upload and the world pass (or the software renderer).
+        world: f64,
+        /// Post chain, HUD / native Duke canvas, upload and present.
+        overlay: f64,
+    }
+
+    impl FramePerf {
+        const ZERO: Self = Self {
+            sim: 0.0,
+            world: 0.0,
+            overlay: 0.0,
+        };
+    }
+
+    fn perf_note(sim: f64, world: f64, overlay: f64, width: u32, height: u32) {
+        if !PERF_ON.get() {
+            return;
+        }
+        PERF_TOTALS.with_borrow_mut(|t| {
+            t.sim += sim;
+            t.world += world;
+            t.overlay += overlay;
+        });
+        PERF_INFO.with_borrow_mut(|info| {
+            info.1 = width;
+            info.2 = height;
+        });
     }
 
     enum NetModState {
@@ -403,9 +458,16 @@ mod browser {
             })
             .await
             .map_err(|e| e.to_string())?;
+        let backend = match adapter.get_info().backend {
+            wgpu::Backend::BrowserWebGpu => "WebGPU".to_string(),
+            wgpu::Backend::Gl => "WebGL2".to_string(),
+            other => format!("{other:?}"),
+        };
         let gpu = GpuContext::from_adapter(instance, adapter)
             .await
             .map_err(|e| e.to_string())?;
+        web_sys::console::log_1(&format!("room-web: graphics {backend}").into());
+        PERF_INFO.with_borrow_mut(|info| info.0 = backend);
         // WebGL2's guaranteed max texture is 2048. A 2× backing store on a
         // large desktop window (2833×1668) is over that and Surface::configure
         // panics. CSS size stays the window; the bitmap is scaled down.
@@ -480,6 +542,12 @@ mod browser {
             scene_color,
             post_ping,
             post_ldr,
+            world_size: (width, height),
+            rendermode: 4,
+            softscale: 2,
+            soft_fov: 90.0,
+            soft_visibility: 8.0,
+            soft: None,
         }));
         web_sys::console::log_1(
             &format!(
@@ -2746,6 +2814,7 @@ mod browser {
     }
 
     fn draw_frame_inner(state: &Shared) {
+        let t_start = now_ms();
         if matches!(state.borrow().mode, Mode::Lobby { .. }) {
             if let Err(e) = promote_lobby_to_play(state) {
                 web_sys::console::error_1(&e);
@@ -3263,6 +3332,7 @@ mod browser {
             None => vec![(s.camera, None, None)],
         };
 
+        let t_sim = now_ms();
         let Ok(frame) = s.surface.get_current_texture() else {
             return;
         };
@@ -3281,19 +3351,49 @@ mod browser {
         // Always draw the world into the Rgba8 scene RT (matches Unlit/zone
         // pipelines), then present to the swapchain via post (identity when FX
         // are off). Avoids Bgra filter/sample issues and surface COPY_DST.
+        // `vid_rendermode` 0 / 1: the software renderer draws the level into
+        // the HUD overlay and the GPU world pass is skipped (one full view only).
+        let soft_pixels = if matches!(s.rendermode, 0 | 1) && views.len() == 1 {
+            let (hud_w, hud_h) = hud_dims(native_fb_width, native_fb_height);
+            let scale = s.softscale;
+            let options = crate::play::SoftViewOptions {
+                fov: s.soft_fov,
+                truecolor: s.rendermode == 1,
+                visibility: s.soft_visibility,
+            };
+            let FrameState {
+                mode, soft, camera, ..
+            } = &mut *s;
+            match mode {
+                Mode::Play(play) => play
+                    .draw_software(soft, scale, camera, hud_w, hud_h, options)
+                    .map(|px| (hud_w, hud_h, px)),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let scene_color = s.scene_color.take();
-        for (i, (cam, seat, rect)) in views.iter().enumerate() {
-            let target = &scene_color.as_ref().expect("scene rt").1;
-            render_world_view(&mut s, target, cam, *seat, *rect, i == 0, use_materials);
+        if soft_pixels.is_none() {
+            // Pane rects are in canvas pixels; the world targets may be
+            // smaller (Settings → 3D scale).
+            let kx = s.world_size.0 as f32 / native_fb_width.max(1) as f32;
+            let ky = s.world_size.1 as f32 / native_fb_height.max(1) as f32;
+            for (i, (cam, seat, rect)) in views.iter().enumerate() {
+                let target = &scene_color.as_ref().expect("scene rt").1;
+                let rect = rect.map(|[x, y, w, h]| [x * kx, y * ky, w * kx, h * ky]);
+                render_world_view(&mut s, target, cam, *seat, rect, i == 0, use_materials);
+            }
         }
         s.scene_color = scene_color;
+        let t_world = now_ms();
         {
             let settings = s.render_settings.clone();
             let time = s.pass.time;
             // No post FX: the unlit pass already wrote sRGB (`encode_srgb`).
             let scene_encoded = s.pass.encode_srgb;
-            let w = s.config.width;
-            let h = s.config.height;
+            // Texel size of the post sources: the world targets.
+            let (w, h) = s.world_size;
             let mut encoder =
                 s.gpu
                     .device
@@ -3335,7 +3435,28 @@ mod browser {
             let (native_fb_width, native_fb_height) = hud_dims(native_fb_width, native_fb_height);
             let (hud_fw, hud_fh) = (native_fb_width as f32, native_fb_height as f32);
             let hud_canvas = match &mut s.mode {
-                Mode::Play(play) => Some(play.build_hud_canvas(hud_fw, hud_fh)),
+                Mode::Play(play) => {
+                    let mut hud = play.build_hud_canvas(hud_fw, hud_fh);
+                    if let Some((w, h, pixels)) = soft_pixels {
+                        // Under everything else of the overlay.
+                        let at = hud
+                            .cmds
+                            .iter()
+                            .take_while(|c| matches!(c, room_render::CanvasCmd::Clear { .. }))
+                            .count();
+                        hud.cmds.insert(
+                            at,
+                            room_render::CanvasCmd::BlitRgba {
+                                x: 0.0,
+                                y: 0.0,
+                                w,
+                                h,
+                                pixels,
+                            },
+                        );
+                    }
+                    Some(hud)
+                }
                 Mode::NativeDuke {
                     session,
                     renderer,
@@ -3382,7 +3503,7 @@ mod browser {
             };
             if let Some(hud) = hud_canvas {
                 if let Some(canvas_gpu) = s.canvas.as_mut() {
-                    canvas_gpu.rasterize(&hud, None);
+                    canvas_gpu.rasterize_frame(hud, None);
                 }
                 {
                     let FrameState { gpu, canvas, .. } = &mut *s;
@@ -3408,6 +3529,15 @@ mod browser {
         }
         s.gpu.queue.submit(Some(encoder.finish()));
         frame.present();
+        let t_end = now_ms();
+        // The 3D render size (the canvas size times Settings → 3D scale).
+        perf_note(
+            t_sim - t_start,
+            t_world - t_sim,
+            t_end - t_world,
+            s.world_size.0,
+            s.world_size.1,
+        );
     }
 
     /// Build, upload and draw the world from `cam` into `rect` (whole target if
@@ -3462,15 +3592,18 @@ mod browser {
                 ..
             }
             | Mode::Play(play) => {
-                let sizes = play.materials.wall_texel_sizes();
+                let sizes = play.materials.wall_texel_sizes_shared();
                 let sky = play.sky_texture();
-                let mut lists = build_scene_with_sky_ex_sized(
+                // The player's own view: leave out what solid walls hide
+                // (portal views below build their own, unculled).
+                let mut lists = build_scene_with_sky_ex_shared(
                     &play.map,
                     cam,
                     Some(sprites.as_slice()),
                     Some(sky.as_str()),
                     None,
-                    Some(&sizes),
+                    Some(sizes),
+                    true,
                 );
                 play.animate_textures(&mut lists);
                 // Phones: every dynamic light is a per-pixel loop in the
@@ -3541,12 +3674,9 @@ mod browser {
             _ => None,
         };
         {
+            let world_size = s.world_size;
             let FrameState {
-                gpu,
-                pass,
-                mode,
-                config,
-                ..
+                gpu, pass, mode, ..
             } = &mut *s;
             pass.time += 1.0 / 60.0;
             if use_materials
@@ -3555,7 +3685,7 @@ mod browser {
             {
                 let size = match rect {
                     Some([_, _, w, h]) => (w as u32, h as u32),
-                    None => (config.width, config.height),
+                    None => world_size,
                 };
                 play.render_portal_views(
                     gpu,
@@ -3770,25 +3900,32 @@ mod browser {
         s.camera.aspect = f64::from(w) / f64::from(h.max(1));
         // Match desktop: ~90° horizontal at 16:9.
         s.camera.fov_y_deg = 58.715;
-        if w == s.config.width && h == s.config.height {
+        let scale = WORLD_SCALE.get().min(s.render_settings.scale_factor);
+        let world = room_render::world_render_size(w, h, scale);
+        let resized = w != s.config.width || h != s.config.height;
+        if !resized && world == s.world_size {
             return;
         }
-        s.config.width = w;
-        s.config.height = h;
-        s.surface.configure(&s.gpu.device, &s.config);
-        s.depth = create_depth(&s.gpu.device, w, h);
-        s.stencil_aux = create_stencil_aux(&s.gpu.device, w, h);
         let fmt = s.config.format;
+        if resized {
+            s.config.width = w;
+            s.config.height = h;
+            s.surface.configure(&s.gpu.device, &s.config);
+            s.post_ldr = Some(create_color_rt(&s.gpu.device, fmt, w, h));
+            if s.canvas.is_some() {
+                let (hud_w, hud_h) = hud_dims(w, h);
+                s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, hud_w, hud_h));
+            }
+        }
+        let (ww, wh) = world;
+        s.world_size = world;
+        s.depth = create_depth(&s.gpu.device, ww, wh);
+        s.stencil_aux = create_stencil_aux(&s.gpu.device, ww, wh);
         let scene_format = wgpu::TextureFormat::Rgba8Unorm;
-        s.scene_color = Some(create_color_rt(&s.gpu.device, scene_format, w, h));
-        s.post_ping = Some(create_color_rt(&s.gpu.device, scene_format, w, h));
-        s.post_ldr = Some(create_color_rt(&s.gpu.device, fmt, w, h));
+        s.scene_color = Some(create_color_rt(&s.gpu.device, scene_format, ww, wh));
+        s.post_ping = Some(create_color_rt(&s.gpu.device, scene_format, ww, wh));
         if let Some(chain) = s.post_chain.as_mut() {
             chain.ensure_formats(&s.gpu, scene_format, fmt);
-        }
-        if s.canvas.is_some() {
-            let (hud_w, hud_h) = hud_dims(w, h);
-            s.canvas = Some(CanvasGpu::new(&s.gpu, fmt, hud_w, hud_h));
         }
     }
 
@@ -3844,7 +3981,26 @@ mod browser {
         if let Some(el) = doc.get_element_by_id("fps") {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let shown = rate.round().clamp(0.0, 999.0) as u32;
-            el.set_text_content(Some(&format!("{shown} fps")));
+            if PERF_ON.get() {
+                // Average CPU ms per painted frame. A frame time far above
+                // the CPU total means the GPU (or the browser) is the limit.
+                let frames = (rate * elapsed / 1000.0).max(1.0);
+                let t = PERF_TOTALS.with_borrow_mut(|t| std::mem::replace(t, FramePerf::ZERO));
+                let (backend, w, h) = PERF_INFO.with_borrow(Clone::clone);
+                let line = format!(
+                    "{shown} fps · {:.1} ms/frame · {backend} {w}×{h}\ncpu {:.1} ms: sim {:.1} · world {:.1} · overlay {:.1}",
+                    elapsed / frames,
+                    (t.sim + t.world + t.overlay) / frames,
+                    t.sim / frames,
+                    t.world / frames,
+                    t.overlay / frames,
+                );
+                el.set_class_name("perf");
+                el.set_text_content(Some(&line));
+            } else {
+                el.set_class_name("");
+                el.set_text_content(Some(&format!("{shown} fps")));
+            }
         }
     }
 
@@ -3961,6 +4117,29 @@ mod browser {
         LOW_POWER.with(|c| c.set(on));
     }
 
+    /// Settings → Show frame times: CPU milliseconds per stage, the
+    /// graphics API and the render size next to the FPS counter.
+    #[wasm_bindgen(js_name = roomSetPerfOverlay)]
+    pub fn room_set_perf_overlay(on: bool) {
+        PERF_ON.set(on);
+        if !on {
+            PERF_TOTALS.with_borrow_mut(|t| *t = FramePerf::ZERO);
+        }
+    }
+
+    /// Settings → 3D scale: render the world at `scale` (0.25–1) of the
+    /// canvas size and stretch it on screen; the HUD keeps the full size.
+    #[wasm_bindgen(js_name = roomSetWorldScale)]
+    pub fn room_set_world_scale(scale: f64) {
+        #[allow(clippy::cast_possible_truncation)]
+        let scale = if scale.is_finite() {
+            scale.clamp(0.25, 1.0) as f32
+        } else {
+            1.0
+        };
+        WORLD_SCALE.set(scale);
+    }
+
     #[wasm_bindgen(js_name = roomApplySettings)]
     pub fn room_apply_settings(
         mouse_sens: f64,
@@ -4014,6 +4193,41 @@ mod browser {
             let Ok(mut s) = shared.try_borrow_mut() else {
                 return false;
             };
+            // Renderer choice (`docs/40` SR3): not a shader setting.
+            if name.eq_ignore_ascii_case("vid_rendermode") {
+                return match value.trim().parse::<i32>() {
+                    Ok(v) => {
+                        s.rendermode = v;
+                        if !matches!(v, 0 | 1) {
+                            s.soft = None;
+                        }
+                        true
+                    }
+                    Err(_) => false,
+                };
+            }
+            if name.eq_ignore_ascii_case("fov") || name.eq_ignore_ascii_case("r_visibility") {
+                return match value.trim().parse::<f64>() {
+                    Ok(v) if v.is_finite() => {
+                        if name.eq_ignore_ascii_case("fov") {
+                            s.soft_fov = v.clamp(30.0, 120.0);
+                        } else {
+                            s.soft_visibility = v.clamp(0.5, 128.0);
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+            }
+            if name.eq_ignore_ascii_case("vid_softscale") {
+                return match value.trim().parse::<u32>() {
+                    Ok(v) => {
+                        s.softscale = v.clamp(1, 4);
+                        true
+                    }
+                    Err(_) => false,
+                };
+            }
             let ok = if name.eq_ignore_ascii_case("r_quality") {
                 if let Ok(level) = value.parse::<i32>() {
                     s.render_settings.apply_quality(level.clamp(0, 3) as u8);

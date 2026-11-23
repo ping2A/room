@@ -29,6 +29,7 @@ room-game = { path = "../room-game", features = ["zvm-aot-jit"] }
 room-map = { path = "../room-map" }
 room-mapgen = { path = "../room-mapgen" }
 room-nodebuild = { path = "../room-nodebuild" }
+room-render-soft = { path = "../room-render-soft" }
 room-sim = { path = "../room-sim" }
 room-vfs = { path = "../room-vfs" }
 room-zscript = { path = "../room-zscript" }

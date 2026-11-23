@@ -32,6 +32,15 @@ const RES_PRESETS = [
   { label: "Pixel (640)", cap: 640 },
 ];
 
+/** Settings → 3D scale: the world's render size vs the canvas (HUD stays sharp). */
+const WORLD_SCALE_PRESETS = [
+  { label: "100%", scale: 1 },
+  { label: "85%", scale: 0.85 },
+  { label: "75%", scale: 0.75 },
+  { label: "66%", scale: 0.66 },
+  { label: "50%", scale: 0.5 },
+];
+
 /** CSS playfield size as a fraction of the fitted browser viewport. */
 const WINDOW_PRESETS = [
   { label: "Full", scale: 1 },
@@ -98,7 +107,9 @@ function defaultsFromMod(mod) {
     invertY: false,
     // Phones: a Doom-sized render buffer instead of 3× the screen pixels.
     renderCap: mobile ? 640 : 0,
+    worldScale: 1,
     lowPower: mobile,
+    perfOverlay: false,
     mobilePerfV1: mobile,
     // Online play: rollback off (tics of look-ahead when on), prediction on.
     rollback: false,
@@ -148,11 +159,48 @@ function shaderDefaults() {
     r_sharpen: "0",
     r_exposure: "1",
     gl_bloom_amount: "0.8",
+    vid_rendermode: "4",
+    vid_softscale: "2",
   };
 }
 
 /** Graphics toggles shown in Settings (maps to roomSetShaderCvar). */
 const SHADER_TOGGLES = [
+  {
+    key: "vid_rendermode",
+    label: "Renderer",
+    kind: "select",
+    def: "4",
+    options: [
+      ["4", "Hardware (GPU)"],
+      ["0", "Software (classic)"],
+      ["1", "Software (true colour)"],
+    ],
+  },
+  {
+    key: "fov",
+    label: "Software field of view",
+    kind: "select",
+    def: "90",
+    options: [
+      ["75", "75°"],
+      ["90", "90° (Doom)"],
+      ["100", "100°"],
+      ["110", "110°"],
+    ],
+  },
+  {
+    key: "vid_softscale",
+    label: "Software resolution",
+    kind: "select",
+    def: "2",
+    options: [
+      ["1", "320×200"],
+      ["2", "640×400"],
+      ["3", "960×600"],
+      ["4", "1280×800"],
+    ],
+  },
   { key: "gl_bloom", label: "Bloom", kind: "bool" },
   { key: "gl_ssao", label: "SSAO", kind: "int", min: 0, max: 3 },
   { key: "gl_fxaa", label: "Anti-alias", kind: "aa" },
@@ -246,8 +294,14 @@ export function initSettings(mod, opts = {}) {
             <select id="settings-res"></select>
           </label>
           <p class="settings-hint">Caps the longest edge of the render buffer (internal pixels).</p>
+          <label class="settings-row">3D scale
+            <select id="settings-world-scale"></select>
+          </label>
+          <p class="settings-hint">Draws the 3D view at fewer pixels and stretches it to fit; the status bar and text stay sharp. Lower it when the frame rate is low at high resolutions.</p>
           <label class="settings-check"><input id="settings-lowpower" type="checkbox" /> Performance mode</label>
           <p class="settings-hint">For phones and tablets: no dynamic lights. On by default there, with Pixel resolution.</p>
+          <label class="settings-check"><input id="settings-perf" type="checkbox" /> Show frame times</label>
+          <p class="settings-hint">Next to the FPS counter: CPU milliseconds per frame by stage, the graphics API (WebGPU or WebGL2) and the render resolution.</p>
           <button type="button" id="settings-fs" class="settings-btn">Toggle fullscreen</button>
         </section>
         <section>
@@ -379,6 +433,13 @@ export function initSettings(mod, opts = {}) {
     o.textContent = p.label;
     resSel.appendChild(o);
   }
+  const worldSel = root.querySelector("#settings-world-scale");
+  for (const p of WORLD_SCALE_PRESETS) {
+    const o = document.createElement("option");
+    o.value = String(p.scale);
+    o.textContent = p.label;
+    worldSel.appendChild(o);
+  }
   const winSel = root.querySelector("#settings-window");
   for (const p of WINDOW_PRESETS) {
     const o = document.createElement("option");
@@ -421,6 +482,26 @@ export function initSettings(mod, opts = {}) {
     const box = root.querySelector("#settings-shaders");
     box.innerHTML = "";
     for (const t of SHADER_TOGGLES) {
+      if (t.kind === "select") {
+        const row = document.createElement("label");
+        row.className = "settings-row";
+        row.textContent = t.label + " ";
+        const sel = document.createElement("select");
+        for (const [value, label] of t.options) {
+          const o = document.createElement("option");
+          o.value = value;
+          o.textContent = label;
+          sel.appendChild(o);
+        }
+        sel.value = String(state.shaders[t.key] ?? t.def);
+        sel.addEventListener("change", () => {
+          state.shaders[t.key] = sel.value;
+          applyShaders();
+        });
+        row.appendChild(sel);
+        box.appendChild(row);
+        continue;
+      }
       if (t.kind === "aa") {
         const row = document.createElement("label");
         row.className = "settings-row";
@@ -509,12 +590,21 @@ export function initSettings(mod, opts = {}) {
 
   function syncForm() {
     resSel.value = String(state.renderCap || 0);
+    {
+      const want = Number(state.worldScale) || 1;
+      let best = WORLD_SCALE_PRESETS[0].scale;
+      for (const p of WORLD_SCALE_PRESETS) {
+        if (Math.abs(p.scale - want) < Math.abs(best - want)) best = p.scale;
+      }
+      worldSel.value = String(best);
+    }
     winSel.value = String(nearestWindowScale(state.windowScale));
     const sens = root.querySelector("#settings-sens");
     sens.value = String(Math.round((state.mouseSens || 1) * 100));
     root.querySelector("#settings-sens-val").textContent = (state.mouseSens || 1).toFixed(2);
     root.querySelector("#settings-invert").checked = !!state.invertY;
     root.querySelector("#settings-lowpower").checked = !!state.lowPower;
+    root.querySelector("#settings-perf").checked = !!state.perfOverlay;
     root.querySelector("#settings-predict").checked = state.predict !== false;
     root.querySelector("#settings-rollback").checked = !!state.rollback;
     const rbTics = root.querySelector("#settings-rollback-tics");
@@ -876,6 +966,10 @@ export function initSettings(mod, opts = {}) {
     const bindsJson = JSON.stringify(state.binds || {});
     try {
       if (typeof mod.roomSetLowPower === "function") mod.roomSetLowPower(!!state.lowPower);
+      if (typeof mod.roomSetWorldScale === "function") {
+        mod.roomSetWorldScale(Number(state.worldScale) || 1);
+      }
+      if (typeof mod.roomSetPerfOverlay === "function") mod.roomSetPerfOverlay(!!state.perfOverlay);
     } catch (_) {
       /* old wasm */
     }
@@ -956,6 +1050,10 @@ export function initSettings(mod, opts = {}) {
     state.lowPower = ev.target.checked;
     apply();
   });
+  root.querySelector("#settings-perf").addEventListener("change", (ev) => {
+    state.perfOverlay = ev.target.checked;
+    apply();
+  });
   root.querySelector("#settings-predict").addEventListener("change", (ev) => {
     state.predict = ev.target.checked;
     state.predictSet = true;
@@ -976,6 +1074,10 @@ export function initSettings(mod, opts = {}) {
   });
   resSel.addEventListener("change", () => {
     state.renderCap = Number(resSel.value) || 0;
+    apply();
+  });
+  worldSel.addEventListener("change", () => {
+    state.worldScale = Number(worldSel.value) || 1;
     apply();
   });
   winSel.addEventListener("change", () => {

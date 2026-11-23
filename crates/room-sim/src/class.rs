@@ -418,6 +418,8 @@ pub struct ClassExt {
     pub damage_screen_color: String,
     /// `RadiusDamageFactor`: scale on splash damage this actor takes.
     pub radius_damage_factor: f64,
+    /// `DontHurtShooter`: a plain `A_Explode` spares the shooter.
+    pub dont_hurt_shooter: bool,
     /// `SelfDamageFactor`: scale on damage this actor deals to itself.
     pub self_damage_factor: f64,
     /// `Stamina` (script-readable).
@@ -632,6 +634,7 @@ impl Default for ClassExt {
             player_max_health: 0,
             damage_screen_color: String::new(),
             radius_damage_factor: 1.0,
+            dont_hurt_shooter: false,
             self_damage_factor: 1.0,
             stamina: 0,
             accuracy: 0,
@@ -2361,6 +2364,11 @@ fn apply_ext_property(ext: &mut ClassExt, lower: &str, args: &[String]) -> bool 
         }
         "radiusdamagefactor" => {
             ext.radius_damage_factor = first_f64(args).unwrap_or(ext.radius_damage_factor);
+        }
+        "donthurtshooter" => {
+            ext.dont_hurt_shooter = args
+                .first()
+                .is_none_or(|a| !matches!(a.trim().to_ascii_lowercase().as_str(), "false" | "0"));
         }
         "selfdamagefactor" => {
             ext.self_damage_factor = first_f64(args).unwrap_or(ext.self_damage_factor);

@@ -336,6 +336,17 @@ fn apply_session_names(game: &mut Headless, names: &[(u8, String)]) {
     }
 }
 
+/// Software view settings from the browser's CVars (SR5).
+#[derive(Clone, Copy, Debug)]
+pub struct SoftViewOptions {
+    /// `fov` (degrees across 4:3).
+    pub fov: f64,
+    /// `vid_rendermode 1`.
+    pub truecolor: bool,
+    /// `r_visibility` (8 = Doom).
+    pub visibility: f64,
+}
+
 impl PlaySession {
     /// Mount embedded `room.pk3` + IWAD bytes and start (skill, map, coop /
     /// lockstep options).
@@ -1093,7 +1104,7 @@ impl PlaySession {
         if scene.portal_views.is_empty() {
             return;
         }
-        let sizes = self.materials.wall_texel_sizes();
+        let sizes = self.materials.wall_texel_sizes_shared();
         let sky = self.sky_texture();
         let tic = self.game.world().map_or(0, |w| w.level.maptime);
         let dyn_lights = scene.dyn_lights.clone();
@@ -1108,13 +1119,15 @@ impl PlaySession {
         let vfs = &self.vfs;
         let anim_tic = u32::try_from(tic).unwrap_or(0);
         let mut build = |c: &room_render::Camera, _depth: u32, _skybox: bool| {
-            let mut s = room_render::build_scene_with_sky_ex_sized(
+            // Portal eyes sit behind walls: no occlusion culling.
+            let mut s = room_render::build_scene_with_sky_ex_shared(
                 map,
                 c,
                 Some(sprites),
                 Some(sky.as_str()),
                 None,
-                Some(&sizes),
+                Some(std::sync::Arc::clone(&sizes)),
+                false,
             );
             tex_anim.apply(&mut s, tic);
             s.dyn_lights = dyn_lights.clone();
@@ -1211,6 +1224,90 @@ impl PlaySession {
     #[must_use]
     pub fn current_map_name(&self) -> String {
         self.map.name.to_ascii_uppercase()
+    }
+
+    /// Draw the level with the classic software renderer (`vid_rendermode`
+    /// 0, `docs/40` SR3) as RGBA for an `out_w` × `out_h` overlay. `soft`
+    /// keeps the renderer between frames; it is rebuilt for a new map or
+    /// `scale` (320×200 × scale). `None` when not in a level or the map has
+    /// no BSP nodes (the caller keeps the GPU view).
+    pub fn draw_software(
+        &mut self,
+        soft: &mut Option<((usize, u32), room_render_soft::sim::SoftWorldView)>,
+        scale: u32,
+        camera: &Camera,
+        out_w: u32,
+        out_h: u32,
+        view: SoftViewOptions,
+    ) -> Option<Vec<u8>> {
+        if !matches!(self.game.state, GameState::Level) {
+            return None;
+        }
+        let sky = self.sky_texture();
+        let frac = f64::from((self.tic_accum * self.game.tic_rate() as f32).clamp(0.0, 1.0));
+        let world = self.game.world()?;
+        let scale = scale.clamp(1, 4);
+        let key = (std::sync::Arc::as_ptr(&world.map) as usize, scale);
+        if soft.as_ref().is_none_or(|(k, _)| *k != key) {
+            *soft = None;
+            let mut view = room_render_soft::sim::SoftWorldView::new(
+                &self.vfs,
+                &world.map,
+                320 * scale,
+                200 * scale,
+            )?;
+            // SR7: ANIMDEFS camera textures.
+            view.set_camera_canvases(
+                self.camera_tex_sizes
+                    .iter()
+                    .map(|(n, &(w, h))| (n.clone(), w, h)),
+            );
+            // SR8: VOXELDEF.
+            view.set_voxeldefs(self.voxeldefs.clone());
+            *soft = Some((key, view));
+        }
+        let (_, sw) = soft.as_mut()?;
+        // SR5: widescreen to the overlay's shape, fov, true colour.
+        let soft_h = 200 * scale;
+        let soft_w = ((f64::from(out_w.max(1)) / f64::from(out_h.max(1))) * f64::from(soft_h) * 1.2)
+            .round()
+            .clamp(2.0, 8192.0) as u32;
+        sw.set_view(soft_w, soft_h, view.fov, view.truecolor);
+        sw.view.renderer.visibility = view.visibility / 8.0;
+        let player = world
+            .players
+            .get(usize::from(self.local_seat))
+            .and_then(|p| p.as_ref());
+        let cam = room_render_soft::sim::SoftCamera {
+            x: f64::from(camera.eye.x),
+            y: f64::from(camera.eye.y),
+            z: f64::from(camera.eye.z),
+            angle_deg: f64::from(libm::atan2f(camera.forward.y, camera.forward.x).to_degrees()),
+            extralight: player.map_or(0, |p| p.extralight),
+            fixed_colormap: player.map_or(0, room_sim::Player::fixed_colormap),
+            hide: player.and_then(|p| p.mo),
+            sky,
+            plane_lerp: Some(frac),
+            pitch_deg: f64::from(
+                libm::atan2f(
+                    camera.forward.z,
+                    libm::sqrtf(
+                        camera.forward.x * camera.forward.x + camera.forward.y * camera.forward.y,
+                    ),
+                )
+                .to_degrees(),
+            ),
+        };
+        // SR8: particles, and dynamic lights in true colour.
+        sw.particles = room_render_soft::soft_particles(&self.particles);
+        sw.lights = if view.truecolor {
+            room_render_soft::soft_lights(&self.collect_dyn_lights())
+        } else {
+            Vec::new()
+        };
+        let mut rgba = Vec::new();
+        sw.draw_fit(&self.vfs, world, &self.map, &cam, out_w, out_h, &mut rgba);
+        Some(rgba)
     }
 
     /// Sky texture: ACS `ChangeSky`, else MAPINFO `sky1` of this map, else `SKY1`.
@@ -2420,6 +2517,9 @@ impl PlaySession {
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
                 self.0.blit_rgba(x, y, w, h, pixels.to_vec());
             }
+            fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+                self.0.blit_rgba(x, y, w, h, pixels);
+            }
         }
         struct OffsetSink<'a> {
             inner: Sink<'a>,
@@ -2435,6 +2535,10 @@ impl PlaySession {
             }
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
                 self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+            }
+            fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+                self.inner
+                    .blit_rgba_owned(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         // The SBARINFO bar has its own placement: `ui` up to its slot, the
@@ -3276,6 +3380,7 @@ impl PlaySession {
 
     /// Client prediction is on.
     #[must_use]
+    #[allow(dead_code)]
     pub fn predict(&self) -> bool {
         self.predict
     }
@@ -4117,6 +4222,9 @@ impl PlaySession {
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
                 self.0.blit_rgba(x, y, w, h, pixels.to_vec());
             }
+            fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+                self.0.blit_rgba(x, y, w, h, pixels);
+            }
         }
         struct OffsetSink<'a> {
             inner: Sink<'a>,
@@ -4132,6 +4240,10 @@ impl PlaySession {
             }
             fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
                 self.inner.blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
+            }
+            fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+                self.inner
+                    .blit_rgba_owned(x + self.ox, y + self.oy, w, h, pixels);
             }
         }
         blit_draw_list_full(

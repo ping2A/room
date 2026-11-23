@@ -83,6 +83,79 @@ impl Camera {
         (up * c + f.cross(up) * s).normalize_or_zero()
     }
 
+    /// The horizontal directions this view can show, as a counter-clockwise
+    /// arc `(from, to)` of map angles in radians (`to - from < 2π`), widened
+    /// by `margin` on each side.
+    ///
+    /// Pitch and roll are taken into account: the arc is the ground-plane
+    /// shadow of the view frustum, which is the cone spanned by its four
+    /// corner rays, so the shadows of those four rays bound it exactly.
+    /// `None` when the view can face every way (looking near straight up or
+    /// down, a degenerate camera) or is orthographic: nothing may be culled
+    /// by direction then.
+    #[must_use]
+    pub fn horizontal_view_arc(&self, margin: f64) -> Option<(f64, f64)> {
+        use core::f64::consts::{PI, TAU};
+        if self.ortho.is_some() {
+            return None;
+        }
+        let f = self.forward.as_dvec3();
+        let up = self.up.as_dvec3();
+        if f.length_squared() < 1e-12 {
+            return None;
+        }
+        let f = f.normalize();
+        // Same basis as `Mat4::look_at_rh` in `view_proj`.
+        let r = f.cross(up);
+        if r.length_squared() < 1e-12 {
+            return None;
+        }
+        let r = r.normalize();
+        let u = r.cross(f);
+        let half_y = (self.fov_y_deg.to_radians() * 0.5).tan();
+        let half_x = half_y * self.aspect;
+        if !(half_y.is_finite() && half_x.is_finite() && half_y > 0.0 && half_x > 0.0) {
+            return None;
+        }
+        let mut corners = [(0.0f64, 0.0f64); 4];
+        let mut sum = (0.0, 0.0);
+        for (i, (sx, sy)) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let d = f + r * (sx * half_x) + u * (sy * half_y);
+            corners[i] = (d.x, d.y);
+            sum.0 += d.x;
+            sum.1 += d.y;
+        }
+        if sum.0.hypot(sum.1) < 1e-9 {
+            return None;
+        }
+        let mid = sum.1.atan2(sum.0);
+        let (mut lo, mut hi) = (0.0f64, 0.0f64);
+        for (x, y) in corners {
+            // A vertical corner ray adds nothing to the shadow.
+            if x.hypot(y) < 1e-12 {
+                continue;
+            }
+            let mut d = y.atan2(x) - mid;
+            while d > PI {
+                d -= TAU;
+            }
+            while d <= -PI {
+                d += TAU;
+            }
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+        // Four rays that do not fit in an open half-turn span every
+        // direction.
+        if hi - lo >= PI - 1e-9 || hi - lo + 2.0 * margin >= TAU {
+            return None;
+        }
+        Some((mid + lo - margin, mid + hi + margin))
+    }
+
     /// XY map position used by the BSP clipper.
     #[must_use]
     pub fn map_xy(&self) -> (f64, f64) {
@@ -204,6 +277,100 @@ fn reflect_point(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> (f64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Azimuth `a` lies on the counter-clockwise arc `(from, to)`.
+    fn on_arc(a: f64, (from, to): (f64, f64)) -> bool {
+        (a - from).rem_euclid(core::f64::consts::TAU) <= to - from + 1e-9
+    }
+
+    /// Every direction the image shows (any pixel, at any pitch, roll, field
+    /// of view and aspect) points inside the arc; a camera that can face
+    /// every way returns `None`.
+    #[test]
+    fn horizontal_view_arc_contains_every_visible_direction() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (mut some, mut none) = (0, 0);
+        for _ in 0..4000 {
+            let yaw = next() * core::f64::consts::TAU;
+            let pitch = (next() - 0.5) * 3.1;
+            let roll = (next() - 0.5) * 1.2;
+            let forward = Vec3::new(
+                (yaw.cos() * pitch.cos()) as f32,
+                (yaw.sin() * pitch.cos()) as f32,
+                pitch.sin() as f32,
+            );
+            let cam = Camera {
+                eye: Vec3::ZERO,
+                forward,
+                up: Camera::rolled_up(forward, roll as f32),
+                fov_y_deg: 30.0 + next() * 110.0,
+                aspect: 0.5 + next() * 2.5,
+                ..Camera::default()
+            };
+            let Some(arc) = cam.horizontal_view_arc(0.0) else {
+                none += 1;
+                continue;
+            };
+            some += 1;
+            assert!(arc.1 - arc.0 < core::f64::consts::PI, "{arc:?}");
+            // Rebuild the image's rays the way `view_proj` does.
+            let f = cam.forward.as_dvec3().normalize();
+            let r = f.cross(cam.up.as_dvec3()).normalize();
+            let u = r.cross(f);
+            let hy = (cam.fov_y_deg.to_radians() * 0.5).tan();
+            let hx = hy * cam.aspect;
+            for _ in 0..64 {
+                let (sx, sy) = (next() * 2.0 - 1.0, next() * 2.0 - 1.0);
+                let d = f + r * (sx * hx) + u * (sy * hy);
+                if d.x.hypot(d.y) < 1e-6 {
+                    continue;
+                }
+                let a = d.y.atan2(d.x);
+                assert!(
+                    on_arc(a, arc),
+                    "yaw {yaw} pitch {pitch} roll {roll} fov {} aspect {}: ray at {a} outside {arc:?}",
+                    cam.fov_y_deg,
+                    cam.aspect
+                );
+            }
+        }
+        assert!(
+            some > 2000 && none > 50,
+            "both cases exercised ({some} / {none})"
+        );
+    }
+
+    #[test]
+    fn horizontal_view_arc_level_and_straight_down() {
+        let cam = Camera::default();
+        let (from, to) = cam.horizontal_view_arc(0.0).unwrap();
+        let half = ((cam.fov_y_deg.to_radians() * 0.5).tan() * cam.aspect).atan();
+        assert!(
+            (to - half).abs() < 1e-4 && (from + half).abs() < 1e-4,
+            "{from} {to}"
+        );
+        let wider = cam.horizontal_view_arc(0.05).unwrap();
+        assert!((wider.1 - to - 0.05).abs() < 1e-9);
+        let down = Camera {
+            forward: Vec3::new(0.01, 0.0, -1.0).normalize(),
+            ..Camera::default()
+        };
+        assert!(
+            down.horizontal_view_arc(0.0).is_none(),
+            "looking down sees every way"
+        );
+        let ortho = Camera {
+            ortho: Some(512.0),
+            ..Camera::default()
+        };
+        assert!(ortho.horizontal_view_arc(0.0).is_none());
+    }
 
     #[test]
     fn reflect_across_x_axis_line() {

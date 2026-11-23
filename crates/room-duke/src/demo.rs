@@ -495,7 +495,10 @@ pub enum DukeDemoError {
     TooLarge,
     /// Replay's observed deterministic state differs from the recording.
     #[error("Duke fdem state mismatch at tic {tic}")]
-    StateMismatch { tic: usize },
+    StateMismatch {
+        /// First tic whose state differs.
+        tic: usize,
+    },
     /// Replay completed.
     #[error("Duke fdem playback is at end of recording")]
     EndOfDemo,

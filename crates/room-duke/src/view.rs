@@ -459,6 +459,8 @@ pub struct DukeSoftRenderer {
     /// Previous/current geometry for render-only interpolation of moving
     /// Build walls. The playsim world remains untouched.
     geometry_interpolation: RefCell<Option<GeometryInterpolation>>,
+    /// HUD weapon tiles from the CON definitions (not drawn from yet).
+    #[allow(dead_code, reason = "resolved for the weapon HUD, not read yet")]
     weapon_tiles: [Option<i16>; 12],
     access_hand_tile: Option<i16>,
     laser_hand_tile: Option<i16>,
@@ -626,7 +628,6 @@ impl DukeSoftRenderer {
         };
         let access_hand_tile = hud_tile("HANDHOLDINGACCESS");
         let laser_hand_tile = hud_tile("HANDHOLDINGLASER");
-        drop(hud_tile);
         Ok(Self {
             palette,
             base_palettes,
@@ -991,6 +992,7 @@ impl DukeSoftRenderer {
         self.animation_palette = Some(rgb);
     }
 
+    /// Set the Atomic BRITABLE row (screen brightness, 0–15).
     pub fn set_brightness(&self, row: u8) {
         self.brightness.set(row.min(15));
     }

@@ -195,7 +195,7 @@ pub fn movetransports(
     randomseed: &mut i32,
     sync: &[DukeInput],
     script: Option<&crate::con::ScriptImage>,
-    emit_tic: u32,
+    _emit_tic: u32,
 ) {
     let mut i = lists.headspritestat[STAT_TRANSPORT as usize];
     while i >= 0 {
@@ -271,10 +271,15 @@ pub fn movetransports(
                         }
                         p.transporter_hold = 13;
                     }
+                    // `ps[p].bobposx = ps[p].oposx = ps[p].posx = sprite[OW].x`:
+                    // the bob origin moves too, so the next tic's body `xvel`
+                    // (and `bobcounter`) do not see the teleport distance.
                     p.posx = ox;
                     p.posy = oy;
                     p.oposx = ox;
                     p.oposy = oy;
+                    p.bobposx = ox;
+                    p.bobposy = oy;
                     p.posz = oz - PHEIGHT;
                     p.oposz = p.posz;
                     if osect >= 0 {

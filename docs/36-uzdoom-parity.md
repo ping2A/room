@@ -235,7 +235,7 @@ vanilla actors and codepointers stay native so demos keep passing (§4.2).
 | Feature | UZDoom | Room | Gap |
 |---|---|---|---|
 | Hardware renderer (Vulkan/GL/GLES) | ✅ | ✅ wgpu (Full/Downlevel) | — |
-| Software renderer (truecolor + 8-bit) | ✅ | ❌ | `room-render-soft` is a stub (classic look via palette post: `docs/29` exists) |
+| Software renderer (truecolor + 8-bit) | ✅ | ❌ | `room-render-soft` is a stub (classic look via palette post: `docs/29` exists); planned as milestones SR0–SR10 in `docs/40` |
 | Dynamic lights, attenuated, spot, shadowmaps | ✅ | ✅ | `lights.rs`, `scene.rs` |
 | Lightmaps (ZDRay `LIGHTMAP` lump) | ✅ | ✅ | `lightmap.rs` |
 | SSAO, bloom, tonemap, FXAA, lens | ✅ | ✅/◐ | `docs/21` SH0/SH1 at 85% |

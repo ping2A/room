@@ -15,7 +15,9 @@ use crate::spawn::{BOLT1, CRACK1, FIREEXT, WATERBUBBLE, WATERBUBBLEMAKER};
 use crate::stat::{STAT_MISC, STAT_STANDABLE};
 
 const SEENINE: i16 = 1247;
+#[allow(dead_code, reason = "Duke tile number, kept next to SEENINE")]
 const SEENINEDEAD: i16 = 1248;
+#[allow(dead_code, reason = "Duke tile number, kept next to SEENINE")]
 const SEENINEDEAD2: i16 = 1249;
 const OOZFILTER: i16 = 1079;
 const EXPLOSION2: i16 = 1890;
@@ -903,7 +905,7 @@ pub(crate) fn tick_tripbombs(
         if actor_temps.len() <= sprite_index {
             actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
         }
-        let mut bomb = world.sprites[sprite_index];
+        let bomb = world.sprites[sprite_index];
         if bomb.sectnum < 0 {
             let _ = world.lists.deletesprite(sprite_index as i16);
             continue;

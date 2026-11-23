@@ -3426,6 +3426,9 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
             room_zvm::ZsActorOp::NoBlocking => {
                 let _ = call_action(world, self_id, "A_NoBlocking");
             }
+            room_zvm::ZsActorOp::ExplodeMissile => {
+                crate::physics::explode_missile(world, self_id);
+            }
             room_zvm::ZsActorOp::Action { name, args } => {
                 let last = args
                     .iter()
@@ -5356,6 +5359,7 @@ fn a_spawn_item(world: &mut World, self_id: ActorId, args: &[String]) -> ActionR
         .get(7)
         .and_then(|s| s.trim_matches('"').parse::<f64>().ok())
         .unwrap_or(0.0);
+    let flags = parse_i32_arg(args, 8, 0);
     let Some(src) = world.actors.get(self_id).cloned() else {
         return ActionResult::Continue;
     };
@@ -5400,13 +5404,80 @@ fn a_spawn_item(world: &mut World, self_id: ActorId, args: &[String]) -> ActionR
                 ));
             }
         }
+        let pointers = spawned_item_pointers(world, self_id, &src, id, flags);
         if let Some(m) = world.actors.get_mut(id) {
             m.vel = DVec3::new(vx * c - vy * s, vx * s + vy * c, vz);
-            m.target = src.target;
-            m.master = Some(self_id);
+            (m.target, m.master, m.tracer) = pointers;
         }
     }
     ActionResult::Continue
+}
+
+/// `target` / `master` / `tracer` of an `A_SpawnItemEx` spawn: UZDoom
+/// `InitSpawnedItem` (`zscript/actors/attacks.zs`).
+///
+/// A non-monster (a missile such as Brutal Doom's `FootStep6` /
+/// `FootstepStrong`, or any effect) gets the *originator* as its target, so
+/// it never hits the actor that spawned it. Taking the spawner's own target
+/// instead made a player's footsteps hit the player as soon as the player
+/// had a target, e.g. the monster that last shot them.
+/// Monsters keep the spawner's target (UZDoom copies friendliness).
+/// `master` stays the spawner unless a flag says otherwise (Room default).
+fn spawned_item_pointers(
+    world: &World,
+    self_id: ActorId,
+    src: &crate::actor::Actor,
+    spawned: ActorId,
+    flags: i32,
+) -> (Option<ActorId>, Option<ActorId>, Option<ActorId>) {
+    const SXF_TRANSFERPOINTERS: i32 = 1024;
+    const SXF_SETTARGET: i32 = 1 << 20;
+    const SXF_SETTRACER: i32 = 1 << 21;
+    const SXF_NOPOINTERS: i32 = 1 << 22;
+    const SXF_ORIGINATOR: i32 = 1 << 23;
+    const SXF_SETMASTER: i32 = 1 << 4;
+    let flags_of = |id: ActorId| {
+        world.actors.get(id).map_or(0, |a| {
+            a.flags | world.classes.get(a.class).map_or(0, |c| c.flags)
+        })
+    };
+    // Skip missiles back to whoever fired them (`SXF_ORIGINATOR` keeps self).
+    let mut originator = Some(self_id);
+    if flags & SXF_ORIGINATOR == 0 {
+        let mut hops = 0;
+        while let Some(o) = originator {
+            if flags_of(o) & crate::class::FLAG_MISSILE == 0 || hops >= 64 {
+                break;
+            }
+            originator = world.actors.get(o).and_then(|a| a.target);
+            hops += 1;
+        }
+    }
+    let (mut target, mut master, mut tracer) = if flags & SXF_TRANSFERPOINTERS != 0 {
+        (src.target, src.master, src.tracer)
+    } else {
+        (None, Some(self_id), None)
+    };
+    if flags_of(spawned) & crate::class::FLAG_ISMONSTER != 0 {
+        if flags & SXF_TRANSFERPOINTERS == 0 {
+            target = src.target;
+        }
+    } else if flags & SXF_TRANSFERPOINTERS == 0 {
+        target = originator.or(Some(self_id));
+    }
+    if flags & SXF_NOPOINTERS != 0 {
+        (target, master, tracer) = (None, None, None);
+    }
+    if flags & SXF_SETMASTER != 0 {
+        master = originator;
+    }
+    if flags & SXF_SETTARGET != 0 {
+        target = originator;
+    }
+    if flags & SXF_SETTRACER != 0 {
+        tracer = originator;
+    }
+    (target, master, tracer)
 }
 
 /// `A_ThrowGrenade("type" [, zheight [, xyspeed [, zspeed]]])` — lofted projectile.
@@ -5684,11 +5755,19 @@ fn a_custom_missile(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     let Ok(id) = world.spawn_at(missile_class, pos, ang) else {
         return ActionResult::Continue;
     };
+    // UZDoom `CMF_TRACKOWNER`: a projectile fired by a projectile belongs to
+    // the first non-missile up its `target` chain, so it spares (and credits)
+    // the real shooter.
+    let owner = if flags & CMF_TRACKOWNER != 0 {
+        missile_owner(world, self_id)
+    } else {
+        Some(self_id)
+    };
     if let Some(m) = world.actors.get_mut(id) {
         m.vel = vel;
         m.flags |= crate::class::FLAG_MISSILE;
         m.flags &= !crate::class::FLAG_SOLID;
-        m.target = Some(self_id);
+        m.target = owner;
         m.master = Some(self_id);
         m.tracer = reference;
     }
@@ -5696,8 +5775,33 @@ fn a_custom_missile(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     ActionResult::Continue
 }
 
+/// Walk `target` links from a missile back to the actor that fired it
+/// (UZDoom's owner loop for `CMF_TRACKOWNER` / `InitSpawnedItem`).
+/// A non-missile is its own owner; a broken chain ends at the last missile.
+fn missile_owner(world: &World, id: ActorId) -> Option<ActorId> {
+    let is_missile = |id: ActorId| {
+        world.actors.get(id).is_some_and(|a| {
+            (a.flags | world.classes.get(a.class).map_or(0, |c| c.flags))
+                & crate::class::FLAG_MISSILE
+                != 0
+        })
+    };
+    let mut owner = id;
+    for _ in 0..64 {
+        if !is_missile(owner) {
+            break;
+        }
+        match world.actors.get(owner).and_then(|a| a.target) {
+            Some(next) => owner = next,
+            None => break,
+        }
+    }
+    Some(owner)
+}
+
 const CMF_AIMMODE: i32 = 3;
 const CMF_AIMDIRECTION: i32 = 2;
+const CMF_TRACKOWNER: i32 = 4;
 const CMF_ABSOLUTEPITCH: i32 = 16;
 const CMF_ABSOLUTEANGLE: i32 = 128;
 
@@ -5713,7 +5817,7 @@ fn parse_cmf_flags(raw: Option<&String>) -> i32 {
         .map(|f| match f.trim().to_ascii_uppercase().as_str() {
             "CMF_AIMOFFSET" => 1,
             "CMF_AIMDIRECTION" => CMF_AIMDIRECTION,
-            "CMF_TRACKOWNER" => 4,
+            "CMF_TRACKOWNER" => CMF_TRACKOWNER,
             "CMF_CHECKTARGETDEAD" => 8,
             "CMF_ABSOLUTEPITCH" => CMF_ABSOLUTEPITCH,
             "CMF_OFFSETPITCH" => 32,
@@ -11705,14 +11809,6 @@ pub(crate) fn radius_attack(
     max_damage: i32,
     distance: f64,
 ) {
-    if max_damage <= 0 || distance <= 0.0 {
-        return;
-    }
-    world.push_fx(crate::fx_events::FxEvent::Explosion {
-        pos: origin,
-        radius: distance,
-        damage: max_damage,
-    });
     // Vanilla `P_RadiusAttack(spot, spot->target, damage)` / GZDoom: the
     // blast is credited to the shooter of a missile (`bombsource`).
     let bomb_source = world
@@ -11721,6 +11817,37 @@ pub(crate) fn radius_attack(
         .filter(|a| a.flags & crate::class::FLAG_MISSILE != 0)
         .and_then(|a| a.target)
         .or(Some(source));
+    radius_attack_from(
+        world,
+        source,
+        origin,
+        max_damage,
+        distance,
+        bomb_source,
+        true,
+    );
+}
+
+/// [`radius_attack`] with GZDoom's `bombsource` and `RADF_HURTSOURCE`:
+/// without `hurt_source` the blast skips `bomb_source` (UZDoom
+/// `P_RadiusAttack`).
+pub(crate) fn radius_attack_from(
+    world: &mut World,
+    source: ActorId,
+    origin: DVec3,
+    max_damage: i32,
+    distance: f64,
+    bomb_source: Option<ActorId>,
+    hurt_source: bool,
+) {
+    if max_damage <= 0 || distance <= 0.0 {
+        return;
+    }
+    world.push_fx(crate::fx_events::FxEvent::Explosion {
+        pos: origin,
+        radius: distance,
+        damage: max_damage,
+    });
     let vanilla = world.math_mode == crate::vanilla::SimMathMode::VanillaFixed;
     // Linked portals: the blast reaches the groups around it, at displaced
     // positions (`FMultiBlockThingsIterator` in `P_RadiusAttack`).
@@ -11732,7 +11859,7 @@ pub(crate) fn radius_attack(
     );
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
-        if id == source {
+        if id == source || (!hurt_source && Some(id) == bomb_source) {
             continue;
         }
         let Some(other) = world.actors.get(id) else {
@@ -11877,10 +12004,33 @@ fn radius_damage_lines(
     }
 }
 
-/// `A_Explode`: radius damage around self (Doom barrel defaults).
+/// `A_Explode` without arguments: UZDoom reads `ExplosionDamage` (128 when
+/// unset), `ExplosionRadius` (the damage when unset) and `DontHurtShooter`.
 fn a_explode(world: &mut World, self_id: ActorId) -> ActionResult {
+    let (damage, radius, hurt_source) = world
+        .actors
+        .get(self_id)
+        .and_then(|a| world.classes.get(a.class))
+        .map_or((128, 128.0, true), |c| {
+            let damage = if c.explosion_damage > 0 {
+                c.explosion_damage
+            } else {
+                128
+            };
+            let radius = if c.explosion_radius > 0 {
+                f64::from(c.explosion_radius)
+            } else {
+                f64::from(damage)
+            };
+            (damage, radius, !c.ext.dont_hurt_shooter)
+        });
     if let Some(pos) = a_explode_sound(world, self_id) {
-        radius_attack(world, self_id, pos, 128, 128.0);
+        if hurt_source {
+            radius_attack(world, self_id, pos, damage, radius);
+        } else {
+            let bomb_source = world.actors.get(self_id).and_then(|a| a.target);
+            radius_attack_from(world, self_id, pos, damage, radius, bomb_source, false);
+        }
     }
     ActionResult::Continue
 }
@@ -11912,8 +12062,27 @@ fn a_explode_args(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
     } else {
         f64::from(damage)
     };
+    // UZDoom: `flags` defaults to `XF_HURTSOURCE`; the blast's source is the
+    // caller's `target` (its shooter) unless `XF_NOTMISSILE`. Brutal Doom's
+    // `FootstepStrong` passes 0 so a landing never hurts the player.
+    const XF_HURTSOURCE: i32 = 1;
+    const XF_NOTMISSILE: i32 = 4;
+    let flags = parse_i32_arg(args, 2, XF_HURTSOURCE);
+    let bomb_source = if flags & XF_NOTMISSILE != 0 {
+        Some(self_id)
+    } else {
+        world.actors.get(self_id).and_then(|a| a.target)
+    };
     if let Some(pos) = a_explode_sound(world, self_id) {
-        radius_attack(world, self_id, pos, damage, distance);
+        radius_attack_from(
+            world,
+            self_id,
+            pos,
+            damage,
+            distance,
+            bomb_source,
+            flags & XF_HURTSOURCE != 0,
+        );
     }
     ActionResult::Continue
 }
@@ -11990,7 +12159,9 @@ fn a_mushroom(world: &mut World, self_id: ActorId, args: &[String]) -> ActionRes
         if let Ok(id) = world.spawn_at(shot, pos, ang) {
             if let Some(m) = world.actors.get_mut(id) {
                 m.vel = DVec3::new(c * base_speed, s * base_speed, slope * base_speed * 0.25);
-                m.target = self_actor.target;
+                // `P_SpawnMissile(actor, …)`: the shots belong to the
+                // exploding actor, so they never hit it.
+                m.target = Some(self_id);
                 m.master = Some(self_id);
                 // MBF: fireballs are gravity-affected (clear NOGRAVITY if set).
                 m.flags &= !crate::class::FLAG_NOGRAVITY;
@@ -12188,11 +12359,30 @@ fn a_spawn_object(world: &mut World, self_id: ActorId, args: &[String]) -> Actio
         src.pos.z() + zofs,
     );
     if let Ok(id) = world.spawn_at(cid, pos, ang) {
+        // DSDA `A_SpawnObject`: a spawned missile copies the pointers of a
+        // missile caller, and otherwise is fired as by a monster (target =
+        // caller, tracer = caller's target). Others keep their own pointers.
+        let missile = |a: &crate::actor::Actor| {
+            (a.flags | world.classes.get(a.class).map_or(0, |c| c.flags))
+                & (crate::class::FLAG_MISSILE
+                    | crate::class::FLAG_BOUNCEONFLOORS
+                    | crate::class::FLAG_BOUNCEONWALLS)
+                != 0
+        };
+        let spawned_missile = world.actors.get(id).is_some_and(missile);
+        let caller_missile = missile(&src);
         if let Some(m) = world.actors.get_mut(id) {
             m.vel = DVec3::new(xvel * c - yvel * s, xvel * s + yvel * c, zvel);
-            m.target = src.target;
             m.master = Some(self_id);
-            m.tracer = src.target;
+            if spawned_missile {
+                if caller_missile {
+                    m.target = src.target;
+                    m.tracer = src.tracer;
+                } else {
+                    m.target = Some(self_id);
+                    m.tracer = src.target;
+                }
+            }
         }
     }
     ActionResult::Continue
@@ -12677,10 +12867,25 @@ fn a_radius_thrust(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
         .unwrap_or(128.0)
         .abs()
         .max(1.0);
-    let affect_source = args.get(2).is_some_and(|s| {
-        let t = s.trim_matches('"').to_ascii_lowercase();
-        t == "1" || t == "true" || t == "yes"
-    });
+    // UZDoom: `flags` defaults to `RTF_AFFECTSOURCE`; the source is the
+    // caller's `target` (its shooter) unless `RTF_NOTMISSILE`. Flag names
+    // arrive as numbers (`RTF_AFFECTSOURCE | RTF_NOIMPACTDAMAGE` = 3).
+    const RTF_AFFECTSOURCE: i32 = 1;
+    const RTF_NOTMISSILE: i32 = 4;
+    let flags = match args
+        .get(2)
+        .map(|s| s.trim_matches('"').to_ascii_lowercase())
+    {
+        Some(t) if t == "true" || t == "yes" => RTF_AFFECTSOURCE,
+        Some(t) if t == "false" || t == "no" => 0,
+        _ => parse_i32_arg(args, 2, RTF_AFFECTSOURCE),
+    };
+    let affect_source = flags & RTF_AFFECTSOURCE != 0;
+    let source = if flags & RTF_NOTMISSILE != 0 {
+        Some(self_id)
+    } else {
+        world.actors.get(self_id).and_then(|a| a.target)
+    };
     let Some(origin) = world.actors.get(self_id).map(|a| a.pos) else {
         return ActionResult::Continue;
     };
@@ -12692,7 +12897,8 @@ fn a_radius_thrust(world: &mut World, self_id: ActorId, args: &[String]) -> Acti
     );
     let ids: Vec<ActorId> = world.thinkers.default.clone();
     for id in ids {
-        if id == self_id && !affect_source {
+        // The thrust spot itself only moves when it is the source.
+        if (id == self_id && source != Some(self_id)) || (!affect_source && Some(id) == source) {
             continue;
         }
         let Some(other) = world.actors.get(id) else {
@@ -18280,7 +18486,7 @@ actor Scout : Actor 9017
         let states = Arc::new(StateTable::from_decorate(&ir, &classes));
         let scout = classes.find_name("Scout").unwrap();
         let spawn = states.find_label(scout, "Spawn").unwrap();
-        let bad = states.find_label(scout, "Bad").unwrap();
+        let _bad = states.find_label(scout, "Bad").unwrap();
         let seen = states.find_label(scout, "Seen").unwrap();
         let mut map = MapBuilder::new()
             .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
@@ -19298,6 +19504,439 @@ actor Spawner : Actor 9002
         assert!((a.pos.y() - 64.0).abs() < 1e-6);
         assert!((a.pos.z() - 8.0).abs() < 1e-6);
         assert!((a.vel.x() - 4.0).abs() < 1e-6);
+    }
+
+    /// UZDoom `InitSpawnedItem`: a non-monster spawn (Brutal Doom's
+    /// `FootStep6`) targets its spawner, not the spawner's own target.
+    #[test]
+    fn a_spawn_item_ex_missile_targets_its_spawner() {
+        let ir = parse_decorate(
+            r#"
+actor Step : Actor 9001
+{
+  Projectile
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor Walker : Actor 9002
+{
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  Walk:
+    POSS A 1 A_SpawnItemEx("Step", 0, 0, 8, 0, 0, 0, 0, SXF_SETMASTER)
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let walker = classes.find_name("Walker").unwrap();
+        let step = classes.find_name("Step").unwrap();
+        let walk = states.find_label(walker, "Walk").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let other = w
+            .spawn_at(walker, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let id = w
+            .spawn_at(walker, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.actors.get_mut(id).unwrap().target = Some(other);
+        w.set_state(id, Some(walk), true);
+        let child = w
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .find(|&oid| w.actors.get(oid).is_some_and(|a| a.class == step))
+            .unwrap();
+        let a = w.actors.get(child).unwrap();
+        assert_eq!(
+            a.target,
+            Some(id),
+            "a spawned missile must not hit its spawner"
+        );
+        assert_eq!(a.master, Some(id));
+    }
+
+    fn blast_world(decorate: &str) -> (World, Arc<ClassRegistry>, Arc<StateTable>) {
+        let ir = parse_decorate(decorate).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        (w, classes, states)
+    }
+
+    const BLAST_ACTORS: &str = r#"
+actor Victim : Actor 9001
+{
+  Health 1000
+  Radius 16
+  Height 56
+  Mass 100
+  +SHOOTABLE
+  +SOLID
+  States { Spawn: POSS A -1 Stop }
+}
+actor Shell : Actor 9002
+{
+  ExplosionDamage 40
+  ExplosionRadius 96
+  DontHurtShooter
+  States { Spawn: TNT1 A -1 Stop Boom: TNT1 A 1 A_Explode TNT1 A -1 Stop }
+}
+actor Bomb : Actor 9003
+{
+  ExplosionDamage 40
+  States { Spawn: TNT1 A -1 Stop Boom: TNT1 A 1 A_Explode TNT1 A -1 Stop }
+}
+actor Pusher : Actor 9004
+{
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  Push:
+    TNT1 A 1 A_RadiusThrust(400, 128)
+    TNT1 A -1
+    Stop
+  Spare:
+    TNT1 A 1 A_RadiusThrust(400, 128, 0)
+    TNT1 A -1
+    Stop
+  }
+}
+actor Shard : Actor 9005
+{
+  Projectile
+  States { Spawn: BAL1 A -1 Stop }
+}
+actor Cluster : Actor 9006
+{
+  Projectile
+  States
+  {
+  Spawn:
+    BAL1 A -1
+    Stop
+  Split:
+    BAL1 A 1 A_SpawnProjectile("Shard", 0, 0, 0, CMF_AIMDIRECTION|CMF_TRACKOWNER)
+    BAL1 A -1
+    Stop
+  }
+}
+"#;
+
+    /// Plain `A_Explode`: `ExplosionDamage` / `ExplosionRadius`, and
+    /// `DontHurtShooter` spares the shooter (UZDoom metadata defaults).
+    #[test]
+    fn a_explode_without_args_reads_explosion_properties() {
+        let (mut w, classes, states) = blast_world(BLAST_ACTORS);
+        let victim = classes.find_name("Victim").unwrap();
+        assert!(
+            classes
+                .get(classes.find_name("Shell").unwrap())
+                .unwrap()
+                .ext
+                .dont_hurt_shooter
+        );
+        let shooter = w
+            .spawn_at(victim, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let near = w
+            .spawn_at(victim, DVec3::new(260.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let health = |w: &World, id| w.actors.get(id).unwrap().health;
+        for (class, shooter_hurt) in [("Shell", false), ("Bomb", true)] {
+            let (s0, n0) = (health(&w, shooter), health(&w, near));
+            let cid = classes.find_name(class).unwrap();
+            let b = w
+                .spawn_at(cid, DVec3::new(230.0, 200.0, 8.0), Angle::ZERO)
+                .unwrap();
+            w.actors.get_mut(b).unwrap().target = Some(shooter);
+            w.set_state(b, Some(states.find_label(cid, "Boom").unwrap()), true);
+            assert!(health(&w, near) < n0, "{class}: the blast reaches 30 units");
+            assert!(n0 - health(&w, near) <= 40, "{class}: ExplosionDamage 40");
+            assert_eq!(health(&w, shooter) < s0, shooter_hurt, "{class}");
+        }
+    }
+
+    /// UZDoom `A_RadiusThrust`: `RTF_AFFECTSOURCE` is the default and the
+    /// source is the caller's target; `flags = 0` leaves the source alone.
+    #[test]
+    fn a_radius_thrust_affects_the_source_by_default() {
+        let (mut w, classes, states) = blast_world(BLAST_ACTORS);
+        let victim = classes.find_name("Victim").unwrap();
+        let pusher = classes.find_name("Pusher").unwrap();
+        for (label, moved) in [("Push", true), ("Spare", false)] {
+            let shooter = w
+                .spawn_at(victim, DVec3::new(240.0, 200.0, 0.0), Angle::ZERO)
+                .unwrap();
+            let p = w
+                .spawn_at(pusher, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+                .unwrap();
+            w.actors.get_mut(p).unwrap().target = Some(shooter);
+            w.set_state(p, Some(states.find_label(pusher, label).unwrap()), true);
+            let vx = w.actors.get(shooter).unwrap().vel.x();
+            assert_eq!(vx > 0.0, moved, "{label}: vx {vx}");
+            w.actors.get_mut(shooter).unwrap().destroyed = true;
+        }
+    }
+
+    /// UZDoom `CMF_TRACKOWNER`: a projectile fired by a projectile belongs
+    /// to the original shooter.
+    #[test]
+    fn a_spawn_projectile_track_owner_follows_the_missile_chain() {
+        let (mut w, classes, states) = blast_world(BLAST_ACTORS);
+        let victim = classes.find_name("Victim").unwrap();
+        let cluster = classes.find_name("Cluster").unwrap();
+        let shard = classes.find_name("Shard").unwrap();
+        let shooter = w
+            .spawn_at(victim, DVec3::new(100.0, 100.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let c = w
+            .spawn_at(cluster, DVec3::new(200.0, 200.0, 32.0), Angle::ZERO)
+            .unwrap();
+        w.actors.get_mut(c).unwrap().target = Some(shooter);
+        w.set_state(c, Some(states.find_label(cluster, "Split").unwrap()), true);
+        let s = w
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .find(|&id| w.actors.get(id).is_some_and(|a| a.class == shard))
+            .unwrap();
+        assert_eq!(w.actors.get(s).unwrap().target, Some(shooter));
+    }
+
+    /// Flag names OR-ed in an action argument reach the action as their
+    /// value: `SXF_TRANSFERPOINTERS|SXF_NOCHECKPOSITION` once evaluated to 0,
+    /// which silently dropped every combined flag set in Brutal Doom.
+    #[test]
+    fn combined_flag_constants_reach_the_action() {
+        let ir = parse_decorate(
+            r#"
+actor Puff : Actor 9001
+{
+  +NOINTERACTION
+  States { Spawn: TNT1 A -1 Stop }
+}
+actor Spawner : Actor 9002
+{
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  Go:
+    POSS A 1 A_SpawnItemEx("Puff", 0, 0, 0, 0, 0, 0, 0, SXF_TRANSFERPOINTERS|SXF_NOCHECKPOSITION)
+    POSS A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let spawner = classes.find_name("Spawner").unwrap();
+        let puff = classes.find_name("Puff").unwrap();
+        let other = w
+            .spawn_at(spawner, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let id = w
+            .spawn_at(spawner, DVec3::new(64.0, 64.0, 0.0), Angle::ZERO)
+            .unwrap();
+        w.actors.get_mut(id).unwrap().target = Some(other);
+        w.set_state(id, Some(states.find_label(spawner, "Go").unwrap()), true);
+        let child = w
+            .thinkers
+            .default
+            .iter()
+            .copied()
+            .find(|&c| w.actors.get(c).is_some_and(|a| a.class == puff))
+            .unwrap();
+        // `SXF_TRANSFERPOINTERS` copies the spawner's target (without the
+        // flag, the spawner itself would be the target).
+        assert_eq!(w.actors.get(child).unwrap().target, Some(other));
+        // ... and its (empty) master instead of making the spawner the master.
+        assert_eq!(w.actors.get(child).unwrap().master, None);
+    }
+
+    /// UZDoom `A_Explode(damage, distance, flags)`: without `XF_HURTSOURCE`
+    /// the blast spares the caller's target (Brutal Doom `FootstepStrong`).
+    #[test]
+    fn a_explode_without_hurtsource_spares_the_shooter() {
+        let ir = parse_decorate(
+            r#"
+actor Victim : Actor 9001
+{
+  Health 100
+  Radius 16
+  Height 56
+  +SHOOTABLE
+  +SOLID
+  States { Spawn: POSS A -1 Stop }
+}
+actor Blast : Actor 9002
+{
+  States
+  {
+  Spawn:
+    TNT1 A -1
+    Stop
+  Spare:
+    TNT1 A 1 A_Explode(60, 64, 0)
+    TNT1 A -1
+    Stop
+  Hurt:
+    TNT1 A 1 A_Explode(60, 64)
+    TNT1 A -1
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let victim = classes.find_name("Victim").unwrap();
+        let blast = classes.find_name("Blast").unwrap();
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let shooter = w
+            .spawn_at(victim, DVec3::new(128.0, 128.0, 0.0), Angle::ZERO)
+            .unwrap();
+        for (label, hurt) in [("Spare", false), ("Hurt", true)] {
+            let before = w.actors.get(shooter).unwrap().health;
+            let b = w
+                .spawn_at(blast, DVec3::new(128.0, 128.0, 8.0), Angle::ZERO)
+                .unwrap();
+            w.actors.get_mut(b).unwrap().target = Some(shooter);
+            let st = states.find_label(blast, label).unwrap();
+            w.set_state(b, Some(st), true);
+            let after = w.actors.get(shooter).unwrap().health;
+            assert_eq!(after < before, hurt, "{label}: {before} -> {after}");
+        }
+    }
+
+    /// Brutal Doom barrels: `A_SpawnItemEx("BarrelExplosionDamage", …)` puts a
+    /// Speed 0 missile at the barrel's feet whose second frame calls
+    /// `A_Explode`. GZDoom skips `P_ZMovement` for it (`Vel.Z == 0` and on the
+    /// floor), so it must not explode on the floor before its blast runs.
+    #[test]
+    fn spawned_resting_missile_runs_its_blast() {
+        let ir = parse_decorate(
+            r#"
+actor Zomb : Actor 9001
+{
+  Health 20
+  Radius 20
+  Height 56
+  +SHOOTABLE
+  +SOLID
+  States { Spawn: POSS A -1 Stop Death: POSS H -1 Stop }
+}
+Actor BlastDmg
+{
+	+MISSILE
+	Radius 2
+	Height 42
+	PROJECTILE
+	Speed 0
+	Damagetype "ExplosiveImpact"
+	+NOBLOCKMAP
+	RenderStyle "None"
+	States
+	{
+	Spawn:
+		TNT1 A 0
+		TNT1 A 0 A_Explode(200,200)
+		Stop
+	}
+}
+actor Barrel : Actor 9002
+{
+  Health 20
+  Radius 10
+  Height 34
+  +SHOOTABLE
+  +SOLID
+  States
+  {
+  Spawn:
+    BARI A -1
+    Stop
+  Death:
+    BEXP D 1
+    TNT1 A 0 A_SpawnItemEx ("BlastDmg",0,0,0,0,0,0,0,SXF_NOCHECKPOSITION,0)
+    TNT1 A 0 A_NoBlocking
+    TNT1 A 10
+    Stop
+  }
+}
+"#,
+        )
+        .unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 512.0, 512.0), 0.0, 128.0)
+            .player_start(32.0, 32.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let zomb = classes.find_name("Zomb").unwrap();
+        let barrel = classes.find_name("Barrel").unwrap();
+        let shooter = w
+            .spawn_at(zomb, DVec3::new(400.0, 400.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let z = w
+            .spawn_at(zomb, DVec3::new(260.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        let b = w
+            .spawn_at(barrel, DVec3::new(200.0, 200.0, 0.0), Angle::ZERO)
+            .unwrap();
+        crate::damage::damage_mobj(&mut w, b, Some(shooter), Some(shooter), 50);
+        for _ in 0..10 {
+            w.tick();
+        }
+        assert!(w.actors.get(z).map_or(true, |a| a.health <= 0));
     }
 
     #[test]

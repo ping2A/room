@@ -38,16 +38,25 @@ pub const COOLEXPLOSION1: i16 = 1360;
 pub const SPIT: i16 = 1636;
 /// Atomic `FIRELASER` projectile tile used by sector shooter effectors.
 pub const FIRELASER: i16 = 1625;
+/// Atomic `SHOTGUN` tile.
 pub const SHOTGUN: i16 = 2613;
 /// Atomic `KNEE` hit sprite / weapon view tile.
 pub const KNEE: i16 = 2521;
+/// Atomic `SMALLSMOKE` tile.
 pub const SMALLSMOKE: i16 = 2329;
+/// Atomic `JIBS6` tile.
 pub const JIBS6: i16 = 2286;
+/// Atomic `BLOOD` tile.
 pub const BLOOD: i16 = 1620;
+/// Atomic `BLOODSPLAT1` tile.
 pub const BLOODSPLAT1: i16 = 2296;
+/// Atomic `BLOODSPLAT2` tile.
 pub const BLOODSPLAT2: i16 = 2297;
+/// Atomic `BLOODSPLAT3` tile.
 pub const BLOODSPLAT3: i16 = 2298;
+/// Atomic `BLOODSPLAT4` tile.
 pub const BLOODSPLAT4: i16 = 2299;
+/// Atomic `APLAYER` tile.
 pub const APLAYER: i16 = 1405;
 /// Atomic `SHOTGUNSHELL` (ejected casing).
 pub const SHOTGUNSHELL: i16 = 2535;
@@ -161,7 +170,7 @@ pub fn aim(
     actortype: &[u8],
     player: Option<&Player>,
 ) -> i16 {
-    if !auto_aim {
+    if !auto_aim && !player.is_some_and(|p| p.legacy_demo_autoaim) {
         return -1;
     }
     let a = i32::from(s.ang);
@@ -2430,7 +2439,8 @@ pub fn process_weapons_rpg(
         return;
     }
     p.kickback_pic += 1;
-    if p.kickback_pic == 2 {
+    // Chocolate `processweapon`: `(*kb)++; if (*kb == 4) shoot(pi, RPG)`.
+    if p.kickback_pic == 4 {
         let _ = shoot_rpg_player(
             p,
             rpg_tile,
@@ -2494,6 +2504,7 @@ pub(crate) fn shoot_rpg_player(
         let mut zvel = (100 - i32::from(p.horiz) - i32::from(p.horizoff)) * 81;
         if target >= 0 {
             let target_sprite = &sprites[target as usize];
+
             let height = tile_meta
                 .get(target_sprite.picnum.max(0) as usize)
                 .map_or(0, |meta| i32::from(meta.height));
@@ -3645,6 +3656,8 @@ pub(crate) fn spawn_devastator_projectile(
     k
 }
 
+/// Advance the shotgun for one tic: start the firing sequence on fire, and
+/// on the fourth frame fire seven pellets.
 pub fn process_weapons_shotgun(
     p: &mut Player,
     sync_bits: u32,
@@ -3948,7 +3961,6 @@ pub(crate) fn spawn_player_shell(
     shell_height: i32,
     shell_xvel: i16,
 ) -> i16 {
-    use room_build_engine::geom::{SectorWalls, WallXY, clipmove_xy};
     use room_build_engine::helpers::sincos_q14;
 
     let body = p.sprite_i;

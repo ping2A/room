@@ -57,13 +57,13 @@ impl TextureManager {
         self.entries.insert(entry.id.raw(), entry);
     }
 
-    /// Lookup by id.
-    #[must_use]
     /// Drop a texture (its GPU memory goes when the last view does).
     pub fn remove(&mut self, id: TextureId) {
         self.entries.remove(&id.raw());
     }
 
+    /// Lookup by id.
+    #[must_use]
     pub fn get(&self, id: TextureId) -> Option<&TextureEntry> {
         self.entries.get(&id.raw())
     }

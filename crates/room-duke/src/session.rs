@@ -510,46 +510,87 @@ pub struct DukeTspr {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AtomicSaveGlobals {
+    /// Player count written with the save.
     pub players: Option<i32>,
+    /// 19-byte save slot name (trimmed).
     pub name: String,
+    /// Episode (volume), 0-based.
     pub volume: Option<i32>,
+    /// Level within the episode, 0-based.
     pub level: Option<i32>,
+    /// Number of active mirror records.
     pub mirror_count: Option<i32>,
+    /// Mirror wall table (64 entries).
     pub mirror_walls: Vec<i16>,
+    /// Mirror sector table (64 entries).
     pub mirror_sectors: Vec<i16>,
+    /// 2D automap sector bitset (`MAXSECTORS / 8` bytes).
     pub show2dsector: Vec<u8>,
+    /// Saved board name (128 bytes, with its terminator).
     pub boardfilename: Vec<u8>,
+    /// Number of cloud sprites (`numclouds`).
     pub numclouds: Option<i32>,
+    /// Cloud sprite indices (128 entries).
     pub clouds: Vec<i16>,
+    /// Cloud X offsets (128 entries).
     pub cloudx: Vec<i16>,
+    /// Cloud Y offsets (128 entries).
     pub cloudy: Vec<i16>,
+    /// Duke `pskybits` (parallax sky tile count, log2).
     pub pskybits: Option<i32>,
+    /// Duke `pskyoff[8]` parallax sky tile offsets.
     pub pskyoff: Vec<i16>,
+    /// Duke `animatecnt`: active floor / ceiling animations.
     pub animatecnt: Option<i32>,
+    /// Duke `animatesect` (64 entries, active first).
     pub animatesect: Vec<i16>,
+    /// Duke `animateptr` for the active animations.
     pub animateptr: Vec<i32>,
+    /// Duke `animategoal` for the active animations.
     pub animategoal: Vec<i32>,
+    /// Duke `animatevel` for the active animations.
     pub animatevel: Vec<i32>,
+    /// Duke `gotpic` tile-seen bits.
     pub gotpic: Vec<u8>,
+    /// Duke `playerswhenstarted`.
     pub playerswhenstarted: Option<i32>,
+    /// Duke `ud.from_bonus`: came from a secret exit.
     pub from_bonus: Option<i32>,
+    /// Duke `ud.secretlevel`: pending secret level (`0` = none).
     pub secretlevel: Option<i32>,
+    /// Duke `ud.respawn_monsters`.
     pub respawn_monsters: Option<i32>,
+    /// Duke `ud.respawn_items`.
     pub respawn_items: Option<i32>,
+    /// Duke `ud.respawn_inventory`.
     pub respawn_inventory: Option<i32>,
+    /// Duke `ud.god`: god mode.
     pub god: Option<i32>,
+    /// Duke `ud.auto_run`.
     pub auto_run: Option<i32>,
+    /// Duke `ud.crosshair`.
     pub crosshair: Option<i32>,
+    /// Duke `ud.last_level`: previous level index.
     pub last_level: Option<i32>,
+    /// Duke `ud.eog`: end-of-game flag.
     pub eog: Option<i32>,
+    /// Duke `ud.coop`: cooperative play.
     pub coop: Option<i32>,
+    /// Duke `ud.marker`: respawn markers.
     pub marker: Option<i32>,
+    /// Duke `ud.ffire`: friendly fire.
     pub ffire: Option<i32>,
+    /// Duke `camsprite`: active camera sprite (`-1` = none).
     pub camsprite: Option<i32>,
+    /// Duke `connecthead`: multiplayer connect-list head.
     pub connecthead: Option<i32>,
+    /// Duke `connectpoint2[16]`: connect-list next links.
     pub connectpoint2: Vec<i16>,
+    /// Duke `numplayersprites`.
     pub numplayersprites: Option<i32>,
+    /// Duke `frags[16][16]`, row-major (killer × victim).
     pub frags: Vec<i16>,
+    /// Duke `parallaxyscale`.
     pub parallaxyscale: Option<i32>,
 }
 
@@ -2891,8 +2932,12 @@ pub const DEMO1_PAD_PRE_EXPLODE: &[u32] = &[
 const SPRITE_EXT_ALPHA_TRANSLUCENT: u8 = 85;
 const SPRITE_EXT_ALPHA_MORE_TRANSPARENT: u8 = 170;
 
+/// A running Duke Nukem 3D game: the Build world, players, CON script state
+/// and every simulation counter, advanced one 30 Hz tic at a time.
 pub struct DukeSession {
+    /// Simulation tic counter (30 Hz Duke tics).
     pub tic: u32,
+    /// Build `randomseed` (`krand` state).
     pub randomseed: i32,
     /// Duke `global_random` (separate from Build `randomseed`).
     pub global_random: i32,
@@ -2908,6 +2953,7 @@ pub struct DukeSession {
     pub pad_pre_override: Option<u32>,
     /// Extra `krand`s immediately before `moveexplosions` (tests — mid-tic TRAND gaps).
     pub pad_pre_explode_override: Option<u32>,
+    /// Sprite sector / status linked lists (Build `headspritesect` etc.).
     pub lists: SpriteLists,
     /// While the per-sprite EDuke32 event loop runs, hooks that return without
     /// spawns, kills or errors leave `lists` behind `world.lists` (ED9).
@@ -2916,11 +2962,13 @@ pub struct DukeSession {
     event_lists_stale: bool,
     /// Chocolate's 64-entry FIFO used to retire old footprints and blood pools.
     decal_queue: crate::decal_queue::DukeDecalQueue,
+    /// Compiled CON script, when one is loaded.
     pub script: Option<ScriptImage>,
     /// Per-sprite CON temps (`hittype[i].temp_data`); sized lazily.
     pub actor_temps: Vec<ActorConTemps>,
     /// `sprite[].picnum` mirror (indexed by sprite id).
     pub picnum: Vec<i16>,
+    /// Seat 0 (the local player).
     pub player: Player,
     /// Players on seats 1..N-1; seat zero remains `player` for API compatibility.
     pub coop_players: Vec<Player>,
@@ -2928,6 +2976,7 @@ pub struct DukeSession {
     player_starts: Vec<DukePlayerStart>,
     /// Chocolate `frags[killer][victim]`, stored in an 8×8 row-major table.
     pub frag_matrix: Vec<i16>,
+    /// The loaded Build map, once a level is running.
     pub world: Option<BuildWorld>,
     /// ART height + picanm y-offset per picnum (for `getzrange` sprite ceilings).
     pub tile_meta: Vec<TileZMeta>,
@@ -2980,6 +3029,7 @@ pub struct DukeSession {
     level_exit_ready: bool,
     /// Solo CON `resetplayer` event consumed by the desktop/native host.
     player_restart_ready: bool,
+    /// Atomic save globals kept from the last imported save.
     pub atomic_globals: Option<AtomicSaveGlobals>,
     /// Full modeled Atomic save template from the loaded game save.
     atomic_sav_template: Option<Vec<u8>>,
@@ -8299,6 +8349,7 @@ fn eduke_list_runs_actor_code(stat: i16, picnum: i16) -> bool {
 }
 
 impl DukeSession {
+    /// An empty session with no level loaded.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -15145,7 +15196,6 @@ impl DukeSession {
             player.effector_force_x = 0;
             player.effector_force_y = 0;
         }
-        let mut input = sync_inputs.first().copied().unwrap_or_default();
         crate::fixups::set(self.trace_fixups);
         self.tic = self.tic.wrapping_add(1);
         // EDuke32's read-only totalclock advances at 120 Hz; Room advances
@@ -15214,7 +15264,17 @@ impl DukeSession {
         self.run_eduke_processinput_events(&mut sync_inputs);
         let fire_blocked_seats = self.run_eduke_fire_events(&mut sync_inputs);
         self.run_eduke_incurdamage_events(&mut sync_inputs);
-        input = sync_inputs.first().copied().unwrap_or_default();
+        let mut input = sync_inputs.first().copied().unwrap_or_default();
+        // Mouse-aim bit 23 (`checksectors` head). DEMO1's trace shows its
+        // effect in the same tic's `processinput` (re-centring starts on the
+        // tic bit 23 clears, tic 837), so it is applied before the players move.
+        crate::player::checksectors_aim_mode(&mut self.player, input.bits);
+        for (seat, player) in self.coop_players.iter_mut().enumerate() {
+            let bits = sync_inputs
+                .get(seat + 1)
+                .map_or(0, |seat_input| seat_input.bits);
+            crate::player::checksectors_aim_mode(player, bits);
+        }
         // Chocolate: `movedummyplayers()` right after `global_random = TRAND`.
         if let Some(world) = self.world.as_mut() {
             let mut plist = Vec::with_capacity(1 + self.coop_players.len());
@@ -15520,6 +15580,17 @@ impl DukeSession {
                 );
             }
             if self.player.extra > 0 {
+                tick_player_walking_sound(
+                    &mut self.player,
+                    world,
+                    input,
+                    &mut self.randomseed,
+                    self.script.as_ref(),
+                    &mut self.actor_temps,
+                    pre_move,
+                );
+            }
+            if self.player.extra > 0 {
                 tick_player_footprints(
                     &mut self.player,
                     &mut self.lists,
@@ -15729,6 +15800,17 @@ impl DukeSession {
                         &mut self.randomseed,
                         self.script.as_ref(),
                         &mut self.actor_temps,
+                    );
+                }
+                if player.extra > 0 {
+                    tick_player_walking_sound(
+                        player,
+                        world,
+                        seat_input,
+                        &mut self.randomseed,
+                        self.script.as_ref(),
+                        &mut self.actor_temps,
+                        pre_move,
                     );
                 }
                 if player.extra > 0 {
@@ -62082,7 +62164,21 @@ fn tick_player_inventory(
         }
     }
 
-    // Chocolate `processinput`: surface/land refills the 15-second air
+    // Chocolate `processinput` runs `incur_damage` (which takes
+    // `extra_extra8 >> 8`) well before `doincrements` adds this tic's
+    // drowning damage, so a point accumulated now is lost next tic.
+    if player.extra > 0 {
+        let damage = player.extra_extra8 >> 8;
+        if damage > 0 {
+            player.extra_extra8 = 0;
+            player.extra = player.extra.saturating_sub(damage).max(0);
+            player.last_extra = player.extra;
+        }
+    } else {
+        player.extra = 0;
+        player.shield_amount = 0;
+    }
+    // Chocolate `doincrements`: surface/land refills the 15-second air
     // reserve. Without active scuba, underwater tics consume air and then
     // accumulate one health point per eight tics in Q8 (`extra_extra8 += 32`).
     if sector_lotag != Some(2) {
@@ -62100,17 +62196,6 @@ fn tick_player_inventory(
                 queue_player_sound(script, "DUKE_LONGTERM_PAIN", player, actor_temps);
             }
         }
-    }
-    if player.extra > 0 {
-        let damage = player.extra_extra8 >> 8;
-        if damage > 0 {
-            player.extra_extra8 = 0;
-            player.extra = player.extra.saturating_sub(damage).max(0);
-            player.last_extra = player.extra;
-        }
-    } else {
-        player.extra = 0;
-        player.shield_amount = 0;
     }
 }
 
@@ -62609,6 +62694,9 @@ pub(crate) struct PreMovePlayer {
     posz: i32,
     cursectnum: i16,
     on_ground: bool,
+    /// Momentum before this tic's `fvel` / `svel` are added.
+    posxv: i32,
+    posyv: i32,
 }
 
 impl PreMovePlayer {
@@ -62619,7 +62707,73 @@ impl PreMovePlayer {
             posz: player.posz,
             cursectnum: player.cursectnum,
             on_ground: player.on_ground,
+            posxv: player.posxv,
+            posyv: player.posyv,
         }
+    }
+}
+
+/// Chocolate `processinput` walking sounds, between the floor hazards and
+/// the velocity update: while the player moves, on bob phases 1 and 3 near
+/// the floor, PANNEL1/2 floors play DUKE_WALKINDUCTS and shallow water
+/// (`psectlotag == 1`) rolls `TRAND & 1` for DUKE_ONWATER; either sets
+/// `walking_snd_toggle`, which counts down on the other phases. The roll is
+/// part of the RNG stream (DEMO1 tic 908).
+fn tick_player_walking_sound(
+    player: &mut Player,
+    world: &BuildWorld,
+    input: DukeInput,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    pre: PreMovePlayer,
+) {
+    if pre.posxv == 0 && pre.posyv == 0 && input.fvel == 0 && input.svel == 0 {
+        return;
+    }
+    let Some(sector) = usize::try_from(pre.cursectnum)
+        .ok()
+        .and_then(|index| world.sectors.get(index))
+    else {
+        return;
+    };
+    // `truefdist` is taken at the top of `processinput`, from the
+    // start-of-tic position.
+    let sec_z: Vec<room_build_engine::geom::SectorZ> =
+        world.sectors.iter().map(SectorT::z).collect();
+    let wxy: Vec<room_build_engine::geom::WallXY> =
+        world.walls.iter().map(|wall| wall.xy()).collect();
+    let (_, floor) =
+        room_build_engine::geom::getzsofslope(pre.cursectnum, pre.posx, pre.posy, &sec_z, &wxy);
+    let truefdist = (pre.posz - floor).abs();
+    if truefdist >= PHEIGHT + (8 << 8) {
+        return;
+    }
+    let k = sincos_q14(player.bob_counter & 2047).0 >> 12;
+    if k == 1 || k == 3 {
+        if !player.sprite_bridge && player.walking_snd_toggle == 0 && player.on_ground {
+            match sector.lotag {
+                0 => {
+                    // Chocolate prefers a floor sprite under the player (`lz`);
+                    // Room checks the sector floor picture.
+                    const PANNEL1: i16 = 342;
+                    const PANNEL2: i16 = 343;
+                    if matches!(sector.floorpicnum, PANNEL1 | PANNEL2) {
+                        queue_player_sound(script, "DUKE_WALKINDUCTS", player, actor_temps);
+                        player.walking_snd_toggle = 1;
+                    }
+                }
+                1 => {
+                    if krand_step(randomseed) & 1 == 0 {
+                        queue_player_sound(script, "DUKE_ONWATER", player, actor_temps);
+                    }
+                    player.walking_snd_toggle = 1;
+                }
+                _ => {}
+            }
+        }
+    } else if player.walking_snd_toggle > 0 {
+        player.walking_snd_toggle -= 1;
     }
 }
 

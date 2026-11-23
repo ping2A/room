@@ -18,6 +18,7 @@ mod registry;
 mod room;
 mod security;
 mod state;
+mod thumbnail;
 mod ticket;
 mod util;
 

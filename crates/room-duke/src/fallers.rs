@@ -76,7 +76,6 @@ pub(crate) fn move_fallers(
             // `IFHIT` is the `ifhitbyweapon` macro: it only consumes hits
             // while actor health is nonnegative, applies damage, updates an
             // owned sprite's owner, and returns the weapon tile.
-            let before_health = sprite.extra;
             let mut preserve_hit = false;
             let hit_tile = if temps[index].hit_extra >= 0 && sprite.extra >= 0 {
                 let hit_tile = temps[index].hit_picnum;
@@ -129,8 +128,9 @@ pub(crate) fn move_fallers(
             } else if queued_hit && !DAMAGE_TRIGGERS_FALL.contains(&hit_tile) {
                 // Chocolate's `movefallers` restores health for hits that do
                 // not activate a falling sprite, while leaving a zero-damage
-                // `hittype.extra` until the next IFHIT probe.
-                sprite.extra = before_health;
+                // `hittype.extra` until the next IFHIT probe. `sprite` is a
+                // copy that this branch never writes back, so the stored
+                // health is already the health before the probe.
                 temps[index].hit_extra = 0;
             }
             continue;

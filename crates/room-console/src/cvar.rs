@@ -310,6 +310,29 @@ impl CvarStore {
         reg_f(self, "r_sharpen", 0.0);
         reg_f(self, "vid_scalefactor", 1.0);
         reg_i(self, "vid_scalemode", 0);
+        // Renderer (`docs/40` SR3): 4 = hardware (GPU, default), 0 = the
+        // classic software renderer (1, true colour, draws as 0 until SR5).
+        reg_i(self, "vid_rendermode", 4);
+        // Software view size: 320×200 times this (1–4); 2 = 640×400.
+        reg_i(self, "vid_softscale", 2);
+        // Software renderer on several threads (SR9; UZDoom's name; the
+        // browser always draws on one).
+        reg_b(self, "r_scene_multithreaded", true);
+        // Software renderer view (SR5): horizontal field of view across the
+        // 4:3 part (wider screens see more), and ZDoom's `r_visibility`
+        // (8 = Doom's light falloff).
+        self.register(
+            "fov",
+            CvarType::Float,
+            CvarValue::Float(90.0),
+            CvarFlags::ARCHIVE,
+        );
+        self.register(
+            "r_visibility",
+            CvarType::Float,
+            CvarValue::Float(8.0),
+            CvarFlags::ARCHIVE,
+        );
         reg_b(self, "gl_bloom", false);
         reg_f(self, "gl_bloom_amount", 0.8);
         reg_i(self, "gl_ssao", 0);

@@ -4,7 +4,32 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Stretch: classic CPU software renderer."
+description = "Classic CPU software renderer for Doom-engine maps (docs/40)."
+
+[dependencies]
+room-core = { path = "../room-core" }
+room-formats = { path = "../room-formats" }
+room-map = { path = "../room-map" }
+room-render = { path = "../room-render" }
+room-vfs = { path = "../room-vfs" }
+# Headless screenshots (`shot.rs`, SR10).
+png.workspace = true
+room-nodebuild = { path = "../room-nodebuild" }
+# The shells' playsim bridge (`sim.rs`, SR3); the renderer itself does not
+# need it.
+room-sim = { path = "../room-sim", optional = true, default-features = false }
+room-defs = { path = "../room-defs", optional = true }
+
+[features]
+sim = ["dep:room-sim", "dep:room-defs"]
+
+[dev-dependencies]
+# The GPU `ClassicPalette` comparison (`tests/classic_palette.rs`, SR10).
+glam.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+room-decorate = { path = "../room-decorate" }
+room-testkit = { path = "../room-testkit" }
 
 [lints]
 workspace = true

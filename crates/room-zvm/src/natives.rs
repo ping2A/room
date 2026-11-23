@@ -74,6 +74,7 @@ pub enum ZsLevelOp {
 /// Heap class id of sector references made by `level.PointInSector`.
 const SECTOR_POINT_CLASS: u32 = u32::MAX - 7;
 
+/// A ZScript actor action the native VM runs (`A_Look`, `A_Chase`, …).
 #[derive(Clone, Debug)]
 pub enum ZsActorOp {
     /// `A_Look`.
@@ -259,6 +260,8 @@ pub enum ZsActorOp {
     Pain,
     /// `A_NoBlocking` / `A_Fall`.
     NoBlocking,
+    /// `ExplodeMissile()`: the missile stops and enters its death state.
+    ExplodeMissile,
     /// A playsim action already implemented for DECORATE. `args` are the
     /// integer registers the call passed, trailing zeros omitted.
     Action {
@@ -3626,17 +3629,39 @@ mod play_natives {
         Ok(())
     }
 
+    /// `RadiusAttack(Actor bombsource, int bombdamage, double bombdistance,
+    /// Name bombmod, int flags, double fulldamagedistance, name species)`:
+    /// `i` = [damage, flags], `f` = [distance, full distance] (names ride in
+    /// `s`). The stdlib `A_Explode` and `A_RadiusThrust` both end here.
     fn actor_radius(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        queue_action(ctx, regs, "A_Explode");
+        const RADF_HURTSOURCE: i64 = 1;
+        const RADF_SOURCEISSPOT: i64 = 4;
+        const RADF_NODAMAGE: i64 = 8;
+        let damage = regs.i.first().copied().unwrap_or(0);
+        let flags = regs.i.get(1).copied().unwrap_or(RADF_HURTSOURCE);
+        #[allow(clippy::cast_possible_truncation)]
+        let distance = regs.f.first().copied().unwrap_or(0.0) as i64;
+        // Same bits as `XF_HURTSOURCE` / `XF_NOTMISSILE` and
+        // `RTF_AFFECTSOURCE` / `RTF_NOTMISSILE`. The trailing 1 keeps an
+        // explicit `flags = 0` from being trimmed back to the default (the
+        // fourth argument, `alert`, is not used by the playsim).
+        let pass = flags & (RADF_HURTSOURCE | RADF_SOURCEISSPOT);
+        let name = if flags & RADF_NODAMAGE != 0 {
+            "A_RadiusThrust"
+        } else {
+            "A_Explode"
+        };
+        ctx.play.actor_ops.push(super::ZsActorOp::Action {
+            name: name.to_owned(),
+            args: [damage, distance, pass, 1],
+        });
         Ok(())
     }
 
-    fn actor_explode(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        let damage = regs.i.first().copied().unwrap_or(0);
-        ctx.play.actor_ops.push(super::ZsActorOp::Action {
-            name: "A_Explode".to_owned(),
-            args: [damage, 0, 0, 0],
-        });
+    /// `ExplodeMissile(line, target, onsky)`: not a blast, the missile's
+    /// impact (`P_ExplodeMissile`).
+    fn actor_explode(ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        ctx.play.actor_ops.push(super::ZsActorOp::ExplodeMissile);
         Ok(())
     }
 
@@ -10009,17 +10034,13 @@ mod tests {
             explode(&mut ctx, &mut regs).expect("explode");
             die(&mut ctx, &mut regs).expect("die");
         }
-        match ctx
-            .play
-            .actor_ops
-            .get(ctx.play.actor_ops.len().wrapping_sub(2))
-        {
-            Some(super::ZsActorOp::Action { name, args }) => {
-                assert_eq!(name, "A_Explode");
-                assert_eq!(args[0], 128);
-            }
-            other => panic!("explode op {other:?}"),
-        }
+        // `ExplodeMissile` is the missile's impact, not an `A_Explode` blast.
+        assert!(matches!(
+            ctx.play
+                .actor_ops
+                .get(ctx.play.actor_ops.len().wrapping_sub(2)),
+            Some(super::ZsActorOp::ExplodeMissile)
+        ));
         match ctx.play.actor_ops.last() {
             Some(super::ZsActorOp::Action { name, args }) => {
                 assert_eq!(name, "A_Die");

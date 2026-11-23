@@ -530,6 +530,51 @@ fn main() {
         println!("krand calls identical for {tics} tics");
         return;
     }
+    if mode == "inputs" {
+        // duke_frontier inputs DEMO1 <from> <to>: the recorded per-tic input.
+        let from: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let to: usize = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(from);
+        let g = std::fs::read(&grp).unwrap();
+        let d = std::fs::read(&dmo).unwrap();
+        let (_, demo) = room_duke::demo_sync::session_from_grp_demo(&g, &d).unwrap();
+        for (tic, inp) in demo.tics.iter().enumerate().take(to + 1).skip(from) {
+            println!(
+                "{tic} turn={} horizon={} forward={} strafe={} bits={:#010x}",
+                inp.turn, inp.horizon, inp.forward, inp.strafe, inp.bits
+            );
+        }
+        return;
+    }
+    if mode == "player" {
+        // duke_frontier player DEMO1 <from> <to>: seat-0 state after each tic.
+        let from: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let to: usize = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(from);
+        let g = std::fs::read(&grp).unwrap();
+        let d = std::fs::read(&dmo).unwrap();
+        let (mut s, demo) = room_duke::demo_sync::session_from_grp_demo(&g, &d).unwrap();
+        s.trace_fixups = false;
+        for (tic, inp) in demo.tics.iter().enumerate().take(to + 1) {
+            s.tick(room_duke::DukeInput::from_dmo(inp));
+            if tic >= from {
+                let p = &s.player;
+                println!(
+                    "{tic} extra={} boots={} horiz={} pos=({},{},{}) sect={} on_ground={} aim={} weapon={} kickback={}",
+                    p.extra,
+                    p.boot_amount,
+                    p.horiz,
+                    p.posx,
+                    p.posy,
+                    p.posz,
+                    p.cursectnum,
+                    p.on_ground,
+                    p.aim_mode,
+                    p.curr_weapon,
+                    p.kickback_pic
+                );
+            }
+        }
+        return;
+    }
     if mode == "dump" {
         // duke_frontier dump DEMO1 <tic> <out>: oracle-format sprite dump
         // (`i pic stat x y z` + extras) after `tic` (oracle's dump tic).

@@ -62,10 +62,10 @@ pub mod ue1;
 pub mod voxel_draw;
 
 pub use bloom::{BLOOM_LEVELS, BloomPass};
-pub use bsp_walk::{VisibleSet, walk_bsp};
+pub use bsp_walk::{VisibleSet, walk_bsp, walk_bsp_occluded, walk_bsp_occluded_in_view};
 pub use camera::Camera;
 pub use canvas::{Canvas, CanvasCmd};
-pub use canvas_gpu::CanvasGpu;
+pub use canvas_gpu::{CanvasGpu, CanvasRaster};
 pub use capture::{
     CaptureError, encode_gif, encode_png, read_rgba, read_texture_rgba, scale_rgba_nn,
     swizzle_bgra_to_rgba,
@@ -142,11 +142,13 @@ pub use scene::{
     PORTAL_STYLE_FLIP_X, PlaneReflectSurface, PortalView, PortalViewKind, SceneLists,
     append_sprites, apply_dyn_lights, apply_glow_fullbright, build_scene, build_scene_from_visible,
     build_scene_from_visible_ex, build_scene_with_sky, build_scene_with_sky_ex,
-    build_scene_with_sky_ex_sized, clip_scene_to_mirror_line, collect_shadow_occluders,
-    horizon_scene, is_sky_flat, mirror_clip_plane, mirror_tex_name, plane_reflect_tex_name,
-    portal_tex_name, portal_view_strips_portals, request_portal_view,
+    build_scene_with_sky_ex_shared, build_scene_with_sky_ex_sized, clip_scene_to_mirror_line,
+    collect_shadow_occluders, horizon_scene, is_sky_flat, mirror_clip_plane, mirror_tex_name,
+    plane_reflect_tex_name, portal_tex_name, portal_view_strips_portals, request_portal_view,
 };
-pub use settings::{AaMode, CrtPreset, GoreLevel, RenderSettings, SHADER_CVAR_NAMES};
+pub use settings::{
+    AaMode, CrtPreset, GoreLevel, RenderSettings, SHADER_CVAR_NAMES, world_render_size,
+};
 pub use skinning::{
     BoneUniforms, MAX_BONES, SkinnedPass, SkinnedVertex, iqm_to_skinned_vertices, skin_matrices,
 };

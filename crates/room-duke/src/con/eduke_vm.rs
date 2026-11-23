@@ -3293,6 +3293,7 @@ impl EdukeVmState {
         }
     }
 
+    /// Take the lines the script printed since the last call.
     pub fn take_console_output(&mut self) -> Vec<String> {
         std::mem::take(&mut self.console_output)
             .into_iter()

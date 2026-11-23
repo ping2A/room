@@ -39,6 +39,7 @@ impl FrameLog {
     }
 
     /// Append one v2 frame body; once full the log freezes (returns `false`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn push(&mut self, body: &[u8]) -> bool {
         self.push_layout(body, false)
     }

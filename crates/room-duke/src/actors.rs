@@ -1,7 +1,7 @@
 //! Actor movers — Chocolate `moveactors` / CON `execute` (D5).
 
 use room_build_engine::geom::{
-    SectorWalls, SectorZ, SpriteHit, SpriteZClip, WallXY, cansee,
+    SectorWalls, SectorZ, SpriteHit, SpriteZClip, WallXY, cansee, clipmove_xy_at_z_cliptype,
     clipmove_xy_at_z_sprites_with_lists, getzsofslope,
 };
 use room_build_engine::helpers::{getangle, sincos_q14};
@@ -121,7 +121,7 @@ pub(crate) fn tick_poolballs(
                 })
                 .collect();
             let old_sect = sprites[ball_u].sectnum;
-            let hit = clipmove_xy_at_z_sprites_with_lists(
+            let hit = clipmove_xy_at_z_cliptype(
                 &mut sprites[ball_u].x,
                 &mut sprites[ball_u].y,
                 ball.z,
@@ -135,7 +135,7 @@ pub(crate) fn tick_poolballs(
                 &wall_xy,
                 Some(&sec_z),
                 &clip_sprites,
-                256,
+                CLIPMASK1,
                 Some(lists),
             );
             if sprites[ball_u].sectnum != old_sect {
@@ -2338,7 +2338,7 @@ fn move_pipebombs(
         }
         temps[iu].g_t[0] += 1;
         let mut bounced = false;
-        let mut move_hit = 0;
+        let move_hit;
         {
             let s = &mut sprites[iu];
             let sect = s.sectnum as usize;

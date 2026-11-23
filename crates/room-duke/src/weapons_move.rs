@@ -15,7 +15,7 @@ use crate::shoot::{
     COOLEXPLOSION1, FIRELASER, FREEZEBLAST, GROWSPARK, RPG_PROJECTILE, SHOTSPARK1, SHRINKSPARK,
     SPIT, egs,
 };
-use crate::spawn::{CRACK1, FIREEXT, WATERBUBBLE};
+use crate::spawn::WATERBUBBLE;
 use crate::standables::spawn_maker_bubble;
 use crate::stat::{STAT_ACTOR, STAT_DEFAULT, STAT_DUMMY, STAT_FALLER, STAT_MISC, STAT_PROJECTILE};
 
@@ -1560,7 +1560,8 @@ pub fn moveweapons(
                 me.cstat = 0;
             }
             let (mut nx, mut ny, mut nsect) = (source.x, source.y, source.sectnum);
-            let retval = room_build_engine::geom::clipmove_xy_at_z_sprites_with_lists(
+            // `qq = CLIPMASK1`: walls stop it only on `cstat & 64`.
+            let retval = room_build_engine::geom::clipmove_xy_at_z_cliptype(
                 &mut nx,
                 &mut ny,
                 clip_z,
@@ -1574,12 +1575,15 @@ pub fn moveweapons(
                 &wxy,
                 Some(&sec_z),
                 &sprite_clips,
-                256,
+                (256 << 16) | 64,
                 Some(&*lists),
             );
             let sect_for_planes = if nsect >= 0 { nsect } else { source.sectnum };
+            // Chocolate `moveweapons` runs `getglobalz(i)` at the old position
+            // before `movesprite`, which then tests the Z step against those
+            // cached `hittype` planes (not the planes at the new position).
             let (ceilz, florz) =
-                room_build_engine::geom::getzsofslope(sect_for_planes, nx, ny, &sec_z, &wxy);
+                projectile_globalz(&source, sectors, &sec_z, &wxy, &sprite_clips, sprites);
             let daz = source.z + dz;
             let z_ok = daz > ceilz && daz <= florz;
             let nz = if z_ok { daz } else { source.z };
@@ -6111,4 +6115,44 @@ fn step_projectile(
         let _ = lists.changespritesect(i, next);
         sprites[iu].sectnum = next;
     }
+}
+
+/// Chocolate `getglobalz` for a STAT_PROJECTILE sprite: `getzrange` from
+/// `z - FOURSLEIGHT` with a 4-unit radius and blocking sprites; when the
+/// floor it finds is the projectile owner's own APLAYER body, the sector's
+/// planes are used instead. Returns `(ceilingz, floorz)`.
+fn projectile_globalz(
+    s: &SpriteT,
+    sectors: &[SectorT],
+    sec_z: &[room_build_engine::geom::SectorZ],
+    wxy: &[room_build_engine::geom::WallXY],
+    sprites: &[room_build_engine::geom::SpriteZClip],
+    all: &[SpriteT],
+) -> (i32, i32) {
+    const FOURSLEIGHT: i32 = 1 << 8;
+    let range = room_build_engine::geom::getzrange_with_sprites(
+        s.x,
+        s.y,
+        s.z - FOURSLEIGHT,
+        s.sectnum,
+        4,
+        (1 << 16) | 1,
+        sec_z,
+        wxy,
+        sprites,
+    );
+    let sector = usize::try_from(s.sectnum).ok().and_then(|i| sectors.get(i));
+    if range.florhit & 49152 == 49152 {
+        let lz = range.florhit & 4095;
+        let lz_is_player = all
+            .get(lz as usize)
+            .is_some_and(|body| body.picnum == APLAYER && body.cstat & 48 == 0);
+        if lz_is_player
+            && i32::from(s.owner) == lz
+            && let Some(sector) = sector
+        {
+            return (sector.ceilingz, sector.floorz);
+        }
+    }
+    (range.ceilz, range.florz)
 }

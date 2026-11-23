@@ -1637,6 +1637,17 @@ fn z_movement_inner(world: &mut World, actor_id: ActorId) {
     let planes = check_position(world, &actor, actor.pos, Some(actor_id));
     let floor_z = planes.floor_z;
     let ceiling_z = planes.ceiling_z;
+    // GZDoom `AActor::Tick` only runs `P_ZMovement` when `Vel.Z != 0 ||
+    // Z() != floorz`. A missile resting on the floor without vertical speed
+    // (Brutal Doom's `BarrelExplosionDamage`: Speed 0, spawned at the
+    // barrel's feet, `A_Explode` on its second frame) must not "hit" the
+    // floor and explode before its blast runs.
+    if (actor.flags & FLAG_MISSILE) != 0
+        && actor.vel.z() == 0.0
+        && (actor.pos.z() - floor_z).abs() < 1e-9
+    {
+        return;
+    }
     let mut vel_z = actor.vel.z();
     let water = actor_waterlevel(world, &actor);
     let no_gravity =

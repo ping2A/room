@@ -863,6 +863,10 @@ impl SoftTiles {
     /// texel row sits on the (scaled) horizon at one texel per 200-line row,
     /// wrapping vertically. `row` and `horizon` are framebuffer rows.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        dead_code,
+        reason = "Build parascan sky, kept for the classic sky mode"
+    )]
     fn sample_sky_parascan(
         &self,
         base: i16,

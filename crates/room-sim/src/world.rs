@@ -3430,6 +3430,19 @@ impl World {
         }
     }
 
+    /// `P_DamageMobj(target, inflictor, source, damage)` for tools and
+    /// integration tests (the playsim reaches damage through its own paths).
+    /// Returns the damage actually dealt.
+    pub fn damage_actor(
+        &mut self,
+        target: ActorId,
+        inflictor: Option<ActorId>,
+        source: Option<ActorId>,
+        damage: i32,
+    ) -> i32 {
+        crate::damage::damage_mobj(self, target, inflictor, source, damage)
+    }
+
     /// Spawn an actor from class defaults at `pos`.
     pub fn spawn_at(
         &mut self,

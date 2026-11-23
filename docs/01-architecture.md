@@ -38,7 +38,7 @@ room/
     room-testkit/         # test-only: UDMF map builder DSL, headless scenario helpers
     room-abi-gen/         # tool: generates host glue + guest bindings (Rust, C, Zig, AssemblyScript) from the scripting IDL
     room-signal/          # tiny WebRTC signalling server for netplay (optional)
-    room-render-soft/     # stretch: classic CPU software renderer
+    room-render-soft/     # classic CPU software renderer (planned, docs/40)
   fuzz/                      # cargo-fuzz targets
   testdata/                  # generated fixtures, Freedoom-derived goldens
   docs/                      # these documents + ADRs in docs/decisions/

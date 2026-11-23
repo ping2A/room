@@ -184,6 +184,13 @@ fn eval_ident(world: &World, self_id: ActorId, name: &str) -> EvalValue {
             .map(EvalValue::Int)
             .unwrap_or(EvalValue::Int(0)),
         _ if lower.starts_with("aaptr_") => EvalValue::Str(name.to_owned()),
+        // UZDoom flag constants inside an expression
+        // (`SXF_NOCHECKPOSITION|SXF_SETMASTER`, `CMF_AIMDIRECTION|CMF_TRACKOWNER`):
+        // as a string they read as 0, so every OR-ed flag set used to vanish.
+        _ if name.contains('_') => match crate::uz_constants::constant(name) {
+            Some(v) => EvalValue::Int(v as i32),
+            None => EvalValue::Str(name.to_owned()),
+        },
         _ => EvalValue::Str(name.to_owned()),
     }
 }

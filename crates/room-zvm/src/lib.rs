@@ -227,7 +227,7 @@ mod tests {
             ..Default::default()
         };
         p2.finalize();
-        vm.program = p2;
+        vm.program = std::sync::Arc::new(p2);
         // Still need a[0]=array at entry — extend call. For now assert heap path OK.
         let _ = arr;
         let _ = id;

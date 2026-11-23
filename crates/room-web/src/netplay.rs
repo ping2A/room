@@ -516,6 +516,7 @@ impl NetLobby {
 
     /// First bot seat from server `start`.
     #[must_use]
+    #[allow(dead_code)]
     pub fn bot_first_seat(&self) -> u8 {
         self.cfg.bot_first_seat
     }
@@ -1598,6 +1599,7 @@ impl NetPlay {
     }
 
     /// First tic the server reported a desync at (v2), if any.
+    #[allow(dead_code)]
     pub fn desync_tic(&self) -> Option<u32> {
         match &self.transport {
             CoopSocket::V2(t) => t.desync_tic(),

@@ -17,6 +17,7 @@ const OUTRO: i64 = 1_000_000_000;
 /// Single-player end-of-level intermission state.
 #[derive(Clone, Debug)]
 pub struct BonusScreen {
+    /// Kills, secrets and time shown on the screen.
     pub stats: DukeLevelBonusStats,
     /// `level_names[]` entry (CON `definelevelname`, uppercase).
     pub level_name: String,

@@ -209,6 +209,10 @@ pub fn public_router(state: AppState) -> Router {
                 .route("/api/mods", get(list_mods))
                 .route("/api/mods/{file}", get(get_mod_file))
                 .route("/api/presets", get(list_presets))
+                .route(
+                    "/api/presets/{id}/thumbnail.png",
+                    get(crate::thumbnail::preset_thumbnail),
+                )
                 .route("/api/content/{file}", get(get_content_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))
@@ -245,6 +249,10 @@ pub fn router(state: AppState) -> Router {
                 .route("/api/mods", get(list_mods))
                 .route("/api/mods/{file}", get(get_mod_file))
                 .route("/api/presets", get(list_presets))
+                .route(
+                    "/api/presets/{id}/thumbnail.png",
+                    get(crate::thumbnail::preset_thumbnail),
+                )
                 .route("/api/content/{file}", get(get_content_file))
                 .route("/ws/{room_id}", get(ws_legacy))
                 .route("/v2/rooms/{room_id}/ws", get(ws_v2))

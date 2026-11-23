@@ -1912,9 +1912,23 @@ fn a_lower(world: &mut World, player: &mut Player, mo: ActorId) {
         return;
     }
     let Some(next) = player.pending_weapon.take() else {
-        // No pending → stay holstered (rare); snap ready off.
-        player.pspr_state = None;
-        player.pspr_tics = 0;
+        // GZDoom `P_BringUpWeapon` with `WP_NOCHANGE`: the ready weapon
+        // snaps back to `WEAPONTOP` in its Ready state. Brutal Doom's
+        // `Select` states call `A_Lower` on purpose (the M202, the rifle…);
+        // dropping the psprite there left the player with no weapon.
+        match player
+            .ready_weapon
+            .and_then(|w| world.states.find_label(w, "Ready"))
+        {
+            Some(ready) => {
+                player.pspr_y = crate::player::WEAPON_TOP;
+                set_psprite(world, player, mo, ready);
+            }
+            None => {
+                player.pspr_state = None;
+                player.pspr_tics = 0;
+            }
+        }
         return;
     };
     player.ready_weapon = Some(next);
@@ -3204,6 +3218,53 @@ mod tests {
         }
         assert_eq!(player.ready_weapon, Some(pistol));
         assert!(player.quick_kick_restore.is_none());
+        w.players[0] = Some(player);
+    }
+
+    /// GZDoom `P_BringUpWeapon` with no pending weapon: `A_Lower` at the
+    /// bottom brings the ready weapon straight back up in its Ready state
+    /// (Brutal Doom's M202 calls `A_Lower` from `Select`).
+    #[test]
+    fn a_lower_without_pending_weapon_returns_to_ready() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w =
+            World::from_map_with_classes(map, Arc::clone(&classes), Arc::clone(&states)).unwrap();
+        let fist = classes.find_name("Fist").unwrap();
+        let pistol = classes.find_name("Pistol").unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        let mut player = w.players[0].take().unwrap();
+        player.ready_weapon = Some(pistol);
+        player.pending_weapon = None;
+        player.pspr_y = crate::player::WEAPON_BOTTOM;
+        a_lower(&mut w, &mut player, mo);
+        let ready = states.find_label(pistol, "Ready").unwrap();
+        assert!(
+            player.pspr_state.is_some(),
+            "the player is left with no weapon"
+        );
+        assert_eq!(player.ready_weapon, Some(pistol));
+        assert_eq!(player.pspr_y, crate::player::WEAPON_TOP);
+        assert_eq!(
+            player
+                .pspr_state
+                .and_then(|s| w.states.get(s))
+                .map(|s| s.sprite.clone()),
+            w.states.get(ready).map(|s| s.sprite.clone())
+        );
+        // A pending weapon still wins.
+        player.pending_weapon = Some(fist);
+        player.pspr_y = crate::player::WEAPON_BOTTOM;
+        a_lower(&mut w, &mut player, mo);
+        assert_eq!(player.ready_weapon, Some(fist));
         w.players[0] = Some(player);
     }
 

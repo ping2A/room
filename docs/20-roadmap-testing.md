@@ -124,7 +124,7 @@ UI. Does not touch the playsim.
 | **F7** | Duke + polish | Duke palette/`pal`, Doom/Duke anchors, optional desktop camera / GPU | Duke goldens |
 
 ### Stretch (post-1.0)
-Classic software renderer · ZScript→Rust/WASM transpiler · bots · rollback netcode · Timidity/GUS, ADLMIDI/OPNMIDI, GME ports · HRTF · component-model ABI v2 · mobile (Android/iOS) shells · join-in-progress.
+Classic software renderer (planned as SR0–SR10, `docs/40`) · ZScript→Rust/WASM transpiler · bots · rollback netcode · Timidity/GUS, ADLMIDI/OPNMIDI, GME ports · HRTF · component-model ABI v2 · mobile (Android/iOS) shells · join-in-progress.
 
 ## 2. Testing layers
 

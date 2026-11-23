@@ -61,6 +61,7 @@ pub struct ActorConTemps {
     pub cgg: i16,
     /// Chocolate `hittype[i].floorz` / `ceilingz` from `getglobalz`.
     pub hit_floorz: i32,
+    /// Chocolate `hittype[i].ceilingz` from `getglobalz`.
     pub hit_ceilingz: i32,
     /// EDuke32 actor extension flags exposed to CON as `htflags`.
     #[serde(default)]
@@ -98,6 +99,7 @@ pub struct ActorConTemps {
     pub respawn_star_spawned: bool,
     /// Chocolate `hittype[].lastvx` / `lastvy` (`ifcansee`).
     pub lastvx: i32,
+    /// Chocolate `hittype[].lastvy` (`ifcansee`).
     pub lastvy: i32,
     /// CON `addweapon` / `addammo` ops; applied to the player after `execute`.
     /// Each entry is `(is_addweapon, weapon, ammo)`.
@@ -123,6 +125,7 @@ pub struct ActorConTemps {
     pub hit_extra: i16,
     /// Chocolate `hittype[].ang` / `owner` for knockback / ownership.
     pub hit_ang: i16,
+    /// Chocolate `hittype[].owner`: who dealt the queued hit.
     pub hit_owner: i16,
     /// EDuke32 damage source of the queued hit: the projectile, bullet spark
     /// or exploding sprite that dealt it (`THISACTOR` in EVENT_DAMAGESPRITE /
@@ -507,6 +510,7 @@ pub struct ConSpriteEnv {
     pub respawn_inventory: bool,
     /// Chocolate `ud.respawn_items`.
     pub respawn_items: bool,
+    /// Current sector `lotag`.
     pub sect_lotag: i16,
     /// `sector[].floorz` — Chocolate `ifonwater`.
     pub sector_floorz: i32,
@@ -514,20 +518,27 @@ pub struct ConSpriteEnv {
     pub sector_ceilingz: i32,
     /// Sector flags and tiles used by vanilla space/outside predicates.
     pub sector_ceilingstat: u16,
+    /// `sector[].floorstat`.
     pub sector_floorstat: u16,
+    /// `sector[].ceilingpicnum`.
     pub sector_ceilingpicnum: i16,
+    /// `sector[].floorpicnum`.
     pub sector_floorpicnum: i16,
+    /// `sector[].ceilingpal`.
     pub sector_ceilingpal: u8,
     /// `hittype[].floorz` — Chocolate `iffloordistl`.
     pub floorz: i32,
     /// `hittype[].ceilingz` — Chocolate `ifceilingdistl`.
     pub ceilingz: i32,
+    /// Current actor sprite Z.
     pub sprite_z: i32,
     /// Chocolate `g_x` from `findplayer` (manhattan opos + Z/16).
     pub player_dist: i32,
     /// Actor XY/sect for `ifcanseetarget`.
     pub actor_x: i32,
+    /// Actor Y for `ifcanseetarget`.
     pub actor_y: i32,
+    /// Actor sector for `ifcanseetarget`.
     pub actor_sect: i16,
     /// Current actor facing for CON `ifangdiffl`.
     pub actor_ang: i16,
@@ -539,26 +550,39 @@ pub struct ConSpriteEnv {
     pub actor_yrepeat: u8,
     /// ART tile height for the actor's current picnum (`tiles[].dim.height`).
     pub actor_tile_height: i16,
+    /// Nearest player X (`ps[].posx`).
     pub player_x: i32,
+    /// Nearest player Y (`ps[].posy`).
     pub player_y: i32,
+    /// Nearest player Z (`ps[].posz`).
     pub player_z: i32,
     /// Player body sprite Z (Chocolate `sprite[ps[].i].z` for `ifcansee`).
     pub player_sprite_z: i32,
     /// Current player body index passed to EGS as the gore owner.
     pub player_sprite_i: i16,
+    /// Nearest player's sector (`ps[].cursectnum`).
     pub player_sect: i16,
+    /// Nearest player's facing (`ps[].ang`).
     pub player_ang: i16,
+    /// Player body sprite `xrepeat`.
     pub player_xrepeat: u8,
+    /// Player health (the body sprite's `extra`).
     pub player_extra: i16,
     /// `max_player_health` from Atomic `gamestartup`.
     pub max_player_health: i16,
+    /// God mode is on.
     pub player_god_mode: bool,
     /// Chocolate `timebeforeexit`; used by `ifp pcanseeeverything`.
     pub player_time_before_exit: i16,
+    /// Player is on the ground (`ps[].on_ground`).
     pub player_on_ground: bool,
+    /// `ps[].jumping_counter`.
     pub player_jumping_counter: i16,
+    /// `ps[].jetpack_on`.
     pub player_jetpack_on: i16,
+    /// Player vertical velocity (`ps[].poszv`).
     pub player_poszv: i32,
+    /// Selected weapon (`ps[].curr_weapon`).
     pub player_curr_weapon: i16,
     /// Chocolate `kickback_pic` used by `ifp pkicking`.
     pub player_kickback_pic: i16,
@@ -568,22 +592,33 @@ pub struct ConSpriteEnv {
     pub player_knee_incs: i16,
     /// Mirrors `ps[].ammo_amount` / `gotweapon` for CON addweapon/addammo.
     pub player_ammo: [i16; 12],
+    /// Weapons the player has (`ps[].gotweapon`).
     pub player_gotweapon: [bool; 12],
     /// Chocolate `ps[].got_access` mask.
     pub player_access_cards: u8,
     /// Chocolate `ps[].shield_amount` for `ifpinventory` / `addinventory`.
     pub player_shield_amount: i16,
+    /// `ps[].steroids_amount`.
     pub player_steroids_amount: i16,
+    /// `ps[].scuba_amount`.
     pub player_scuba_amount: i16,
+    /// `ps[].holoduke_amount`.
     pub player_holoduke_amount: i16,
+    /// `ps[].jetpack_amount`.
     pub player_jetpack_amount: i16,
+    /// `ps[].heat_amount` (night vision).
     pub player_heat_amount: i16,
+    /// `ps[].firstaid_amount`.
     pub player_firstaid_amount: i16,
+    /// `ps[].boot_amount`.
     pub player_boot_amount: i16,
+    /// Selected inventory item (`ps[].inven_icon`).
     pub player_inventory_icon: u8,
     /// Chocolate `weaprecs` reservation table for `ifgotweaponce`.
     pub player_weapon_reservations: [i16; 16],
+    /// Entries used in `player_weapon_reservations`.
     pub player_weapon_reservation_count: u8,
+    /// Cooperative game (`ud.coop`).
     pub coop_mode: bool,
     /// Chocolate `sync[].bits` for the nearest player.
     pub sync_bits: u32,
@@ -672,11 +707,15 @@ impl Default for ConSpriteEnv {
 
 /// Execution context for one `execute` / nested `parse` session.
 pub struct ConVm<'a> {
+    /// Compiled CON words.
     pub script: &'a [i32],
     /// Word index of the current instruction (`insptr`).
     pub insptr: usize,
+    /// Set when the actor ran `killit`.
     pub killit_flag: i32,
+    /// Build `randomseed` (`krand` state).
     pub randomseed: i32,
+    /// The actor's CON temps (`hittype[]`).
     pub temps: &'a mut ActorConTemps,
     /// Action pointer currently selected (`g_t[4]`), word index or 0.
     pub action_ptr: i32,
@@ -688,6 +727,7 @@ pub struct ConVm<'a> {
     pub env: Option<ConSpriteEnv>,
     /// Geometry for Chocolate `ifcanseetarget` (`cansee`).
     pub cansee_sectors: Option<&'a [SectorZ]>,
+    /// Walls for `cansee`, matching `cansee_sectors`.
     pub cansee_walls: Option<&'a [WallXY]>,
     /// Sprites for `furthestcanseepoint` hitscan (`CLIPMASK1`).
     pub cansee_sprites: Option<&'a [SpriteHit]>,
@@ -702,6 +742,7 @@ pub struct ConVm<'a> {
     pub sprite_ang: i16,
     /// `g_sp->extra` / `g_sp->picnum` mirrors for `ifhitweapon` / `ifdead`.
     pub sprite_extra: i16,
+    /// `g_sp->picnum` mirror (see `sprite_extra`).
     pub sprite_picnum: i16,
     /// Mutable sprite cstat (`cstat` / `cstator`).
     pub sprite_cstat: u16,
@@ -864,6 +905,7 @@ impl<'a> ConVm<'a> {
         })
     }
 
+    /// A VM positioned at `entry` in `script`.
     #[must_use]
     pub fn new(
         script: &'a [i32],

@@ -1,8 +1,10 @@
 //! CLI tools: wad ls/extract, map dump, nodebuild, demo verify, render-to-png.
 
 mod duke_check;
+mod inspect;
 mod mod_check;
 mod parity;
+mod soft_view;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -18,6 +20,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Describe game files: IWAD / PWAD, PK3 / IPK3 / PKE / ZIP, PK7 / 7Z,
+    /// directories, Duke 3D GRP, Build MAP / ART, DeHackEd and loose files
+    Inspect {
+        /// Files or directories to describe
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// List every lump / file
+        #[arg(long)]
+        lumps: bool,
+        /// List every map (text output stops at 40)
+        #[arg(long)]
+        all_maps: bool,
+    },
     /// Inspect WAD/PK3/directory archives
     Wad {
         #[command(subcommand)]
@@ -57,6 +75,65 @@ enum Commands {
     Mod {
         #[command(subcommand)]
         command: ModCmd,
+    },
+    /// Draw one view of a Doom map with the classic software renderer (PNG, `docs/40`)
+    SoftView {
+        /// IWAD / PWADs to mount, in order
+        #[arg(required = true)]
+        wads: Vec<PathBuf>,
+        /// Map name
+        #[arg(long, default_value = "MAP01")]
+        map: String,
+        /// Output PNG
+        #[arg(short, long, default_value = "soft-view.png")]
+        output: PathBuf,
+        /// Frame width
+        #[arg(long, default_value_t = 320)]
+        width: u32,
+        /// Frame height (200 full screen, 168 above the status bar)
+        #[arg(long, default_value_t = 200)]
+        height: u32,
+        /// Eye X (default: player 1 start)
+        #[arg(long, allow_hyphen_values = true)]
+        x: Option<f64>,
+        /// Eye Y
+        #[arg(long, allow_hyphen_values = true)]
+        y: Option<f64>,
+        /// Eye Z (default: floor + 41)
+        #[arg(long, allow_hyphen_values = true)]
+        z: Option<f64>,
+        /// Facing, degrees (default: player 1 start)
+        #[arg(long, allow_hyphen_values = true)]
+        angle: Option<f64>,
+        /// Sky texture (default: vanilla's for the map)
+        #[arg(long)]
+        sky: Option<String>,
+        /// Keep vanilla's drawseg / visplane / vissprite limits
+        #[arg(long)]
+        vanilla_limits: bool,
+        /// Draw the map's things at their spawn sprites (Doom numbers)
+        #[arg(long)]
+        things: bool,
+        /// Weapon sprite to draw, frame A (`PISG`, `SHTG`, …)
+        #[arg(long)]
+        weapon: Option<String>,
+        /// Level time in tics (animated textures and flats)
+        #[arg(long, default_value_t = 0)]
+        tic: u32,
+        /// Modern view: field of view across the 4:3 part (wider images see
+        /// more to the sides)
+        #[arg(long)]
+        fov: Option<f64>,
+        /// Free look: rows to shear the view (positive looks up)
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        look: i32,
+        /// True-colour drawers (sector light colours and fades)
+        #[arg(long)]
+        truecolor: bool,
+        /// Write the PNG at this size (`1280x960`) with Doom's tall pixels
+        /// and black bars, as a screen shows it
+        #[arg(long, value_parser = parse_size)]
+        display: Option<(u32, u32)>,
     },
     /// UZDoom parity report (`docs/36` UZ0)
     Parity {
@@ -599,6 +676,54 @@ fn run() -> Result<()> {
                 }
             }
         },
+        Commands::SoftView {
+            wads,
+            map,
+            output,
+            width,
+            height,
+            x,
+            y,
+            z,
+            angle,
+            sky,
+            vanilla_limits,
+            things,
+            weapon,
+            tic,
+            fov,
+            look,
+            truecolor,
+            display,
+        } => {
+            let vfs = mount_many(&wads)?;
+            let colours = soft_view::run(
+                &vfs,
+                &soft_view::SoftViewArgs {
+                    map: &map,
+                    output: &output,
+                    width,
+                    height,
+                    x,
+                    y,
+                    z,
+                    angle,
+                    sky: sky.as_deref(),
+                    vanilla_limits,
+                    things,
+                    weapon: weapon.as_deref(),
+                    tic,
+                    fov,
+                    look,
+                    truecolor,
+                    display,
+                },
+            )?;
+            eprintln!(
+                "wrote {} ({width}×{height}, {colours} colours)",
+                output.display()
+            );
+        }
         Commands::Parity { uzdoom, md, json } => {
             let report = parity::build_report(uzdoom.as_deref())?;
             let markdown = report.to_markdown();
@@ -798,6 +923,17 @@ fn run() -> Result<()> {
                 )?;
             }
         },
+        Commands::Inspect {
+            paths,
+            json,
+            lumps,
+            all_maps,
+        } => inspect::run(&inspect::Args {
+            paths,
+            json,
+            lumps,
+            all_maps,
+        })?,
         Commands::Wad { command } => match command {
             WadCmd::Ls { path } => {
                 let vfs = mount_one(&path)?;
@@ -1844,4 +1980,19 @@ mod hex {
         }
         s
     }
+}
+
+/// `WxH` (`1280x960`) for `--display`.
+fn parse_size(s: &str) -> Result<(u32, u32), String> {
+    let (w, h) = s
+        .split_once(['x', 'X', '×'])
+        .ok_or_else(|| format!("{s}: expected WIDTHxHEIGHT"))?;
+    let n = |v: &str| {
+        v.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&n| (1..=16384).contains(&n))
+            .ok_or_else(|| format!("{s}: bad size"))
+    };
+    Ok((n(w)?, n(h)?))
 }
