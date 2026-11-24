@@ -38,6 +38,9 @@ pub struct ConProjectile {
     pub ang: i16,
     /// Projectile owner sprite.
     pub owner: i16,
+    /// The projectile's own sprite number (Chocolate skips a projectile that
+    /// owns itself: `if (OW == i) continue`).
+    pub index: i16,
 }
 
 /// Per-actor CON temps (`hittype[].temp_data` / `g_t[]` in Chocolate).
@@ -373,6 +376,10 @@ pub struct PendingHitRadius {
     pub radius: i32,
     /// Damage bands from farthest to nearest, as passed by CON.
     pub damage: [i32; 4],
+    /// How many CON `spawn`s this actor queued before the `hitradius`:
+    /// Chocolate runs both inline, so the blast follows those spawns.
+    #[serde(default)]
+    pub after_spawns: usize,
 }
 
 fn minus_one_i16() -> i16 {
@@ -886,7 +893,9 @@ impl<'a> ConVm<'a> {
         };
         let (actor_sin, actor_cos) = sincos_q14(i32::from(self.sprite_ang) & 2047);
         projectiles.iter().any(|projectile| {
-            if projectile.owner == self.sprite_i || projectile.sectnum != env.actor_sect {
+            // Chocolate `dodge`: `if (OW == i || SECT != s->sectnum) continue` —
+            // `OW`/`SECT` are the projectile's own owner and sector.
+            if projectile.owner == projectile.index || projectile.sectnum != env.actor_sect {
                 return false;
             }
             let dx = projectile.x.wrapping_sub(env.actor_x);
@@ -1219,8 +1228,13 @@ impl<'a> ConVm<'a> {
         let log_active = room_build_engine::numeric::krand_log::is_recording();
         if log_active {
             room_build_engine::numeric::krand_log::set_context(Some(format!(
-                "CON sprite={} pic={} pc={} rnd={x}",
-                self.sprite_i, self.sprite_picnum, self.insptr
+                "CON sprite={} pic={} pc={} rnd={x} t0={} t2={} t4={}",
+                self.sprite_i,
+                self.sprite_picnum,
+                self.insptr,
+                self.temps.g_t[0],
+                self.temps.g_t[2],
+                self.temps.g_t[4]
             )));
         }
         let seed_before = self.randomseed;
@@ -2490,11 +2504,14 @@ impl<'a> ConVm<'a> {
                     self.word(self.insptr + 3),
                     self.word(self.insptr + 4),
                 ];
+                let after_spawns = self.temps.pending_spawns.len();
                 self.temps.pending_hit_radii.push(PendingHitRadius {
                     radius: radius.max(0),
                     damage,
+                    after_spawns,
                 });
-                self.insptr += 6;
+                // Chocolate: args at +1..+5, `insptr += 6` in total.
+                self.insptr += 5;
             }
             // palfrom — Chocolate writes pals_time and the three RGB channels
             // on the current player (`gamedef.c`, opcode 14).
@@ -2953,6 +2970,27 @@ ends\n\
         let mut seed = 1;
         let mut temps = ActorConTemps::default();
         assert_eq!(execute(&img, entry, &mut seed, &mut temps), ConStop::KillIt);
+    }
+
+    /// Regression: `hitradius` is opcode + 5 words; reading one word too far
+    /// skipped the `killit` after it (DEMO1 tic 974: an RPG-killed drone stayed).
+    #[test]
+    fn hitradius_consumes_five_args_then_runs_next_op() {
+        let src = b"\
+state K\n\
+  hitradius 2048 10 20 30 40\n\
+  killit\n\
+ends\n\
+";
+        let img = compile(src, &mut NullIncludes);
+        assert_eq!(img.errors, 0);
+        let entry = img.labels.get("K").unwrap().value as usize;
+        let mut seed = 1;
+        let mut temps = ActorConTemps::default();
+        assert_eq!(execute(&img, entry, &mut seed, &mut temps), ConStop::KillIt);
+        assert_eq!(temps.pending_hit_radii.len(), 1);
+        assert_eq!(temps.pending_hit_radii[0].radius, 2048);
+        assert_eq!(temps.pending_hit_radii[0].damage, [10, 20, 30, 40]);
     }
 
     #[test]

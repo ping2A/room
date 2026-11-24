@@ -4,11 +4,16 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+mod compile;
 mod error;
 mod load;
 mod pcd;
 mod vm;
 
+pub use compile::{
+    AcsKnownName, CompileError, CompiledAcs, acs_known_names, compile_acs, compile_acs_module,
+    compile_acs_standalone,
+};
 pub use error::AcsError;
 pub use load::{
     AcsFormat, AcsFunction, AcsMapArray, AcsModule, SCRIPTF_CLIENTSIDE, SCRIPTF_NET, ScriptDef,

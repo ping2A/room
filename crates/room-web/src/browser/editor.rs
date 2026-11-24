@@ -31,6 +31,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+mod acs;
 mod scripts;
 
 thread_local! {
@@ -255,6 +256,7 @@ fn overrides_wad(
             "sprites" => Some(("SS_START", "SS_END")),
             "patches" => Some(("PP_START", "PP_END")),
             "textures" => Some(("TX_START", "TX_END")),
+            "acs" => Some(("A_START", "A_END")),
             _ => None,
         };
         if let Some((start, _)) = markers {
@@ -587,10 +589,12 @@ impl Editor {
                 seq.push(st);
                 at = st.next;
             }
-            if seq
-                .iter()
-                .any(|s| s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1"))
-            {
+            // Only sequences that show something: zero-tic helpers such as the
+            // `LightDone` every weapon inherits (`SHTG E 0 A_Light0`) never
+            // appear, and would pull the shotgun's images into every weapon.
+            if seq.iter().any(|s| {
+                s.tics != 0 && s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1")
+            }) {
                 let mut name = match label.as_str() {
                     "xdeath" => "XDeath".to_owned(),
                     _ => label,
@@ -1103,6 +1107,7 @@ fn rgba_js(w: u32, h: u32, rgba: &[u8]) -> JsValue {
 #[wasm_bindgen(js_name = roomEditorOpen)]
 pub fn room_editor_open(iwad: &[u8], name: &str) -> Result<String, JsValue> {
     let ed = Editor::new((name.to_owned(), Bytes::copy_from_slice(iwad))).map_err(err)?;
+    acs::clear();
     let summary = ed.summary().to_string();
     EDITOR.with(|e| *e.borrow_mut() = Some(ed));
     ACTIVE.with(|a| a.set(true));
@@ -1374,12 +1379,21 @@ pub fn room_editor_play_music(name: &str) {
 #[wasm_bindgen(js_name = roomEditorLoadMap)]
 pub fn room_editor_load_map(name: &str) -> Result<String, JsValue> {
     with_editor(|ed| {
-        let doc = RawMap::load(&ed.vfs, name).map_err(|e| e.to_string())?;
-        ed.blobs.insert(
-            doc.name.clone(),
-            (doc.behavior.clone(), doc.extra_lumps.clone()),
-        );
+        let mut doc = RawMap::load(&ed.vfs, name).map_err(|e| e.to_string())?;
         let mut geom = load_map(&ed.vfs, name).map_err(|e| e.to_string())?;
+        if acs::edited(&doc.name) {
+            // Scripts compiled in the editor replace the game's copy.
+            if let Some((behavior, extra)) = ed.blobs.get(&doc.name) {
+                doc.behavior.clone_from(behavior);
+                doc.extra_lumps.clone_from(extra);
+                geom.behavior.clone_from(behavior);
+            }
+        } else {
+            ed.blobs.insert(
+                doc.name.clone(),
+                (doc.behavior.clone(), doc.extra_lumps.clone()),
+            );
+        }
         ensure_nodes(&mut geom);
         start_session(ed, geom.clone(), None)?;
         ed.doc = Some(doc.clone());
@@ -2594,6 +2608,7 @@ fn image_ns(ns: &str) -> &'static str {
         "sprites" => "sprites",
         "patches" => "patches",
         "textures" => "textures",
+        "acs" => "acs",
         _ => "global",
     }
 }
@@ -2775,7 +2790,9 @@ pub fn room_editor_sprite_anims(sprite: &str, num: Option<i32>) -> Result<JsValu
         let mut used: BTreeSet<String> = seqs
             .iter()
             .flat_map(|(_, s)| s.iter())
-            .filter(|s| s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1"))
+            .filter(|s| {
+                s.tics != 0 && s.sprite.len() == 4 && !s.sprite.eq_ignore_ascii_case("TNT1")
+            })
             .map(|s| s.sprite.to_ascii_uppercase())
             .collect();
         if prefix.len() == 4 {

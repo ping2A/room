@@ -305,7 +305,7 @@ If the optional verifier is on, budget it separately: run each verified room's `
 
 Operators get a private web console to watch every room live and to kick, mute, ban, message or close; every action goes through an audited REST API that the UI is only a client of.
 
-**Tech.** A static single-page app in TypeScript (Svelte or Preact, built with Vite), embedded into the server binary with `rust-embed` and served from the admin listener. Strict CSP, no third-party CDNs, no inline scripts. Live data comes from one admin WebSocket (`/admin/api/live`) that pushes a cluster summary every 1 s and room events as they happen. Alternative if the team prefers all-Rust: Leptos compiled to WASM, same API.
+**Tech.** A static single-page app (embedded HTML/CSS/JS) served from the admin listener. Strict CSP, no third-party CDNs. Live data is polled from `/admin/api/v1/*` and `/metrics` (a live admin WebSocket is still deferred). Alongside the SPA, `room-admin` (`crates/room-admin-tui`, ratatui) is a terminal client of the same REST API — run `./room admin-tui`. The TUI’s **Net** tab shows relay latency buckets, msg/frame rates, and per-room lockstep fields from inspect (`rtt_ms`, `next_tic`, `waiting_seats`, `desync_count`, …).
 
 **Screens:**
 

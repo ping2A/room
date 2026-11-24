@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bytes = { workspace = true, optional = true }
+room-acs = { path = "../room-acs", optional = true }
 room-audio = { path = "../room-audio", optional = true }
 room-build = { path = "../room-build", optional = true }
 room-build-engine = { path = "../room-build-engine", optional = true }
@@ -123,6 +124,7 @@ browser = [
     "dep:room-duke",
     "dep:room-render",
     "dep:room-render-soft",
+    "dep:room-acs",
     "dep:room-script",
     "dep:room-sim",
     "dep:room-zvm",

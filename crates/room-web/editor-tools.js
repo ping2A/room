@@ -281,8 +281,33 @@ export function install(ctx) {
 
   // ------------------------------------------------------------ auto-align
 
-  /** Align texture x offsets along walls connected to `lineIdx`'s side that share its texture. */
-  function autoAlign(lineIdx, sideKey, part) {
+  /**
+   * Height (world z) of texture row 0 on a wall part before its y offset —
+   * Doom pegging: middle hangs from the ceiling (or sits on the floor when
+   * lower-unpegged), upper hangs from the back ceiling (front ceiling when
+   * upper-unpegged), lower starts at the back floor (front ceiling when
+   * lower-unpegged).
+   */
+  function wallAnchor(l, sk, part, texH) {
+    const d = S.doc;
+    const front = side(l[sk]);
+    const back = side(l[sk === "side_front" ? "side_back" : "side_front"]);
+    const F = front && d.sectors[front.sector];
+    const B = back && d.sectors[back.sector];
+    if (!F) return 0;
+    const f = l.flags || 0;
+    if (part === "upper") return f & 8 ? F.ceiling_height : (B ? B.ceiling_height : F.ceiling_height) + texH;
+    if (part === "lower") return f & 16 ? F.ceiling_height : (B ? B.floor_height : F.floor_height);
+    if (f & 16) return Math.max(F.floor_height, B ? B.floor_height : -Infinity) + texH;
+    return Math.min(F.ceiling_height, B ? B.ceiling_height : Infinity);
+  }
+
+  /**
+   * Align texture offsets along walls connected to `lineIdx`'s side that
+   * share its texture: x so the texture runs on without a seam, and with
+   * `vertical` also y so its rows line up at the same heights.
+   */
+  function autoAlign(lineIdx, sideKey, part, vertical = false) {
     const d = S.doc;
     const l0 = d.linedefs[lineIdx];
     const s0 = l0 && side(l0[sideKey]);
@@ -290,7 +315,13 @@ export function install(ctx) {
     const tex = (part && s0[part] !== "-" ? s0[part] : null) || [s0.middle, s0.upper, s0.lower].find((t) => t && t !== "-");
     if (!tex) { ctx.toast("This wall has no texture to align", true); return; }
     const tw = Math.max(1, ctx.thumb(tex)?.width || 64);
+    const th = Math.max(1, ctx.thumb(tex)?.height || 128);
     const wrap = (v) => ((Math.round(v) % tw) + tw) % tw;
+    const wrapY = (v) => ((Math.round(v) % th) + th) % th;
+    const partOf = (s, p) => (p && s[p] === tex ? p : ["middle", "upper", "lower"].find((k) => s[k] === tex) || "middle");
+    // Texture row 0 sits at z = anchor + y_offset: keep that equal (mod height).
+    const part0 = partOf(s0, part);
+    const level = wallAnchor(l0, sideKey, part0, th) + s0.y_offset;
     const uses = (s) => s && (s.upper === tex || s.middle === tex || s.lower === tex);
     const startV = (l, sk) => (sk === "side_front" ? l.v1 : l.v2);
     const endV = (l, sk) => (sk === "side_front" ? l.v2 : l.v1);
@@ -312,26 +343,36 @@ export function install(ctx) {
       let cur = [lineIdx, sideKey], off = s0.x_offset;
       for (let guard = 0; guard < 4096; guard++) {
         const l = d.linedefs[cur[0]];
-        const cands = (dir > 0 ? starts.get(endV(l, cur[1])) : ends.get(startV(l, cur[1]))) || [];
-        const next = cands.find((c) => unseen(c, cur[0]));
+        const cands = ((dir > 0 ? starts.get(endV(l, cur[1])) : ends.get(startV(l, cur[1]))) || []).filter((c) => unseen(c, cur[0]));
+        // Where walls fork, follow the straightest continuation.
+        const heading = (li, sk) => {
+          const ln = d.linedefs[li], a = ctx.vtx(startV(ln, sk)), b = ctx.vtx(endV(ln, sk));
+          return a && b ? Math.atan2(b.y - a.y, b.x - a.x) : 0;
+        };
+        const h0 = heading(cur[0], cur[1]);
+        const turn = (c) => Math.abs(Math.atan2(Math.sin(heading(c[0], c[1]) - h0), Math.cos(heading(c[0], c[1]) - h0)));
+        const next = cands.sort((p, q) => turn(p) - turn(q))[0];
         if (!next) break;
         seen.add(`${next[0]}:${next[1]}`);
         off = dir > 0 ? off + len(l) : off - len(d.linedefs[next[0]]);
         off = wrap(off);
-        side(d.linedefs[next[0]][next[1]]).x_offset = clampI16(off);
+        const ns = side(d.linedefs[next[0]][next[1]]);
+        ns.x_offset = clampI16(off);
+        if (vertical) ns.y_offset = clampI16(wrapY(level - wallAnchor(d.linedefs[next[0]], next[1], partOf(ns, null), th)));
         cur = next;
         n++;
       }
     }
     ctx.commit();
-    ctx.status(`Auto-aligned ${n} wall${n === 1 ? "" : "s"} to ${tex} (width ${tw})`);
+    ctx.status(`Auto-aligned ${n} wall${n === 1 ? "" : "s"} to ${tex}${vertical ? ` across and up (${tw}×${th})` : ` (width ${tw})`}`);
   }
 
-  function autoAlignSelection() {
+  /** J: align x along the picked wall / selected line; Shift+J also y. */
+  function autoAlignSelection(vertical = false) {
     const h = S.pick3d;
-    if (h?.kind === "wall") { autoAlign(h.index, h.side ? "side_back" : "side_front", h.part); return; }
-    if (S.mode === "lines" && S.sel.size) { autoAlign([...S.sel][0], "side_front", null); return; }
-    ctx.toast("Pick a wall in 3D or select a line, then press J");
+    if (h?.kind === "wall") { autoAlign(h.index, h.side ? "side_back" : "side_front", h.part, vertical); return; }
+    if (S.mode === "lines" && S.sel.size) { autoAlign([...S.sel][0], "side_front", null, vertical); return; }
+    ctx.toast("Pick a wall in 3D or select a line, then press J (Shift+J also aligns heights)");
   }
 
   // ------------------------------------------------------------ map checker
@@ -947,12 +988,18 @@ export function install(ctx) {
     if (mod && e.code === "KeyD") { e.preventDefault(); if (copySelection()) paste(pastePoint(true)); return true; }
     if (mod) return false;
     if (e.code === "F8") { e.preventDefault(); toggleChecker(); return true; }
-    if (e.code === "KeyJ") { autoAlignSelection(); return true; }
+    if (e.code === "KeyJ") { autoAlignSelection(e.shiftKey); return true; }
     if (in3d) return false;
     if (e.code === "KeyR") { transform(e.shiftKey ? "ccw" : "cw"); return true; }
     if (e.code === "KeyH") { transform(e.shiftKey ? "mirrorY" : "mirrorX"); return true; }
     return false;
   }
 
-  return { onKey, toggleChecker, openComposer, transform, autoAlignSelection, show, copy: copySelection, paste: () => clip && paste(pastePoint(false)) };
+  return {
+    onKey, toggleChecker, openComposer, transform, autoAlignSelection, show, copy: copySelection,
+    paste: () => clip && paste(pastePoint(false)),
+    /** The clipboard (prefabs save and restore it). */
+    getClip: () => (clip ? structuredClone(clip) : null),
+    setClip: (c) => { clip = c ? structuredClone(c) : null; },
+  };
 }

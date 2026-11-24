@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Room — development entry point (same commands as dist-vps/room).
 #
-#   ./room start|stop|restart|status|logs|health
+#   ./room start|stop|restart|status|logs|health|admin-tui
 #   ./room package [--zip]     # → scripts/package-vps.sh
 #   ./room push [vps] user@host:~/room/   # or ~/boom/ — same as Boom
 #

@@ -226,9 +226,18 @@ export function textLang(name, path, text = "") {
   if (["acs", "bcs"].includes(ext) || stem === "scripts" && ext !== "o" || p.startsWith("acs_source/")) return "acs";
   if (["mapinfo", "zmapinfo", "umapinfo", "emapinfo", "gameinfo"].includes(stem)) return "mapinfo";
   if (looksZscript(text)) return "zs";
+  if (looksAcs(text)) return "acs";
   if (stem === "decorate" || ext === "dec" || ext === "decorate" || p.startsWith("actors/") || p.startsWith("decorate/")) return "decorate";
   if (/^\s*(?:\/\/[^\n]*\n\s*)*actor\s+[\w.]+/i.test(text.slice(0, 4096))) return "decorate";
   return "text";
+}
+
+/** ACS source: `#library`, `#import`, the standard headers, or a `script N (…)` / `script "x"` line. */
+export function looksAcs(text = "") {
+  const t = text.slice(0, 8192);
+  return /^\s*#(?:library|import)\s+"/im.test(t)
+    || /^\s*#include\s+"z(?:common|defs|special)\.acs"/im.test(t)
+    || /^\s*script\s+(?:\d+|"[^"\n]+")\s*(?:\(|open\b|enter\b|death\b|respawn\b|disconnect\b|return\b|unloading\b)/im.test(t);
 }
 
 /**
@@ -677,4 +686,203 @@ export function install(ctx) {
   }
 
   return { renderBrowser, open, newWat, newAs };
+}
+
+// ------------------------------------------------------------ ACS assist
+
+/** Argument names of common line specials (ZDoom wiki spelling), for ACS hints. */
+export const ACS_SPECIAL_ARGS = Object.fromEntries(Object.entries({
+  Door_Close: "tag, speed, lighttag", Door_Open: "tag, speed, lighttag", Door_Raise: "tag, speed, delay, lighttag",
+  Door_LockedRaise: "tag, speed, delay, lock, lighttag", Door_Animated: "tag, speed, delay, lock",
+  Generic_Door: "tag, speed, kind, delay, lock", Generic_Floor: "tag, speed, height, target, flags",
+  Generic_Ceiling: "tag, speed, height, target, flags", Generic_Lift: "tag, speed, delay, type, height",
+  Floor_LowerByValue: "tag, speed, height", Floor_LowerToLowest: "tag, speed", Floor_LowerToNearest: "tag, speed",
+  Floor_RaiseByValue: "tag, speed, height", Floor_RaiseToHighest: "tag, speed", Floor_RaiseToNearest: "tag, speed",
+  Floor_MoveToValue: "tag, speed, height, negative", Floor_RaiseAndCrush: "tag, speed, crush, crushmode",
+  Floor_Waggle: "tag, amp, freq, offset, time", Ceiling_LowerByValue: "tag, speed, height",
+  Ceiling_RaiseByValue: "tag, speed, height", Ceiling_MoveToValue: "tag, speed, height, negative",
+  Ceiling_LowerToFloor: "tag, speed", Ceiling_CrushAndRaise: "tag, speed, crush, crushmode", Ceiling_CrushStop: "tag",
+  Ceiling_Waggle: "tag, amp, freq, offset, time", FloorAndCeiling_LowerByValue: "tag, speed, height",
+  FloorAndCeiling_RaiseByValue: "tag, speed, height", Pillar_Build: "tag, speed, height",
+  Plat_DownWaitUpStay: "tag, speed, delay", Plat_PerpetualRaise: "tag, speed, delay", Plat_Stop: "tag",
+  Elevator_RaiseToNearest: "tag, speed", Elevator_LowerToNearest: "tag, speed", Elevator_MoveToFloor: "tag, speed",
+  Stairs_BuildUp: "tag, speed, height, delay, reset", Stairs_BuildDown: "tag, speed, height, delay, reset",
+  Light_ChangeToValue: "tag, value", Light_RaiseByValue: "tag, value", Light_LowerByValue: "tag, value",
+  Light_Fade: "tag, value, tics", Light_Flicker: "tag, upper, lower", Light_Strobe: "tag, upper, lower, u-tics, l-tics",
+  Light_Glow: "tag, upper, lower, tics", Light_ForceLightning: "mode",
+  Sector_SetColor: "tag, r, g, b, desat", Sector_SetFade: "tag, r, g, b", Sector_SetDamage: "tag, amount, mod",
+  Sector_SetGravity: "tag, ipart, fpart", Sector_SetWind: "tag, amount, angle, useline", Sector_SetFriction: "tag, amount",
+  Sector_ChangeSound: "tag, newsequence", Scroll_Floor: "tag, x-move, y-move, type", Scroll_Ceiling: "tag, x-move, y-move, unused",
+  Scroll_Texture_Both: "lineid, left, right, down, up", Line_SetBlocking: "lineid, setflags, clearflags",
+  Line_SetTextureOffset: "lineid, x, y, side, flags", TranslucentLine: "lineid, amount, additive",
+  Thing_Activate: "tid", Thing_Deactivate: "tid", Thing_Remove: "tid", Thing_Destroy: "tid, extreme, tag",
+  Thing_Spawn: "tid, type, angle, newtid", Thing_SpawnNoFog: "tid, type, angle, newtid",
+  Thing_Projectile: "tid, type, angle, speed, vspeed", Thing_Damage: "tid, amount, mod", Thing_ChangeTID: "oldtid, newtid",
+  Thing_Move: "tid, destid, nofog", Thing_SetSpecial: "tid, special, arg1, arg2, arg3", Thing_Hate: "hater, hatee, type",
+  Thing_SetGoal: "tid, goal, delay, dontchasetarget", Thing_Raise: "tid", Thing_Stop: "tid",
+  Thing_Thrust: "tid, angle, force, nolimit", ThrustThingZ: "tid, force, updown, add",
+  Teleport: "tid, tag, nosourcefog", Teleport_NoFog: "tid, useangle, tag, keepheight", Teleport_NewMap: "map, pos, face",
+  Teleport_EndGame: "", Exit_Normal: "pos", Exit_Secret: "pos",
+  ACS_Execute: "script, map, arg1, arg2, arg3", ACS_ExecuteAlways: "script, map, arg1, arg2, arg3",
+  ACS_ExecuteWithResult: "script, arg1, arg2, arg3, arg4", ACS_Suspend: "script, map", ACS_Terminate: "script, map",
+  ACS_LockedExecute: "script, map, arg1, arg2, lock", Radius_Quake: "intensity, duration, damrad, tremrad, tid",
+  ChangeCamera: "tid, who, revert", SetPlayerProperty: "who, set, which", Noise_Alert: "target, emitter",
+}).map(([k, v]) => [k.toLowerCase(), v ? v.split(", ") : []]));
+
+/**
+ * Names declared in an ACS source: functions (with parameter names), named
+ * scripts, variables and #defines, for completion.
+ * @returns {Array<Array>} [name, kind, min, max, number, params]
+ */
+export function acsLocalNames(src) {
+  const out = [];
+  const seen = new Set();
+  const add = (n, kind, lo = -1, hi = -1, params = null) => {
+    const k = n.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push([n, kind, lo, hi, 0, params]);
+  };
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+  for (const m of code.matchAll(/\bfunction\s+(?:int|str|bool|fixed|void)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/gi)) {
+    const ps = m[2].trim().toLowerCase() === "void" || !m[2].trim() ? [] : m[2].split(",").map((p) => p.trim().split(/\s+/).pop());
+    add(m[1], "own function", ps.length, ps.length, ps.join(", "));
+  }
+  for (const m of code.matchAll(/#(?:lib)?define\s+([A-Za-z_]\w*)/gi)) add(m[1], "define");
+  for (const m of code.matchAll(/^\s*(?:(?:world|global)\s+)?(?:int|str|bool|fixed)\s+(?:\d+\s*:\s*)?([A-Za-z_]\w*)/gim)) add(m[1], "variable");
+  return out;
+}
+
+/**
+ * Completion popup and argument hint for an ACS `<textarea>`.
+ * `getNames()` → [[name, kind, min, max, number, params?]] (compiler names +
+ * the file's own); `argNames(number, name)` → argument names of a line special, or null.
+ * The popup opens after two letters; ↑/↓ choose, Enter/Tab insert, Esc closes.
+ */
+export function acsAssist(ta, area, getNames, argNames = () => null) {
+  const pop = document.createElement("div");
+  pop.className = "acs-pop";
+  pop.hidden = true;
+  const hint = document.createElement("div");
+  hint.className = "acs-hint muted";
+  area.append(pop);
+  let items = [];
+  let at = 0;
+  let span = null; // [start, end) of the word being completed
+  const charW = (() => {
+    const c = document.createElement("canvas").getContext("2d");
+    c.font = getComputedStyle(ta).font || "12px monospace";
+    return c.measureText("M").width || 7.2;
+  })();
+  const close = () => { pop.hidden = true; items = []; };
+  const label = (n) => {
+    const [name, kind, lo, hi, , params] = n;
+    if (params != null) return `${name}(${params})`;
+    if (lo < 0) return kind === "constant" || kind === "define" || kind === "variable" ? name : `${name}(…)`;
+    return `${name}(${lo === hi ? lo : `${lo}–${hi}`} arg${hi === 1 ? "" : "s"})`;
+  };
+  function render() {
+    pop.replaceChildren(...items.map((n, i) => {
+      const row = document.createElement("div");
+      row.className = `acs-item${i === at ? " active" : ""}`;
+      const a = document.createElement("span");
+      a.textContent = label(n);
+      const b = document.createElement("span");
+      b.className = "acs-kind";
+      b.textContent = n[1];
+      row.append(a, b);
+      row.addEventListener("mousedown", (e) => { e.preventDefault(); at = i; accept(); });
+      return row;
+    }));
+    const before = ta.value.slice(0, span[0]);
+    const line = before.split("\n").length - 1;
+    const col = before.length - before.lastIndexOf("\n") - 1;
+    pop.style.left = `${Math.max(0, 8 + col * charW - ta.scrollLeft)}px`;
+    pop.style.top = `${6 + (line + 1) * 18 - ta.scrollTop}px`;
+    pop.hidden = !items.length;
+    pop.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+  }
+  function accept() {
+    const n = items[at];
+    if (!n) return;
+    const callable = !["constant", "define", "variable"].includes(n[1]);
+    const after = ta.value.slice(span[1]);
+    const text = n[0] + (callable && !after.startsWith("(") ? "(" : "");
+    ta.setRangeText(text, span[0], span[1], "end");
+    close();
+    ta.dispatchEvent(new Event("input"));
+  }
+  function update() {
+    const pos = ta.selectionStart;
+    const m = /[A-Za-z_]\w*$/.exec(ta.value.slice(0, pos));
+    updateHint(pos);
+    if (!m || m[0].length < 2 || ta.selectionEnd !== pos) { close(); return; }
+    const w = m[0].toLowerCase();
+    const all = getNames();
+    const starts = all.filter((n) => n[0].toLowerCase().startsWith(w));
+    const inner = all.filter((n) => !n[0].toLowerCase().startsWith(w) && n[0].toLowerCase().includes(w));
+    items = [...starts, ...inner].filter((n) => n[0].toLowerCase() !== w).slice(0, 12);
+    span = [pos - m[0].length, pos];
+    at = 0;
+    if (items.length) render(); else close();
+  }
+  /** The call the caret is in: name, argument index → hint text. */
+  function updateHint(pos) {
+    const before = ta.value.slice(Math.max(0, pos - 2000), pos);
+    let depth = 0;
+    let commas = 0;
+    let open = -1;
+    for (let i = before.length - 1; i >= 0; i--) {
+      const c = before[i];
+      if (c === "\n" && depth === 0 && i < before.length - 400) break;
+      if (c === ")") depth++;
+      else if (c === "(") {
+        if (depth === 0) { open = i; break; }
+        depth--;
+      } else if (c === "," && depth === 0) commas++;
+      else if (c === ";" || c === "{" || c === "}") break;
+    }
+    const m = open >= 0 ? /([A-Za-z_]\w*)\s*$/.exec(before.slice(0, open)) : null;
+    const n = m && getNames().find((x) => x[0].toLowerCase() === m[1].toLowerCase());
+    if (!n || ["constant", "define", "variable"].includes(n[1])) { hint.textContent = ""; return; }
+    let text = label(n);
+    const names = n[1] === "special" ? ACS_SPECIAL_ARGS[n[0].toLowerCase()] || argNames(n[4], n[0]) : null;
+    if (names && n[3] > 0) {
+      const args = [];
+      for (let i = 0; i < n[3]; i++) {
+        const w = names[i] || "arg";
+        const a = i >= n[2] ? `[${w}]` : w;
+        args.push(i === commas ? `‹${a}›` : a);
+      }
+      text = `${n[0]}(${args.join(", ")})`;
+    } else if (n[5] != null) {
+      text = `${n[0]}(${n[5].split(", ").map((p, i) => (i === commas ? `‹${p}›` : p)).join(", ")})`;
+    } else if (n[2] >= 0) {
+      text += ` · argument ${commas + 1}`;
+    }
+    hint.textContent = `${text}  — ${n[1]}`;
+  }
+  ta.addEventListener("input", update);
+  ta.addEventListener("click", () => { close(); updateHint(ta.selectionStart); });
+  ta.addEventListener("blur", () => setTimeout(close, 150));
+  ta.addEventListener("scroll", () => { if (!pop.hidden) render(); });
+  ta.addEventListener("keydown", (e) => {
+    if (pop.hidden) {
+      if (e.key === " " && (e.ctrlKey || e.metaKey)) { e.preventDefault(); update(); }
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      at = (at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      render();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      accept();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  }, true);
+  return { hint, close };
 }

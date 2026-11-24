@@ -123,3 +123,18 @@ test("zscriptClosure follows #include from the ZSCRIPT root, whatever the file n
   const got = [...zscriptClosure(lumps, (l) => files[l.path], resolve)].map((l) => l.path).sort();
   assert.deepEqual(got, ["src/handlers.txt", "src/more.txt", "zscript.zc"]);
 });
+
+test("ACS sources are recognised by content", async () => {
+  const { textLang, acsLocalNames } = await import("../editor-scripts.js");
+  assert.equal(textLang("LIBSRC", "LIBSRC", '#library "MYLIB"\nint a;'), "acs");
+  assert.equal(textLang("STUFF", "STUFF", "// map scripts\nscript 1 OPEN\n{\n}"), "acs");
+  assert.equal(textLang("STUFF", "STUFF", 'script "Boss" (int hp) { }'), "acs");
+  assert.equal(textLang("NOTES", "NOTES", "a script about things"), "text");
+  const names = acsLocalNames('#define TAG 3\nint counter;\nworld int 1:visits;\nfunction int Add(int a, int b) { return a + b; }\nfunction void Go(void) { }');
+  const byName = Object.fromEntries(names.map((n) => [n[0], n]));
+  assert.deepEqual(byName.Add.slice(1), ["own function", 2, 2, 0, "a, b"]);
+  assert.deepEqual(byName.Go.slice(2, 4), [0, 0]);
+  assert.equal(byName.TAG[1], "define");
+  assert.equal(byName.counter[1], "variable");
+  assert.equal(byName.visits[1], "variable");
+});

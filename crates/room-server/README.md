@@ -13,6 +13,7 @@ Config is CLI flags; each flag also reads a matching `ROOM_*` environment variab
 open http://127.0.0.1:8765/        # public lobby
 open http://127.0.0.1:8765/play/   # game client (same origin)
 open http://127.0.0.1:8766/admin   # operator console
+./scripts/room-server.sh admin-tui # ratatui live ops console
 ```
 
 Lobby **Callsign** is required before Play / create — it becomes the in-game pseudo

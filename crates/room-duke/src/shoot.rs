@@ -29,6 +29,8 @@ const COMMANDER: i16 = 1920;
 const GREENSLIME: i16 = 2370;
 const ORGANTIC: i16 = 2420;
 const ROTATEGUN: i16 = 2360;
+/// Atomic `RPG` rocket tile.
+const RPG_TILE: i16 = 2605;
 pub(crate) const RECON: i16 = 1960;
 /// Atomic `CHAINGUN` weapon damage profile.
 pub const CHAINGUN: i16 = 2536;
@@ -156,6 +158,16 @@ pub fn ldist(a: &SpriteT, b: &SpriteT) -> i32 {
 
 fn scale_div(n: i32, mul: i32, div: i32) -> i32 {
     if div == 0 { 0 } else { (n * mul) / div }
+}
+
+/// Make deleted sprite slots (stat `MAXSTATUS`; Room keeps their stale data)
+/// invisible to a hitscan: Chocolate's hitscan walks the live sector lists.
+pub(crate) fn drop_deleted_hits(hits: &mut [SpriteHit], sprite_stat: &[i16]) {
+    for (index, hit) in hits.iter_mut().enumerate() {
+        if sprite_stat.get(index).copied() == Some(room_build_engine::world::MAXSTATUS as i16) {
+            hit.cstat = 0;
+        }
+    }
 }
 
 /// Chocolate `aim` (auto-aim cone; no TRAND).
@@ -544,6 +556,84 @@ pub(crate) fn shoot_bloodsplat_enemy(
     sa = sa.wrapping_add(1024 + 64 - ((krand_step(randomseed) & 127) as i16));
     let zvel = 1024 - (krand_step(randomseed) & 2047);
 
+    bloodsplat_trace(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        tile_meta,
+        script,
+        atwith,
+        (sect, sx, sy, sz),
+        sa,
+        zvel,
+    );
+}
+
+/// Chocolate player `shoot(ps[p].i, BLOODSPLATn)` (APLAYER `random_wall_jibs`):
+/// from the eye (`posz + pyoff + 4<<8`), `sa = ang + 64-(TRAND&127)`,
+/// `zvel = 1024-(TRAND&2047)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shoot_bloodsplat_player(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    randomseed: &mut i32,
+    player: &Player,
+    atwith: i16,
+) {
+    let Some(body) = usize::try_from(player.sprite_i)
+        .ok()
+        .and_then(|i| sprites.get(i))
+    else {
+        return;
+    };
+    let sect = body.sectnum;
+    let sz = player.posz + i32::from(player.pyoff) + (4 << 8);
+    let sa = player
+        .ang
+        .wrapping_add(64 - ((krand_step(randomseed) & 127) as i16));
+    let zvel = 1024 - (krand_step(randomseed) & 2047);
+    bloodsplat_trace(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        picnum_out,
+        actor_temps,
+        tile_meta,
+        script,
+        atwith,
+        (sect, player.posx, player.posy, sz),
+        sa,
+        zvel,
+    );
+}
+
+/// The BLOODSPLAT hitscan shared by enemy and player shooters. The wall
+/// splat spawn itself (`spawn(i, atwith)` + `ssp`) is not modelled yet.
+#[allow(clippy::too_many_arguments)]
+fn bloodsplat_trace(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[WallT],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    atwith: i16,
+    (sect, sx, sy, sz): (i16, i32, i32, i32),
+    sa: i16,
+    zvel: i32,
+) {
     let sec: Vec<SectorWalls> = sectors
         .iter()
         .map(|s| SectorWalls {
@@ -553,7 +643,7 @@ pub(crate) fn shoot_bloodsplat_enemy(
         .collect();
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-    let spr_hits: Vec<SpriteHit> = sprites
+    let mut spr_hits: Vec<SpriteHit> = sprites
         .iter()
         .map(|sp| {
             let meta = tile_meta
@@ -576,6 +666,7 @@ pub(crate) fn shoot_bloodsplat_enemy(
             }
         })
         .collect();
+    crate::shoot::drop_deleted_hits(&mut spr_hits, &lists.sprite_stat);
     let (sin, cos) = sincos_q14(i32::from(sa));
     let hit = hitscan_full(
         sx,
@@ -714,7 +805,7 @@ pub(crate) fn shoot_coolexplosion_enemy(
     let _ = krand_step(randomseed);
 }
 
-fn checkhitsprite_shotgun(
+pub(crate) fn checkhitsprite_shotgun(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &mut [SectorT],
@@ -776,6 +867,78 @@ fn checkhitsprite_shotgun(
         actor_temps[iu].hit_radius = crate::con::direct_hit_payload();
         return;
     }
+    // Chocolate `default:` — an untagged wall-aligned statnum-0 sprite
+    // ignores the hit entirely.
+    {
+        let st = lists.sprite_stat.get(iu).copied().unwrap_or(0);
+        let t = sprites[iu];
+        if t.cstat & 16 != 0 && t.hitag == 0 && t.lotag == 0 && st == 0 {
+            return;
+        }
+    }
+    // Chocolate: the badguy reaction (RPG doubling, jibs, blood splats,
+    // knockback, wake) only runs for a hit by something other than itself.
+    let reacts = (sprites[su].picnum == FREEZEBLAST || sprites[su].owner != hitspr)
+        && lists.sprite_stat.get(iu).copied() != Some(STAT_PROJECTILE);
+    if reacts {
+        checkhitsprite_badguy_reaction(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            players,
+            picnum_out,
+            actor_temps,
+            tile_meta,
+            script,
+            actortype,
+            randomseed,
+            hitspr,
+            spark,
+        );
+    }
+    // Chocolate: queue `hittype` damage (CON `ifhitweapon` → `spawn BLOOD`).
+    // Do not subtract `sprite.extra` here — `ifhitbyweapon` applies it later.
+    let st = lists.sprite_stat.get(iu).copied().unwrap_or(0);
+    if st != 2 {
+        if actor_temps.len() <= iu {
+            actor_temps.resize_with(iu + 1, ActorConTemps::default);
+        }
+        actor_temps[iu].hit_picnum = sprites[su].picnum;
+        actor_temps[iu].hit_extra = actor_temps[iu].hit_extra.saturating_add(sprites[su].extra);
+        actor_temps[iu].hit_ang = sprites[su].ang;
+        actor_temps[iu].hit_owner = sprites[su].owner;
+        actor_temps[iu].hit_source = su as i16;
+        actor_temps[iu].hit_radius = crate::con::direct_hit_payload();
+    }
+    let _ = spawn_blood;
+}
+
+/// Chocolate `checkhitsprite` default branch, badguy part: `sn` is the
+/// projectile or spark that hit badguy `hitspr`.
+#[allow(clippy::too_many_arguments)]
+fn checkhitsprite_badguy_reaction(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &[WallT],
+    players: &[Player],
+    picnum_out: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    tile_meta: &[TileZMeta],
+    script: Option<&ScriptImage>,
+    actortype: &[u8],
+    randomseed: &mut i32,
+    hitspr: i16,
+    spark: i16,
+) {
+    let iu = hitspr as usize;
+    let su = spark as usize;
+    // `if (sprite[sn].picnum == RPG) sprite[sn].extra <<= 1;` — the rocket's
+    // own extra doubles, so its hitradius blast hits twice as hard too.
+    if sprites[su].picnum == RPG_TILE {
+        sprites[su].extra = sprites[su].extra.wrapping_shl(1);
+    }
     // Chocolate `checkhitsprite`: this specific debris spawn is suppressed
     // for these actor families and for actor types with custom CON handling.
     let target_pic = sprites[iu].picnum;
@@ -826,7 +989,13 @@ fn checkhitsprite_shotgun(
     let owner = sprites[su].owner;
     if owner >= 0 {
         let ou = owner as usize;
-        if ou < sprites.len() && sprites[ou].picnum == APLAYER {
+        if ou < sprites.len()
+            && sprites[ou].picnum == APLAYER
+            && !matches!(target_pic, ROTATEGUN | DRONE)
+            && players
+                .get(sprites[ou].yvel.max(0) as usize)
+                .is_some_and(|p| p.curr_weapon == SHOTGUN_WEAPON)
+        {
             // Order matches Chocolate checkhitsprite shotgun branch.
             for pn in [BLOODSPLAT3, BLOODSPLAT1, BLOODSPLAT2, BLOODSPLAT4] {
                 shoot_bloodsplat_enemy(
@@ -850,43 +1019,49 @@ fn checkhitsprite_shotgun(
             }
         }
     }
-    // Chocolate knockback + pushmove (can nudge XY between shotgun pellets).
-    if sprites[iu].cstat & 48 == 0 {
-        sprites[iu].ang = sprites[su].ang.wrapping_add(1024) & 2047;
-    }
-    let kick = -(i32::from(sprites[su].extra) << 2);
-    sprites[iu].xvel = kick.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    {
-        let sec: Vec<SectorWalls> = sectors
-            .iter()
-            .map(|s| SectorWalls {
-                wallptr: s.wallptr,
-                wallnum: s.wallnum,
-            })
-            .collect();
-        let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
-        let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-        let mut x = sprites[iu].x;
-        let mut y = sprites[iu].y;
-        let mut sect = sprites[iu].sectnum;
-        let _ = pushmove(
-            &mut x,
-            &mut y,
-            sprites[iu].z,
-            &mut sect,
-            128,
-            4 << 8,
-            4 << 8,
-            CLIPMASK0,
-            &sec,
-            &sec_z,
-            &wxy,
-        );
-        sprites[iu].x = x;
-        sprites[iu].y = y;
-        if sect != sprites[iu].sectnum && sect >= 0 {
-            let _ = lists.changespritesect(hitspr, sect);
-            sprites[iu].sectnum = sect;
+    // Chocolate knockback + pushmove (can nudge XY between shotgun pellets);
+    // the tank, bosses, recon and rotategun do not get pushed.
+    if !matches!(
+        target_pic,
+        1975 | 2630 | 4740 | 2710 | 2760 | RECON | ROTATEGUN
+    ) {
+        if sprites[iu].cstat & 48 == 0 {
+            sprites[iu].ang = sprites[su].ang.wrapping_add(1024) & 2047;
+        }
+        let kick = -(i32::from(sprites[su].extra) << 2);
+        sprites[iu].xvel = kick.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        {
+            let sec: Vec<SectorWalls> = sectors
+                .iter()
+                .map(|s| SectorWalls {
+                    wallptr: s.wallptr,
+                    wallnum: s.wallnum,
+                })
+                .collect();
+            let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
+            let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+            let mut x = sprites[iu].x;
+            let mut y = sprites[iu].y;
+            let mut sect = sprites[iu].sectnum;
+            let _ = pushmove(
+                &mut x,
+                &mut y,
+                sprites[iu].z,
+                &mut sect,
+                128,
+                4 << 8,
+                4 << 8,
+                CLIPMASK0,
+                &sec,
+                &sec_z,
+                &wxy,
+            );
+            sprites[iu].x = x;
+            sprites[iu].y = y;
+            if sect != sprites[iu].sectnum && sect >= 0 {
+                let _ = lists.changespritesect(hitspr, sect);
+                sprites[iu].sectnum = sect;
+            }
         }
     }
     // Chocolate `checkhitsprite`: a sleeping badguy (stat 2) is woken into
@@ -900,21 +1075,6 @@ fn checkhitsprite_shotgun(
         }
         actor_temps[iu].timetosleep = crate::fta::SLEEPTIME;
     }
-    // Chocolate: queue `hittype` damage (CON `ifhitweapon` → `spawn BLOOD`).
-    // Do not subtract `sprite.extra` here — `ifhitbyweapon` applies it later.
-    let st = lists.sprite_stat.get(iu).copied().unwrap_or(0);
-    if st != 2 {
-        if actor_temps.len() <= iu {
-            actor_temps.resize_with(iu + 1, ActorConTemps::default);
-        }
-        actor_temps[iu].hit_picnum = sprites[su].picnum;
-        actor_temps[iu].hit_extra = actor_temps[iu].hit_extra.saturating_add(sprites[su].extra);
-        actor_temps[iu].hit_ang = sprites[su].ang;
-        actor_temps[iu].hit_owner = sprites[su].owner;
-        actor_temps[iu].hit_source = su as i16;
-        actor_temps[iu].hit_radius = crate::con::direct_hit_payload();
-    }
-    let _ = spawn_blood;
 }
 
 /// Chocolate `tracers` — underwater shotgun trail (WATERBUBBLE / SMALLSMOKE).
@@ -1073,7 +1233,7 @@ pub(crate) fn shoot_defined_hitscan(
     let sec_w: Vec<SectorWalls> = sectors.iter().map(SectorT::walls).collect();
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-    let sprite_hits: Vec<SpriteHit> = sprites
+    let mut sprite_hits: Vec<SpriteHit> = sprites
         .iter()
         .enumerate()
         .map(|(index, sprite)| {
@@ -1097,6 +1257,7 @@ pub(crate) fn shoot_defined_hitscan(
             hit
         })
         .collect();
+    crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
     let hit = if range == 0 {
         HitScan::MISS
     } else {
@@ -1611,7 +1772,7 @@ pub fn shoot_shotgun_player(
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
     // Indices must match world sprite indices (`hitsprite` is a slice index).
     // Face sprites: Chocolate `width*xrepeat` / `height*yrepeat<<2` (not clipdist).
-    let spr_hits: Vec<SpriteHit> = sprites
+    let mut spr_hits: Vec<SpriteHit> = sprites
         .iter()
         .map(|s| {
             let meta = tile_meta
@@ -1634,6 +1795,7 @@ pub fn shoot_shotgun_player(
             }
         })
         .collect();
+    crate::shoot::drop_deleted_hits(&mut spr_hits, &lists.sprite_stat);
 
     let (sin, cos) = sincos_q14(i32::from(sa));
     let mut hit: HitScan = hitscan_full(
@@ -2489,7 +2651,7 @@ pub(crate) fn shoot_rpg_player(
     {
         let source = sprites[body];
         let mut shot_ang = i32::from(p.ang);
-        let mut z = p.posz + p.pyoff + (4 << 8);
+        let z = p.posz + p.pyoff + (4 << 8);
         let target = aim(
             &source,
             AUTO_AIM_ANGLE,
@@ -2517,8 +2679,12 @@ pub(crate) fn shoot_rpg_player(
                 );
             }
         }
-        z += 3 << 8;
         let sect = source.sectnum;
+        // Chocolate `shoot(RPG)`: `if (s->extra >= 0) s->shade = -96` darkens
+        // the *shooter* (the muzzle flash); the rocket itself is EGS'd at shade 0.
+        if source.extra >= 0 {
+            sprites[body].shade = -96;
+        }
         if sect >= 0 && (sect as usize) < sectors.len() {
             let k = lists.insertsprite(sect, STAT_PROJECTILE);
             if k >= 0 && (k as usize) < sprites.len() {
@@ -2535,9 +2701,9 @@ pub(crate) fn shoot_rpg_player(
                     ang: shot_ang as i16,
                     sectnum: sect,
                     picnum: rpg_tile,
-                    shade: if source.extra >= 0 { -96 } else { 0 },
-                    xrepeat: 16,
-                    yrepeat: 16,
+                    shade: 0,
+                    xrepeat: 14,
+                    yrepeat: 14,
                     xvel: 644,
                     zvel: zvel as i16,
                     owner: p.sprite_i,
@@ -2793,7 +2959,7 @@ pub(crate) fn shoot_shrink_grow_player(
                 .collect();
             let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
             let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
-            let sprite_hits: Vec<SpriteHit> = sprites
+            let mut sprite_hits: Vec<SpriteHit> = sprites
                 .iter()
                 .enumerate()
                 .map(|(index, s)| {
@@ -2817,6 +2983,7 @@ pub(crate) fn shoot_shrink_grow_player(
                     hit
                 })
                 .collect();
+            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
             let hit = hitscan_full(
                 source.x,
                 source.y,
@@ -3467,6 +3634,7 @@ fn tripbomb_target(
             }
         })
         .collect();
+    crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
     sprite_hits[body].cstat &= !257;
     let hit = hitscan_full(
         p.posx,
@@ -4194,7 +4362,7 @@ pub(crate) fn shoot_enemy(
         if atwith != KNEE {
             sprites[iu].cstat &= !257;
         }
-        let spr_hits: Vec<SpriteHit> = sprites
+        let mut spr_hits: Vec<SpriteHit> = sprites
             .iter()
             .map(|sp| {
                 let meta = tile_meta
@@ -4217,6 +4385,7 @@ pub(crate) fn shoot_enemy(
                 }
             })
             .collect();
+        crate::shoot::drop_deleted_hits(&mut spr_hits, &lists.sprite_stat);
         let (sin, cos) = sincos_q14(i32::from(sa) & 2047);
         let hit = hitscan_full(
             sx,

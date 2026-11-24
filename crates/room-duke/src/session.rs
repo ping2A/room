@@ -14500,6 +14500,55 @@ impl DukeSession {
     /// tic's pending hit already taken (as EDuke32 scripts see it before
     /// armor); the script's own changes are kept. A non-zero `RETURN` skips
     /// this tic's armor absorption.
+    /// Atomic `processinput`: `if (s->extra > 0) incur_damage(p); else
+    /// { s->extra = 0; shield_amount = 0; }` then `last_extra = s->extra`.
+    /// `incur_damage` takes the Q8 environmental damage, and armor absorbs a
+    /// random 20–49% of the loss since `last_extra` (one TRAND).
+    fn atomic_incur_damage(&mut self) {
+        if self
+            .script
+            .as_ref()
+            .is_some_and(|image| image.dialect == ConDialect::EDuke32)
+        {
+            return;
+        }
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        for player in std::iter::once(&mut self.player).chain(self.coop_players.iter_mut()) {
+            let Some(body) = usize::try_from(player.sprite_i)
+                .ok()
+                .and_then(|index| world.sprites.get_mut(index))
+            else {
+                continue;
+            };
+            if body.extra > 0 {
+                body.extra = body.extra.wrapping_sub(player.extra_extra8 >> 8);
+                let mut damage = i32::from(body.extra) - i32::from(player.last_extra);
+                if damage < 0 {
+                    player.extra_extra8 = 0;
+                    if player.shield_amount > 0 {
+                        let percent = 20 + krand_step(&mut self.randomseed) % 30;
+                        let shield_damage = damage * percent / 100;
+                        damage -= shield_damage;
+                        player.shield_amount =
+                            (i32::from(player.shield_amount) + shield_damage) as i16;
+                        if player.shield_amount < 0 {
+                            damage += i32::from(player.shield_amount);
+                            player.shield_amount = 0;
+                        }
+                    }
+                    body.extra = (i32::from(player.last_extra) + damage) as i16;
+                }
+            } else {
+                body.extra = 0;
+                player.shield_amount = 0;
+            }
+            player.extra = body.extra;
+            player.last_extra = body.extra;
+        }
+    }
+
     fn run_eduke_incurdamage_events(&mut self, inputs: &mut [DukeInput]) {
         if self.world.is_none()
             || !self.script.as_ref().is_some_and(|image| {
@@ -15264,6 +15313,7 @@ impl DukeSession {
         self.run_eduke_processinput_events(&mut sync_inputs);
         let fire_blocked_seats = self.run_eduke_fire_events(&mut sync_inputs);
         self.run_eduke_incurdamage_events(&mut sync_inputs);
+        self.atomic_incur_damage();
         let mut input = sync_inputs.first().copied().unwrap_or_default();
         // Mouse-aim bit 23 (`checksectors` head). DEMO1's trace shows its
         // effect in the same tic's `processinput` (re-centring starts on the
@@ -16224,11 +16274,14 @@ impl DukeSession {
             } else if self.player.toggle_key_flag == 0 {
                 self.player.toggle_key_flag = 1;
             }
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             let special_sector = crate::interactions::handle_sector_special(
                 world,
                 &mut self.player,
                 &mut self.level_exit_ready,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             if self.cashman && open_down && self.player.extra > 0 && self.player.cursectnum >= 0 {
                 let money = self
                     .script
@@ -16272,11 +16325,14 @@ impl DukeSession {
             }
             if !special_sector {
                 if open_down && !self.open_was_down {
+                    // World-based: run on the live lists (self.lists) via a swap.
+                    std::mem::swap(&mut world.lists, &mut self.lists);
                     let used_camera = crate::interactions::use_camera_screen(
                         world,
                         &mut self.player,
                         &self.tile_meta,
                     );
+                    std::mem::swap(&mut world.lists, &mut self.lists);
                     if used_camera == crate::interactions::CameraUseResult::Entered
                         && let Some(id) = self
                             .script
@@ -16307,19 +16363,26 @@ impl DukeSession {
                     let utility = if used_nuke_button {
                         None
                     } else {
-                        crate::interactions::use_utility_sprite(
-                            world,
-                            self.player.posx,
-                            self.player.posy,
-                            self.player.posz + (16 << 8),
-                            self.player.ang,
-                            self.player.cursectnum,
-                            &mut self.player,
-                            &self.tile_meta,
-                            &mut self.actor_temps,
-                            max_health,
-                            &mut self.randomseed,
-                        )
+                        {
+                            std::mem::swap(&mut world.lists, &mut self.lists);
+                            let swap_result = {
+                                crate::interactions::use_utility_sprite(
+                                    world,
+                                    self.player.posx,
+                                    self.player.posy,
+                                    self.player.posz + (16 << 8),
+                                    self.player.ang,
+                                    self.player.cursectnum,
+                                    &mut self.player,
+                                    &self.tile_meta,
+                                    &mut self.actor_temps,
+                                    max_health,
+                                    &mut self.randomseed,
+                                )
+                            };
+                            std::mem::swap(&mut world.lists, &mut self.lists);
+                            swap_result
+                        }
                     };
                     queue_utility_sound(
                         self.script.as_ref(),
@@ -16362,6 +16425,8 @@ impl DukeSession {
                             self.pending_sound_ids.push(id);
                         }
                     } else if !used_nuke_button {
+                        // World-based: run on the live lists (self.lists) via a swap.
+                        std::mem::swap(&mut world.lists, &mut self.lists);
                         crate::interactions::use_near_sector(
                             world,
                             &mut self.sector_motions,
@@ -16370,6 +16435,7 @@ impl DukeSession {
                             &self.player,
                             &self.tile_meta,
                         );
+                        std::mem::swap(&mut world.lists, &mut self.lists);
                     }
                 }
                 self.open_was_down = open_down;
@@ -16388,14 +16454,20 @@ impl DukeSession {
                 }
                 tick_weapon_input!(&mut *player, weapon_input, seat + 1);
                 activate_bullet_switches!(&mut *player);
+                // World-based: run on the live lists (self.lists) via a swap.
+                std::mem::swap(&mut world.lists, &mut self.lists);
                 let sector_special = crate::interactions::handle_sector_special(
                     world,
                     player,
                     &mut self.level_exit_ready,
                 );
+                std::mem::swap(&mut world.lists, &mut self.lists);
                 if !sector_special && open_down && !player.use_was_down {
+                    // World-based: run on the live lists (self.lists) via a swap.
+                    std::mem::swap(&mut world.lists, &mut self.lists);
                     let used_camera =
                         crate::interactions::use_camera_screen(world, player, &self.tile_meta);
+                    std::mem::swap(&mut world.lists, &mut self.lists);
                     if used_camera == crate::interactions::CameraUseResult::Entered
                         && let Some(id) = self
                             .script
@@ -16426,19 +16498,26 @@ impl DukeSession {
                     let utility = if used_nuke_button {
                         None
                     } else {
-                        crate::interactions::use_utility_sprite(
-                            world,
-                            player.posx,
-                            player.posy,
-                            player.posz + (16 << 8),
-                            player.ang,
-                            player.cursectnum,
-                            player,
-                            &self.tile_meta,
-                            &mut self.actor_temps,
-                            max_health,
-                            &mut self.randomseed,
-                        )
+                        {
+                            std::mem::swap(&mut world.lists, &mut self.lists);
+                            let swap_result = {
+                                crate::interactions::use_utility_sprite(
+                                    world,
+                                    player.posx,
+                                    player.posy,
+                                    player.posz + (16 << 8),
+                                    player.ang,
+                                    player.cursectnum,
+                                    player,
+                                    &self.tile_meta,
+                                    &mut self.actor_temps,
+                                    max_health,
+                                    &mut self.randomseed,
+                                )
+                            };
+                            std::mem::swap(&mut world.lists, &mut self.lists);
+                            swap_result
+                        }
                     };
                     queue_utility_sound(
                         self.script.as_ref(),
@@ -16589,6 +16668,7 @@ impl DukeSession {
                     &mut self.actor_temps,
                     &mut self.randomseed,
                     self.script.as_ref(),
+                    &self.tile_meta,
                     self.tic.saturating_sub(1),
                 );
                 let mut player_iter = players.into_iter();
@@ -16922,6 +17002,8 @@ impl DukeSession {
             }
             for actor_index in operate_order {
                 self.actor_temps[actor_index].pending_operate = false;
+                // World-based: run on the live lists (self.lists) via a swap.
+                std::mem::swap(&mut world.lists, &mut self.lists);
                 crate::interactions::operate_con_near_sector(
                     world,
                     actor_index,
@@ -16932,7 +17014,10 @@ impl DukeSession {
                     &players,
                     &self.tile_meta,
                 );
+                std::mem::swap(&mut world.lists, &mut self.lists);
             }
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::interactions::tick_nuke_buttons(
                 world,
                 &mut self.picnum,
@@ -16942,9 +17027,12 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.pending_sound_ids,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             self.player = players[0].clone();
             self.coop_players = players[1..].to_vec();
             world.lists = self.lists.clone();
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::interactions::tick_auto_activators(
                 world,
                 &mut self.sector_motions,
@@ -16959,6 +17047,7 @@ impl DukeSession {
                 &mut self.picnum,
                 self.script.as_ref(),
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             move_light_effectors(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -16967,6 +17056,8 @@ impl DukeSession {
                 &mut self.actor_temps,
                 self.global_random,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_lightning_effectors(
                 world,
                 &mut players,
@@ -16975,6 +17066,7 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             let motions = &self.sector_motions;
             move_elevator_shade_effectors(
                 &mut self.lists,
@@ -16990,6 +17082,8 @@ impl DukeSession {
                 &mut world.sectors[..world.numsectors as usize],
                 &mut self.actor_temps,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_explosive_sector_effectors(
                 world,
                 &mut self.actor_temps,
@@ -16997,6 +17091,7 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_battlestar_shields(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -17027,17 +17122,25 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_sliding_door_effectors(
                 world,
                 &mut self.actor_temps,
                 &self.effector_wall_offsets,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_swing_door_effectors(
                 world,
                 &mut self.actor_temps,
                 &self.effector_wall_offsets,
                 &script.actortype,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_nonrotating_subways(
                 world,
                 &mut players,
@@ -17056,6 +17159,9 @@ impl DukeSession {
                     .as_ref()
                     .map_or(&[], |script| script.actortype.as_slice()),
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_train_effectors(
                 world,
                 &mut players,
@@ -17068,6 +17174,9 @@ impl DukeSession {
                 self.monsters_off,
                 self.clipping,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_boss_effectors(
                 world,
                 &mut players,
@@ -17078,6 +17187,7 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             move_cascade_effectors(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -17090,7 +17200,12 @@ impl DukeSession {
                 &mut world.sectors[..world.numsectors as usize],
                 &mut self.actor_temps,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_conveyor_effectors(world, &mut players, &mut self.actor_temps);
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_escalator_effectors(
                 world,
                 &mut players,
@@ -17099,6 +17214,7 @@ impl DukeSession {
                 &self.tile_meta,
                 crate::player::DUKE_GC,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_drill_effectors(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -17109,6 +17225,8 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_shooter_effectors(
                 world,
                 &players,
@@ -17118,23 +17236,30 @@ impl DukeSession {
                 self.script.as_ref(),
                 &mut self.randomseed,
             );
-            crate::effectors::move_quake_debris_effectors(
-                world,
-                &mut self.actor_temps,
-                &mut self.picnum,
-                self.script.as_ref(),
-                &mut self.randomseed,
-                i32::from(self.earthquake_time),
-            );
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // SE33 quake debris is thrown by `move_quake_effectors` in the same
+            // effector-list pass as SE2 (as Chocolate's `moveeffectors`).
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             move_true_drop_planes(world, &mut players, &mut self.actor_temps);
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::interactions::tick_bridge_effectors(world, &mut players, &mut self.actor_temps);
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_kroz_effectors(world, &mut players, &mut self.actor_temps);
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_rotating_sector_effectors(
                 world,
                 &mut players,
                 &mut self.actor_temps,
                 &self.effector_wall_offsets,
             );
+            std::mem::swap(&mut world.lists, &mut self.lists);
             move_warp_elevator_effectors(
                 &mut self.lists,
                 world.sprites.as_mut(),
@@ -17142,8 +17267,14 @@ impl DukeSession {
                 &mut players,
                 &mut self.actor_temps,
             );
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::move_sine_floor_effectors(world);
+            std::mem::swap(&mut world.lists, &mut self.lists);
+            // World-based: run on the live lists (self.lists) via a swap.
+            std::mem::swap(&mut world.lists, &mut self.lists);
             crate::effectors::align_sine_floor_slopes(world);
+            std::mem::swap(&mut world.lists, &mut self.lists);
             self.player = players[0].clone();
             self.coop_players = players[1..].to_vec();
             for player in &players {
@@ -62167,9 +62298,11 @@ fn tick_player_inventory(
     // Chocolate `processinput` runs `incur_damage` (which takes
     // `extra_extra8 >> 8`) well before `doincrements` adds this tic's
     // drowning damage, so a point accumulated now is lost next tic.
+    // (Atomic runs the full `incur_damage` in `Session::atomic_incur_damage`.)
+    let eduke = script.is_some_and(|image| image.dialect == ConDialect::EDuke32);
     if player.extra > 0 {
         let damage = player.extra_extra8 >> 8;
-        if damage > 0 {
+        if eduke && damage > 0 {
             player.extra_extra8 = 0;
             player.extra = player.extra.saturating_sub(damage).max(0);
             player.last_extra = player.extra;

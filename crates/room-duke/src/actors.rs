@@ -29,6 +29,14 @@ const MOVE_FACEPLAYER: i16 = 1;
 const MOVE_SEEKPLAYER: i16 = 512;
 const MOVE_GETH: i16 = 2;
 const MOVE_GETV: i16 = 4;
+/// Atomic `define spin 32`.
+const MOVE_SPIN: i16 = 32;
+/// Atomic `define face_player_smart 64`.
+const MOVE_FACEPLAYERSMART: i16 = 64;
+/// Atomic `define jumptoplayer 257` (both bits must be set).
+const MOVE_JUMPTOPLAYER: i16 = 257;
+/// Atomic `define dodgebullet 4096`.
+const MOVE_DODGEBULLET: i16 = 4096;
 /// Atomic `define faceplayerslow 16`.
 const MOVE_FACEPLAYERSLOW: i16 = 16;
 /// Atomic `ORGANTIC` — exempt from move() floor/ceiling z clamps.
@@ -301,6 +309,41 @@ pub(crate) fn hits_xy(
     find_distance_2d(h.hitx - sp.x, h.hity - sp.y)
 }
 
+/// Chocolate `dodge(s)`: walk the live STAT_PROJECTILE list; the first
+/// projectile in the actor's sector that is ahead of it, flying toward it and
+/// within the 64-unit cross band turns it by `512 + (TRAND & 1024)`.
+pub(crate) fn move_dodge(
+    lists: &SpriteLists,
+    sprites: &[SpriteT],
+    sp: &mut SpriteT,
+    randomseed: &mut i32,
+) -> bool {
+    let (my, mx) = sincos_q14(i32::from(sp.ang) & 2047);
+    let mut i = lists.headspritestat[crate::stat::STAT_PROJECTILE as usize];
+    while i >= 0 {
+        let iu = i as usize;
+        let Some(b) = sprites.get(iu) else { break };
+        let next = lists.nextspritestat[iu];
+        if b.owner != i && b.sectnum == sp.sectnum {
+            let bx = b.x.wrapping_sub(sp.x);
+            let by = b.y.wrapping_sub(sp.y);
+            let (byv, bxv) = sincos_q14(i32::from(b.ang) & 2047);
+            if mx.wrapping_mul(bx).wrapping_add(my.wrapping_mul(by)) >= 0
+                && bxv.wrapping_mul(bx).wrapping_add(byv.wrapping_mul(by)) < 0
+            {
+                let d = bxv.wrapping_mul(by).wrapping_sub(byv.wrapping_mul(bx));
+                if d.wrapping_abs() < 65_536 * 64 {
+                    let r = krand_step(randomseed);
+                    sp.ang = sp.ang.wrapping_sub((512 + (r & 1024)) as i16);
+                    return true;
+                }
+            }
+        }
+        i = next;
+    }
+    false
+}
+
 /// Chocolate `move()` after CON parse (seekplayer / geth / skill odd-frame skip).
 fn actor_con_move(
     lists: &SpriteLists,
@@ -339,6 +382,11 @@ fn actor_con_move(
         }
         sp.ang = ((i32::from(sp.ang) + angdif) & 2047) as i16;
     }
+    // Chocolate `if (a & spin) ang += sintable[(t0 << 3) & 2047] >> 6`.
+    if a & MOVE_SPIN != 0 {
+        let (sin, _) = sincos_q14((temps.g_t[0] << 3) & 2047);
+        sp.ang = sp.ang.wrapping_add((sin >> 6) as i16);
+    }
     if a & MOVE_FACEPLAYERSLOW != 0 {
         let goal = getangle(player_x - sp.x, player_y - sp.y);
         let mut angdif = getincangle(i32::from(sp.ang), goal).signum() << 5;
@@ -347,6 +395,21 @@ fn actor_con_move(
             sp.ang = (goal & 2047) as i16;
         }
         sp.ang = ((i32::from(sp.ang) + angdif) & 2047) as i16;
+    }
+    // Chocolate `(a & jumptoplayer) == jumptoplayer`: early-tic hop.
+    if a & MOVE_JUMPTOPLAYER == MOVE_JUMPTOPLAYER && temps.g_t[0] < 16 {
+        let (sin, _) = sincos_q14((512 + (temps.g_t[0] << 4)) & 2047);
+        sp.zvel = sp.zvel.wrapping_sub((sin >> 5) as i16);
+    }
+    // Chocolate `face_player_smart`: lead the player by its velocity / 768.
+    if a & MOVE_FACEPLAYERSMART != 0 {
+        let (vx, vy) = player.as_deref().map_or((0, 0), |p| (p.posxv, p.posyv));
+        let goal = getangle(player_x + vx / 768 - sp.x, player_y + vy / 768 - sp.y);
+        let mut angdif = getincangle(i32::from(sp.ang), goal) >> 2;
+        if angdif > -8 && angdif < 0 {
+            angdif = 0;
+        }
+        sp.ang = sp.ang.wrapping_add(angdif as i16);
     }
     let move_ptr = temps.g_t[1];
     if move_ptr == 0 || a == 0 {
@@ -362,6 +425,11 @@ fn actor_con_move(
     }
     if a & MOVE_GETV != 0 {
         zvel += ((vvel << 4) - zvel) >> 1;
+    }
+    // Chocolate `if (a & dodgebullet) dodge(g_sp);` — before alterang, on the
+    // live weapons list (it may turn the actor and draws TRAND on a hit).
+    if a & MOVE_DODGEBULLET != 0 {
+        move_dodge(lists, clip_source.sprites, sp, randomseed);
     }
     // alterang
     xvel += (hvel - xvel) / 5;
@@ -758,6 +826,17 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
             i = next;
             continue;
         }
+        // Chocolate `moveactors`: `if (s->xrepeat == 0 || sect < 0 || sect >=
+        // MAXSECTORS) KILLIT(i);` before anything else (a slime that ate an
+        // enemy leaves it at xrepeat 0; DEMO1 tic 1028).
+        if sprites[iu].xrepeat == 0
+            || sprites[iu].sectnum < 0
+            || sprites[iu].sectnum as usize >= room_build_engine::world::MAXSECTORS
+        {
+            let _ = lists.deletesprite(i);
+            i = next;
+            continue;
+        }
         let pic_i = picnum[iu];
         // Chocolate handles HEAVYHBOMB in the C actor switch; it does not run
         // an actor CON body for this tile.
@@ -965,6 +1044,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 sectnum: projectile.sectnum,
                 ang: projectile.ang,
                 owner: projectile.owner,
+                index: projectile_i,
             });
             projectile_i = lists.nextspritestat[projectile_index];
         }
@@ -973,9 +1053,13 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         let mut actor_t = std::mem::take(&mut temps[iu]);
         let mut actor_s = sprites[iu];
         let stop = {
-            let sectors_ro: &[SectorT] = sectors;
-            let walls_ro: &[WallT] = walls;
-            let players_ro: &[Player] = players;
+            // `shoot` may break glass / hit walls and hurt players mid-parse.
+            let sectors_cell = std::cell::RefCell::new(&mut *sectors);
+            let walls_cell = std::cell::RefCell::new(&mut *walls);
+            let players_cell = std::cell::RefCell::new(&mut *players);
+            // `shoot` lights the shooter (`shade = -96`) on the live array;
+            // carry it over the local copy written back after the parse.
+            let shooter_shade: std::cell::Cell<Option<i8>> = std::cell::Cell::new(None);
             // `shoot` and `fall` both act on the live sprite array mid-parse.
             let sprites_cell = std::cell::RefCell::new(&mut *sprites);
             let lists_cell = std::cell::RefCell::new(&mut *lists);
@@ -999,8 +1083,16 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 let mut me = sprites[iu];
                 me.z = *z;
                 me.zvel = *zvel;
+                let sectors_ro = sectors_cell.borrow();
+                let walls_ro = walls_cell.borrow();
                 con_fall(
-                    &mut me, sectors_ro, walls_ro, sprites, tile_meta, DUKE_GC, t,
+                    &mut me,
+                    &sectors_ro,
+                    &walls_ro,
+                    sprites,
+                    tile_meta,
+                    DUKE_GC,
+                    t,
                 );
                 sprites[iu].z = me.z;
                 sprites[iu].zvel = me.zvel;
@@ -1017,16 +1109,41 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                     || pn == BLOODSPLAT2
                     || pn == BLOODSPLAT3
                     || pn == BLOODSPLAT4;
-                if !bloodsplat && pn != COOLEXPLOSION1 {
-                    return false;
-                }
                 sprites[iu].ang = ang;
+                if !bloodsplat && pn != COOLEXPLOSION1 {
+                    // Chocolate `shoot()` runs inline: its TRANDs (aim
+                    // jitter, tracers, ricochet) precede the CON ops after it
+                    // (DEMO1 tic 1260: PIGCOP's five `shoot SHOTGUN`).
+                    let mut sectors_guard = sectors_cell.borrow_mut();
+                    let mut walls_guard = walls_cell.borrow_mut();
+                    let mut players_guard = players_cell.borrow_mut();
+                    let handled = crate::shoot::shoot_enemy(
+                        lists,
+                        sprites,
+                        &mut sectors_guard,
+                        &mut walls_guard,
+                        picnum,
+                        temps,
+                        tile_meta,
+                        script,
+                        &mut players_guard,
+                        seed,
+                        i,
+                        pn,
+                    );
+                    if handled {
+                        shooter_shade.set(Some(sprites[iu].shade));
+                    }
+                    return handled;
+                }
                 if bloodsplat {
+                    let sectors_ro = sectors_cell.borrow();
+                    let walls_ro = walls_cell.borrow();
                     shoot_bloodsplat_enemy(
                         lists,
                         sprites,
-                        sectors_ro,
-                        walls_ro,
+                        &sectors_ro,
+                        &walls_ro,
                         picnum,
                         temps,
                         tile_meta,
@@ -1044,14 +1161,14 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                         tile_meta,
                         Some(script),
                         script.actortype.as_slice(),
-                        players_ro,
+                        &players_cell.borrow(),
                         seed,
                         i,
                     );
                 }
                 true
             };
-            execute_actor_with(
+            let stop = execute_actor_with(
                 script,
                 body,
                 randomseed,
@@ -1069,7 +1186,11 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 active_sound_owners,
                 Some(&mut shoot_now),
                 Some(&mut fall_now),
-            )
+            );
+            if let Some(shade) = shooter_shade.get() {
+                actor_s.shade = shade;
+            }
+            stop
         };
         temps[iu] = actor_t;
         sprites[iu] = actor_s;
@@ -1144,7 +1265,12 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 let _ = lists.changespritestat(spawned, STAT_ACTOR);
             }
         }
-        let hit_radii: Vec<_> = temps[iu].pending_hit_radii.drain(..).collect();
+        // A `hitradius` queued after a CON `spawn` waits for that spawn below
+        // (Chocolate runs both inline, so their TRANDs interleave in op order).
+        let (hit_radii, mut late_hit_radii): (Vec<_>, Vec<_>) = temps[iu]
+            .pending_hit_radii
+            .drain(..)
+            .partition(|request| request.after_spawns == 0);
         for request in hit_radii {
             crate::weapons_move::apply_con_hitradius(
                 lists,
@@ -1475,7 +1601,8 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 }
             }
         }
-        for pn in spawns {
+        let spawn_count = spawns.len();
+        for (spawn_k, pn) in spawns.into_iter().enumerate() {
             if pn == BLOOD {
                 let _ = con_spawn_blood(lists, sprites, picnum, temps, Some(script), i);
             } else if pn == EXPLOSION2 {
@@ -1498,6 +1625,47 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                     Some(decal_queue),
                 );
             }
+            late_hit_radii.retain(|request| {
+                let due = request.after_spawns <= spawn_k + 1 || spawn_k + 1 == spawn_count;
+                if due {
+                    crate::weapons_move::apply_con_hitradius(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        temps,
+                        players,
+                        randomseed,
+                        i as i16,
+                        request.radius,
+                        request.damage,
+                        script.actortype.as_slice(),
+                        Some(script),
+                        tile_meta,
+                    );
+                }
+                !due
+            });
+        }
+        // Spawn queue dropped meanwhile: the blast still happens.
+        for request in late_hit_radii {
+            crate::weapons_move::apply_con_hitradius(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                temps,
+                players,
+                randomseed,
+                i as i16,
+                request.radius,
+                request.damage,
+                script.actortype.as_slice(),
+                Some(script),
+                tile_meta,
+            );
         }
         for pn in shoots {
             if matches!(
@@ -1726,10 +1894,8 @@ impl ActorPassView {
                 self.picnums = sprites.iter().map(|s| s.picnum).collect();
             }
             ViewKind::Clip => {
-                self.clips = sprites
-                    .iter()
-                    .map(|s| sprite_z_clip(s, tile_meta))
-                    .collect();
+                self.clips =
+                    crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
             }
         }
         self.source = sprites
@@ -2213,10 +2379,8 @@ fn move_pipebombs(
         .collect();
     let sec_z: Vec<SectorZ> = sectors.iter().map(SectorT::z).collect();
     let wall_xy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
-    let clips: Vec<SpriteZClip> = sprites
-        .iter()
-        .map(|s| sprite_z_clip(s, tile_meta))
-        .collect();
+    let clips: Vec<SpriteZClip> =
+        crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
     for i in order {
         let iu = i as usize;
         if lists.sprite_stat.get(iu).copied() != Some(STAT_ACTOR)

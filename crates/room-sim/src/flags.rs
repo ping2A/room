@@ -339,6 +339,25 @@ pub static UZDOOM_FLAGS: &[&str] = &[
     "ROOMSCALEDCOLLISION",
 ];
 
+/// Uppercase flag name → bit; the first entry wins for a repeated name, as
+/// the old scan did.
+fn flag_index_map() -> &'static std::collections::HashMap<String, u16> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<String, u16>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = std::collections::HashMap::with_capacity(UZDOOM_FLAGS.len());
+        for (i, n) in UZDOOM_FLAGS.iter().enumerate() {
+            if n.starts_with('<') {
+                continue;
+            }
+            if let Ok(i) = u16::try_from(i) {
+                map.entry(n.to_ascii_uppercase()).or_insert(i);
+            }
+        }
+        map
+    })
+}
+
 /// Placeholder for [`UZDOOM_FLAGS`] bit 0.
 const RESERVED_FLAG_SLOT: &str = "<reserved>";
 
@@ -348,16 +367,28 @@ const ROOM_ONLY_FLAGS: usize = 1;
 
 impl ActorFlags {
     /// Bit index of `name`, if it is a UZDoom flag.
+    ///
+    /// Called per actor per tic by the movement code, so it is a hash
+    /// lookup on a stack copy of the name (no allocation), not a scan of
+    /// the 300-odd names.
     #[must_use]
     pub fn index_of(name: &str) -> Option<u16> {
-        let upper = name.trim().trim_start_matches('+').to_ascii_uppercase();
-        if upper.is_empty() || upper.starts_with('<') {
+        let name = name.trim().trim_start_matches('+');
+        if name.is_empty() || name.starts_with('<') {
             return None;
         }
-        UZDOOM_FLAGS
-            .iter()
-            .position(|n| n.eq_ignore_ascii_case(&upper))
-            .and_then(|i| u16::try_from(i).ok())
+        let mut buf = [0u8; 48];
+        let key = name.as_bytes();
+        let upper: std::borrow::Cow<'_, str> = if key.len() <= buf.len() {
+            let out = &mut buf[..key.len()];
+            out.copy_from_slice(key);
+            out.make_ascii_uppercase();
+            // ASCII case changes keep UTF-8 valid.
+            std::borrow::Cow::Borrowed(std::str::from_utf8(&buf[..key.len()]).ok()?)
+        } else {
+            std::borrow::Cow::Owned(name.to_ascii_uppercase())
+        };
+        flag_index_map().get(upper.as_ref()).copied()
     }
 
     /// Whether bit `index` is set.
@@ -422,6 +453,44 @@ pub fn is_uzdoom_flag(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hash lookup answers exactly as the old linear scan did, for every
+    /// name in any case, with `+`, spaces, and for names that are not flags.
+    #[test]
+    fn index_of_matches_the_linear_scan() {
+        fn scan(name: &str) -> Option<u16> {
+            let upper = name.trim().trim_start_matches('+').to_ascii_uppercase();
+            if upper.is_empty() || upper.starts_with('<') {
+                return None;
+            }
+            UZDOOM_FLAGS
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(&upper))
+                .and_then(|i| u16::try_from(i).ok())
+        }
+        let mut names: Vec<String> = Vec::new();
+        for n in UZDOOM_FLAGS {
+            names.push((*n).to_owned());
+            names.push(n.to_ascii_lowercase());
+            names.push(format!(" +{} ", n.to_ascii_lowercase()));
+            names.push(format!("{n}X"));
+        }
+        for n in [
+            "",
+            "+",
+            "<reserved>",
+            "NOTAFLAG",
+            "Inventory.AlwaysPickup",
+            "é",
+            &"A".repeat(80),
+        ] {
+            names.push(n.to_owned());
+        }
+        for n in &names {
+            assert_eq!(ActorFlags::index_of(n), scan(n), "{n:?}");
+        }
+        assert_eq!(ActorFlags::index_of("+inchase"), Some(1));
+    }
 
     #[test]
     fn every_define_flag_has_a_bit() {

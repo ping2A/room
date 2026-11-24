@@ -999,10 +999,23 @@ export function initSettings(mod, opts = {}) {
     saveStored(state);
   }
 
+  // A solo game pauses while the panel is open (the wasm ignores this in
+  // netplay); older wasm builds have no export.
+  function setMenuPause(on) {
+    if (typeof mod.roomSetMenuPause === "function") {
+      try {
+        mod.roomSetMenuPause(on);
+      } catch (e) {
+        console.warn("room-web: menu pause failed", e);
+      }
+    }
+  }
+
   function close() {
     listening = null;
     root.hidden = true;
     document.body.classList.remove("settings-open");
+    setMenuPause(false);
   }
 
   function open() {
@@ -1017,6 +1030,7 @@ export function initSettings(mod, opts = {}) {
     syncForm();
     root.hidden = false;
     document.body.classList.add("settings-open");
+    setMenuPause(true);
   }
 
   root.querySelector(".settings-close").addEventListener("click", () => {

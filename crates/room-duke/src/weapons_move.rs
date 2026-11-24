@@ -1250,7 +1250,7 @@ pub fn moveweapons(
             let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
             let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
             let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
-            let sprite_hits: Vec<SpriteHit> = sprites
+            let mut sprite_hits: Vec<SpriteHit> = sprites
                 .iter()
                 .enumerate()
                 .map(|(index, sprite)| {
@@ -1268,6 +1268,7 @@ pub fn moveweapons(
                     hit
                 })
                 .collect();
+            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
             let hit = hitscan_full(
                 source.x,
                 source.y,
@@ -1411,7 +1412,7 @@ pub fn moveweapons(
             let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
             let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
             let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
-            let sprite_hits: Vec<SpriteHit> = sprites
+            let mut sprite_hits: Vec<SpriteHit> = sprites
                 .iter()
                 .enumerate()
                 .map(|(index, sprite)| {
@@ -1429,6 +1430,7 @@ pub fn moveweapons(
                     hit
                 })
                 .collect();
+            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
             let hit = hitscan_full(
                 source.x,
                 source.y,
@@ -1552,10 +1554,8 @@ pub fn moveweapons(
                 .get(source.picnum.max(0) as usize)
                 .map_or(0, |m| i32::from(m.height));
             let clip_z = source.z - ((height * i32::from(source.yrepeat)) << 1);
-            let mut sprite_clips: Vec<_> = sprites
-                .iter()
-                .map(|sprite| crate::player::sprite_z_clip(sprite, tile_meta))
-                .collect();
+            let mut sprite_clips: Vec<_> =
+                crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
             if let Some(me) = sprite_clips.get_mut(iu) {
                 me.cstat = 0;
             }
@@ -1763,6 +1763,25 @@ pub fn moveweapons(
             continue;
         }
         let custom_rpg = projectile_workslike & crate::shoot::PROJECTILE_FLAG_RPG != 0;
+        if sprites[iu].picnum == rpg_tile && !custom_rpg {
+            move_vanilla_rpg(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                randomseed,
+                actor_temps,
+                picnum,
+                script,
+                tile_meta,
+                i,
+                &sec_w,
+                &wxy,
+                &sec_z,
+            );
+            continue;
+        }
         if sprites[iu].picnum == rpg_tile || custom_rpg {
             let mut timer_expired = false;
             if custom_rpg
@@ -1842,7 +1861,7 @@ pub fn moveweapons(
                     }
                 }
             }
-            let spr_hits: Vec<SpriteHit> = sprites
+            let mut spr_hits: Vec<SpriteHit> = sprites
                 .iter()
                 .enumerate()
                 .map(|(index, sp)| {
@@ -1862,6 +1881,7 @@ pub fn moveweapons(
                     hit
                 })
                 .collect();
+            crate::shoot::drop_deleted_hits(&mut spr_hits, &lists.sprite_stat);
             let hit = if timer_expired {
                 room_build_engine::geom::HitScan {
                     hitsect: source.sectnum,
@@ -2247,7 +2267,7 @@ pub fn moveweapons(
                     })
                     .unwrap_or(0)
                     != 0;
-            let sprite_hits: Vec<SpriteHit> = sprites
+            let mut sprite_hits: Vec<SpriteHit> = sprites
                 .iter()
                 .enumerate()
                 .map(|(index, sp)| {
@@ -2269,6 +2289,7 @@ pub fn moveweapons(
                     hit
                 })
                 .collect();
+            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
             let hit = hitscan_full(
                 source.x,
                 source.y,
@@ -2915,6 +2936,400 @@ fn arm_tagged_detonables_from_blast(
 /// RPGBLASTRADIUS are content data; damage is selected from the three vanilla
 /// distance bands.
 /// The target CON consumes `hit_extra` through its normal `ifhitweapon` path.
+/// Chocolate `movesprite` for a STAT_PROJECTILE sprite (non-badguy, statnum
+/// 4): `clipmove` with wall distance 8 at `z - height`, by the per-tic step
+/// of `(xchange, ychange)`, then the Z step when it stays between the planes
+/// `getglobalz` cached before the move. Returns Build's code: 0, `16384 |
+/// sector` (plane), `32768 | wall`, `49152 | sprite`.
+#[allow(clippy::too_many_arguments)]
+fn projectile_movesprite(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    i: i16,
+    xchange: i32,
+    ychange: i32,
+    zchange: i32,
+    cliptype: u32,
+    (ceilz, florz): (i32, i32),
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+    sec_z: &[SectorZ],
+    tile_meta: &[TileZMeta],
+) -> i32 {
+    let iu = i as usize;
+    let me = sprites[iu];
+    let height = tile_meta
+        .get(me.picnum.max(0) as usize)
+        .map_or(0, |m| i32::from(m.height));
+    let clip_z = me.z - ((height * i32::from(me.yrepeat)) << 1);
+    let mut sprite_clips: Vec<_> =
+        crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
+    if let Some(own) = sprite_clips.get_mut(iu) {
+        own.cstat = 0;
+    }
+    let (mut nx, mut ny, mut nsect) = (me.x, me.y, me.sectnum);
+    let retval = room_build_engine::geom::clipmove_xy_at_z_cliptype(
+        &mut nx,
+        &mut ny,
+        clip_z,
+        &mut nsect,
+        (xchange * TICSPERFRAME) >> 3,
+        (ychange * TICSPERFRAME) >> 3,
+        8,
+        4 << 8,
+        4 << 8,
+        sec_w,
+        wxy,
+        Some(sec_z),
+        &sprite_clips,
+        cliptype,
+        Some(&*lists),
+    );
+    sprites[iu].x = nx;
+    sprites[iu].y = ny;
+    if nsect >= 0 && nsect != me.sectnum {
+        let _ = lists.changespritesect(i, nsect);
+        sprites[iu].sectnum = nsect;
+    }
+    let daz = sprites[iu].z + ((zchange * TICSPERFRAME) >> 3);
+    if daz > ceilz && daz <= florz {
+        sprites[iu].z = daz;
+    } else if retval == 0 {
+        return 16384 + i32::from(nsect);
+    }
+    retval
+}
+
+/// Build `setsprite(i, x, y, z)`: move the sprite and re-find its sector.
+fn setsprite_xyz(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    i: i16,
+    (x, y, z): (i32, i32, i32),
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+) {
+    let iu = i as usize;
+    sprites[iu].x = x;
+    sprites[iu].y = y;
+    sprites[iu].z = z;
+    let mut sect = sprites[iu].sectnum;
+    room_build_engine::geom::updatesector(x, y, &mut sect, sec_w, wxy);
+    if sect >= 0 && sect != sprites[iu].sectnum {
+        let _ = lists.changespritesect(i, sect);
+        sprites[iu].sectnum = sect;
+    }
+}
+
+/// Chocolate `moveweapons` for the vanilla `RPG` rocket: smoke trail,
+/// `movesprite` (CLIPMASK1), the homing proximity hit, plane checks against
+/// the cached `getglobalz` planes, then on impact `checkhitsprite` /
+/// `checkhitwall` / `checkhitceiling`, a spawned `EXPLOSION2` (plus
+/// `EXPLOSION2BOT`), `RPG_EXPLODE`, `hitradius`, and the rocket is deleted.
+#[allow(clippy::too_many_arguments)]
+fn move_vanilla_rpg(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    players: &mut [Player],
+    randomseed: &mut i32,
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    i: i16,
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+    sec_z: &[SectorZ],
+) {
+    let iu = i as usize;
+    let tile = |name: &str, fallback: i16| script_tile(script, name).unwrap_or(fallback);
+    let s = sprites[iu];
+    let lotag = |sect: i16| {
+        usize::try_from(sect)
+            .ok()
+            .and_then(|k| sectors.get(k))
+            .map_or(0, |sector| sector.lotag)
+    };
+    let underwater = lotag(s.sectnum) == 2;
+    let (k, ll) = if underwater {
+        (i32::from(s.xvel) >> 1, i32::from(s.zvel) >> 1)
+    } else {
+        (i32::from(s.xvel), i32::from(s.zvel))
+    };
+    let (dax, day, daz) = (s.x, s.y, s.z);
+    // `getglobalz(i)` at the old position, before the smoke spawns.
+    let sprite_clips: Vec<_> =
+        crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
+    let planes = projectile_globalz(&s, sectors, sec_z, wxy, &sprite_clips, sprites);
+    if actor_temps.len() <= iu {
+        actor_temps.resize_with(iu + 1, ActorConTemps::default);
+    }
+    if actor_temps[iu].hit_picnum != tile("BOSS2", 2710) && s.xrepeat >= 10 && !underwater {
+        if let Some(image) = script {
+            let smoke = crate::spawn_rt::spawn_from(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                image,
+                randomseed,
+                i,
+                tile("SMALLSMOKE", 1060),
+                None,
+            );
+            if let Some(sp) = usize::try_from(smoke).ok().and_then(|k| sprites.get_mut(k)) {
+                sp.z += 1 << 8;
+            }
+        }
+    }
+    let (sin, cos) = sincos_q14(i32::from(s.ang) & 2047);
+    let mut j = projectile_movesprite(
+        lists,
+        sprites,
+        i,
+        (k * cos) >> 14,
+        (k * sin) >> 14,
+        ll,
+        (256 << 16) | 64,
+        planes,
+        sec_w,
+        wxy,
+        sec_z,
+        tile_meta,
+    );
+    let s = sprites[iu];
+    if s.yvel >= 0
+        && let Some(target) = sprites.get(s.yvel as usize)
+        && crate::actors::find_distance_2d(s.x - target.x, s.y - target.y) < 256
+    {
+        j = 49152 | i32::from(s.yvel);
+    }
+    if s.sectnum < 0 {
+        let _ = lists.deletesprite(i);
+        return;
+    }
+    if j & 49152 != 49152 {
+        let (ceilz, florz) = planes;
+        let on_water = lotag(s.sectnum) == 1;
+        if s.z < ceilz {
+            j = 16384 | i32::from(s.sectnum);
+            sprites[iu].zvel = -1;
+        } else if (s.z > florz && !on_water) || (s.z > florz + (16 << 8) && on_water) {
+            j = 16384 | i32::from(s.sectnum);
+            if !on_water {
+                sprites[iu].zvel = 1;
+            }
+        }
+    }
+    if j == 0 {
+        // No hit: a full-size rocket under water leaves bubbles (`rnd(140)`).
+        if lotag(sprites[iu].sectnum) == 2
+            && sprites[iu].xrepeat >= 10
+            && (krand_step(randomseed) >> 8) >= 255 - 140
+            && let Some(image) = script
+        {
+            let _ = crate::spawn_rt::spawn_from(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                image,
+                randomseed,
+                i,
+                WATERBUBBLE,
+                None,
+            );
+        }
+        return;
+    }
+    let mut sounds: Vec<i16> = Vec::new();
+    if j & 49152 == 49152 {
+        let target = (j & 4095) as usize;
+        // `checkhitsprite(j, i)`: object cases, or the default branch (a
+        // badguy doubles the rocket's extra, gets knocked back and woken).
+        if target < sprites.len() {
+            let actortype: Vec<u8> = script.map_or_else(Vec::new, |image| image.actortype.clone());
+            crate::shoot::checkhitsprite_shotgun(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                picnum,
+                actor_temps,
+                tile_meta,
+                script,
+                &actortype,
+                randomseed,
+                target as i16,
+                i,
+                false,
+            );
+            if sprites[target].picnum == APLAYER {
+                if actor_temps.len() <= target {
+                    actor_temps.resize_with(target + 1, ActorConTemps::default);
+                }
+                actor_temps[target]
+                    .pending_actor_sounds
+                    .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+            }
+        }
+    } else if j & 49152 == 32768 {
+        // The rocket never mirror-bounces: back to where it was, then `checkhitwall`.
+        let wall = (j & 32767) as usize;
+        setsprite_xyz(lists, sprites, i, (dax, day, daz), sec_w, wxy);
+        let here = sprites[iu];
+        sounds.extend(apply_checkhitwall(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum,
+            actor_temps,
+            randomseed,
+            here,
+            i,
+            here.picnum,
+            wall,
+            here.x,
+            here.y,
+            here.z,
+            here.sectnum,
+            script,
+        ));
+    } else {
+        setsprite_xyz(lists, sprites, i, (dax, day, daz), sec_w, wxy);
+        if sprites[iu].zvel < 0 {
+            let sect = sprites[iu].sectnum;
+            if usize::try_from(sect)
+                .ok()
+                .and_then(|k| sectors.get(k))
+                .is_some_and(|sector| sector.ceilingstat & 1 != 0 && sector.ceilingpal == 0)
+            {
+                let _ = lists.deletesprite(i);
+                return;
+            }
+            let mut ceiling_sounds = Vec::new();
+            crate::shoot::check_hit_ceiling(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                script,
+                randomseed,
+                sect,
+                i,
+                sprites[iu].owner,
+                &mut ceiling_sounds,
+            );
+            sounds.extend(
+                ceiling_sounds
+                    .into_iter()
+                    .map(|id| i16::try_from(id).unwrap_or_default()),
+            );
+        }
+    }
+    let s = sprites[iu];
+    let plane_hit = j & 49152 == 16384;
+    let mut boom = -1;
+    if let Some(image) = script {
+        boom = crate::spawn_rt::spawn_from(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum,
+            actor_temps,
+            tile_meta,
+            image,
+            randomseed,
+            i,
+            tile("EXPLOSION2", 1890),
+            None,
+        );
+        if let Some(e) = usize::try_from(boom).ok().filter(|&k| k < sprites.len()) {
+            sprites[e].x = dax;
+            sprites[e].y = day;
+            sprites[e].z = daz;
+            if s.xrepeat < 10 {
+                sprites[e].xrepeat = 6;
+                sprites[e].yrepeat = 6;
+            } else if plane_hit {
+                if s.zvel > 0 {
+                    let _ = crate::spawn_rt::spawn_from(
+                        lists,
+                        sprites,
+                        sectors,
+                        walls,
+                        picnum,
+                        actor_temps,
+                        tile_meta,
+                        image,
+                        randomseed,
+                        i,
+                        tile("EXPLOSION2BOT", 2219),
+                        None,
+                    );
+                } else {
+                    sprites[e].cstat |= 8;
+                    sprites[e].z += 48 << 8;
+                }
+            }
+        }
+    }
+    // `spritesound(RPG_EXPLODE, i)`: the rocket goes away, so the sound rides
+    // on its explosion (same place), with any wall / ceiling hit sounds.
+    sounds.push(9);
+    if let Some(e) = usize::try_from(boom).ok() {
+        if actor_temps.len() <= e {
+            actor_temps.resize_with(e + 1, ActorConTemps::default);
+        }
+        actor_temps[e].pending_actor_sounds.extend(sounds);
+    }
+    let (strength, radius) = if s.xrepeat >= 10 {
+        (i32::from(s.extra), RPG_BLAST_RADIUS)
+    } else {
+        // Chocolate adds `global_random & 3`; Room's projectile pass has no
+        // `global_random`, and the value only nudges a shrunk rocket's damage.
+        (i32::from(s.extra), RPG_BLAST_RADIUS >> 1)
+    };
+    apply_rpg_blast(
+        lists,
+        sprites,
+        sectors,
+        walls,
+        actor_temps,
+        players,
+        randomseed,
+        strength,
+        radius,
+        s.picnum,
+        None,
+        s,
+        i,
+        picnum,
+        script,
+        tile_meta,
+        script.map_or(&[], |image| image.actortype.as_slice()),
+        s.x,
+        s.y,
+        s.z,
+        s.sectnum,
+        s.owner,
+    );
+    let _ = lists.deletesprite(i);
+}
+
 pub(crate) fn apply_rpg_blast(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],

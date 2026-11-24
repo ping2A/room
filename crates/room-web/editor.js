@@ -7,7 +7,9 @@ import {
   SECTOR_PORTAL_FLAGS, THING_EXT_FLAGS, THING_TYPE_HINTS,
 } from "./editor-tools.js";
 import { install as installPaint, paintNs } from "./editor-paint.js";
-import { install as installScripts, highlight, textLang, includesOf, zscriptClosure } from "./editor-scripts.js";
+import { install as installScripts, highlight, textLang, includesOf, zscriptClosure, acsAssist, acsLocalNames } from "./editor-scripts.js";
+import { argKindsOf } from "./editor-geom.js";
+import { install as installExtras } from "./editor-extras.js";
 
 /** Keep the native Duke editor separate from the Doom map/resource browser. */
 const ROOM_UI_SHOW_DUKE = true;
@@ -119,6 +121,8 @@ const S = {
   thingInfo: new Map(),
   doc: null,
   docs: {},
+  mapAcs: {}, // map → ACS source compiled into its BEHAVIOR in the editor
+  acsGen: 0,
   mode: "sectors",
   sel: new Set(),
   hover: -1,
@@ -152,6 +156,8 @@ const S = {
   /** Layout before entering visual mode (`2d` / `split` / `3d`). */
   layoutBeforeVisual: "split",
 };
+/** Autosave, tag links, shaping and workflow tools (`editor-extras.js`), installed at the end. */
+let extras = null;
 
 // ---------------------------------------------------------------- engine boot
 
@@ -250,6 +256,7 @@ function engineMapName(name) {
 
 function setSummary(json) {
   S.summary = JSON.parse(json);
+  extras?.onSummary();
   S.zsKeys = null;
   S.thingInfo = new Map(S.summary.things.map((t) => [t.num, t]));
   const sel = $("#map-select");
@@ -293,7 +300,7 @@ function setSummary(json) {
     $("#btn-composer").hidden = true;
     $("#btn-export-pk3").hidden = true;
     $("#btn-open-pk3").hidden = true;
-    document.querySelector(".packs").hidden = true;
+    document.querySelectorAll(".packs").forEach((e) => { e.hidden = true; });
     document.querySelector(".layout").hidden = false;
     $("#textured").parentElement.hidden = true;
     $("#portals-toggle").hidden = true;
@@ -302,8 +309,10 @@ function setSummary(json) {
     const labels = { vertices: "Vertices", lines: "Walls", sectors: "Sectors", things: "Sprites", draw: "Draw" };
     document.querySelectorAll("#modes .btn").forEach((b) => {
       b.textContent = labels[b.dataset.mode] || b.textContent;
-      b.hidden = false;
+      b.hidden = !labels[b.dataset.mode];
     });
+    $("#doom-tools").hidden = true;
+    $("#thing-filter").hidden = true;
   } else {
     $("#btn-export").textContent = "Export WAD";
     $("#btn-export").title = "Download edited maps and resources as a PWAD (Ctrl+S)";
@@ -320,7 +329,7 @@ function setSummary(json) {
     $("#btn-composer").hidden = false;
     $("#btn-export-pk3").hidden = false;
     $("#btn-open-pk3").hidden = false;
-    document.querySelector(".packs").hidden = false;
+    document.querySelectorAll(".packs").forEach((e) => { e.hidden = false; });
     document.querySelector(".layout").hidden = false;
     $("#textured").parentElement.hidden = false;
     $("#portals-toggle").hidden = false;
@@ -331,6 +340,8 @@ function setSummary(json) {
       b.textContent = labels[b.dataset.mode] || b.textContent;
       b.hidden = false;
     });
+    $("#doom-tools").hidden = false;
+    $("#thing-filter").hidden = false;
   }
   syncPacksUi();
   syncBrowserTab();
@@ -546,6 +557,7 @@ function openIwad(bytes, name) {
     S.drawPts = [];
     S.doc = null;
     S.docs = {};
+    S.mapAcs = {};
     S.mode = "sectors";
     S.sel.clear();
     S.undo = [];
@@ -571,6 +583,7 @@ function openIwad(bytes, name) {
     status(S.summary.duke
       ? `Opened ${name} — choose a Build map from the Maps list`
       : `Opened ${name} — choose a Doom map from the Maps list`);
+    if (!S.summary.duke) extras?.offerRestore();
     return true;
   } catch (e) {
     toast(`Open failed: ${errText(e)}`, true);
@@ -717,8 +730,8 @@ function syncPacksUi() {
   const packs = listRemovableArchives();
   label.replaceChildren();
   if (!packs.length) {
-    label.textContent = "—";
-    label.title = "No extra archives — use + Pack… or Open…";
+    // Nothing mounted: the chip shows only the game (empty labels are hidden).
+    label.title = "No extra archives — File › Mount content pack… or Add files on top…";
     return;
   }
   label.title = `Mounted: ${packs.join(", ")}`;
@@ -817,7 +830,10 @@ async function openFiles(files) {
 
 function loadMap(name) {
   try {
-    const json = S.mod.roomEditorLoadMap(name);
+    // A map made in the editor (New map, Generate, a restored autosave) is
+    // not in the game files: open its document and push it to the engine.
+    const onlyHere = !!S.docs[name] && !S.summary?.duke && !S.summary?.maps?.includes(name);
+    const json = onlyHere ? null : S.mod.roomEditorLoadMap(name);
     S.doc = S.docs[name] ? S.docs[name] : JSON.parse(json);
     if (S.summary?.duke) {
       const native = JSON.parse(S.mod.roomEditorDukeMapGet(name));
@@ -1015,6 +1031,7 @@ function hitTest(wx, wy, mode = S.mode) {
   if (mode === "things") {
     let best = -1, bd = Infinity;
     d.things.forEach((t, i) => {
+      if (!thingVisible(t)) return;
       const r = Math.max(thingRadius(t), tol);
       const dd = Math.hypot(t.x - wx, t.y - wy);
       if (dd <= r && dd < bd) { bd = dd; best = i; }
@@ -1026,6 +1043,66 @@ function hitTest(wx, wy, mode = S.mode) {
 }
 
 const thingRadius = (t) => S.thingInfo.get(t.type_id)?.radius || 16;
+
+// ---------------------------------------------------------------- thing filter
+
+const TF_KEY = "room/editor-thing-filter";
+/** View › Things on the map: hidden categories, skill, game mode. */
+const thingFilter = (() => {
+  try {
+    const f = JSON.parse(localStorage.getItem(TF_KEY) || "null");
+    if (f) return { hide: new Set(f.hide || []), skill: f.skill || "all", mode: f.mode || "all" };
+  } catch (_) { /* fresh */ }
+  return { hide: new Set(), skill: "all", mode: "all" };
+})();
+const thingFilterOn = () => thingFilter.hide.size > 0 || thingFilter.skill !== "all" || thingFilter.mode !== "all";
+
+/** Whether thing `t` passes the filter (category, skill bits, game-mode flags per map format). */
+function thingVisible(t) {
+  if (!thingFilterOn()) return true;
+  const cat = S.thingInfo.get(t.type_id)?.cat || "special";
+  if (thingFilter.hide.has(cat)) return false;
+  const f = t.flags || 0;
+  if (thingFilter.skill !== "all" && !(f & Number(thingFilter.skill))) return false;
+  const m = thingFilter.mode;
+  if (m === "all") return true;
+  if (isHexen()) {
+    // Hexen: explicit single / coop / deathmatch bits.
+    return !!(f & { single: 256, coop: 512, dm: 1024 }[m]);
+  }
+  // Doom / Boom (and Room's UDMF bits): 16 multiplayer only, 32 not DM, 64 not coop.
+  if (m === "single") return !(f & 16);
+  if (m === "dm") return isUdmf() || !(f & 32);
+  return isUdmf() || !(f & 64);
+}
+
+function saveThingFilter() {
+  try { localStorage.setItem(TF_KEY, JSON.stringify({ hide: [...thingFilter.hide], skill: thingFilter.skill, mode: thingFilter.mode })); } catch (_) { /* private mode */ }
+}
+
+function renderThingFilter() {
+  const box = $("#tf-cats");
+  if (!box) return;
+  box.replaceChildren(...CAT_ORDER.map((cat) => {
+    const cb = el("input", { type: "checkbox", checked: !thingFilter.hide.has(cat) });
+    cb.addEventListener("change", () => {
+      if (cb.checked) thingFilter.hide.delete(cat); else thingFilter.hide.add(cat);
+      thingFilterChanged();
+    });
+    return el("label", { class: "check" }, cb, el("span", { class: "tf-dot", style: `background:${CAT_COLORS[cat]}` }), cat[0].toUpperCase() + cat.slice(1));
+  }));
+  $("#tf-skill").value = thingFilter.skill;
+  $("#tf-mode").value = thingFilter.mode;
+}
+
+function thingFilterChanged() {
+  saveThingFilter();
+  // Hidden things leave the selection, so edits never touch what you can't see.
+  if (S.mode === "things" && S.doc) for (const i of [...S.sel]) if (!thingVisible(S.doc.things[i])) S.sel.delete(i);
+  render2d();
+  renderInspector();
+  updateCounts();
+}
 
 function selectionVertices() {
   const d = S.doc, out = new Set();
@@ -1864,6 +1941,7 @@ function draw2d() {
     for (let y = Math.floor(wy0 / step) * step; y <= wy1; y += step) { const [, sy] = toScreen(0, y); ctx.moveTo(0, Math.round(sy) + 0.5); ctx.lineTo(W, Math.round(sy) + 0.5); }
     ctx.stroke();
   }
+  extras?.drawBackground(ctx);
   // Sectors.
   const geo = geometry();
   ctx.save();
@@ -1910,6 +1988,7 @@ function draw2d() {
       ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx - nx * 6, my - ny * 6); ctx.stroke();
     }
   });
+  extras?.drawLinks(ctx, geo, dpr, W, H);
   if (S.showPortals && S.portals) drawPortalOverlay(ctx, geo, sc, dpr, W, H);
   // Vertices.
   if (S.mode === "vertices" || S.mode === "lines" || S.mode === "draw" || sc > 0.6) {
@@ -1927,6 +2006,7 @@ function draw2d() {
   const showThings = S.mode === "things" || sc > 0.12;
   if (showThings) {
     d.things.forEach((t, i) => {
+      if (!thingVisible(t)) return;
       const info = S.thingInfo.get(t.type_id);
       const [x, y] = toScreen(t.x, t.y);
       const r = Math.max(3, (info?.radius || 16) * sc);
@@ -1962,6 +2042,7 @@ function draw2d() {
     ctx.stroke();
     S.drawPts.forEach((p) => { const [x, y] = toScreen(p.x, p.y); ctx.fillStyle = "#4cc38a"; ctx.fillRect(x - 3, y - 3, 6, 6); });
   }
+  extras?.drawTool(ctx, W, H);
   // Selection box.
   if (mouse.box) {
     const [x0, y0, x1, y1] = mouse.box;
@@ -1997,9 +2078,10 @@ function setHint() {
     lines: "Click/drag lines · X split · F flip · Del delete",
     sectors: "Click sectors · PgUp/PgDn floor ±8 (Shift: ceiling) · +/- light · Del delete",
     things: "Double-click/Insert to place the type picked in Things · drag to move · Del delete",
-    draw: "Click to add points · click the first point (or Enter) to close · Esc cancels",
+    draw: "Click to add points · click the first point (or Enter) to close · Esc cancels · Rectangle / Ellipse: drag a box",
+    ...(extras?.HINTS || {}),
   };
-  $("#hint2d").textContent = `${hints[S.mode]} · Wheel zoom · Right/middle-drag pan · Double-click: move 3D camera`;
+  $("#hint2d").textContent = `${hints[S.mode] || ""} · Wheel zoom · Right/middle-drag pan · Double-click: move 3D camera`;
 }
 
 function dukePointSegmentDistance(x, y, ax, ay, bx, by) {
@@ -2319,6 +2401,7 @@ cv.addEventListener("mousedown", (e) => {
     return;
   }
   if (e.button !== 0) return;
+  if (extras?.mouseDown(wx, wy, e)) { render2d(); return; }
   if (S.mode === "draw") {
     let p = { x: clampI16(snap(wx)), y: clampI16(snap(wy)) };
     const near = S.doc.vertices.find((v) => Math.hypot(v.x - wx, v.y - wy) < 8 / S.view.scale);
@@ -2377,6 +2460,7 @@ window.addEventListener("mousemove", (e) => {
     render2d();
     return;
   }
+  if (extras?.mouseMove(wx, wy)) { render2d(); return; }
   if (mouse.drag && mouse.moved) {
     const dg = mouse.drag;
     if (!dg.snapped) { snapshot(); dg.snapped = true; }
@@ -2396,18 +2480,21 @@ window.addEventListener("mousemove", (e) => {
 
 window.addEventListener("mouseup", () => {
   if (S.dukeMap) { dukeMouseUp(); return; }
+  if (extras?.mouseUp()) render2d();
   if (mouse.box && S.doc) {
     const [x0, y0, x1, y1] = mouse.box;
     const [ax, ay] = toWorld(Math.min(x0, x1), Math.max(y0, y1));
     const [bx, by] = toWorld(Math.max(x0, x1), Math.min(y0, y1));
     const inside = (p) => p.x >= ax && p.x <= bx && p.y >= ay && p.y <= by;
     const d = S.doc;
-    if (S.mode === "vertices") d.vertices.forEach((v, i) => { if (inside(v)) S.sel.add(i); });
-    if (S.mode === "lines") d.linedefs.forEach((l, i) => { if (inside(vtx(l.v1)) && inside(vtx(l.v2))) S.sel.add(i); });
-    if (S.mode === "things") d.things.forEach((t, i) => { if (inside(t)) S.sel.add(i); });
+    // With a Find filter on, only matching objects are picked.
+    const pick = (i) => { if (!extras || extras.allowBox(S.mode, i)) S.sel.add(i); };
+    if (S.mode === "vertices") d.vertices.forEach((v, i) => { if (inside(v)) pick(i); });
+    if (S.mode === "lines") d.linedefs.forEach((l, i) => { if (inside(vtx(l.v1)) && inside(vtx(l.v2))) pick(i); });
+    if (S.mode === "things") d.things.forEach((t, i) => { if (inside(t) && thingVisible(t)) pick(i); });
     if (S.mode === "sectors") {
       const g = geometry();
-      g.bbox.forEach((bb, i) => { if (bb[0] >= ax && bb[2] <= bx && bb[1] >= ay && bb[3] <= by) S.sel.add(i); });
+      g.bbox.forEach((bb, i) => { if (bb[0] >= ax && bb[2] <= bx && bb[1] >= ay && bb[3] <= by) pick(i); });
     }
     mouse.box = null;
     renderInspector();
@@ -2456,8 +2543,53 @@ room.addEventListener("mousedown", (e) => {
     const ny = 1 - ((e.clientY - r.top) / r.height) * 2;
     const hit = S.mod.roomEditorPick(nx, ny);
     lastClickHit = !!hit;
-    if (hit) applyPick(JSON.parse(hit), e.shiftKey);
+    if (hit) {
+      const h = JSON.parse(hit);
+      applyPick(h, e.shiftKey);
+      if (h.kind === "wall" && !e.shiftKey) startOffsetDrag(h, e);
+    }
   }
+});
+
+// Dragging a picked wall in 3D moves its texture with the mouse (x / y
+// offsets); a plain click without moving just picks it. One undo step.
+let offDrag = null;
+function startOffsetDrag(h, e) {
+  const t = pickTarget();
+  if (!t || t.plane) return;
+  const l = S.doc.linedefs[h.index];
+  const a = vtx(l.v1), b = vtx(l.v2);
+  // Texels per screen pixel at the wall's distance (90° horizontal field of view).
+  let dist = 256;
+  if (a && b && S.cam) {
+    const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy || 1;
+    const k = Math.max(0, Math.min(1, ((S.cam.x - a.x) * dx + (S.cam.y - a.y) * dy) / len2));
+    dist = Math.max(32, Math.hypot(a.x + dx * k - S.cam.x, a.y + dy * k - S.cam.y));
+  }
+  offDrag = { t, sx: e.clientX, sy: e.clientY, ox: t.obj.x_offset, oy: t.obj.y_offset, scale: (dist * 2) / Math.max(1, room.clientWidth), moved: false, queued: false };
+}
+window.addEventListener("mousemove", (e) => {
+  if (!offDrag || S.playing) return;
+  const dx = e.clientX - offDrag.sx, dy = e.clientY - offDrag.sy;
+  if (!offDrag.moved && Math.hypot(dx, dy) < 4) return;
+  if (!offDrag.moved) { snapshot(); offDrag.moved = true; room.style.cursor = "move"; }
+  const step = e.shiftKey ? 8 : 1;
+  const q = (v) => Math.round(v / step) * step;
+  // Texture follows the mouse: right → smaller x offset, down → smaller y offset.
+  offDrag.t.obj.x_offset = clampI16(offDrag.ox - q(dx * offDrag.scale));
+  offDrag.t.obj.y_offset = clampI16(offDrag.oy - q(dy * offDrag.scale));
+  status(`Offsets ${offDrag.t.obj.x_offset}, ${offDrag.t.obj.y_offset}${e.shiftKey ? " (steps of 8)" : " · Shift: steps of 8"}`);
+  if (!offDrag.queued) {
+    offDrag.queued = true;
+    requestAnimationFrame(() => { if (offDrag) offDrag.queued = false; commit({ inspector: false }); });
+  }
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button !== 0 || !offDrag) return;
+  const moved = offDrag.moved;
+  offDrag = null;
+  room.style.cursor = "";
+  if (moved) { commit(); renderInspector(); }
 });
 room.addEventListener("dblclick", (e) => {
   if (S.playing || e.button !== 0 || !lastClickHit) return;
@@ -3458,6 +3590,7 @@ function renderInspector() {
       el("button", { class: "btn small", onclick: flipLines }, "Flip (F)"),
       el("button", { class: "btn small", onclick: splitLines }, "Split (X)"),
       el("button", { class: "btn small", title: "Align x offsets along connected walls with the same texture", onclick: () => tools.autoAlignSelection() }, "Auto-align (J)"),
+      el("button", { class: "btn small", title: "Align x and y offsets: the texture runs on and its rows stay at the same heights", onclick: () => tools.autoAlignSelection(true) }, "Align X+Y (⇧J)"),
       ...(n === 2 ? [el("button", { class: "btn small", title: "Make the two selected lines a portal pair (Line_SetPortal)", onclick: makePortalPair }, "Make portal")] : []),
       el("button", { class: "btn small danger", onclick: deleteSelection }, "Delete"));
     body.append(actions);
@@ -3501,6 +3634,7 @@ function renderInspector() {
       const adv = advanced(`${label} — all fields`, sides, ["upper", "middle", "lower", "x_offset", "y_offset", "sector"]);
       if (adv) body.append(adv);
     }
+    if (extras) body.append(extras.linePanel(idx));
     body.append(advanced("Line — all fields", objs, ["v1", "v2", "flags", "special", "tag", "args", "activation", "side_front", "side_back", "hexen"]));
   } else if (S.mode === "sectors") {
     const objs = idx.map((i) => d.sectors[i]);
@@ -3516,6 +3650,7 @@ function renderInspector() {
     const flats = fieldset("Flats", objs, ["floor_pic", "ceiling_pic"], { fields: { floor_pic: { flat: true }, ceiling_pic: { flat: true } } });
     if (S.pick3d?.kind === "floor" || S.pick3d?.kind === "ceiling") flats.style.borderColor = "#ffcc33";
     body.append(flats);
+    if (extras) body.append(extras.sectorPanel(idx));
     body.append(fieldset("Light & action", objs, ["light", "special", "tag"], {
       fields: { light: { range: true, min: 0, max: 255 }, special: isHexen() || isUdmf() ? {} : { options: DOOM_SECTOR_SPECIALS } },
     }));
@@ -3583,7 +3718,8 @@ function renameMap(name) {
 
 function updateCounts() {
   const d = S.doc;
-  $("#st-counts").textContent = d ? `${d.vertices.length} V · ${d.linedefs.length} L · ${d.sidedefs.length} SD · ${d.sectors.length} S · ${d.things.length} T` : "";
+  const hidden = d && thingFilterOn() ? d.things.filter((t) => !thingVisible(t)).length : 0;
+  $("#st-counts").textContent = d ? `${d.vertices.length} V · ${d.linedefs.length} L · ${d.sidedefs.length} SD · ${d.sectors.length} S · ${d.things.length} T${hidden ? ` (${hidden} hidden)` : ""}` : "";
 }
 
 // ---------------------------------------------------------------- texture picker
@@ -3703,8 +3839,23 @@ function renderBrowser() {
       if (!sprites.length) body.append(el("p", { class: "muted", style: "padding:6px 10px" }, "No sprites in this map yet."));
       return;
     }
-    body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" },
-      "Click: pick type · Double-click / right-click / icon: edit sprite + sounds"));
+    // The picked type, shown large: what it looks like and what clicking does.
+    const picked = sm.things.find((t) => t.num === S.thingType);
+    if (picked) {
+      const big = el("canvas", { class: "thing-preview-img", width: 128, height: 128 });
+      if (picked.sprite) drawThumb(big, picked.sprite, 128);
+      const edit = el("button", { class: "btn small", disabled: !picked.sprite,
+        onclick: () => paint.open("sprites", picked.sprite, { num: picked.num, className: picked.name }) }, "✎ Edit sprite & sounds");
+      body.append(el("div", { class: "thing-preview" }, big,
+        el("div", { class: "thing-preview-info" },
+          el("strong", {}, picked.title),
+          el("div", { class: "sub" }, `${picked.name} · #${picked.num} · ${picked.cat}`),
+          el("div", { class: "sub" }, picked.sprite ? `Sprite ${picked.sprite}` : "No sprite"),
+          el("div", { class: "muted thing-preview-hint" }, S.mode === "things" ? "Click the map to place one; selected things change to this type." : "Things mode (T): click the map to place one."),
+          edit)));
+    } else {
+      body.append(el("p", { class: "muted", style: "padding:6px 10px;margin:0" }, "Click a thing to see it and use it for placing."));
+    }
     for (const cat of CAT_ORDER) {
       const list = sm.things.filter((t) => t.cat === cat && (!q || t.title.toUpperCase().includes(q) || String(t.num).includes(q)));
       if (!list.length) continue;
@@ -3726,15 +3877,15 @@ function renderBrowser() {
         }
         const row = el("div", {
           class: `list-item${S.thingType === t.num ? " active" : ""}`,
-          title: t.sprite ? `${t.title} — edit sprite & sounds` : t.title,
+          title: t.sprite ? `${t.title} — double-click to edit its sprite & sounds` : t.title,
           onclick: () => {
             S.thingType = t.num;
             if (S.mode === "things" && S.sel.size) { snapshot(); S.sel.forEach((i) => { S.doc.things[i].type_id = t.num; }); commit(); }
             renderBrowser();
           },
         }, icon, el("div", {}, el("div", {}, t.title), el("div", { class: "sub" }, t.name)), el("span", { class: "meta" }, t.num));
+        // Double-click is the shortcut to the sprite editor.
         row.addEventListener("dblclick", (e) => { e.preventDefault(); openSprite(); });
-        row.addEventListener("contextmenu", (e) => { e.preventDefault(); openSprite(); });
         body.append(row);
       }
     }
@@ -4142,7 +4293,7 @@ function pickFile(accept) {
   });
 }
 
-const overrideNs = (l) => (["flats", "sprites", "patches", "textures"].includes(l.ns) ? l.ns : "global");
+const overrideNs = (l) => (["flats", "sprites", "patches", "textures", "acs"].includes(l.ns) ? l.ns : "global");
 const IMAGE_KINDS = ["flat", "patch", "sprite", "graphic", "texture"];
 
 const PATH_OVERRIDES = "editor-overrides.pk3";
@@ -4239,10 +4390,32 @@ function findInclude(path, from) {
   return hit;
 }
 
-function textEditor(l, bytes) {
+/** Argument names of line special `n` for ACS hints (inspector labels, else kinds). */
+function specialArgNames(n) {
+  const spec = SPECIAL_ARGS[n];
+  if (spec) return spec.map((a) => (a ? String(a[0]).toLowerCase() : "arg"));
+  const kinds = argKindsOf(n);
+  return kinds ? [...kinds].map((c) => ({ s: "tag", t: "tid", l: "line id", p: "polyobj" }[c] || "arg")) : null;
+}
+
+/** Open an #include / #import file (path as written) and put the caret on `line`. */
+function openAtLine(path, line, from) {
+  const hit = findInclude(path, from);
+  if (!hit) { toast(`${path} is not in the loaded files`, true); return; }
+  openLump(hit);
+  setTimeout(() => document.querySelector(`[data-lump-id="${hit.id}"]`)?._goTo?.(line), 0);
+}
+
+/**
+ * Code editor for a text lump. `opts.map`: edit that map's ACS (`SCRIPTS`),
+ * where saving compiles it into the map's `BEHAVIOR` instead of writing a lump.
+ */
+function textEditor(l, bytes, opts = {}) {
   const wrap = el("div", {});
   const text0 = new TextDecoder("utf-8").decode(bytes);
-  const lang = isZscriptLump(l) ? "zs" : textLang(l.name, l.path || l.name, text0);
+  const lang = opts.map ? "acs" : isZscriptLump(l) ? "zs" : textLang(l.name, l.path || l.name, text0);
+  const acs = lang === "acs";
+  const acsName = opts.map ? "SCRIPTS" : (l.path || l.name || "SCRIPTS");
   const zscript = lang === "zs";
   const ta = el("textarea", { class: "code hl-input", spellcheck: "false" });
   ta.value = text0;
@@ -4276,6 +4449,11 @@ function textEditor(l, bytes) {
     if (!inc.length) return;
     incBar.append(el("span", { class: "muted" }, "#include:"));
     for (const x of inc) {
+      const builtin = acs && /(^|[\\/])z(?:common|defs|special|wvars)\.acs$/i.test(x.path) && !findInclude(x.path, l);
+      if (builtin) {
+        incBar.append(el("span", { class: "btn small", title: "Standard header: built into the ACS compiler" }, x.path));
+        continue;
+      }
       const found = !!findInclude(x.path, l);
       incBar.append(el("button", { class: `btn small${found ? "" : " missing"}`, title: found ? `Open ${x.path} (or Ctrl/⌘+click the line)` : "Not found in the loaded files", onclick: () => openInclude(x.path) }, x.path));
     }
@@ -4311,6 +4489,32 @@ function textEditor(l, bytes) {
     errBox.hidden = !errBox.childElementCount;
     renderGutter();
   };
+  /** ACS compile result → status line, gutter mark, click-to-jump. */
+  const showAcs = (r) => {
+    errBox.replaceChildren();
+    marks = new Map();
+    if (r.ok) {
+      const n = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+      errBox.append(el("div", { class: "diag-ok" }, `ACS OK — ${n(r.scripts, "script")}, ${n(r.functions, "function")}, ${r.bytes} bytes`));
+    } else {
+      const e = r.error || {};
+      const here = !e.file || e.file.toLowerCase() === acsName.toLowerCase();
+      if (here && e.line) marks.set(e.line, e.message);
+      // An error in an #include / #import opens that file at the line.
+      const jump = !e.line ? null : here ? () => goToLine(e.line) : () => openAtLine(e.file, e.line, l);
+      errBox.append(el("div", { class: `diag error${jump ? " jump" : ""}`, title: here ? "Go to line" : `Open ${e.file} at line ${e.line}`,
+        onclick: jump }, here ? `${e.line}  error: ${e.message}` : `${e.file}:${e.line}  error: ${e.message}`));
+    }
+    errBox.hidden = false;
+    renderGutter();
+  };
+  const compileAcs = () => {
+    try {
+      const r = JSON.parse(S.mod.roomEditorCompileAcs(acsName, ta.value));
+      showAcs(r);
+      return r;
+    } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); return null; }
+  };
   const check = () => {
     try {
       const r = JSON.parse(S.mod.roomEditorCheckZscript(l.path || l.name, ta.value));
@@ -4333,6 +4537,29 @@ function textEditor(l, bytes) {
     if (inc) { e.preventDefault(); openInclude(inc.path); }
   });
   const save = () => {
+    if (opts.map) {
+      try {
+        const r = JSON.parse(S.mod.roomEditorSetMapAcs(opts.map, ta.value));
+        showAcs(r);
+        if (r.ok) {
+          S.mapAcs[opts.map] = ta.value;
+          S.acsGen++;
+          // The map is now edited: Export writes it with its new BEHAVIOR.
+          if (S.doc?.name === opts.map && !S.docs[opts.map]) S.docs[opts.map] = S.doc;
+        }
+        toast(r.ok ? `${opts.map} scripts compiled — level restarted` : `ACS error on line ${r.error?.line} — the map keeps its old scripts`, !r.ok);
+      } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
+      return;
+    }
+    if (acs) {
+      // Lumps are saved as typed; the check only reports.
+      try {
+        const err = overrideLump(l, new TextEncoder().encode(ta.value));
+        const r = compileAcs();
+        toast(err ? `Applied — ${err}` : r?.ok ? `${l.name} applied — ACS compiles` : `${l.name} applied — ACS has errors`, !!err || !r?.ok);
+      } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
+      return;
+    }
     try {
       const err = overrideLump(l, new TextEncoder().encode(ta.value));
       const r = zscript ? check() : null;
@@ -4342,14 +4569,87 @@ function textEditor(l, bytes) {
     } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
   };
   const where = l.arch && l.path ? ` Saved by path into the PK3 (${l.path}); Export PK3 writes it back.` : "";
-  const note = zscript
-    ? `ZScript — syntax colors as you type, Check finds errors (click one to jump), Ctrl/⌘+click an #include to open it.${where}`
-    : `${DOOM_LANG_LABEL[lang]} — the level reloads with your changes.${where}`;
-  const actions = el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Apply & reload (Ctrl+S)"));
+  const note = opts.map
+    ? `Compile & run builds the map's BEHAVIOR from this source and restarts the level; errors leave the old scripts in place. Exported with the map.`
+    : zscript
+      ? `ZScript — syntax colors as you type, Check finds errors (click one to jump), Ctrl/⌘+click an #include to open it.${where}`
+      : acs
+        ? `ACS — Check compiles it (click an error to jump). Map scripts are edited from the map's 📜 Scripts button.${where}`
+        : `${DOOM_LANG_LABEL[lang]} — the level reloads with your changes.${where}`;
+  const actions = el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, opts.map ? "Compile & run (Ctrl+S)" : "Apply & reload (Ctrl+S)"));
   if (zscript) actions.append(el("button", { class: "btn", title: "Parse this file, then compile the whole ZScript program with it", onclick: check }, "Check ZScript"));
+  if (acs) actions.append(el("button", { class: "btn", title: "Compile without applying; errors are marked in the margin", onclick: compileAcs }, "Check ACS"));
   actions.append(el("span", { class: `kind text` }, DOOM_LANG_LABEL[lang]), el("span", { class: "muted" }, note));
-  wrap.append(actions, incBar, el("div", { class: "code-wrap" }, gutter, el("div", { class: "code-area" }, hl, ta)), errBox);
+  const area = el("div", { class: "code-area" }, hl, ta);
+  wrap.dataset.lumpId = String(l.id ?? "");
+  wrap._goTo = goToLine;
+  let assistHint = null;
+  let libRow = null;
+  if (acs) {
+    let builtin = null;
+    const names = () => {
+      if (!builtin) { try { builtin = JSON.parse(S.mod.roomEditorAcsNames()); } catch (_) { builtin = []; } }
+      return [...acsLocalNames(ta.value), ...builtin];
+    };
+    assistHint = acsAssist(ta, area, names, specialArgNames).hint;
+  }
+  if (acs && !opts.map) {
+    // `#library "NAME"` sources compile into acs/NAME (+ LOADACS).
+    const auto = el("input", { type: "checkbox", checked: true });
+    const libBtn = el("button", { class: "btn go", title: "Compile into the acs namespace as this library's lump" }, "Compile library");
+    libRow = el("div", { class: "actions acs-lib" }, libBtn,
+      el("label", { title: "Add the library to LOADACS so every map loads it" }, auto, " Load on every map (LOADACS)"));
+    const libName = () => /^\s*#library\s+"([^"]+)"/im.exec(ta.value)?.[1] || null;
+    const syncLib = () => {
+      const n = libName();
+      libRow.hidden = !n;
+      if (n) libBtn.textContent = `Compile library ${n.toUpperCase()}`;
+    };
+    libBtn.addEventListener("click", () => {
+      try {
+        const r = JSON.parse(S.mod.roomEditorInstallAcsLibrary(acsName, ta.value, auto.checked));
+        showAcs(r);
+        if (!r.ok) { toast(`ACS error on line ${r.error?.line} — library not installed`, true); return; }
+        setSummary(S.mod.roomEditorApplyLumps());
+        S.acsGen++;
+        toast(`Library ${r.library.toUpperCase()} compiled into acs/${r.library.toUpperCase()}${auto.checked ? " and added to LOADACS" : ""} — level restarted`);
+      } catch (e) { errBox.hidden = false; errBox.textContent = errText(e); }
+    });
+    ta.addEventListener("input", syncLib);
+    syncLib();
+  }
+  wrap.append(actions, ...(libRow ? [libRow] : []), incBar, el("div", { class: "code-wrap" }, gutter, area));
+  if (assistHint) wrap.append(assistHint);
+  wrap.append(errBox);
   return wrap;
+}
+
+/** The open map's ACS in a document tab: edit, compile, play-test. */
+function openMapAcs() {
+  if (!S.doc || S.dukeMap || S.summary?.duke) { toast("Open a Doom-engine map first", true); return; }
+  const name = S.doc.name;
+  const id = `acs:${name}`;
+  if (S.lumpTabs.has(id)) { selectDocTab(id); return; }
+  let info;
+  try { info = JSON.parse(S.mod.roomEditorMapAcs()); } catch (e) { toast(errText(e), true); return; }
+  const src = S.mapAcs[name] ?? (info.source || info.starter);
+  const view = el("div", {});
+  const status = info.scripts ? `${info.scripts} compiled script${info.scripts === 1 ? "" : "s"} in BEHAVIOR` : "No compiled scripts yet";
+  view.append(el("div", { class: "doc-head" }, el("h2", {}, `${name} scripts`), el("span", { class: "kind text" }, "ACS"), el("span", { class: "muted" }, status)));
+  // The document's own format: a conversion may not have reached the engine yet.
+  if (String(S.doc.format || info.format).toLowerCase() === "doom") {
+    view.append(el("div", { class: "acs-convert" },
+      el("p", { class: "muted" }, "This is a Doom-format map: lines can't start scripts and the exported map has no BEHAVIOR. OPEN scripts still run while you play-test here."),
+      el("button", { class: "btn go", onclick: () => {
+        convertToUdmf();
+        if (!isUdmf()) return;
+        S.lumpTabs.delete(id);
+        openMapAcs();
+      } }, "Convert the map to UDMF (keeps the scripts)")));
+  }
+  view.append(textEditor({ name: "SCRIPTS", path: "SCRIPTS", kind: "text" }, new TextEncoder().encode(src), { map: name }));
+  S.lumpTabs.set(id, { title: `${name} ACS`, view });
+  selectDocTab(id);
 }
 
 function imageView(l) {
@@ -4484,6 +4784,7 @@ function exportWad() {
     const bytes = S.mod.roomEditorExport(JSON.stringify(S.docs));
     const base = (S.summary.pwads.at(-1) || S.summary.iwad).replace(/\.(wad|pk3|zip)$/i, "");
     download(bytes, `${base}-room-edit.wad`);
+    extras?.onExported();
     const paths = S.summary.overrides.filter((o) => o.ns === "path").length;
     toast(`Exported ${Object.keys(S.docs).length} map(s) + ${S.summary.overrides.length - paths} lump(s)${paths ? ` — ${paths} PK3 file edit(s) need Export PK3` : ""}`, paths > 0);
   } catch (e) { toast(`Export: ${errText(e)}`, true); }
@@ -4506,6 +4807,7 @@ function exportPk3() {
     const bytes = S.mod.roomEditorExportPk3(JSON.stringify(S.docs), target);
     const base = (target || S.summary.pwads.at(-1) || S.summary.iwad).replace(/^.*[\/]/, "").replace(/\.(wad|pk3|pk7|zip|ipk3)$/i, "");
     download(bytes, `${base}-room-edit.pk3`);
+    extras?.onExported();
     toast(`Exported ${target ? `${target} + ` : ""}${Object.keys(S.docs).length} map(s) + ${S.summary.overrides.length} edit(s) as PK3`);
   } catch (e) { toast(`Export PK3: ${errText(e)}`, true); }
 }
@@ -4656,8 +4958,39 @@ $("#gen-seed").value = Math.floor(Math.random() * 1e6);
 
 // ---------------------------------------------------------------- toolbar & keys
 
+// View › Things on the map.
+renderThingFilter();
+$("#tf-skill").addEventListener("change", (e) => { thingFilter.skill = e.target.value; thingFilterChanged(); });
+$("#tf-mode").addEventListener("change", (e) => { thingFilter.mode = e.target.value; thingFilterChanged(); });
+$("#tf-reset").addEventListener("click", () => {
+  thingFilter.hide.clear(); thingFilter.skill = "all"; thingFilter.mode = "all";
+  renderThingFilter(); thingFilterChanged();
+});
+
+// Header menus (File / Tools / View): one open at a time; choosing an item,
+// clicking elsewhere or Escape closes them; hovering another title while one
+// is open switches to it. Checkboxes keep the menu open.
+const menus = [...document.querySelectorAll("#toolbar details.menu")];
+const closeMenus = (except) => menus.forEach((m) => { if (m !== except) m.open = false; });
+for (const m of menus) {
+  m.addEventListener("toggle", () => { if (m.open) closeMenus(m); });
+  m.querySelector("summary").addEventListener("pointerenter", () => {
+    if (!m.open && menus.some((o) => o.open)) m.open = true;
+  });
+  m.querySelector(".menu-pop").addEventListener("click", (e) => {
+    const item = e.target.closest(".btn");
+    // Later, so a label still opens its file picker.
+    if (item && !item.closest(".menu-row")) setTimeout(() => { m.open = false; });
+  });
+}
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#toolbar details.menu")) closeMenus(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && menus.some((m) => m.open)) { closeMenus(); e.stopPropagation(); }
+}, true);
+
 function syncModeButtons() {
   document.querySelectorAll("#modes .btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === S.mode));
+  $("#draw-opts").hidden = S.mode !== "draw" || !!S.dukeMap;
   setHint();
 }
 function setMode(m) {
@@ -4665,6 +4998,7 @@ function setMode(m) {
   if (S.mode === "draw" && S.drawPts.length) S.drawPts = [];
   S.mode = m;
   S.sel.clear();
+  extras?.reset();
   if (S.dukeMap) S.dukeSelection = null;
   S.pick3d = null;
   S.actorSel = null;
@@ -4816,6 +5150,7 @@ window.addEventListener("keydown", (e) => {
     if (!mod && e.code === "Home") { fitDukeView(); return; }
   }
   if (tools.onKey(e, { mod, in3d: document.activeElement === room })) return;
+  if (extras?.onKey(e, { mod })) return;
   if (document.activeElement === room) {
     if (!S.playing && key3d(e)) e.preventDefault();
     if (!S.playing && (e.code === "Delete" || e.code === "Backspace") && S.mode === "things") { deleteSelection(); e.preventDefault(); }
@@ -4824,11 +5159,11 @@ window.addEventListener("keydown", (e) => {
   if (mod && e.code === "KeyA") {
     e.preventDefault();
     const n = { vertices: S.doc.vertices, lines: S.doc.linedefs, sectors: S.doc.sectors, things: S.doc.things }[S.mode]?.length || 0;
-    S.sel = new Set(Array.from({ length: n }, (_, i) => i));
+    S.sel = new Set(Array.from({ length: n }, (_, i) => i).filter((i) => S.mode !== "things" || thingVisible(S.doc.things[i])));
     renderInspector(); render2d();
     return;
   }
-  const modeKeys = { KeyV: "vertices", KeyL: "lines", KeyS: "sectors", KeyT: "things", KeyD: "draw" };
+  const modeKeys = { KeyV: "vertices", KeyL: "lines", KeyS: "sectors", KeyT: "things", KeyD: "draw", KeyK: "cut", KeyQ: "measure" };
   if (!mod && modeKeys[e.code]) { setMode(modeKeys[e.code]); return; }
   switch (e.code) {
     case "Delete": case "Backspace": deleteSelection(); e.preventDefault(); break;
@@ -4858,7 +5193,7 @@ window.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", render2d);
 new ResizeObserver(render2d).observe($("#view2d-wrap"));
-window.addEventListener("beforeunload", (e) => { if (Object.keys(S.docs).length) { e.preventDefault(); e.returnValue = ""; } });
+// Leaving with unexported work asks first: see editor-extras.js (it knows what was exported).
 document.addEventListener("pointerlockchange", () => {
   if (document.pointerLockElement !== room) look = false;
 });
@@ -4890,8 +5225,18 @@ const paint = installPaint({
 const scripts = installScripts({
   S, el, toast, errText, selectDocTab, setSummary, setPlaying, renderBrowser, rowEl, download, pickFile, addPwad,
 });
+extras = installExtras({
+  S, $, el, toast, status, errText, snapshot, commit, render2d, renderInspector, snap, clampI16, toScreen, mouse,
+  tools, finishDraw, loadMap, setSummary, setLumpData,
+  thingColor: (type) => CAT_COLORS[S.thingInfo.get(type)?.cat] || "#ff00ff",
+});
+for (const [id, fn] of [["#btn-find", extras.openFind], ["#btn-prefabs", extras.openPrefabs], ["#btn-trace", extras.openTrace], ["#btn-acs", openMapAcs]]) {
+  $(id).addEventListener("click", () => { if (S.doc) fn(); else toast("Open a map first"); });
+}
+$("#draw-shape").addEventListener("change", setHint);
+$("#btn-snapshots").addEventListener("click", () => { if (S.summary && !S.summary.duke) extras.openSnapshots(); else toast("Open a Doom game first"); });
 // Console scripting hook: edit `roomEditor.state.doc`, then `roomEditor.commit()`.
-window.roomEditor = { state: S, tools, paint, scripts, snapshot, commit, undo, redo, loadMap };
+window.roomEditor = { state: S, tools, paint, scripts, extras, snapshot, commit, undo, redo, loadMap, openMapAcs };
 $("#btn-check").addEventListener("click", () => S.dukeMap ? dukeCheckMap() : tools.toggleChecker());
 $("#btn-composer").addEventListener("click", () => tools.openComposer());
 $("#btn-rotate").addEventListener("click", (e) => S.dukeMap
@@ -4909,7 +5254,7 @@ setHint();
 setPlaying(false);
 renderDocTabs();
 renderInspector();
-boot().catch((e) => { status(`Engine failed: ${errText(e)}`); console.error(e); });
+boot().then(() => extras.noteAutosave()).catch((e) => { status(`Engine failed: ${errText(e)}`); console.error(e); });
 pollCamera();
 
 // ------------------------------------------------ native Build helpers

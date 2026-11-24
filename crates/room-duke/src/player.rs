@@ -129,6 +129,28 @@ pub struct TileZMeta {
     pub game_flags: u32,
 }
 
+/// [`sprite_z_clip`] for every sprite slot, with deleted slots (stat
+/// `MAXSTATUS`, whose stale data stays in Room's array) made non-blocking:
+/// Chocolate's clip/zrange scans walk the live sector lists only.
+#[must_use]
+pub fn live_sprite_z_clips(
+    sprites: &[SpriteT],
+    sprite_stat: &[i16],
+    tile_meta: &[TileZMeta],
+) -> Vec<SpriteZClip> {
+    sprites
+        .iter()
+        .enumerate()
+        .map(|(index, s)| {
+            let mut clip = sprite_z_clip(s, tile_meta);
+            if sprite_stat.get(index).copied() == Some(room_build_engine::world::MAXSTATUS as i16) {
+                clip.cstat = 0;
+            }
+            clip
+        })
+        .collect()
+}
+
 /// Build a [`SpriteZClip`] from a live sprite + ART meta table.
 #[must_use]
 pub fn sprite_z_clip(s: &SpriteT, tile_meta: &[TileZMeta]) -> SpriteZClip {
@@ -1511,9 +1533,21 @@ fn apply_player_fall_z_with_eduke_bridge(
         })
         .collect();
     let wxy: Vec<WallXY> = walls.iter().map(WallT::xy).collect();
+    // Chocolate `getzrange` walks the live sector sprite lists: a deleted
+    // sprite (stale in Room's array, stat MAXSTATUS) must not clip (DEMO1
+    // tic 1029: the killed drone's slot kept capping the player's ceiling).
     let zclips: Vec<SpriteZClip> = sprites
         .iter()
-        .map(|s| sprite_z_clip(s, tile_meta))
+        .enumerate()
+        .map(|(index, s)| {
+            let mut clip = sprite_z_clip(s, tile_meta);
+            if sprite_stat.is_some_and(|stats| {
+                stats.get(index).copied() == Some(room_build_engine::world::MAXSTATUS as i16)
+            }) {
+                clip.cstat = 0;
+            }
+            clip
+        })
         .collect();
 
     let zr = getzrange_with_sprites(
@@ -1678,16 +1712,31 @@ fn apply_player_fall_z_with_eduke_bridge(
         40
     };
     let contact = fz - (i << 8);
+    let floor_slopes = sectors[p.cursectnum as usize].floorstat & 2 != 0;
 
     if p.posz < contact {
-        // Falling.
-        p.on_ground = false;
-        p.poszv += DUKE_GC + 80;
-        if p.poszv >= 4096 + 2048 {
-            p.poszv = 4096 + 2048;
+        // Falling — unless standing still on a sloped floor close enough to
+        // snap onto it.
+        if sync.bits & 3 == 0 && p.on_ground && floor_slopes && p.posz >= contact - (16 << 8) {
+            p.posz = contact;
+        } else {
+            p.on_ground = false;
+            p.poszv += DUKE_GC + 80;
+            if p.poszv >= 4096 + 2048 {
+                p.poszv = 4096 + 2048;
+            }
+            if p.poszv > 2400 && p.falling_counter < 255 {
+                p.falling_counter += 1;
+            }
+            // Landing damage (`falling_counter > 9`: `extra -= j - (TRAND&3)`)
+            // and the scream / land sounds are not modelled here yet.
         }
     } else {
         // On ground / water surface.
+        p.falling_counter = 0;
+        if psectlotag != 1 && psectlotag != 2 && !p.on_ground && p.poszv > (6144 >> 1) {
+            p.hard_landing = (p.poszv >> 10).clamp(0, 255) as u8;
+        }
         p.on_ground = true;
         if i == 40 {
             let mut k = (contact - p.posz) >> 1;
@@ -1712,11 +1761,51 @@ fn apply_player_fall_z_with_eduke_bridge(
         if sync.bits & 2 != 0 {
             p.posz += 2048 + 768;
         }
+        // Jump: a fresh press with headroom starts the jump arc.
+        let jump_held = sync.bits & 1 != 0;
+        if !jump_held && p.jumping_toggle == 1 {
+            p.jumping_toggle = 0;
+        } else if jump_held
+            && p.jumping_toggle == 0
+            && p.jumping_counter == 0
+            && fz - cz > (56 << 8)
+        {
+            p.jumping_counter = 1;
+            p.jumping_toggle = 1;
+        }
+        if p.jumping_counter != 0 && !jump_held {
+            p.jumping_toggle = 0;
+        }
+    }
+
+    if p.jumping_counter != 0 {
+        if sync.bits & 1 == 0 && p.jumping_toggle == 1 {
+            p.jumping_toggle = 0;
+        }
+        if p.jumping_counter < 1024 + 256 {
+            if psectlotag == 1 && p.jumping_counter > 768 {
+                p.jumping_counter = 0;
+                p.poszv = -512;
+            } else {
+                let (sin, _) = sincos_q14((2048 - 128 + i32::from(p.jumping_counter)) & 2047);
+                p.poszv -= sin / 12;
+                p.jumping_counter += 180;
+                p.on_ground = false;
+            }
+        } else {
+            p.jumping_counter = 0;
+            p.poszv = 0;
+        }
     }
 
     p.posz += p.poszv;
 
     if p.posz < cz + (4 << 8) {
+        p.jumping_counter = 0;
+        if p.poszv < 0 {
+            p.posxv = 0;
+            p.posyv = 0;
+        }
         p.poszv = 128;
         p.posz = cz + (4 << 8);
     }

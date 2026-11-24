@@ -42,6 +42,7 @@ Commands:
   stop      Stop the background process (SIGTERM, then SIGKILL)
   restart   stop then start
   status    Print pid / health / admin UI
+  admin-tui Live ratatui ops console (rooms, seats, metrics, bans, audit)
   mods      Build every mods/<dir> (Rust crate or AssemblyScript) into <module>.wad
 
 Mods: start builds them too (unless --no-build) and serves them, but each one
@@ -62,14 +63,15 @@ Environment:
 
 Lobby:    http://<bind>/
 Play:     http://<bind>/play/   (same-origin; needs --web-root)
-Admin UI: http://<admin-bind>/admin
+Admin UI:  http://<admin-bind>/admin
+Admin TUI: ./scripts/room-server.sh admin-tui
 EOF
 }
 
 cmd=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    start|stop|restart|status|mods)
+    start|stop|restart|status|mods|admin-tui)
       if [[ -n "$cmd" ]]; then
         echo "room-server.sh: unexpected second command '$1'" >&2
         exit 2
@@ -122,7 +124,7 @@ build_room_web() {
   wasm-bindgen "$wasm" --out-dir "$out" --target web --no-typescript
   cp crates/room-web/index.html crates/room-web/voice.js crates/room-web/rtc.js \
     crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/settings.js crates/room-web/mixer-worklet.js \
-    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor.css \
+    crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor-extras.js crates/room-web/editor-geom.js crates/room-web/editor.css \
     crates/room-web/face-capture.js crates/room-web/face-gallery.js crates/room-web/face-share.js \
     crates/room-web/face-worker.js crates/room-web/settings-faces.js crates/room-web/sound-record.js "$out/"
   cp -R crates/room-web/as "$out/as"
@@ -131,8 +133,8 @@ build_room_web() {
   local v
   v="$(date +%s)"
   sed -i.bak "s|room_web_bg\.wasm|room_web_bg.wasm?v=${v}|g" "$out/room_web.js"
-  sed -i.bak -E "s#\./(room_web|editor-tools|editor-paint|editor-scripts|netgraph|touch|rtc|voice)\.js#./\1.js?v=${v}#g" \
-    "$out/editor.js" "$out/index.html"
+  sed -i.bak -E "s#\./(room_web|editor-tools|editor-paint|editor-scripts|editor-extras|editor-geom|netgraph|touch|rtc|voice)\.js#./\1.js?v=${v}#g" \
+    "$out/editor.js" "$out/editor-extras.js" "$out/index.html"
   sed -i.bak -E "s#\./editor\.(js|css)#./editor.\1?v=${v}#g" "$out/editor.html"
   sed -i.bak "s|./face-capture.js|./face-capture.js?v=${v}|g" "$out/editor-paint.js"
   sed -i.bak "s|./sound-record.js|./sound-record.js?v=${v}|g" "$out/editor.js" "$out/editor-paint.js"
@@ -469,6 +471,7 @@ do_status() {
     echo "  lobby:      ${base}/"
     echo "  admin-bind: ${ADMIN_BIND}"
     echo "  admin UI:   ${admin_base}/admin"
+    echo "  admin TUI:  ./scripts/room-server.sh admin-tui"
     echo "  log:        ${LOG_FILE}"
     echo "  pidfile:    ${PID_FILE}"
     if curl -sf "${base}/healthz" >/dev/null 2>&1; then
@@ -496,10 +499,38 @@ do_status() {
   return 1
 }
 
+do_admin_tui() {
+  if [[ -f "$ADMIN_BIND_FILE" ]]; then
+    ADMIN_BIND="$(cat "$ADMIN_BIND_FILE")"
+  fi
+  local admin_base bin target_dir
+  admin_base="$(http_base_for "$ADMIN_BIND")"
+  target_dir="${CARGO_TARGET_DIR:-$ROOT/target}"
+  bin="${target_dir}/debug/room-admin"
+  # Build first (show cargo progress), then exec the binary so the alternate-
+  # screen TUI owns this terminal. A quiet `cargo run` looked stuck on the
+  # one-line "admin TUI → …" message.
+  echo "room-server: building room-admin…"
+  cargo build -p room-admin-tui --bin room-admin
+  if [[ ! -x "$bin" ]]; then
+    echo "room-server: missing ${bin}" >&2
+    exit 1
+  fi
+  # Clear the build chatter so the next thing on screen is the full TUI.
+  printf '\033[2J\033[H'
+  exec "$bin" \
+    --url "${admin_base}" \
+    ${ROOM_ADMIN_TOKEN:+--token "$ROOM_ADMIN_TOKEN"} \
+    ${ROOM_ADMIN_USER:+--user "$ROOM_ADMIN_USER"} \
+    ${ROOM_ADMIN_PASSWORD:+--password "$ROOM_ADMIN_PASSWORD"} \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+}
+
 case "$cmd" in
   start) do_start ;;
   stop) do_stop ;;
   restart) do_stop; do_start ;;
   status) do_status ;;
   mods) build_mods ;;
+  admin-tui) do_admin_tui ;;
 esac

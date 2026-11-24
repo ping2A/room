@@ -228,6 +228,11 @@ pub fn shadowmap_tex_dims() -> (u32, u32) {
 /// For each of [`SHADOWMAP_RES`] directions in the XY plane, stores the distance
 /// to the nearest occluder (or the light radius if none). Matches GZDoom's
 /// `gl_light_shadowmap` idea at CPU quality (GPU ray BVH still open).
+///
+/// Each light only tests the walls that come within its radius (a nearer
+/// hit needs a wall point that close), so the cost follows the walls around
+/// the light, not the whole map: 32 lights × 512 rays × every wall was
+/// tens of millions of ray tests a frame. The result is the same, bit for bit.
 #[must_use]
 pub fn bake_1d_shadowmaps(
     instances: &[DynLightInstance],
@@ -244,17 +249,25 @@ pub fn bake_1d_shadowmaps(
         }
         return atlas;
     }
+    let dirs = shadow_ray_dirs();
+    let mut near: Vec<ShadowOccluder> = Vec::new();
     for (li, lit) in instances.iter().take(n).enumerate() {
         let origin = lit.pos.truncate();
         let radius = lit.radius.max(1.0);
         let row = &mut atlas[li * SHADOWMAP_RES..(li + 1) * SHADOWMAP_RES];
-        for s in 0..SHADOWMAP_RES {
-            let ang = -std::f32::consts::PI
-                + (s as f32 + 0.5) * (std::f32::consts::TAU / SHADOWMAP_RES as f32);
-            let dir = Vec2::new(ang.cos(), ang.sin());
+        near.clear();
+        // A hit at `t < radius` is a wall point closer than `radius`; keep a
+        // unit of slack for float rounding (extra walls cannot change a hit).
+        let reach = radius + 1.0;
+        near.extend(
+            occluders
+                .iter()
+                .filter(|o| segment_dist_sq(origin, o.a, o.b) <= reach * reach),
+        );
+        for (s, dir) in dirs.iter().enumerate() {
             let mut best = radius;
-            for occ in occluders {
-                if let Some(t) = ray_segment_hit(origin, dir, occ.a, occ.b) {
+            for occ in &near {
+                if let Some(t) = ray_segment_hit(origin, *dir, occ.a, occ.b) {
                     if t > 1e-3 && t < best {
                         best = t;
                     }
@@ -264,6 +277,32 @@ pub fn bake_1d_shadowmaps(
         }
     }
     atlas
+}
+
+/// The [`SHADOWMAP_RES`] ray directions, computed once.
+fn shadow_ray_dirs() -> &'static [Vec2; SHADOWMAP_RES] {
+    static DIRS: std::sync::OnceLock<[Vec2; SHADOWMAP_RES]> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        let mut dirs = [Vec2::ZERO; SHADOWMAP_RES];
+        for (s, d) in dirs.iter_mut().enumerate() {
+            let ang = -std::f32::consts::PI
+                + (s as f32 + 0.5) * (std::f32::consts::TAU / SHADOWMAP_RES as f32);
+            *d = Vec2::new(ang.cos(), ang.sin());
+        }
+        dirs
+    })
+}
+
+/// Squared distance from `p` to segment `a→b`.
+fn segment_dist_sq(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let e = b - a;
+    let len_sq = e.length_squared();
+    let t = if len_sq > 0.0 {
+        ((p - a).dot(e) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + e * t - p).length_squared()
 }
 
 /// Ray `origin + t * dir` (`dir` unit) vs segment `a→b`. Returns `t` if hit.
@@ -301,6 +340,117 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    /// The bake as it was (every ray against every wall): the new one must
+    /// give the same bits.
+    /// Bake per-light 1D occlusion distances (row-major, one row per light).
+    ///
+    /// For each of [`SHADOWMAP_RES`] directions in the XY plane, stores the distance
+    /// to the nearest occluder (or the light radius if none). Matches GZDoom's
+    /// `gl_light_shadowmap` idea at CPU quality (GPU ray BVH still open).
+    fn bake_reference(instances: &[DynLightInstance], occluders: &[ShadowOccluder]) -> Vec<f32> {
+        let n = instances.len().min(MAX_GPU_LIGHTS);
+        let mut atlas = vec![0.0f32; SHADOWMAP_RES * MAX_GPU_LIGHTS];
+        if n == 0 || occluders.is_empty() {
+            // No occlusion → full radius (set after we know each light).
+            for (li, lit) in instances.iter().take(n).enumerate() {
+                let r = lit.radius.max(1.0);
+                let row = &mut atlas[li * SHADOWMAP_RES..(li + 1) * SHADOWMAP_RES];
+                row.fill(r);
+            }
+            return atlas;
+        }
+        for (li, lit) in instances.iter().take(n).enumerate() {
+            let origin = lit.pos.truncate();
+            let radius = lit.radius.max(1.0);
+            let row = &mut atlas[li * SHADOWMAP_RES..(li + 1) * SHADOWMAP_RES];
+            for s in 0..SHADOWMAP_RES {
+                let ang = -std::f32::consts::PI
+                    + (s as f32 + 0.5) * (std::f32::consts::TAU / SHADOWMAP_RES as f32);
+                let dir = Vec2::new(ang.cos(), ang.sin());
+                let mut best = radius;
+                for occ in occluders {
+                    if let Some(t) = ray_segment_hit(origin, dir, occ.a, occ.b) {
+                        if t > 1e-3 && t < best {
+                            best = t;
+                        }
+                    }
+                }
+                row[s] = best;
+            }
+        }
+        atlas
+    }
+
+    #[test]
+    fn shadow_bake_matches_the_full_scan_bit_for_bit() {
+        let wad = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/freedoom/freedoom2.wad");
+        let occluders = if wad.is_file() {
+            let vfs = room_vfs::VfsBuilder::new()
+                .mount_path(&wad)
+                .unwrap()
+                .build()
+                .unwrap();
+            let map = room_map::load_map(&vfs, "MAP10").unwrap();
+            crate::scene::collect_shadow_occluders(&map)
+        } else {
+            // A grid of walls when Freedoom is missing.
+            (0..400)
+                .map(|i| {
+                    let (x, y) = ((i % 20) as f32 * 64.0, (i / 20) as f32 * 64.0);
+                    ShadowOccluder {
+                        a: Vec2::new(x, y),
+                        b: Vec2::new(x + 40.0, y + 9.0),
+                    }
+                })
+                .collect()
+        };
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for o in &occluders {
+            lo = lo.min(o.a.min(o.b));
+            hi = hi.max(o.a.max(o.b));
+        }
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        for round in 0..6 {
+            let lights: Vec<DynLightInstance> = (0..40)
+                .map(|i| {
+                    let mut p = lo + (hi - lo) * Vec2::new(next(), next());
+                    // Some lights sit exactly on a wall end.
+                    if i % 7 == 0 {
+                        p = occluders[(i * 31 + round) % occluders.len()].a;
+                    }
+                    DynLightInstance {
+                        pos: p.extend(32.0),
+                        color: [1.0; 3],
+                        radius: [0.0, 16.0, 64.0, 200.0, 700.0, 3000.0][(i + round) % 6],
+                        subtractive: false,
+                        spot_dir: None,
+                        spot_outer_cos: 1.0,
+                        spot_inner_cos: 1.0,
+                    }
+                })
+                .collect();
+            let want = bake_reference(&lights, &occluders);
+            let got = bake_1d_shadowmaps(&lights, &occluders);
+            assert_eq!(want.len(), got.len());
+            for (i, (a, b)) in want.iter().zip(&got).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "round {round} light {} ray {}",
+                    i / SHADOWMAP_RES,
+                    i % SHADOWMAP_RES
+                );
+            }
+        }
+    }
 
     #[test]
     fn packs_spotlight_cone() {

@@ -167,8 +167,18 @@ fn tick_breakable_standable(
     if actor_temps.len() <= sprite_index {
         actor_temps.resize_with(sprite_index + 1, ActorConTemps::default);
     }
+    // Chocolate: a crack only reacts with `hitag > 0`; then every tic it
+    // runs `ifhitbyweapon` (which needs `extra >= 0`) and, unless a blast
+    // detonates it, restores `extra = 0`.
+    if is_crack && thing.hitag <= 0 {
+        return true;
+    }
     let temp = &mut actor_temps[sprite_index];
-    if temp.hit_extra < 0 || temp.hit_picnum < 0 {
+    if temp.hit_extra < 0 || temp.hit_picnum < 0 || thing.extra < 0 {
+        if is_crack {
+            thing.extra = 0;
+            world.sprites[sprite_index] = thing;
+        }
         return true;
     }
     let hit_picnum = temp.hit_picnum;

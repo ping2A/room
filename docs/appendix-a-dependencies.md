@@ -14,6 +14,7 @@ Before adding a crate, verify its current maintenance state and that the version
 |---|---|---|
 | core | `bitflags`, `thiserror`, `smallvec`, `arrayvec`, `indexmap`, `foldhash` (or `ahash` with fixed seed), `bytes`, `serde`, `ron` (compat `levelfixes.ron`), `postcard`, `xxhash-rust`, `crc32fast`, `tracing`, `tracing-subscriber`, `libm` | general |
 | cli | `clap`, `anyhow` | `room-cli` / tool binaries |
+| admin TUI | `ratatui` (crossterm backend), `crossterm` | `room-admin-tui` live ops console against `/admin/api/v1` |
 | hashing | `md-5`, `sha2` | MD5 for compat DB/fingerprints, SHA-256 for module identity / join-ticket HMAC |
 | vfs | `zip` 8.x (default features off; `deflate` + `bzip2` + `lzma` — pure Rust via `libbz2-rs-sys` / `lzma-rust2`; never enable `bzip2-rs`/`xz` which pull C), `sevenz-rust2` (7z) | archives |
 | images | `png`, `gif` (encode screenshots / in-game GIF capture), `zune-jpeg`, hand-rolled TGA/BMP/PCX (M2); `image` (default-features off; golden tests + later decode), `image-webp`, `ddsfile`, `texture2ddecoder` | decoding / capture |

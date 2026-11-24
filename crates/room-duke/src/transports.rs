@@ -147,6 +147,25 @@ fn spawn_water_splash2(
     }
     // `hittype[i].picnum = sprite[j].picnum`.
     actor_temps[iu].hit_picnum = src.picnum;
+    // `setsprite(i, sprite[j].x, sprite[j].y, sprite[j].z)`: the splash
+    // re-finds its sector from the spawner's (possibly stale) one, so a
+    // splash over a non-water sector is killed by its first tic.
+    {
+        let sec_walls: Vec<room_build_engine::geom::SectorWalls> = sectors
+            .iter()
+            .map(|s| room_build_engine::geom::SectorWalls {
+                wallptr: s.wallptr,
+                wallnum: s.wallnum,
+            })
+            .collect();
+        let wxy: Vec<room_build_engine::geom::WallXY> = walls.iter().map(WallT::xy).collect();
+        let mut sect = sprites[iu].sectnum;
+        room_build_engine::geom::updatesector(src.x, src.y, &mut sect, &sec_walls, &wxy);
+        if sect >= 0 && sect != sprites[iu].sectnum {
+            let _ = lists.changespritesect(i, sect);
+            sprites[iu].sectnum = sect;
+        }
+    }
     let size = (8 + (krand_step(randomseed) & 7)) as u8;
     let sprite = &mut sprites[iu];
     sprite.xrepeat = size;
@@ -168,7 +187,9 @@ fn spawn_water_splash2(
             sprite.z = florz;
         }
     }
-    if let Some(own) = usize::try_from(sprite.sectnum)
+    // Chocolate's slime check reads `sect`, the sector captured before
+    // `setsprite` (the spawner's).
+    if let Some(own) = usize::try_from(src.sectnum)
         .ok()
         .and_then(|s| sectors.get(s))
     {

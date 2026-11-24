@@ -68,8 +68,8 @@ The only number that counts is the honest one —
 
 | Demo | Map | Tics | Honest frontier | First divergence |
 |------|-----|------|-----------------|------------------|
-| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–959** (2026-11-21; was 0–435) | tic 960 player `extra` 92 vs 0 (own RPG) |
-| DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `numsprites` 1104 vs 1068 (load) |
+| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–1353** (2026-11-23; was 0–959) | tic 1354 randomseed |
+| DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `sprite_hash` (sprite counts now match at load) |
 | DEMO3 | E4L2 skill 2 | 1,657 | 0 | tic 0 randomseed: 3 fewer krands at load |
 
 How to move it: `scripts/duke-oracle/` builds a patched Chocolate Duke3D that
@@ -174,7 +174,44 @@ getzrange with the owner's plane fallback.
 - BLOODPOOL lands with `makeitfall` at `floorz - 256`; GREENSLIME's size and
 offset math use C operator precedence.
 
-Next divergence (tic 960): Room's vanilla RPG still flies through the
+Fixed on the way from tic 960 to tic 1354 (2026-11-23, same method, no
+fixups; `demo1_real_sync_floor` raised to 1354):
+
+- **Vanilla RPG** moves with Chocolate `movesprite` (CLIPMASK1, walldist 8,
+`getglobalz`, homing check, half speed under water) and explodes through
+the full impact path; spawns 14×14, shade 0; SMALLSMOKE sees the real
+player distance.
+- **`checkhitsprite` badguy branch** is shared (`checkhitsprite_shotgun`):
+an RPG hit doubles the rocket's own `extra` (so its blast doubles too),
+knockback skips the tank/bosses/recon/rotategun, and the shotgun blood
+splats require the owner's current weapon to be the shotgun.
+- **CON VM:** `hitradius` consumed one word too many and skipped the next
+op (a killed drone never ran `killit`); a `hitradius` queued after a CON
+`spawn` now runs after that spawn; enemy `shoot` (hitscan, projectiles)
+runs inline mid-parse; `ifbulletnear` skips a projectile owned by itself.
+- **`move()`** gained `dodgebullet`, `spin`, `face_player_smart`,
+`jumptoplayer`; `moveactors` kills `xrepeat == 0` / bad-sector actors first
+(a slime that ate its prey).
+- **Deleted sprite slots** (stale data, stat MAXSTATUS) no longer clip,
+zrange or hitscan (`live_sprite_z_clips`, `drop_deleted_hits`).
+- **`updatesector`'s fallback scan** runs from the last sector down (found
+with overlapping sectors 21/33; also fixed DEMO2's load sprite count).
+- **Player:** jumping (`jumping_counter`/`toggle`, ceiling bump),
+`falling_counter`, `hard_landing`, sloped-floor snap; Atomic `incur_damage`
+(armor TRAND, `extra_extra8`, `last_extra`) runs in the next tic's
+`processinput`; APLAYER `ifhitweapon` reaction (pain-sound rolls, weapon
+palette flashes, RPG/radius `ifrnd 32 spawn BLOOD`, `random_wall_jibs`).
+- EXPLOSION2/EXPLOSION2BOT run their CON (`ifactioncount 20`); WATERSPLASH2
+re-finds its sector (`setsprite`); RECON uses `dist()`; cracks/FIREEXT get
+their spawn `extra` and cracks reset it each tic; SE33 debris was thrown
+twice; world-based effector/interaction calls now run on the live sprite
+lists (their spawns were being discarded).
+
+Known gaps left in these paths: landing damage (`falling_counter > 9`), the
+blood-splat wall decal spawn, the PFLINTCHING action, the dead-player
+branch of the hit reaction (`standard_pjibs`, PTHROWNBACK).
+
+Earlier divergence (tic 960, fixed above): Room's vanilla RPG still flies through the
 hitscan sweep (`advance_projectile_with_sweeps`), which only excludes the
 owner for custom RPGs, so the rocket hits the player at launch. Chocolate
 moves RPG, SPIT, FIRELASER, SHRINKSPARK and COOLEXPLOSION1 with

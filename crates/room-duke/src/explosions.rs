@@ -33,6 +33,8 @@ const PUKE: i16 = 4389;
 const TIRE: i16 = 990;
 const WATERSPLASH2: i16 = 1380;
 const EXPLOSION2: i16 = 1890;
+/// Atomic `EXPLOSION2BOT`.
+const EXPLOSION2BOT: i16 = 2219;
 const FRAMEEFFECT1: i16 = 4095;
 const SCRAP6: i16 = 2390;
 const GLASSPIECES: i16 = 1031;
@@ -326,8 +328,19 @@ pub fn moveexplosions(
         } else if s.picnum == WATERSPLASH2 {
             step_watersplash2(lists, sprites, sectors, actor_temps, i);
         } else if s.picnum == SMALLSMOKE {
-            // Chocolate `moveexplosions`: `execute` (CON sets SMOKEVEL + move()).
-            step_smallsmoke(lists, sprites, sectors, randomseed, actor_temps, script, i);
+            // Chocolate `moveexplosions`: `findplayer` + `execute` (CON sets
+            // SMOKEVEL + move(); `ifpdistl 1596 ifspawnedby RPG killit`).
+            let (_, player_dist) = findplayer_dist(&s, players);
+            step_smallsmoke(
+                lists,
+                sprites,
+                sectors,
+                randomseed,
+                actor_temps,
+                script,
+                i,
+                player_dist,
+            );
         } else if s.picnum == BLOOD {
             // Chocolate: `findplayer` + `execute` (GAME.CON ifpdistg / ifactioncount).
             step_blood(
@@ -375,15 +388,29 @@ pub fn moveexplosions(
                 sprites[iu].xoffset = source.xoffset;
                 sprites[iu].yoffset = source.yoffset;
             }
-        } else if s.picnum == EXPLOSION2 {
-            // RPG impact flash: retain the animated ART tile briefly. The
-            // radius damage/CON hitradius pass is still a separate D6 item.
-            if actor_temps.len() <= iu {
-                actor_temps.resize_with(iu + 1, ActorConTemps::default);
-            }
-            actor_temps[iu].g_t[5] += 1;
-            if actor_temps[iu].g_t[5] >= 20 {
-                let _ = lists.deletesprite(i);
+        } else if s.picnum == EXPLOSION2 || s.picnum == EXPLOSION2BOT {
+            let (_, player_dist) = findplayer_dist(&s, players);
+            // Chocolate `moveexplosions`: `findplayer` + `execute` — GAME.CON
+            // `EXPLOSION_FRAMES` (4-tic delay) with `ifactioncount 20 killit`.
+            if script.is_some() {
+                step_smallsmoke(
+                    lists,
+                    sprites,
+                    sectors,
+                    randomseed,
+                    actor_temps,
+                    script,
+                    i,
+                    player_dist,
+                );
+            } else {
+                if actor_temps.len() <= iu {
+                    actor_temps.resize_with(iu + 1, ActorConTemps::default);
+                }
+                actor_temps[iu].g_t[5] += 1;
+                if actor_temps[iu].g_t[5] >= 20 {
+                    let _ = lists.deletesprite(i);
+                }
             }
         } else if s.picnum == SHOTGUNSHELL || s.picnum == 2533 {
             // SHELL=2533 / SHOTGUNSHELL=2535 — Chocolate moveexplosions ssp + drag.
@@ -679,6 +706,7 @@ fn step_blood(
 ///
 /// First-frame getv/alterang yields `zvel=-153` — matches DEMO1 tic135 smoke Z
 /// (`spark_z - 153`).
+#[allow(clippy::too_many_arguments)]
 fn step_smallsmoke(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
@@ -687,6 +715,7 @@ fn step_smallsmoke(
     actor_temps: &mut Vec<ActorConTemps>,
     script: Option<&ScriptImage>,
     i: i16,
+    player_dist: i32,
 ) {
     let iu = i as usize;
     if actor_temps.len() <= iu {
@@ -723,7 +752,7 @@ fn step_smallsmoke(
         &sec,
         hit_fz,
         hit_cz,
-        i32::MAX,
+        player_dist,
         i,
     );
     if stop == ConStop::KillIt {

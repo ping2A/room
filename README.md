@@ -5,6 +5,19 @@ and GZDoom/ZDoom mods: WAD, PK3, ZIP, DECORATE, ACS, ZScript) and
 **Duke Nukem 3D** (a native Build-engine runtime). It runs on the desktop and
 in the browser, and can compile a mod's ZScript to WebAssembly.
 
+<p align="center">
+  <img src="docs/media/gameplay.gif" width="640" alt="Room running Freedoom: Phase 2 MAP01 with Brutal Doom in the browser: the player picks up an assault rifle and guns down zombies in a spray of gore">
+</p>
+
+<p align="center">
+  <img src="docs/media/doom-action.jpg" width="49%" alt="Brutal Doom assault-rifle muzzle flash against a zombie in Freedoom: Phase 2 MAP01">
+  <img src="docs/media/freedoom-e1m1.jpg" width="49%" alt="Freedoom: Phase 1 E1M1 with Brutal Doom: a gibbed corpse lies at the start of the level">
+</p>
+
+<p align="center"><sub>Freedoom with the Brutal Doom mod, running in Room's browser client.
+Freedoom is free content, so the screenshots use it as the IWAD; any IWAD you own works the
+same way. Brutal Doom is a separate download by its own authors and is not bundled with Room.</sub></p>
+
 - What is implemented: [feature overview](docs/00-overview.md),
   [current status](docs/21-milestone-progress.md)
 - Doom quick start: [Play Doom](#play-doom)
@@ -120,6 +133,22 @@ an automatically converted WebAssembly package (see
 [below](#convert-a-zscript-mod-to-webassembly)), or from the Rust hand-port
 in [`mods/brutal-zscript-rs`](mods/brutal-zscript-rs/README.md). Background:
 [docs/33](docs/33-brutal-doom.md).
+
+### Two renderers
+
+The GPU renderer (wgpu: desktop, WebGPU or WebGL 2 in the browser) is the
+default. A classic 8-bit software renderer ([docs/40](docs/40-software-renderer.md))
+draws the same map the way vanilla Doom did; `room soft-view` renders one
+frame of it to a PNG:
+
+```sh
+cargo run --release -p room-cli -- soft-view testdata/freedoom/freedoom1.wad \
+  --map E1M1 --width 640 --height 400 -o e1m1.png
+```
+
+<p align="center">
+  <img src="docs/media/software-renderer.jpg" width="640" alt="Freedoom E1M1 drawn by the classic software renderer at 320×200, scaled up">
+</p>
 
 ### Controls
 
@@ -338,6 +367,28 @@ canvas for mouse look and press a key to enable audio. The server serves the
 lobby at `http://127.0.0.1:8765/` and the client at
 `http://127.0.0.1:8765/play/`. For deployment and Docker, see
 [`deploy/README.md`](deploy/README.md).
+
+<p align="center">
+  <img src="docs/media/assault-rifle.jpg" width="49%" alt="Brutal Doom on Freedoom: Phase 2 MAP01 in the browser client, firing the assault rifle at a zombie">
+  <img src="docs/media/mobile-touch.jpg" width="49%" alt="Playing Freedoom with Brutal Doom on a phone in landscape: move stick on the left, jump/duck/use/fire buttons on the right, round minimap radar in the top-left corner">
+</p>
+
+On phones the client shows touch controls: a move stick, look by dragging,
+and buttons for fire, use, jump, duck and weapons. The minimap becomes a small
+radar in the top-left corner; tap it for a full-size map. In solo games,
+opening Settings pauses the game.
+
+### Map editor
+
+The browser client ships a map editor (`editor.html`, also linked from the
+in-game menu): a 2D view and a live 3D view side by side, with vertex, line,
+sector and thing modes, texture painting, prefabs, an ACS compiler with
+completion, snapshots, and one-click play-testing of the map you are editing.
+Edits export as a WAD.
+
+<p align="center">
+  <img src="docs/media/map-editor.jpg" width="820" alt="The Room map editor with Freedoom: Phase 2 MAP01 open: map list on the left, 2D map in the middle, live 3D view and map properties on the right">
+</p>
 
 ## Shaders & graphics CVars
 

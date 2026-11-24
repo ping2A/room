@@ -426,6 +426,37 @@ fn check_position_inner(
     self_id: Option<ActorId>,
     pctx: &PortalCheck,
 ) -> CheckResult {
+    check_position_core(world, actor, pos, self_id, pctx, false)
+}
+
+/// The floor and ceiling heights `actor` would have at `pos`: the same
+/// `floor_z`, `ceiling_z` and `dropoff_z` as [`check_position`], without
+/// looking for a solid actor in the way when that cannot change them
+/// (`ok` / `blocking_actor` are then not checked).
+///
+/// [`z_movement`] runs for every actor every tic, gibs and casings included;
+/// scanning every other actor there made a tic grow with the square of the
+/// actor count.
+pub fn check_position_planes(
+    world: &World,
+    actor: &Actor,
+    pos: DVec3,
+    self_id: Option<ActorId>,
+) -> CheckResult {
+    if !world.map.setup.portals.lines.is_empty() {
+        return check_position(world, actor, pos, self_id);
+    }
+    check_position_core(world, actor, pos, self_id, &PortalCheck::default(), true)
+}
+
+fn check_position_core(
+    world: &World,
+    actor: &Actor,
+    pos: DVec3,
+    self_id: Option<ActorId>,
+    pctx: &PortalCheck,
+    planes_only: bool,
+) -> CheckResult {
     let xy = DVec2::new(pos.x(), pos.y());
     let mut result = CheckResult {
         ok: true,
@@ -468,10 +499,14 @@ fn check_position_inner(
         }
     }
     let has_line_portals = !world.map.setup.portals.lines.is_empty();
+    // A 3D midtexture near the actor: `apply_midtex3d` (same lines) may then
+    // change the planes, so a blocking actor's early return matters.
+    let mut near_midtex3d = false;
     for lid in lines_near(&world.map, xy, actor.radius) {
         let Some(line) = world.map.lines.get(lid.raw() as usize) else {
             continue;
         };
+        near_midtex3d |= line.midtex3d;
         if has_line_portals {
             // A passable portal line is not a wall and has no opening of its
             // own; what lies behind the portals in play is the other side.
@@ -626,8 +661,18 @@ fn check_position_inner(
     // Linked portals: actors of the groups this box reaches block at their
     // displaced position (UZDoom `FMultiBlockThingsIterator`).
     let qgroups = crate::portal::query_groups(world, pos, pos.z() + actor.height, actor.radius);
+    // A blocking actor only ends the check early: it keeps the planes found so
+    // far but skips the steps below. With a sector found and none of those
+    // steps able to change anything, the planes do not depend on it.
+    let things_matter =
+        !planes_only || !saw_sector || near_midtex3d || !world.map.setup.ffloors.is_empty();
+    let candidates: &[ActorId] = if things_matter {
+        world.collision_candidates()
+    } else {
+        &[]
+    };
     // Thing-thing: block on solid actors whose XY disks overlap.
-    for id in world.collision_candidates() {
+    for id in candidates {
         if self_id == Some(*id) {
             continue;
         }
@@ -1634,7 +1679,7 @@ fn z_movement_inner(world: &mut World, actor_id: ActorId) {
     let Some(actor) = world.actors.get(actor_id).cloned() else {
         return;
     };
-    let planes = check_position(world, &actor, actor.pos, Some(actor_id));
+    let planes = check_position_planes(world, &actor, actor.pos, Some(actor_id));
     let floor_z = planes.floor_z;
     let ceiling_z = planes.ceiling_z;
     // GZDoom `AActor::Tick` only runs `P_ZMovement` when `Vel.Z != 0 ||

@@ -92,6 +92,7 @@ ${C_BOLD}Commands${C_RESET}
   status          Process + health overview
   logs [-n N]     Tail the service log (default follow)
   health          Curl lobby + admin once
+  admin-tui […]   Live ratatui ops console (rooms, seats, metrics, bans, audit)
   mods            Build gameplay mods only
   package […]     ./scripts/package-vps.sh
   push [vps] [user@host:path]   rsync dist-vps/ (keeps data/, logs/, .env)
@@ -101,11 +102,12 @@ ${C_BOLD}Local URLs${C_RESET} (defaults)
   Lobby   http://127.0.0.1:8765/
   Play    http://127.0.0.1:8765/play/
   Admin   http://127.0.0.1:8766/admin   (admin / admin on first run)
+  Admin TUI  ./room admin-tui
 
 ${C_BOLD}Notes${C_RESET}
   Pid/log: target/room-server/
   Optional repo .env is loaded by room-server via ROOM_* env vars.
-  Same as: ./scripts/room-server.sh start|stop|…
+  Same as: ./scripts/room-server.sh start|stop|admin-tui|…
 EOF
     return
   fi
@@ -119,6 +121,7 @@ ${C_BOLD}Commands${C_RESET}
   status      Process + health overview
   logs [-n N] Tail the service log (default follow)
   health      Curl lobby + admin once
+  admin-tui   Live ratatui ops console against the admin bind
   env-check   Print resolved bind / play / admin URLs
 
 ${C_BOLD}Setup${C_RESET}
@@ -216,6 +219,16 @@ cmd_dev_status() {
 
 cmd_dev_mods() {
   exec "$DEV_CTL" mods "$@"
+}
+
+cmd_dev_admin_tui() {
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+  fi
+  exec "$DEV_CTL" admin-tui -- "$@"
 }
 
 cmd_dev_health() {
@@ -373,6 +386,23 @@ cmd_vps_health() {
   [[ "$ok_g" -eq 1 && "$ok_a" -eq 1 ]]
 }
 
+cmd_vps_admin_tui() {
+  load_env_vps
+  local admin_bin="$ROOT/bin/room-admin"
+  if [[ ! -x "$admin_bin" ]]; then
+    err "missing $admin_bin — rebuild with ./room package"
+    exit 1
+  fi
+  local adm="http://$(bind_host_port "$ROOM_ADMIN_BIND")"
+  info "admin TUI → $adm"
+  exec "$admin_bin" \
+    --url "$adm" \
+    ${ROOM_ADMIN_TOKEN:+--token "$ROOM_ADMIN_TOKEN"} \
+    ${ROOM_ADMIN_USER:+--user "$ROOM_ADMIN_USER"} \
+    ${ROOM_ADMIN_PASSWORD:+--password "$ROOM_ADMIN_PASSWORD"} \
+    "$@"
+}
+
 cmd_vps_env_check() {
   load_env_vps
   echo "mode=vps"
@@ -441,6 +471,11 @@ case "$cmd" in
     else
       err "mods: only available in the git repo (./room mods)"
       exit 1
+    fi
+    ;;
+  admin-tui)
+    if [[ "$DEV_REPO" -eq 1 ]]; then cmd_dev_admin_tui "$@"
+    else cmd_vps_admin_tui "$@"
     fi
     ;;
   package)

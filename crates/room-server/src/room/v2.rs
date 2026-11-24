@@ -319,9 +319,40 @@ impl V2State {
 
     /// Next tic awaiting release.
     #[must_use]
-    #[allow(dead_code)]
     pub fn next_tic(&self) -> u32 {
         self.next_tic
+    }
+
+    /// Consecutive filled (late) tics for a seat.
+    #[must_use]
+    pub fn miss_streak(&self, seat: u8) -> u8 {
+        self.miss_streak
+            .get(usize::from(seat))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Seats still missing a command for [`Self::next_tic`].
+    #[must_use]
+    pub fn waiting_seats(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.active_mask == 0 {
+            return out;
+        }
+        let slot = self.next_tic as usize % RING;
+        for seat in 0..self.max_players {
+            let bit = 1u64 << seat;
+            if self.active_mask & bit == 0 {
+                continue;
+            }
+            if self.bot_mask & bit != 0 || self.absent_mask & bit != 0 {
+                continue;
+            }
+            if self.cell_ref(slot, usize::from(seat)).is_none() {
+                out.push(seat);
+            }
+        }
+        out
     }
 }
 

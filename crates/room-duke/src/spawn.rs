@@ -544,16 +544,27 @@ fn is_wall_switch_tile(pic: i16) -> bool {
 }
 
 /// Chocolate `spawn()` initialization for tagged destructible explosive
-/// sprites (`SEENINE`, `OOZFILTER`).
+/// sprites (`SEENINE`, `OOZFILTER`) and the cracks / fire extinguishers.
 pub(crate) fn init_destructible_explosives(
     lists: &SpriteLists,
     sprites: &mut [SpriteT],
     impact_damage: i32,
 ) {
     for (index, sprite) in sprites.iter_mut().enumerate() {
-        if lists.sprite_stat.get(index).copied() != Some(STAT_STANDABLE)
-            || !matches!(sprite.picnum, SEENINE | OOZFILTER)
-        {
+        if lists.sprite_stat.get(index).copied() != Some(STAT_STANDABLE) {
+            continue;
+        }
+        // `case CRACK1..4 / FIREEXT`: FIREEXT `extra = impact_damage<<2`,
+        // a crack `extra = 1` (blast hits need `extra >= 0`).
+        if sprite.picnum == FIREEXT {
+            sprite.extra = impact_damage.wrapping_shl(2) as i16;
+            continue;
+        }
+        if (CRACK1..=CRACK1 + 3).contains(&sprite.picnum) {
+            sprite.extra = 1;
+            continue;
+        }
+        if !matches!(sprite.picnum, SEENINE | OOZFILTER) {
             continue;
         }
         sprite.shade = -16;

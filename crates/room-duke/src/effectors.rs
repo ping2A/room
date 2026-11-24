@@ -3797,63 +3797,6 @@ pub(crate) fn move_reactor_effectors(
     }
 }
 
-/// Chocolate `moveeffectors` case 33: while an earthquake runs, each SE33
-/// marker has a 1-in-8 chance per tic to throw one `RANDOMSCRAP` shard.
-pub(crate) fn move_quake_debris_effectors(
-    world: &mut BuildWorld,
-    temps: &mut Vec<ActorConTemps>,
-    picnum: &mut Vec<i16>,
-    script: Option<&crate::con::ScriptImage>,
-    randomseed: &mut i32,
-    earthquake_time: i32,
-) {
-    if earthquake_time <= 0 {
-        return;
-    }
-    let mut current = world.lists.headspritestat[STAT_EFFECTOR as usize];
-    while current >= 0 {
-        let index = current as usize;
-        current = world.lists.nextspritestat[index];
-        let Some(marker) = world.sprites.get(index).copied() else {
-            continue;
-        };
-        if marker.lotag != 33 || krand_step(randomseed) & 7 != 0 {
-            continue;
-        }
-        // 32-bit gcc evaluates the EGS arguments right to left.
-        let zvel = (-512 - (krand_step(randomseed) & 2047)) as i16;
-        let xvel = (64 + (krand_step(randomseed) & 63)) as i16;
-        let angle = (krand_step(randomseed) & 2047) as i16;
-        let tile = SCRAP6 + (krand_step(randomseed) & 15) as i16;
-        let z = marker
-            .z
-            .wrapping_sub(8 << 8)
-            .wrapping_sub(krand_step(randomseed) & 8191);
-        let y = marker.y.wrapping_add((krand_step(randomseed) & 255) - 128);
-        let x = marker.x.wrapping_add((krand_step(randomseed) & 255) - 128);
-        let _ = crate::shoot::egs(
-            &mut world.lists,
-            &mut world.sprites[..],
-            picnum,
-            temps,
-            script,
-            marker.sectnum,
-            x,
-            y,
-            z,
-            tile,
-            -8,
-            48,
-            48,
-            angle,
-            xvel,
-            zvel,
-            index as i16,
-            crate::stat::STAT_MISC,
-        );
-    }
-}
-
 /// Advance Chocolate's SE13 explosive-sector recovery (`moveeffectors`).
 /// SEENINE detonation arms T3; the effector restores its original planes over
 /// 256 tics, changes the sector shade once, and then removes the marker.

@@ -9,6 +9,15 @@ ACS bytecode loader and virtual machine (`BEHAVIOR` lumps).
 - [`AcsHost`] — host callbacks for line specials / RNG while interpreting
 - [`tick_scripts`] — advance delayed / running scripts one tic
 - [`start_script`] / [`suspend_script`] / [`terminate_script`] — `ACS_Execute*` family
+- [`compile_acs`] / [`compile_acs_standalone`] — ACS source → `ACSE` `BEHAVIOR`
+  (ACC syntax: scripts, functions, map / world / global variables and arrays,
+  `#include` / `#define`, print items, `HudMessage`, `CreateTranslation`, the
+  internal p-code functions, line specials and `CallFunc` functions; the
+  standard `zcommon.acs` headers are built in, libraries / `#import` are not)
+
+`cargo run -p room-acs --example acsc -- SCRIPTS.acs -I include-dir -o BEHAVIOR.o`
+compiles from the command line. `tools/gen_acs_defs.py` regenerates the
+built-in specials, functions and constants (`src/compile/defs.rs`).
 
 Opcode coverage is a Hexen-era subset (`PUSHNUMBER`, arith, vars, `GOTO`/`IFGOTO`,
 `DELAY*`, `LSPEC*`, `TERMINATE`/`SUSPEND`) plus `CALLFUNC` / `SETRESULTVALUE`,

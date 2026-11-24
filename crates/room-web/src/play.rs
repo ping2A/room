@@ -38,6 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 thread_local! {
+    /// The page's Settings panel is open (`roomSetMenuPause`): a solo game
+    /// stands still until it closes. Netplay ignores it.
+    pub(crate) static MENU_PAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Rollback window in tics from Settings (`roomSetRollback`; 0 = off).
     pub(crate) static ROLLBACK_WINDOW: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// Prediction on / off from Settings (`roomSetPredict`; `None` = the
@@ -127,6 +130,9 @@ pub struct PlaySession {
     pub(crate) alt_attack: bool,
     /// Fractional tic accumulator (seconds).
     pub tic_accum: f32,
+    /// This session set `world.paused` for the Settings panel ([`MENU_PAUSE`])
+    /// and will clear it again when the panel closes.
+    menu_paused: bool,
     /// Gun offset from the previous tic (`PSPF_INTERPOLATE`).
     weapon_bob_prev: (f32, f32),
     /// Weapon bob of the latest simulated tic (interpolated from `weapon_bob_prev`).
@@ -590,6 +596,7 @@ impl PlaySession {
             attack: false,
             alt_attack: false,
             tic_accum: 0.0,
+            menu_paused: false,
             weapon_bob_prev: (0.0, 0.0),
             weapon_bob_curr: (0.0, 0.0),
             level_tics: 0,
@@ -1561,6 +1568,9 @@ impl PlaySession {
             return self.fast_forward(now);
         }
         self.catching_up = false;
+        if self.update_menu_pause() {
+            return false;
+        }
         if !spectator && matches!(self.game.state, GameState::Level) {
             if let Some(stepped) = self.tick_net_clocked(now, tic) {
                 return stepped;
@@ -1649,6 +1659,44 @@ impl PlaySession {
             }
         }
         stepped
+    }
+
+    /// Settings panel open in a solo game: hold the level still (no tics,
+    /// world sounds paused) and drop held input; resume where it was when
+    /// the panel closes. Returns whether the game is held this frame.
+    fn update_menu_pause(&mut self) -> bool {
+        let want = MENU_PAUSE.with(std::cell::Cell::get)
+            && self.net.is_none()
+            && matches!(self.game.state, GameState::Level);
+        if want == self.menu_paused {
+            if want {
+                self.tic_accum = 0.0;
+            }
+            return want;
+        }
+        if want {
+            // Respect a pause that was already on (console `pause`).
+            let Some(world) = self.game.world_mut() else {
+                return false;
+            };
+            if world.paused {
+                return false;
+            }
+            world.paused = true;
+            self.menu_paused = true;
+            self.held.clear();
+            self.attack = false;
+            self.alt_attack = false;
+            self.tic_accum = 0.0;
+        } else {
+            self.menu_paused = false;
+            if let Some(world) = self.game.world_mut() {
+                world.paused = false;
+            }
+            self.tic_accum = 0.0;
+        }
+        self.pump_audio();
+        want
     }
 
     /// One level tic with `cmds`, plus everything that follows a tic.
@@ -3952,6 +4000,11 @@ impl PlaySession {
             let mut anchor_u = 0.5_f32;
             let mut z_bottom = z;
             let grounded = (flags & (FLAG_NOGRAVITY | FLAG_SPAWNCEILING | FLAG_FLOAT)) == 0;
+            // `TNT1` draws nothing (below); Brutal Doom keeps hundreds of
+            // such helpers, so skip their lump lookups.
+            if sprite.eq_ignore_ascii_case("TNT1") {
+                continue;
+            }
             if !sprite.is_empty() {
                 let rot_angle = if view.fixed_rotation {
                     view.rotation_angle_deg
@@ -3962,16 +4015,16 @@ impl PlaySession {
                 if view.sprite_flip {
                     rot = room_render::mirror_rotation(rot).unwrap_or(rot);
                 }
-                let mut candidates = sprite_lump_candidates_rot(&sprite, frame, rot);
-                // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`).
-                if let Some(hit) = self
+                // Indexed lookup first: mixed-letter pairs (`BOS2A2C8`). It
+                // nearly always hits, so the name guesses are only built when
+                // it does not.
+                let hit = self
                     .patches
-                    .sprite_frame_lump(&self.vfs, &sprite, frame, rot)
-                {
-                    candidates.insert(0, hit);
-                }
-                for (name, flip) in &candidates {
-                    if let Some(patch) = self.patches.ensure(&self.vfs, name) {
+                    .sprite_frame_lump(&self.vfs, &sprite, frame, rot);
+                let guesses = std::iter::once(())
+                    .flat_map(|()| sprite_lump_candidates_rot(&sprite, frame, rot));
+                for (name, flip) in hit.into_iter().chain(guesses) {
+                    if let Some(patch) = self.patches.ensure(&self.vfs, &name) {
                         let pw = (f64::from(patch.width) * scale_x.abs()).clamp(0.25, 4096.0);
                         let ph = (f64::from(patch.height) * scale_y.abs()).clamp(0.25, 4096.0);
                         let top = f64::from(patch.top_offset) * scale_y.abs();
@@ -3986,8 +4039,8 @@ impl PlaySession {
                             raw_bottom + 0.05
                         };
                         anchor_u = if pw > 1e-6 { (left / pw) as f32 } else { 0.5 };
-                        texture = name.clone();
-                        flip_u = *flip;
+                        texture = name;
+                        flip_u = flip;
                         break;
                     }
                 }

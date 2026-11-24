@@ -469,7 +469,7 @@ mod tests {
     /// Honest-mode floor: native DEMO1 playback (no fixups, no RNG pads)
     /// matches the Chocolate trace for at least this many tics. Raise it as
     /// the frontier moves; never lower it to make a change pass.
-    const DEMO1_REAL_SYNC_TICS: usize = 960;
+    const DEMO1_REAL_SYNC_TICS: usize = 1354;
 
     #[test]
     fn grp_map_loader_initializes_eduke_vm_before_level_setup() {
@@ -7036,6 +7036,7 @@ mod tests {
                     &mut session.actor_temps,
                     &mut session.randomseed,
                     session.script.as_ref(),
+                    &session.tile_meta,
                     session.tic.saturating_sub(1),
                 );
                 session.player = players[0].clone();

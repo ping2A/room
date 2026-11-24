@@ -125,6 +125,40 @@
       backdrop-filter: blur(8px); z-index: 2;
     }
     #boot[hidden] { display: none !important; }
+    /* Play solo / direct links: a loading dialog instead of the file picker. */
+    #solo-loading {
+      position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+      padding: 1rem; box-sizing: border-box;
+      background:
+        radial-gradient(ellipse at 8% 0%, rgba(176, 16, 24, 0.38), transparent 46%),
+        radial-gradient(ellipse at 96% 100%, rgba(138, 58, 34, 0.18), transparent 40%),
+        repeating-linear-gradient(0deg, transparent 0 3px, rgba(0, 0, 0, 0.12) 3px 4px),
+        #080202;
+    }
+    #solo-loading[hidden] { display: none !important; }
+    #solo-loading .panel {
+      box-sizing: border-box; width: min(32rem, calc(100vw - 2rem));
+      padding: clamp(1.3rem, 4vw, 2.4rem);
+      background: linear-gradient(155deg, rgba(32, 10, 10, 0.98), rgba(12, 4, 4, 0.98));
+      border: 1px solid #6a1c1c; border-radius: 4px;
+      box-shadow: 0 30px 90px rgba(0,0,0,0.78), 0 0 42px rgba(176, 16, 24, 0.12), inset 0 1px 0 rgba(255, 100, 100, 0.08);
+    }
+    #solo-loading .brand-row { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1.6rem; padding-bottom: 0.8rem; border-bottom: 1px solid rgba(176, 16, 24, 0.38); }
+    #solo-loading .brand-mark { width: 2.1rem; height: 2.1rem; display: grid; place-items: center; border: 1px solid #8a2022; border-radius: 2px; background: linear-gradient(145deg, #e02830, #5a080c); color: #f2e6e0; font-family: Impact, Haettenschweiler, "Arial Narrow", sans-serif; font-size: 1.35rem; text-shadow: 1px 2px #3a0808; }
+    #solo-loading .brand-name { color: #e8d4c4; font-family: Impact, Haettenschweiler, "Arial Narrow", sans-serif; letter-spacing: 0.12em; font-size: 1.15rem; }
+    #solo-loading .kicker { margin: 0 0 0.4rem; color: #b99a90; font: 1rem/1.4 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; }
+    #solo-loading h1 { margin: 0 0 1.4rem; color: #f2e6e0; font-family: Impact, Haettenschweiler, "Arial Narrow", "Arial Black", sans-serif; font-weight: 400; font-size: clamp(2rem, 6vw, 3rem); line-height: 0.95; text-transform: uppercase; text-shadow: 2px 3px 0 rgba(90, 10, 12, 0.8); overflow-wrap: anywhere; }
+    #solo-loading .bar { position: relative; height: 10px; overflow: hidden; border: 1px solid #6a1c1c; border-radius: 2px; background: #0e0404; }
+    #solo-loading .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(180deg, #e02830, #8a0e14); transition: width 0.2s linear; }
+    #solo-loading .bar.busy .fill { width: 30%; animation: solo-sweep 1.3s ease-in-out infinite; }
+    @keyframes solo-sweep { from { left: -30%; } to { left: 100%; } }
+    @media (prefers-reduced-motion: reduce) {
+      #solo-loading .bar.busy .fill { animation: none; left: 0; width: 100%; opacity: 0.45; }
+      #solo-loading .fill { transition: none; }
+    }
+    #solo-loading .step { margin: 0.8rem 0 0; min-height: 1.4em; color: #e8d4c4; font: 0.95rem/1.4 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; font-variant-numeric: tabular-nums; }
+    #solo-loading .note { margin: 0.35rem 0 0; color: #9a7a72; font: 0.82rem/1.45 "Arial Narrow", "Franklin Gothic Medium", "Helvetica Neue", sans-serif; }
+    body.solo-loading #status { visibility: hidden; }
     #boot [hidden] { display: none !important; }
     #boot .panel {
       box-sizing: border-box; width: min(66rem, calc(100vw - 2rem)); max-width: none;
@@ -699,6 +733,37 @@
     #minimap .mm-name { font: 400 15px/1 var(--r-display); color: var(--r-red-hi); letter-spacing: 0.06em; text-shadow: 1px 1px 0 #000; }
     #minimap .mm-zoom { font: 700 10px/1 var(--r-ui); color: var(--r-amber); font-variant-numeric: tabular-nums; }
     body.minimap-on #capture-badge { top: calc(max(8px, env(safe-area-inset-top)) + 40px + var(--mm-outer, 252px) + 10px); }
+
+    /* Phones: a small round radar in the free top-left corner instead of the
+       220px slab (which covered the look area under the corner buttons).
+       Tap it to open a large see-through map over the view; tap again (or
+       anywhere on it) to put it back. The game keeps running. */
+    body.touch #minimap {
+      --mm-size: clamp(76px, 24vmin, 116px);
+      top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); right: auto;
+      padding: 0; background: none; border: 0; box-shadow: none;
+      pointer-events: auto; touch-action: none; -webkit-tap-highlight-color: transparent;
+      opacity: 0.88;
+    }
+    body.touch #minimap.size-s { --mm-size: clamp(64px, 19vmin, 92px); }
+    body.touch #minimap.size-l { --mm-size: clamp(90px, 30vmin, 144px); }
+    body.touch #minimap .mm-well {
+      border-radius: 50%; border: 2px solid rgba(233, 194, 90, 0.55);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8), 0 3px 10px rgba(0, 0, 0, 0.6);
+    }
+    body.touch #minimap .mm-bar { display: none; }
+    body.touch #minimap.mm-expanded {
+      --mm-size: min(78vmin, 420px);
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      z-index: 8; opacity: 0.8;
+    }
+    body.touch #minimap.mm-expanded .mm-well { border-radius: 12px; border-color: rgba(233, 194, 90, 0.7); }
+    body.touch #minimap.mm-expanded .mm-bar { display: flex; justify-content: center; }
+    /* The capture badge no longer has a minimap above it on phones. */
+    body.touch.minimap-on #capture-badge { top: calc(max(8px, env(safe-area-inset-top)) + 40px); }
+    /* Net graph / voice bar share the top-left corner in netplay: sit below the radar. */
+    body.touch.minimap-on #netGraph { top: calc(8px + env(safe-area-inset-top) + var(--mm-outer, 120px)); }
+    body.touch.minimap-on #voiceBar { top: calc(52px + env(safe-area-inset-top) + var(--mm-outer, 120px)); }
 
 
     /* Settings › Mod options */
@@ -1306,13 +1371,24 @@
     let mod = null, lines = null, linesAt = 0, mapName = '', raf = 0, dpr = 1;
     const box = () => document.getElementById('minimap');
 
+    const touch = () => document.body.classList.contains('touch');
+    let expanded = false;
+
     function layout() {
       const el = box();
       if (!el) return;
       el.classList.remove('size-s', 'size-m', 'size-l');
       el.classList.add('size-' + (SIZES[cfg.size] ? cfg.size : 'm'));
-      const px = SIZES[cfg.size] || SIZES.m;
-      document.body.style.setProperty('--mm-outer', (px + 36) + 'px');
+      el.classList.toggle('mm-expanded', expanded && touch());
+      // Phones size the well in CSS (vmin): read it back for the canvas.
+      let px = SIZES[cfg.size] || SIZES.m;
+      if (touch() && !el.hidden) {
+        const w = el.querySelector('.mm-well').getBoundingClientRect().width;
+        if (w > 0) px = Math.round(w);
+      }
+      if (!(touch() && expanded)) {
+        document.body.style.setProperty('--mm-outer', (px + (touch() ? 12 : 36)) + 'px');
+      }
       dpr = Math.min(2, window.devicePixelRatio || 1);
       const c = el.querySelector('canvas');
       c.width = Math.round(px * dpr); c.height = Math.round(px * dpr);
@@ -1354,13 +1430,16 @@
         el.querySelector('.mm-name').textContent = String(mapName).toUpperCase();
       }
       if (el.hidden) { el.hidden = false; layout(); }
+      else if (touch() && Math.abs(el.querySelector('.mm-well').getBoundingClientRect().width * dpr - el.querySelector('canvas').width) > 2) layout();
       document.body.classList.add('minimap-on');
 
       const c = el.querySelector('canvas');
       const ctx = c.getContext('2d');
       const W = c.width, H = c.height, cx = W / 2, cy = H / 2;
       const [px, py, yawDeg, allmap] = st;
-      const scale = (ZOOMS[cfg.zoom] / 8) * dpr;   // canvas px per map unit
+      // The phone radar is small: show a bit more of the map around you.
+      const radar = touch() && !expanded ? 0.7 : 1;
+      const scale = (ZOOMS[cfg.zoom] / 8) * dpr * radar;   // canvas px per map unit
       const rot = cfg.rotate ? (yawDeg - 90) * Math.PI / 180 : 0;      // view forward → up
 
       // Well: deep black with a faint warm centre.
@@ -1441,7 +1520,7 @@
       ctx.closePath();
       ctx.fillStyle = cone;
       ctx.fill();
-      arrow(ctx, cx, cy, face, 10 * dpr, '#ffffff', 10 * dpr);
+      arrow(ctx, cx, cy, face, (radar < 1 ? 7 : 10) * dpr, '#ffffff', 10 * dpr);
 
       // Lens falloff toward the rim.
       const v = ctx.createRadialGradient(cx, cy, W * 0.32, cx, cy, W * 0.74);
@@ -1467,6 +1546,29 @@
       if (!(cfg.zoom >= 0 && cfg.zoom < ZOOMS.length)) cfg.zoom = defaults.zoom;
       save();
       start();
+    }
+    // Phones: tap the radar to open the big map, tap again to close it. The
+    // pointer is kept so the tap never reaches the look zone underneath.
+    {
+      const el = box();
+      if (el) {
+        let downAt = 0;
+        el.addEventListener('pointerdown', (e) => {
+          if (!touch()) return;
+          e.preventDefault(); e.stopPropagation();
+          downAt = performance.now();
+        });
+        el.addEventListener('pointerup', (e) => {
+          if (!touch()) return;
+          e.preventDefault(); e.stopPropagation();
+          if (performance.now() - downAt > 600) return;   // a long press is not a tap
+          expanded = !expanded;
+          el.setAttribute('aria-expanded', String(expanded));
+          layout();
+        });
+        el.addEventListener('contextmenu', (e) => { if (touch()) e.preventDefault(); });
+        window.addEventListener('resize', () => { if (!el.hidden) layout(); });
+      }
     }
     window.roomMinimap = {
       attach(m) { mod = m; start(); },
@@ -1618,6 +1720,101 @@
     };
   })();
   </script>
+  <div id="solo-loading" role="dialog" aria-modal="true" aria-labelledby="solo-loading-title" aria-describedby="solo-loading-step" hidden>
+    <div class="panel">
+      <div class="brand-row"><span class="brand-mark">R</span><span class="brand-name">ROOM</span></div>
+      <p class="kicker">Starting</p>
+      <h1 id="solo-loading-title">Your game</h1>
+      <div class="bar busy" role="progressbar" aria-label="Loading progress" aria-valuemin="0" aria-valuemax="100"><div class="fill"></div></div>
+      <p class="step" id="solo-loading-step" aria-live="polite">Loading the engine…</p>
+      <p class="note" id="solo-loading-note" hidden>Downloaded once, then kept in this browser for next time.</p>
+    </div>
+  </div>
+  <script>
+    // A Play solo / direct-play link (`?iwad=…`, not multiplayer) starts on its
+    // own: show what is loading instead of the "Pick a world" file picker.
+    // `window.roomSoloLoading` is driven by the module script below.
+    (() => {
+      const q = new URLSearchParams(location.search);
+      const dialog = document.getElementById("solo-loading");
+      const boot = document.getElementById("boot");
+      const noop = { step() {}, progress() {}, done() {}, fail() {} };
+      if (!dialog || !boot || !q.get("iwad") || q.has("ws")) { window.roomSoloLoading = noop; return; }
+      const base = (u) => decodeURIComponent(String(u).split("?")[0].split("/").pop() || "");
+      const NAMES = {
+        "freedoom1.wad": "Freedoom: Phase 1", "freedoom2.wad": "Freedoom: Phase 2",
+        "doom.wad": "Doom", "doom1.wad": "Doom (shareware)", "doom2.wad": "Doom II",
+        "plutonia.wad": "Final Doom: Plutonia", "tnt.wad": "Final Doom: TNT",
+        "duke3d.grp": "Duke Nukem 3D",
+      };
+      const pretty = (file) => {
+        const f = file.toLowerCase();
+        if (NAMES[f]) return NAMES[f];
+        if (/brutal/.test(f)) return "Brutal Doom";
+        return file.replace(/\.(wad|pk3|pk7|pke|zip|grp|iwad|ipk3)$/i, "");
+      };
+      let title;
+      if (q.get("local") === "1") {
+        title = "Your game";
+      } else {
+        const parts = [pretty(base(q.get("iwad")))];
+        for (const a of (q.get("addon") || "").split(",").map((x) => x.trim()).filter(Boolean)) parts.push(pretty(base(a)));
+        if (q.get("duke_mod")) parts.push("Duke mod");
+        title = parts.filter(Boolean).join(" + ");
+      }
+      if (q.get("gen")) title += " · new map";
+      document.getElementById("solo-loading-title").textContent = title;
+      const step = document.getElementById("solo-loading-step");
+      const note = document.getElementById("solo-loading-note");
+      const bar = dialog.querySelector(".bar");
+      const fill = dialog.querySelector(".fill");
+      const MB = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0);
+      let open = true;
+      dialog.hidden = false;
+      boot.hidden = true;
+      document.body.classList.add("solo-loading");
+      const close = () => {
+        if (!open) return;
+        open = false;
+        dialog.hidden = true;
+        document.body.classList.remove("solo-loading");
+      };
+      window.roomSoloLoading = {
+        /** Show the current step (an indeterminate bar). */
+        step(text) {
+          if (!open || !text) return;
+          step.textContent = text;
+          bar.classList.add("busy");
+          bar.removeAttribute("aria-valuenow");
+          fill.style.width = "";
+          note.hidden = true;
+        },
+        /** A download: `got` of `total` bytes (`total` 0 when unknown). */
+        progress(name, got, total) {
+          if (!open) return;
+          note.hidden = false;
+          if (total > 0) {
+            const pct = Math.min(100, Math.round((got / total) * 100));
+            bar.classList.remove("busy");
+            fill.style.width = pct + "%";
+            bar.setAttribute("aria-valuenow", String(pct));
+            step.textContent = `Downloading ${name} — ${MB(got)} of ${MB(total)} MB`;
+          } else {
+            bar.classList.add("busy");
+            step.textContent = `Downloading ${name} — ${MB(got)} MB`;
+          }
+        },
+        /** The game is running. */
+        done: close,
+        /** Could not start: back to the file picker, which shows the error. */
+        fail() {
+          if (!open) return;
+          close();
+          boot.hidden = false;
+        },
+      };
+    })();
+  </script>
   <div id="lobby" aria-live="polite">
     <div class="panel">
       <div id="lobby-body">
@@ -1661,6 +1858,9 @@
   <script type="module">
     const status = document.getElementById("status");
     const boot = document.getElementById("boot");
+    const soloLoading = window.roomSoloLoading || { step() {}, progress() {}, done() {}, fail() {} };
+    // While the loading dialog is up it shows the status line's steps.
+    new MutationObserver(() => soloLoading.step(status.textContent)).observe(status, { childList: true, characterData: true, subtree: true });
     const fileInput = document.getElementById("iwad");
     const bootCurrent = document.getElementById("boot-current");
     const bootPlay = document.getElementById("boot-play");
@@ -2626,10 +2826,31 @@
         const store = window.caches ? await caches.open("room-bundled-v1").catch(() => null) : null;
         const hit = store ? await store.match(url) : null;
         if (hit) return new Uint8Array(await hit.arrayBuffer());
-        status.textContent = `Downloading ${url.split("?")[0].split("/").pop()}…`;
+        const fileName = url.split("?")[0].split("/").pop();
+        status.textContent = `Downloading ${fileName}…`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-        const bytes = new Uint8Array(await res.arrayBuffer());
+        // Read in chunks so the loading dialog can show progress.
+        const total = Number(res.headers.get("content-length")) || 0;
+        let bytes;
+        if (res.body && res.body.getReader) {
+          const reader = res.body.getReader();
+          const chunks = [];
+          let got = 0;
+          soloLoading.progress(fileName, 0, total);
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            got += value.byteLength;
+            soloLoading.progress(fileName, got, total);
+          }
+          bytes = new Uint8Array(got);
+          let at = 0;
+          for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
+        } else {
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
         if (store) {
           // Drop older versions of the same file before keeping this one.
           const path = new URL(url, location.href).pathname;
@@ -2719,11 +2940,17 @@
         }
       }
       if (!loaded) {
-        if (!dukeModFailed) status.textContent = "Choose a Doom WAD or Duke GRP to play in the browser";
+        // Keep an error the loading dialog was showing; it goes back to the
+        // file picker, where the status line stays visible.
+        if (!dukeModFailed && !status.style.color) {
+          status.textContent = "Choose a Doom WAD or Duke GRP to play in the browser";
+        }
+        soloLoading.fail();
       } else if (params.has("iwad")) {
         // An explicit URL is a direct-play link; packaged defaults leave the
         // refreshed start screen available so users can choose another file.
         boot.hidden = true;
+        soloLoading.done();
       }
 
       const loadIwadFile = async (file, fromBoot) => {
@@ -2758,6 +2985,7 @@
       console.error(err);
       status.textContent = "Failed to start: " + (err && err.message ? err.message : err);
       status.style.color = "#f66";
+      soloLoading.fail();
     }
   </script>
   <script>

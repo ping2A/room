@@ -2897,7 +2897,14 @@ mod browser {
             } => {
                 let dt = ((now - *last_ms) as f32 * 0.001).clamp(0.0, 0.1);
                 *last_ms = now;
-                *tic_accum += dt;
+                // Settings panel open in a solo game: no tics until it closes.
+                let menu_paused =
+                    network.is_none() && crate::play::MENU_PAUSE.with(std::cell::Cell::get);
+                if menu_paused {
+                    *tic_accum = 0.0;
+                } else {
+                    *tic_accum += dt;
+                }
                 let mut sound_events = Vec::new();
                 let mut campaign_transition = None;
                 if let Some(net) = network.as_mut() {
@@ -3014,6 +3021,7 @@ mod browser {
                         audio.resume();
                     }
                     if let Ok(mut mixer) = audio.mixer.try_borrow_mut() {
+                        mixer.set_paused(menu_paused);
                         let audio_options = DUKE_AUDIO_OPTIONS.get();
                         mixer.duke_sfx_gain = if audio_options.sound {
                             f32::from(audio_options.sfx_volume) / 255.0
@@ -4458,6 +4466,14 @@ mod browser {
                 _ => "null".into(),
             }
         })
+    }
+
+    /// The Settings panel opened (`true`) or closed (`false`): a solo game
+    /// (Doom-engine or native Duke) pauses while it is open. Netplay keeps
+    /// running, since the other players' game cannot wait.
+    #[wasm_bindgen(js_name = roomSetMenuPause)]
+    pub fn room_set_menu_pause(on: bool) {
+        crate::play::MENU_PAUSE.with(|c| c.set(on));
     }
 
     /// Settings → Network → Rollback: run the game up to `window` tics

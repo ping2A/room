@@ -168,6 +168,12 @@ pub struct SeatInspect {
     /// Latest pose (`None` until telemetry).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pose: Option<PoseInspect>,
+    /// Client round-trip from the last PING (ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<u16>,
+    /// Consecutive tics the server filled this seat's input (stall).
+    #[serde(default)]
+    pub miss_streak: u8,
 }
 
 /// One spectator row for admin inspect.
@@ -226,6 +232,33 @@ pub struct RoomInspect {
     pub spectators: Vec<SpectatorInspect>,
     /// Flat outline `[x1,y1,x2,y2,…]` in map units.
     pub outline: Vec<i16>,
+    /// Game id (`doom` / `duke3d`).
+    #[serde(default)]
+    pub game: String,
+    /// Lockstep protocol label (`lobby` / `v2` / `duke`).
+    #[serde(default)]
+    pub protocol: String,
+    /// Next tic awaiting release (`0` in lobby).
+    #[serde(default)]
+    pub next_tic: u32,
+    /// Micros from first cmd → frame for the last completed Doom tic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_relay_us: Option<u64>,
+    /// Seconds since room create (or lockstep start once playing).
+    #[serde(default)]
+    pub uptime_secs: u64,
+    /// Stall-fill grace configured on this node (ms).
+    #[serde(default)]
+    pub stall_fill_ms: u64,
+    /// Desync broadcasts emitted by this room.
+    #[serde(default)]
+    pub desync_count: u64,
+    /// Tic numbers with incomplete client checksum sets.
+    #[serde(default)]
+    pub pending_checksum_tics: usize,
+    /// Seats still missing a command for `next_tic`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_seats: Vec<u8>,
 }
 
 /// Settings chosen at room creation.
@@ -547,6 +580,8 @@ struct RoomState {
     clock_from: Instant,
     /// Latest `result` report per seat.
     results: BTreeMap<u8, MatchReport>,
+    /// Desync control messages broadcast from this room.
+    desync_count: u64,
     /// Result recorded on the leaderboard (once per room).
     recorded: bool,
     /// The room closes at this instant (match over / time up).
@@ -635,6 +670,7 @@ pub fn spawn_room(
             started_flag,
             clock_from: Instant::now(),
             results: BTreeMap::new(),
+            desync_count: 0,
             recorded: false,
             close_at: None,
             closed: false,
@@ -1948,6 +1984,7 @@ fn on_checksum(state: &mut RoomState, seat: u8, tic: u32, world_checksum: u64) {
         return;
     }
     warn!(room_id = %state.id, tic, ?bad, "desync");
+    state.desync_count = state.desync_count.saturating_add(1);
     if let Ok(s) = encode_control(&ControlMsg::Desync { tic, seats: bad }) {
         broadcast_all(state, Bytes::from(s.into_bytes()));
     }
@@ -2166,6 +2203,24 @@ fn seat_state_str(s: SeatState) -> &'static str {
 }
 
 fn build_room_inspect(state: &RoomState) -> RoomInspect {
+    let is_duke = state.settings.game == "duke3d";
+    let (protocol, next_tic, last_relay_us, waiting_seats) = if !state.started {
+        ("lobby".into(), 0, None, Vec::new())
+    } else if is_duke {
+        (
+            "duke".into(),
+            state.duke_v2.next_tic(),
+            None,
+            state.duke_v2.waiting_seats(),
+        )
+    } else {
+        (
+            "v2".into(),
+            state.v2.next_tic(),
+            state.v2.last_relay_us,
+            state.v2.waiting_seats(),
+        )
+    };
     let seats = state
         .seats
         .iter()
@@ -2174,6 +2229,13 @@ fn build_room_inspect(state: &RoomState) -> RoomInspect {
                 "away"
             } else {
                 seat_state_str(slot.state)
+            };
+            let miss_streak = if !state.started {
+                0
+            } else if is_duke {
+                state.duke_v2.miss_streak(seat)
+            } else {
+                state.v2.miss_streak(seat)
             };
             SeatInspect {
                 seat,
@@ -2200,6 +2262,8 @@ fn build_room_inspect(state: &RoomState) -> RoomInspect {
                 muted_video: slot.muted_video,
                 muted_chat: slot.muted_chat,
                 pose: slot.pose.clone(),
+                rtt_ms: slot.rtt_ms,
+                miss_streak,
             }
         })
         .collect();
@@ -2226,6 +2290,15 @@ fn build_room_inspect(state: &RoomState) -> RoomInspect {
             })
             .collect(),
         outline: state.map_outline.clone(),
+        game: state.settings.game.clone(),
+        protocol,
+        next_tic,
+        last_relay_us,
+        uptime_secs: state.clock_from.elapsed().as_secs(),
+        stall_fill_ms: state.cfg.stall_fill_ms,
+        desync_count: state.desync_count,
+        pending_checksum_tics: state.checksums.len(),
+        waiting_seats,
     }
 }
 

@@ -151,6 +151,8 @@ cp crates/room-web/editor.js "$OUT/editor.js"
 cp crates/room-web/editor-tools.js "$OUT/editor-tools.js"
 cp crates/room-web/editor-paint.js "$OUT/editor-paint.js"
 cp crates/room-web/editor-scripts.js "$OUT/editor-scripts.js"
+cp crates/room-web/editor-extras.js "$OUT/editor-extras.js"
+cp crates/room-web/editor-geom.js "$OUT/editor-geom.js"
 cp crates/room-web/editor.css "$OUT/editor.css"
 # Face-swap UI (docs/26): editor-paint dynamically imports face-capture.js.
 cp crates/room-web/face-capture.js crates/room-web/face-gallery.js \
@@ -213,7 +215,9 @@ sed_inplace \
   -e "s|./editor-tools.js|./editor-tools.js?v=${CACHE_TS}|g" \
   -e "s|./editor-paint.js|./editor-paint.js?v=${CACHE_TS}|g" \
   -e "s|./editor-scripts.js|./editor-scripts.js?v=${CACHE_TS}|g" \
+  -e "s|./editor-extras.js|./editor-extras.js?v=${CACHE_TS}|g" \
   "$OUT/editor.js"
+sed_inplace "s|./editor-geom.js|./editor-geom.js?v=${CACHE_TS}|g" "$OUT/editor-extras.js"
 sed_inplace "s|./face-capture.js|./face-capture.js?v=${CACHE_TS}|g" "$OUT/editor-paint.js"
 sed_inplace "s|./sound-record.js|./sound-record.js?v=${CACHE_TS}|g" "$OUT/editor.js" "$OUT/editor-paint.js"
 sed_inplace "s|./settings-faces.js|./settings-faces.js?v=${CACHE_TS}|g" "$OUT/face-share.js"

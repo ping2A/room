@@ -126,7 +126,8 @@ pub(crate) fn edge_crosses_ray(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i3
 
 /// Find sector containing `(x,y)`, updating `sect` hint in place.
 ///
-/// Search: hint → neighbours of hint (by `nextsector` on its walls) → all.
+/// Search: hint → neighbours of hint (by `nextsector` on its walls) → all,
+/// highest sector number first.
 /// Sets `*sect = -1` if none contain the point.
 pub fn updatesector(
     x: i32,
@@ -163,7 +164,10 @@ pub fn updatesector(
         }
     }
 
-    for i in 0..n {
+    // The fallback scans from the last sector down (verified against the
+    // Chocolate Duke3D oracle on DEMO1: a point inside two overlapping
+    // sectors, 21 and 33, resolves to 33).
+    for i in (0..n).rev() {
         if inside(x, y, i, sectors, walls) {
             *sect = i;
             return i;
@@ -2568,6 +2572,30 @@ mod tests {
         assert_eq!(s, 0);
         assert_eq!(updatesector(999, 999, &mut s, &sec, &walls), -1);
         assert_eq!(s, -1);
+    }
+
+    /// Overlapping sectors (room-over-room style maps): with no hint and no
+    /// neighbour match, the fallback scan picks the highest sector number.
+    #[test]
+    fn updatesector_fallback_scans_from_the_last_sector() {
+        let (mut sec, mut walls) = unit_square();
+        let copy: Vec<WallXY> = walls
+            .iter()
+            .map(|w| WallXY {
+                point2: w.point2 + 4,
+                ..*w
+            })
+            .collect();
+        walls.extend(copy);
+        sec.push(SectorWalls {
+            wallptr: 4,
+            wallnum: 4,
+        });
+        let mut s = -1_i16;
+        assert_eq!(updatesector(50, 50, &mut s, &sec, &walls), 1);
+        // A valid hint still wins.
+        s = 0;
+        assert_eq!(updatesector(50, 50, &mut s, &sec, &walls), 0);
     }
 
     #[test]

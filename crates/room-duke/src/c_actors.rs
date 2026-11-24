@@ -630,11 +630,13 @@ fn move_recon(ctx: &mut CActorCtx<'_>, i: usize) {
             None => i32::from(s.ang),
         };
         if t0 == 1 || t0 == 4 {
+            // Chocolate `dist(&sprite[j], s)`: `FindDistance3D(dx, dy, dz >> 4)`.
             let far = owner.is_some_and(|target| {
-                let dx = i64::from(target.x - s.x);
-                let dy = i64::from(target.y - s.y);
-                let dz = i64::from((target.z - s.z) >> 4);
-                ((dx * dx + dy * dy + dz * dz) as f64).sqrt() > 1524.0
+                room_build_engine::numeric::find_distance_3d(
+                    target.x.wrapping_sub(s.x),
+                    target.y.wrapping_sub(s.y),
+                    target.z.wrapping_sub(s.z) >> 4,
+                ) > 1524
             });
             if !far {
                 ctx.temps[i].g_t[0] = if t0 == 1 { 0 } else { 5 };

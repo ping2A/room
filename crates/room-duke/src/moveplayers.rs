@@ -399,6 +399,7 @@ pub fn moveplayers(
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
     script: Option<&ScriptImage>,
+    tile_meta: &[crate::player::TileZMeta],
     _emit_tic: u32,
 ) {
     // Bodies whose `ifhitweapon` fires this tic: APLAYER handles the hit and
@@ -416,11 +417,14 @@ pub fn moveplayers(
     apply_player_weapon_hits(
         lists,
         sprites,
+        sectors,
+        walls,
         players,
         picnum,
         actor_temps,
         randomseed,
         script,
+        tile_meta,
     );
     // Chocolate's second APLAYER in STAT_PLAYER is the Holoduke decoy
     // (`owner=-1`), while the live player body has a nonnegative owner.
@@ -779,14 +783,18 @@ fn approach_repeat(current: u8, target: u8) -> u8 {
 
 /// Chocolate `ifhitbyweapon`'s APLAYER path. Damage metadata is queued by
 /// projectile/hitscan handling and consumed in `moveplayers` after weapons.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_player_weapon_hits(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[room_build_engine::types::WallT],
     players: &mut [Player],
     picnum: &mut Vec<i16>,
     actor_temps: &mut Vec<ActorConTemps>,
     randomseed: &mut i32,
     script: Option<&ScriptImage>,
+    tile_meta: &[crate::player::TileZMeta],
 ) {
     const APLAYER: i16 = 1405;
     const SHRINKSPARK: i16 = 1646;
@@ -910,7 +918,14 @@ fn apply_player_weapon_hits(
         // armor absorbs a random 20–49% of lost health, capped by the current
         // shield amount. The one TRAND is consumed only when damage is taken
         // while armor is present.
-        let health = if health > 0 {
+        // Atomic: `ifhitbyweapon` only subtracts the hit here; `incur_damage`
+        // (armor, its TRAND, `last_extra`) runs in the next tic's
+        // `processinput` (see `Session::atomic_incur_damage`).
+        let deferred_incur =
+            !script.is_some_and(|image| image.dialect == crate::con::ConDialect::EDuke32);
+        let health = if deferred_incur {
+            health
+        } else if health > 0 {
             let mut damage = health.wrapping_sub(player.last_extra);
             if damage < 0 && player.shield_amount > 0 && !player.eduke_skip_incur_damage {
                 let shield_percent = 20 + room_build_engine::numeric::krand_step(randomseed) % 30;
@@ -947,7 +962,9 @@ fn apply_player_weapon_hits(
         }
         sprites[sprite_index].extra = health;
         player.extra = health;
-        player.last_extra = health;
+        if !deferred_incur {
+            player.last_extra = health;
+        }
         actor_temps[sprite_index].hit_extra = -1;
 
         if health == 0 && hit_picnum == FREEZEBLAST {
@@ -984,6 +1001,189 @@ fn apply_player_weapon_hits(
         player.posyv = player
             .posyv
             .wrapping_add(i32::from(hit_extra).wrapping_mul(sin).wrapping_shl(shift));
+
+        if deferred_incur {
+            aplayer_hit_reaction(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                player,
+                player_count,
+                picnum,
+                actor_temps,
+                randomseed,
+                script,
+                tile_meta,
+                hit_picnum,
+            );
+        }
+    }
+}
+
+/// GAME.CON APLAYER `ifhitweapon { … }` after the damage (`ifhitbyweapon`):
+/// the pain-sound rolls, the weapon-specific blocks (which may `break`), and
+/// `state random_wall_jibs` (five `ifrnd 96 shoot BLOODSPLATn`).
+#[allow(clippy::too_many_arguments)]
+fn aplayer_hit_reaction(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &[SectorT],
+    walls: &[room_build_engine::types::WallT],
+    player: &mut Player,
+    player_count: usize,
+    picnum: &mut Vec<i16>,
+    actor_temps: &mut Vec<ActorConTemps>,
+    randomseed: &mut i32,
+    script: Option<&ScriptImage>,
+    tile_meta: &[crate::player::TileZMeta],
+    hit_picnum: i16,
+) {
+    let Some(image) = script else {
+        return;
+    };
+    let Ok(body_i) = usize::try_from(player.sprite_i) else {
+        return;
+    };
+    let value = |name: &str, fallback: i32| image.labels.get(name).map_or(fallback, |l| l.value);
+    let tile = |name: &str, fallback: i16| {
+        image
+            .labels
+            .get(name)
+            .and_then(|l| i16::try_from(l.value).ok())
+            .unwrap_or(fallback)
+    };
+    let sound = |actor_temps: &mut Vec<ActorConTemps>, name: &str| {
+        if let Some(id) = image
+            .labels
+            .get(name)
+            .and_then(|l| i16::try_from(l.value).ok())
+            && let Some(temps) = actor_temps.get_mut(body_i)
+        {
+            temps.pending_actor_sounds.push(id);
+        }
+    };
+    let extra = i32::from(sprites[body_i].extra);
+    let dead = extra <= 0;
+    let multiplayer = player_count > 1;
+    if !dead {
+        if multiplayer {
+            if extra < value("YELLHURTSOUNDSTRENGTHMP", 50) {
+                if rnd(randomseed, 64, "APLAYER pain") {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN2");
+                } else if rnd(randomseed, 64, "APLAYER pain") {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN3");
+                } else if rnd(randomseed, 64, "APLAYER pain") {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN4");
+                } else {
+                    sound(actor_temps, "DUKE_DEAD");
+                }
+            } else if rnd(randomseed, 64, "APLAYER pain") {
+                sound(actor_temps, "DUKE_LONGTERM_PAIN5");
+            } else if rnd(randomseed, 64, "APLAYER pain") {
+                sound(actor_temps, "DUKE_LONGTERM_PAIN6");
+            } else if rnd(randomseed, 64, "APLAYER pain") {
+                sound(actor_temps, "DUKE_LONGTERM_PAIN7");
+            } else {
+                sound(actor_temps, "DUKE_LONGTERM_PAIN8");
+            }
+        } else {
+            if extra < value("YELLHURTSOUNDSTRENGTH", 40) {
+                if rnd(randomseed, 74, "APLAYER pain") {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN2");
+                } else if rnd(randomseed, 8, "APLAYER pain") {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN3");
+                } else {
+                    sound(actor_temps, "DUKE_LONGTERM_PAIN4");
+                }
+            }
+            if rnd(randomseed, 128, "APLAYER pain") {
+                sound(actor_temps, "DUKE_LONGTERM_PAIN");
+            }
+        }
+    } else if multiplayer {
+        sound(actor_temps, "DUKE_KILLED4");
+    }
+    // `ifstrength TOUGH { state headhitstate; sound DUKE_GRUNT; ifp pstanding
+    // action PFLINTCHING }` (the flinch action is not modelled).
+    if extra <= value("TOUGH", 20) {
+        sound(actor_temps, "DUKE_GRUNT");
+    }
+    let flash = |player: &mut Player, tics: u8, rgb: [u8; 3]| {
+        player.palette_flash = rgb;
+        player.palette_flash_tics = tics;
+    };
+    if hit_picnum == tile("RPG", 2605)
+        || hit_picnum == tile("RADIUSEXPLOSION", 1670)
+        || hit_picnum == tile("FIREEXT", 916)
+    {
+        if rnd(randomseed, 32, "APLAYER ifrnd 32 spawn BLOOD") {
+            let _ = crate::spawn_rt::spawn_from(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                image,
+                randomseed,
+                player.sprite_i,
+                tile("BLOOD", 1620),
+                None,
+            );
+        }
+        // (`ifdead state standard_pjibs` is not modelled.)
+        flash(player, 48, [52, 0, 0]);
+        return;
+    }
+    if hit_picnum == crate::shoot::GROWSPARK || hit_picnum == tile("SHRINKSPARK", 1646) {
+        // Handled (palette, move, sound) by the caller; both `break`.
+        return;
+    }
+    if hit_picnum == tile("SHOTSPARK1", 2595) {
+        flash(player, 24, [48, 0, 0]);
+    }
+    if hit_picnum == tile("FREEZEBLAST", 1641) {
+        flash(player, 48, [0, 0, 48]);
+        if dead {
+            return;
+        }
+    }
+    if hit_picnum == tile("COOLEXPLOSION1", 1360) {
+        flash(player, 48, [48, 0, 48]);
+    }
+    if hit_picnum == tile("KNEE", 2521) {
+        flash(player, 16, [32, 0, 0]);
+    }
+    if hit_picnum == tile("FIRELASER", 1625) {
+        flash(player, 32, [32, 0, 0]);
+    }
+    // (`ifdead { action PTHROWNBACK tossweapon }` is left to the death path.)
+    for splat in [
+        "BLOODSPLAT1",
+        "BLOODSPLAT2",
+        "BLOODSPLAT3",
+        "BLOODSPLAT4",
+        "BLOODSPLAT1",
+    ] {
+        if rnd(randomseed, 96, "APLAYER random_wall_jibs") {
+            let pn = tile(splat, 2296);
+            let snapshot = player.clone();
+            crate::shoot::shoot_bloodsplat_player(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                tile_meta,
+                script,
+                randomseed,
+                &snapshot,
+                pn,
+            );
+        }
     }
 }
 

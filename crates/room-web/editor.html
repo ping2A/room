@@ -8,76 +8,127 @@
 </head>
 <body class="editor-start">
   <header id="toolbar">
-    <div class="brand">ROOM<span>editor</span><span id="editor-game-mode" class="game-mode" hidden></span></div>
-    <div class="group">
-      <label class="btn" title="Open a Doom WAD (IWAD or standalone PWAD), Duke Nukem 3D GRP, or PK3 / ZIP as the working base.">
-        Game…<input id="file-iwad" type="file" accept=".wad,.iwad,.grp,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip" hidden />
-      </label>
-      <span id="iwad-label" class="iwad-label" title="Base game archive">—</span>
-      <label class="btn" title="Add PWADs, Duke Build .MAP files, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
-        Open…<input id="file-open" type="file" accept=".wad,.grp,.map,.pk3,.pk7,.zip,.ipk3,.ipk7,.pwad,.zs,.zc,.zsc,.txt,application/zip" multiple hidden />
-      </label>
-      <label id="btn-open-pk3" class="btn go" title="Import a PK3 / PK7 / ZIP / IPK3 as the working archive: browse its files, edit its ZScript, open its maps, then Export PK3. Works with or without a game archive open (or drop the file anywhere).">
-        📦 Open PK3…<input id="file-pk3" type="file" accept=".pk3,.pk7,.zip,.ipk3,.ipk7,application/zip,application/x-7z-compressed" multiple hidden />
-      </label>
+    <div class="bar-main">
+      <div class="brand">ROOM<span>editor</span><span id="editor-game-mode" class="game-mode" hidden></span></div>
+      <nav class="menus" aria-label="Editor menus">
+        <details class="menu" id="menu-file">
+          <summary>File</summary>
+          <div class="menu-pop" role="menu">
+            <label class="btn" title="Open a Doom WAD (IWAD or standalone PWAD), Duke Nukem 3D GRP, or PK3 / ZIP as the working base.">
+              Open game…<input id="file-iwad" type="file" accept=".wad,.iwad,.grp,.pk3,.pk7,.zip,.ipk3,.ipk7,application/octet-stream,application/zip" hidden />
+            </label>
+            <label class="btn" title="Add PWADs, Duke Build .MAP files, PK3s, PK7s, or ZIPs on top of the base archive (or drop files anywhere)">
+              Add files on top…<input id="file-open" type="file" accept=".wad,.grp,.map,.pk3,.pk7,.zip,.ipk3,.ipk7,.pwad,.zs,.zc,.zsc,.txt,application/zip" multiple hidden />
+            </label>
+            <label id="btn-open-pk3" class="btn" title="Import a PK3 / PK7 / ZIP / IPK3 as the working archive: browse its files, edit its ZScript, open its maps, then Export PK3. Works with or without a game archive open (or drop the file anywhere).">
+              📦 Open PK3 as the project…<input id="file-pk3" type="file" accept=".pk3,.pk7,.zip,.ipk3,.ipk7,application/zip,application/x-7z-compressed" multiple hidden />
+            </label>
+            <span class="packs"><button id="btn-add-pack" type="button" class="btn" title="Mount a content pack (.pk3 / .zip)">Mount content pack…</button></span>
+            <hr />
+            <button id="btn-new-map" class="btn" title="New map">New map</button>
+            <button id="btn-generate" class="btn" data-key="Ctrl+G" title="Generate a multiplayer map: rooms, corridors, stairs, arenas, teleporters, balanced weapons (Ctrl+G)">🎲 Generate…</button>
+            <hr />
+            <button id="btn-snapshots" class="btn" title="Save named snapshots of your work in this browser and go back to them">🕘 Snapshots…</button>
+            <button id="btn-export-pk3" class="btn" title="Download the opened PK3 (or a new one) with every change: edited files, lumps, maps as maps/*.wad">Export PK3</button>
+          </div>
+        </details>
+        <details class="menu" id="menu-tools">
+          <summary>Tools</summary>
+          <div class="menu-pop" role="menu">
+            <button id="btn-check" class="btn" data-key="F8" title="Map checker (F8)">✔ Check</button>
+            <span id="doom-tools">
+              <button id="btn-find" class="btn" data-key="Ctrl+F" title="Find & replace textures, flats, things, specials and tags (Ctrl+F)">🔎 Find &amp; replace</button>
+              <button id="btn-acs" class="btn" title="Edit and compile this map's ACS scripts">📜 Map scripts (ACS)</button>
+              <button id="btn-prefabs" class="btn" title="Save selections as prefabs and place them in any map">★ Prefabs</button>
+              <button id="btn-trace" class="btn" title="Show an image under the map to trace over">🖼 Trace image</button>
+            </span>
+            <button id="btn-composer" class="btn" title="TEXTURE1/TEXTURE2 + PNAMES composer">🧱 Texture composer</button>
+          </div>
+        </details>
+        <details class="menu" id="menu-view">
+          <summary>View</summary>
+          <div class="menu-pop" role="menu">
+            <div class="menu-row layout" role="group" aria-label="Layout">
+              <button data-layout="2d" class="btn" title="2D only">2D</button>
+              <button data-layout="split" class="btn active" title="2D + 3D">Split</button>
+              <button data-layout="3d" class="btn" title="3D only">3D</button>
+            </div>
+            <button id="btn-visual" class="btn" data-key="M" title="Visual mode — immersive 3D edit (M), like Doom Builder">Visual mode</button>
+            <hr />
+            <label class="check" title="Fill sectors with their floor flat"><input id="textured" type="checkbox" checked /> Floor flats</label>
+            <label class="check" id="portals-toggle" title="Show line portals, portal planes and linked portal groups"><input id="show-portals" type="checkbox" checked /> Portals</label>
+            <label class="check" id="duke-floor-toggle" title="Show each sector's floor height and ART tile on the map" hidden><input id="duke-floors" type="checkbox" checked /> Floor heights</label>
+            <div id="thing-filter" class="thing-filter">
+              <hr />
+              <div class="menu-head">Things on the map <button id="tf-reset" type="button" class="btn small" title="Show every thing">Show all</button></div>
+              <div id="tf-cats" class="tf-cats"></div>
+              <label class="menu-field" title="Only things that appear on this skill">Skill
+                <select id="tf-skill"><option value="all">Any</option><option value="1">Easy (1–2)</option><option value="2">Medium (3)</option><option value="4">Hard (4–5)</option></select>
+              </label>
+              <label class="menu-field" title="Only things that appear in this game mode">Mode
+                <select id="tf-mode"><option value="all">Any</option><option value="single">Single player</option><option value="coop">Co-op</option><option value="dm">Deathmatch</option></select>
+              </label>
+            </div>
+          </div>
+        </details>
+      </nav>
+      <div class="game-chip" title="Base game archive and mounted packs">
+        <span id="iwad-label" class="iwad-label" title="Base game archive">—</span>
+        <span class="packs"><span id="packs-label" class="iwad-label" title="Mounted content packs">—</span></span>
+      </div>
       <select id="map-select" title="Map" disabled><option value="">Choose map…</option></select>
-      <button id="btn-new-map" class="btn" title="New map">New map</button>
-      <button id="btn-generate" class="btn go" title="Generate a multiplayer map: rooms, corridors, stairs, arenas, teleporters, balanced weapons (Ctrl+G)">🎲 Generate…</button>
+      <span class="bar-gap"></span>
       <button id="btn-export" class="btn primary" title="Download edited maps and resources (Ctrl+S)">Export WAD</button>
-      <button id="btn-export-pk3" class="btn" title="Download the opened PK3 (or a new one) with every change: edited files, lumps, maps as maps/*.wad">Export PK3</button>
-    </div>
-    <div class="group">
-      <button id="btn-undo" class="btn icon" title="Undo (Ctrl+Z)">↶</button>
-      <button id="btn-redo" class="btn icon" title="Redo (Ctrl+Y)">↷</button>
-    </div>
-    <div class="group modes" id="modes">
-      <button data-mode="vertices" class="btn" title="Vertices (V)">Vertices</button>
-      <button data-mode="lines" class="btn" title="Lines (L)">Lines</button>
-      <button data-mode="sectors" class="btn active" title="Sectors (S)">Sectors</button>
-      <button data-mode="things" class="btn" title="Things (T)">Things</button>
-      <button data-mode="draw" class="btn" title="Draw sector (D)">Draw</button>
-    </div>
-    <div class="group">
-      <label title="Grid size ([ / ])">Grid
-        <select id="grid">
-          <option>4</option><option>8</option><option>16</option><option selected>32</option>
-          <option>64</option><option>128</option><option>256</option>
+      <div class="group play">
+        <select id="skill" title="Skill for play tests">
+          <option value="1">ITYTD</option><option value="2">HNTR</option>
+          <option value="3" selected>HMP</option><option value="4">UV</option><option value="5">NM</option>
         </select>
-      </label>
-      <label title="Snap to grid (G)"><input id="snap" type="checkbox" checked /> Snap</label>
-      <label title="Fill sectors with their floor flat"><input id="textured" type="checkbox" checked /> Flats</label>
-      <label id="portals-toggle" title="Show line portals, portal planes and linked portal groups"><input id="show-portals" type="checkbox" checked /> Portals</label>
-      <label id="duke-floor-toggle" title="Show each sector's floor height and ART tile on the map" hidden><input id="duke-floors" type="checkbox" checked /> Floors</label>
+        <button id="btn-play" class="btn go" title="Play the selected map in its native runtime (F5)">▶ Play</button>
+        <button id="btn-play-here" class="btn go" title="Play from the 3D camera (F6)">▶ Here</button>
+        <button id="btn-stop" class="btn" title="Back to the fly camera (F7)" disabled>■ Edit</button>
+        <button id="btn-mute" class="btn icon" title="Mute game sound and music">🔊</button>
+      </div>
     </div>
-    <div class="group">
-      <button id="btn-copy" class="btn icon" title="Copy selection (Ctrl+C) · Ctrl+X cut · Ctrl+D duplicate">⧉</button>
-      <button id="btn-paste" class="btn icon" title="Paste at the mouse (Ctrl+V)">📋</button>
-      <button id="btn-rotate" class="btn icon" title="Rotate 90° (R · Shift+R counter-clockwise)">⟳</button>
-      <button id="btn-mirror" class="btn icon" title="Mirror horizontally (H · Shift+H vertically)">⇋</button>
-      <button id="btn-check" class="btn" title="Map checker (F8)">✔ Check</button>
-      <button id="btn-composer" class="btn" title="TEXTURE1/TEXTURE2 + PNAMES composer">🧱 Textures</button>
+    <div class="bar-tools">
+      <div class="group">
+        <button id="btn-undo" class="btn icon" title="Undo (Ctrl+Z)">↶</button>
+        <button id="btn-redo" class="btn icon" title="Redo (Ctrl+Y)">↷</button>
+      </div>
+      <div class="group modes" id="modes" role="group" aria-label="Edit mode">
+        <button data-mode="vertices" class="btn" title="Vertices (V)">Vertices</button>
+        <button data-mode="lines" class="btn" title="Lines (L)">Lines</button>
+        <button data-mode="sectors" class="btn active" title="Sectors (S)">Sectors</button>
+        <button data-mode="things" class="btn" title="Things (T)">Things</button>
+        <button data-mode="draw" class="btn" title="Draw sector (D)">Draw</button>
+        <button data-mode="cut" class="btn" title="Split a sector along a cut between two walls or corners (K)">Cut</button>
+        <button data-mode="measure" class="btn" title="Measure distances (Q)">Measure</button>
+      </div>
+      <div class="group" id="draw-opts" hidden>
+        <label title="Shape drawn in Draw mode">Shape
+          <select id="draw-shape">
+            <option value="polygon">Polygon</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option>
+          </select>
+        </label>
+        <label title="Sides of an ellipse">Sides <input id="draw-sides" type="number" min="3" max="128" value="16" /></label>
+      </div>
+      <div class="group">
+        <label title="Grid size ([ / ])">Grid
+          <select id="grid">
+            <option>4</option><option>8</option><option>16</option><option selected>32</option>
+            <option>64</option><option>128</option><option>256</option>
+          </select>
+        </label>
+        <label title="Snap to grid (G)"><input id="snap" type="checkbox" checked /> Snap</label>
+      </div>
+      <div class="group">
+        <button id="btn-copy" class="btn icon" title="Copy selection (Ctrl+C) · Ctrl+X cut · Ctrl+D duplicate">⧉</button>
+        <button id="btn-paste" class="btn icon" title="Paste at the mouse (Ctrl+V)">📋</button>
+        <button id="btn-rotate" class="btn icon" title="Rotate 90° (R · Shift+R counter-clockwise)">⟳</button>
+        <button id="btn-mirror" class="btn icon" title="Mirror horizontally (H · Shift+H vertically)">⇋</button>
+      </div>
     </div>
-    <div class="group play">
-      <select id="skill" title="Skill for play tests">
-        <option value="1">ITYTD</option><option value="2">HNTR</option>
-        <option value="3" selected>HMP</option><option value="4">UV</option><option value="5">NM</option>
-      </select>
-      <button id="btn-play" class="btn go" title="Play the selected map in its native runtime (F5)">▶ Play</button>
-      <button id="btn-play-here" class="btn go" title="Play from the 3D camera (F6)">▶ Here</button>
-      <button id="btn-stop" class="btn" title="Back to the fly camera (F7)" disabled>■ Edit</button>
-      <button id="btn-mute" class="btn icon" title="Mute game sound and music">🔊</button>
-    </div>
-    <div class="group layout">
-      <button data-layout="2d" class="btn" title="2D only">2D</button>
-      <button data-layout="split" class="btn active" title="2D + 3D">Split</button>
-      <button data-layout="3d" class="btn" title="3D only">3D</button>
-      <button id="btn-visual" class="btn" title="Visual mode — immersive 3D edit (M), like Doom Builder">Visual</button>
-    </div>
-    <div class="group packs">
-      <button id="btn-add-pack" type="button" class="btn" title="Mount a content pack (.pk3 / .zip)">+ Pack…</button>
-      <input id="file-pack" type="file" accept=".pk3,.zip,.pk7,.ipk3,.ipk7,application/zip" multiple hidden />
-      <span id="packs-label" class="iwad-label" title="Mounted content packs">—</span>
-    </div>
+    <input id="file-pack" type="file" accept=".pk3,.zip,.pk7,.ipk3,.ipk7,application/zip" multiple hidden />
   </header>
 
   <main id="workspace">
@@ -149,6 +200,7 @@
     <span id="st-sync" class="pill"></span>
     <span id="st-counts"></span>
     <span id="st-pos"></span>
+    <span id="st-saved" title="Edits are kept in this browser until you export them"></span>
   </footer>
 
   <div id="picker" hidden>

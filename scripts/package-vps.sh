@@ -93,9 +93,10 @@ if [[ -z "$TARGET" ]]; then
 fi
 
 build_server_native() {
-  echo "==> release room-server (native)"
-  cargo build -p room-server --release
+  echo "==> release room-server + room-admin (native)"
+  cargo build -p room-server -p room-admin-tui --release
   SERVER_BIN="target/release/room-server"
+  ADMIN_BIN="target/release/room-admin"
 }
 
 build_server_cross_docker() {
@@ -138,6 +139,7 @@ build_server_cross() {
 }
 
 SERVER_BIN=""
+ADMIN_BIN=""
 if [[ -n "$TARGET" ]]; then
   build_server_cross "$TARGET"
 else
@@ -193,6 +195,13 @@ chmod +x "$OUT/bin/room-server"
 # Strip when available (smaller upload). Host strip may not understand ELF — ignore errors.
 if command -v strip >/dev/null 2>&1; then
   strip -S "$OUT/bin/room-server" 2>/dev/null || true
+fi
+if [[ -n "$ADMIN_BIN" && -x "$ADMIN_BIN" ]]; then
+  cp "$ADMIN_BIN" "$OUT/bin/room-admin"
+  chmod +x "$OUT/bin/room-admin"
+  if command -v strip >/dev/null 2>&1; then
+    strip -S "$OUT/bin/room-admin" 2>/dev/null || true
+  fi
 fi
 
 # Mods next to the binary (same layout as Docker / ROOM_MODS_DIR).

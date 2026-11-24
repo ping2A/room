@@ -142,6 +142,7 @@ fn ns_folder(ns: &str) -> &'static str {
         "sprites" => "sprites/",
         "patches" => "patches/",
         "textures" => "textures/",
+        "acs" => "acs/",
         _ => "",
     }
 }

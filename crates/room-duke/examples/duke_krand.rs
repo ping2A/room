@@ -44,8 +44,32 @@ fn main() {
             );
         }
     }
+    let tic_marks = std::env::var_os("ROOM_CON_OP_TRACE").is_some();
     for t in 0..tics {
+        if tic_marks {
+            // Op traces carry no tic: mark each tic with its k.log number.
+            eprintln!("CONOP-TIC {t}");
+        }
         s.tick(room_duke::DukeInput::from_dmo(&demo.tics[t]));
+        if std::env::var_os("ROOM_PLAYER").is_some() {
+            let p = &s.player;
+            eprintln!(
+                "PLAYER {t} pos=({},{},{}) zv={} jc={} ground={} fall={} sect={} ang={} truefz={} sectfz={}",
+                p.posx,
+                p.posy,
+                p.posz,
+                p.poszv,
+                p.jumping_counter,
+                p.on_ground,
+                p.falling_counter,
+                p.cursectnum,
+                p.ang,
+                0,
+                s.world
+                    .as_ref()
+                    .map_or(0, |w| w.sectors[p.cursectnum.max(0) as usize].floorz)
+            );
+        }
         for (seed, site) in krand_log::drain() {
             println!("{t} {seed} {site}");
         }

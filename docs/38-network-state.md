@@ -6,7 +6,7 @@ The design is in `17-netplay-demos-saves.md` (lockstep model, demos, saves) and
 sheet: when a network change lands, update the matching section here and add a
 line to §11 in the same change.
 
-Last updated: 2026-11-09 (UZ12 + web prediction).
+Last updated: 2026-11-24 (admin TUI network fields).
 
 ## 1. At a glance
 
@@ -256,6 +256,11 @@ tics already released are ignored on receive. Web peer meshes use it too.
 | Bots | `room-sim` `bot::tests` (co-op bots target monsters, deathmatch bots players; dead bots respawn; co-op bots follow the players) |
 
 ## 11. Change log
+
+- 2026-11-24 — Admin inspect / TUI: seats expose `rtt_ms` and `miss_streak`; rooms
+  expose `protocol`, `next_tic`, `last_relay_us`, `waiting_seats`, `desync_count`,
+  `uptime_secs`, `stall_fill_ms`. `room-admin` Net tab shows cluster relay
+  histogram and rates.
 
 - 2026-11-18 (late night) — Rollback round 2: HUD and own sounds from the copy,
   ZScript games can be copied, browser rollback indicator. Desktop
