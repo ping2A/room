@@ -117,25 +117,27 @@ build_server_cross_docker() {
   cid="$(docker create --platform "$platform" room-vps-server:bin)"
   mkdir -p "target/${triple}/release"
   docker cp "$cid:/out/room-server" "target/${triple}/release/room-server"
+  docker cp "$cid:/out/room-admin" "target/${triple}/release/room-admin"
   docker rm "$cid" >/dev/null
 }
 
 build_server_cross() {
   local triple="$1"
-  echo "==> release room-server (cross → $triple)"
+  echo "==> release room-server + room-admin (cross → $triple)"
   rustup target add "$triple" >/dev/null
   # Prefer Docker: ring/aws-lc often break under zig-cc from macOS.
   if command -v docker >/dev/null 2>&1; then
     build_server_cross_docker "$triple"
   elif command -v cargo-zigbuild >/dev/null 2>&1 && command -v zig >/dev/null 2>&1; then
-    cargo zigbuild -p room-server --release --target "$triple"
+    cargo zigbuild -p room-server -p room-admin-tui --release --target "$triple"
   elif command -v cross >/dev/null 2>&1; then
-    cross build -p room-server --release --target "$triple"
+    cross build -p room-server -p room-admin-tui --release --target "$triple"
   else
     echo "package-vps: need Docker (recommended), cargo-zigbuild, or cross to build $triple from $HOST_OS" >&2
     exit 1
   fi
   SERVER_BIN="target/${triple}/release/room-server"
+  ADMIN_BIN="target/${triple}/release/room-admin"
 }
 
 SERVER_BIN=""
@@ -196,12 +198,14 @@ chmod +x "$OUT/bin/room-server"
 if command -v strip >/dev/null 2>&1; then
   strip -S "$OUT/bin/room-server" 2>/dev/null || true
 fi
-if [[ -n "$ADMIN_BIN" && -x "$ADMIN_BIN" ]]; then
-  cp "$ADMIN_BIN" "$OUT/bin/room-admin"
-  chmod +x "$OUT/bin/room-admin"
-  if command -v strip >/dev/null 2>&1; then
-    strip -S "$OUT/bin/room-admin" 2>/dev/null || true
-  fi
+if [[ ! -x "$ADMIN_BIN" ]]; then
+  echo "package-vps: missing room-admin at ${ADMIN_BIN:-?} (needed for ./room admin-tui)" >&2
+  exit 1
+fi
+cp "$ADMIN_BIN" "$OUT/bin/room-admin"
+chmod +x "$OUT/bin/room-admin"
+if command -v strip >/dev/null 2>&1; then
+  strip -S "$OUT/bin/room-admin" 2>/dev/null || true
 fi
 
 # Mods next to the binary (same layout as Docker / ROOM_MODS_DIR).
@@ -281,6 +285,7 @@ SIZE="$(du -sh "$OUT" | awk '{print $1}')"
 echo
 echo "==> VPS tree ready → $OUT  ($SIZE)"
 echo "    target=${TARGET:-native}"
+echo "    bins: room-server + room-admin (./room admin-tui)"
 echo "    Copy env.example → .env (first install), then: ./room start"
 echo "    Push: ./room push user@host:~/room/"
 

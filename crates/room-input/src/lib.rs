@@ -6,6 +6,7 @@ mod attack;
 pub mod double_tap;
 pub mod gamepad;
 mod mod_buttons;
+pub mod touch;
 mod weapon_impulses;
 
 pub use attack::{
@@ -85,6 +86,10 @@ pub enum Key {
     QuickKick,
     /// Use carried inventory (`+invuse`).
     InvUse,
+    /// Select the previous inventory item (Duke's inventory bar).
+    InvPrev,
+    /// Select the next inventory item (Duke's inventory bar).
+    InvNext,
     /// Cycle to next owned weapon.
     NextWeapon,
     /// Cycle to previous owned weapon.

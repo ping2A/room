@@ -291,6 +291,15 @@ impl Metrics {
     }
 }
 
+/// Result of a password login attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoginOutcome {
+    /// Session cookie is ready.
+    Session,
+    /// Password ok; TOTP code required next.
+    NeedTotp,
+}
+
 /// Admin API client.
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -321,24 +330,18 @@ impl Client {
         self.base.with_path(path)
     }
 
-    /// Password login; stores session + CSRF. Fails if MFA is still required.
+    /// Password login; stores session + CSRF, or leaves a pending cookie when MFA is required.
     ///
     /// # Errors
     ///
-    /// Transport, auth, or MFA-required.
-    pub fn login(&mut self, user: &str, password: &str) -> Result<(), HttpError> {
+    /// Transport or bad credentials.
+    pub fn login(&mut self, user: &str, password: &str) -> Result<LoginOutcome, HttpError> {
         let res = http::post_json(
             &self.url("/admin/api/v1/auth/login"),
             &self.auth,
             &json!({ "username": user, "password": password }),
         )?;
-        for (name, value) in res.set_cookies() {
-            match name.as_str() {
-                "room_admin_sid" => self.auth.session = Some(value),
-                "room_admin_pending" => self.auth.pending = Some(value),
-                _ => {}
-            }
-        }
+        self.apply_auth_cookies(&res);
         if !(200..300).contains(&res.status) {
             return Err(HttpError::Status {
                 status: res.status,
@@ -350,19 +353,106 @@ impl Client {
         if let Some(csrf) = body.get("csrf").and_then(|v| v.as_str()) {
             self.auth.csrf = Some(csrf.to_owned());
         }
-        if let Some(need) = body.get("need").and_then(|v| v.as_str()) {
-            if need != "none" && self.auth.session.is_none() {
-                return Err(HttpError::Response(format!(
-                    "login needs MFA step `{need}` — use a bearer token or complete MFA in the web UI"
-                )));
-            }
+        if self.auth.session.is_some() {
+            return Ok(LoginOutcome::Session);
         }
-        if self.auth.session.is_none() && self.auth.bearer.is_none() {
+        let need = body
+            .get("need")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let methods: Vec<&str> = body
+            .get("methods")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        // Prefer TOTP in the terminal even when the server prefers WebAuthn.
+        if need == "totp" || methods.contains(&"totp") {
+            return Ok(LoginOutcome::NeedTotp);
+        }
+        if need == "webauthn" {
             return Err(HttpError::Response(
-                "login returned no session cookie".into(),
+                "login needs a passkey — use the web admin UI, or enroll TOTP on that account"
+                    .into(),
             ));
         }
+        Err(HttpError::Response(format!(
+            "login incomplete (need `{need}`)"
+        )))
+    }
+
+    /// Complete a pending TOTP challenge after [`Self::login`] returned [`LoginOutcome::NeedTotp`].
+    ///
+    /// # Errors
+    ///
+    /// Transport or bad code.
+    pub fn verify_totp(&mut self, code: &str) -> Result<(), HttpError> {
+        let res = http::post_json(
+            &self.url("/admin/api/v1/auth/totp"),
+            &self.auth,
+            &json!({ "code": code }),
+        )?;
+        self.apply_auth_cookies(&res);
+        if !(200..300).contains(&res.status) {
+            return Err(HttpError::Status {
+                status: res.status,
+                body: res.text().chars().take(240).collect(),
+            });
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&res.body).map_err(|e| HttpError::Response(e.to_string()))?;
+        if let Some(csrf) = body.get("csrf").and_then(|v| v.as_str()) {
+            self.auth.csrf = Some(csrf.to_owned());
+        }
+        if self.auth.session.is_none() {
+            return Err(HttpError::Response(
+                "TOTP ok but no session cookie returned".into(),
+            ));
+        }
+        self.auth.pending = None;
         Ok(())
+    }
+
+    /// Auth mode from `GET /admin/api/v1/auth/status` (`mfa` / `token` / `open`).
+    ///
+    /// # Errors
+    ///
+    /// Transport failures (401 is still a successful probe when mode is MFA).
+    pub fn auth_mode(&self) -> Result<String, HttpError> {
+        let res = http::request(
+            &self.url("/admin/api/v1/auth/status"),
+            "GET",
+            &self.auth,
+            None,
+            None,
+            std::time::Duration::from_secs(5),
+        )?;
+        // Status is public enough to answer without a session.
+        if res.status == 401 || res.status == 403 {
+            return Ok("mfa".into());
+        }
+        if !(200..300).contains(&res.status) {
+            return Err(HttpError::Status {
+                status: res.status,
+                body: res.text().chars().take(240).collect(),
+            });
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&res.body).map_err(|e| HttpError::Response(e.to_string()))?;
+        Ok(body
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_owned())
+    }
+
+    fn apply_auth_cookies(&mut self, res: &crate::http::Response) {
+        for (name, value) in res.set_cookies() {
+            match name.as_str() {
+                "room_admin_sid" => self.auth.session = Some(value),
+                "room_admin_pending" => self.auth.pending = Some(value),
+                _ => {}
+            }
+        }
     }
 
     /// `GET /admin/api/v1/summary`.

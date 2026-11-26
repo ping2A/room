@@ -1,0 +1,13 @@
+// Color World: one post-process shader recolours the whole screen.
+// The ZScript handler switches it on and sets its uniforms from the
+// colorworld_* CVars (CVARINFO), so the menu changes it live. All uniforms
+// are integers (tics, percent) so the handler needs no floating point.
+HardwareShader PostProcess scene
+{
+	Name "ColorWorld"
+	Shader "shaders/colorworld.fp" 330
+	Uniform int mode
+	Uniform int tics
+	Uniform int speed
+	Uniform int strength
+}

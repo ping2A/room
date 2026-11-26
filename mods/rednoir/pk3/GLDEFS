@@ -1,0 +1,14 @@
+// Red Noir: one post-process shader turns the world black, white and grey,
+// and keeps only the red of blood. The ZScript handler switches it on and
+// sets its uniforms from the noir_* CVars (CVARINFO), so the menu changes it
+// live. All uniforms are integers (percent, degrees, tics).
+HardwareShader PostProcess scene
+{
+	Name "RedNoir"
+	Shader "shaders/rednoir.fp" 330
+	Uniform int mode
+	Uniform int tics
+	Uniform int contrast
+	Uniform int grain
+	Uniform int vignette
+}

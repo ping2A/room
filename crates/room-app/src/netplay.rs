@@ -11,7 +11,8 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 /// Wire transport selected by `--transport`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum NetTransportKind {
     /// Native UDP peer-to-peer (default; GZDoom-like).
     #[default]
@@ -19,7 +20,7 @@ pub enum NetTransportKind {
     /// TCP peer-to-peer mesh (length-prefixed frames).
     Tcp,
     /// TCP packet-server / relay on the host (more players; one reachable address).
-    #[value(name = "tcp-server")]
+    #[cfg_attr(feature = "cli", value(name = "tcp-server"))]
     TcpServer,
 }
 
@@ -51,7 +52,7 @@ pub struct HostOpts<'a> {
 pub struct NetPlay {
     /// Local seat (`0` = host).
     pub local: PeerId,
-    transport: Box<dyn Transport>,
+    transport: Box<dyn Transport + Send>,
     session: LockstepSession,
     /// Total seats.
     pub peer_count: u8,
@@ -80,6 +81,7 @@ pub struct NetPlay {
 impl NetPlay {
     /// Host: bind, wait for joiners, broadcast start.
     pub fn host(opts: HostOpts<'_>) -> Result<Self, String> {
+        reset_lobby();
         let max_players = match opts.kind {
             NetTransportKind::TcpServer => opts.max_players.clamp(2, 64),
             _ => opts.max_players.clamp(2, 4),
@@ -127,6 +129,7 @@ impl NetPlay {
         noise: bool,
         max_players: u8,
     ) -> Result<(Self, String), String> {
+        reset_lobby();
         match kind {
             NetTransportKind::Udp => Self::join_udp(host_addr, fingerprint, name, noise),
             NetTransportKind::Tcp => Self::join_tcp(host_addr, fingerprint, name, noise),
@@ -167,12 +170,25 @@ impl NetPlay {
         let mut welcome_by_addr = std::collections::BTreeMap::<SocketAddr, Vec<u8>>::new();
 
         while lobby.seats().len() < usize::from(max_players) {
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("host lobby timed out waiting for players".into());
             }
+            set_lobby_progress(lobby.seats().len(), max_players);
             let mut raw = Vec::new();
             transport.poll_raw(&mut raw);
             for (addr, bytes) in raw {
+                // Players on the same network looking for games (docs/41 M7).
+                if crate::lan::is_probe(&bytes) {
+                    let seats = u8::try_from(lobby.seats().len()).unwrap_or(u8::MAX);
+                    let _ = transport.send_raw(
+                        addr,
+                        &crate::lan::reply(seats, max_players, fingerprint, map),
+                    );
+                    continue;
+                }
                 if let Ok(LobbyMsg::Hello(hello)) = LobbyMsg::decode(&bytes) {
                     if known_addrs.contains(&addr) {
                         if let Some(prev) = welcome_by_addr.get(&addr) {
@@ -273,6 +289,9 @@ impl NetPlay {
         let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
             }
@@ -386,6 +405,10 @@ impl NetPlay {
         let mut welcomed = std::collections::BTreeSet::<PeerId>::new();
 
         while lobby.seats().len() < usize::from(max_players) {
+            set_lobby_progress(lobby.seats().len(), max_players);
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("host lobby timed out waiting for players".into());
             }
@@ -490,6 +513,9 @@ impl NetPlay {
         let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
             }
@@ -600,6 +626,10 @@ impl NetPlay {
 
         // Wait until all client seats connected + Hello accepted (host seat already counted).
         while lobby.seats().len() < usize::from(max_players) {
+            set_lobby_progress(lobby.seats().len(), max_players);
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("host lobby timed out waiting for players".into());
             }
@@ -702,6 +732,9 @@ impl NetPlay {
         let mut start_delay: Option<u32> = None;
         let mut seat_names = Vec::new();
         while welcome.is_none() || start_seed.is_none() {
+            if lobby_cancelled() {
+                return Err(LOBBY_CANCELLED.into());
+            }
             if Instant::now() > deadline {
                 return Err("join lobby timed out".into());
             }
@@ -1020,12 +1053,12 @@ impl NetPlay {
 /// Doom netplay reports a world checksum once a second.
 pub const DOOM_CHECKSUM_INTERVAL: u32 = 35;
 
-fn maybe_noise<T: Transport + 'static>(
+fn maybe_noise<T: Transport + Send + 'static>(
     inner: T,
     local: PeerId,
     peers: &[PeerId],
     noise: bool,
-) -> Result<Box<dyn Transport>, String> {
+) -> Result<Box<dyn Transport + Send>, String> {
     if !noise {
         return Ok(Box::new(inner));
     }
@@ -1198,15 +1231,107 @@ pub fn parse_join_addr(s: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("cannot resolve {s}"))
 }
 
-/// Lobby fingerprint from IWAD path + map + skill.
+/// Lobby fingerprint: game file, mods in load order, map and skill. Files
+/// count by name (case-insensitive), not by folder, so a phone and a desktop
+/// keeping the same game in different places match. FNV-1a, so the value
+/// does not depend on the Rust version either build was made with.
 #[must_use]
-pub fn session_fingerprint(iwad: &str, map: &str, skill: u8) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    iwad.hash(&mut h);
-    map.to_ascii_uppercase().hash(&mut h);
-    skill.hash(&mut h);
-    h.finish()
+pub fn session_fingerprint(iwad: &str, mods: &[String], map: &str, skill: u8) -> u64 {
+    fn file_name(path: &str) -> String {
+        path.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(path)
+            .to_ascii_lowercase()
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        // Field separator, so "ab"+"c" differs from "a"+"bc".
+        h ^= 0xff;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    feed(file_name(iwad).as_bytes());
+    for m in mods {
+        feed(file_name(m).as_bytes());
+    }
+    feed(map.to_ascii_uppercase().as_bytes());
+    feed(&[skill]);
+    h
+}
+
+/// The lobby fingerprint for a start configuration: game, mods, map and
+/// skill as [`crate::app`] uses them (the launcher compares it with games
+/// found on the network).
+#[must_use]
+pub fn config_fingerprint(args: &crate::config::AppConfig) -> u64 {
+    let iwad = args
+        .iwad
+        .as_ref()
+        .map_or_else(|| "builtin".to_owned(), |p| p.display().to_string());
+    let map = if args.native_duke {
+        format!(
+            "{}|duke-mode={}|duke-friendly-fire={}",
+            args.map, args.duke_game_mode, args.duke_friendly_fire
+        )
+    } else {
+        args.map.clone()
+    };
+    let mods: Vec<String> = args
+        .file
+        .iter()
+        .chain(&args.grp)
+        .map(|p| p.display().to_string())
+        .collect();
+    session_fingerprint(&iwad, &mods, &map, args.skill.clamp(1, 5))
+}
+
+/// Error text of a lobby left with [`cancel_lobby`].
+pub const LOBBY_CANCELLED: &str = "cancelled";
+
+/// Bumped by [`cancel_lobby`]; a lobby is cancelled once it differs from
+/// the value its thread saw when it started.
+static LOBBY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static LOBBY_STARTED_AT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+/// `seats << 8 | max` while a host waits for players.
+static LOBBY_PROGRESS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Stop the host or join wait running on another thread (the launcher's
+/// Cancel). It returns [`LOBBY_CANCELLED`] within a few milliseconds.
+/// Lobbies started after the call are not affected.
+pub fn cancel_lobby() {
+    LOBBY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn lobby_cancelled() -> bool {
+    LOBBY_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != LOBBY_STARTED_AT.get()
+}
+
+fn reset_lobby() {
+    LOBBY_STARTED_AT.set(LOBBY_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
+    LOBBY_PROGRESS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn set_lobby_progress(seats: usize, max: u8) {
+    let seats = u16::try_from(seats).unwrap_or(255).min(255);
+    LOBBY_PROGRESS.store(
+        seats << 8 | u16::from(max),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// `(players in, players waited for)` while hosting; `None` before the
+/// lobby is up.
+#[must_use]
+pub fn lobby_progress() -> Option<(u8, u8)> {
+    let v = LOBBY_PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let [seats, max] = v.to_be_bytes();
+    (max > 0).then_some((seats, max))
 }
 
 #[cfg(test)]
@@ -1229,11 +1354,17 @@ mod tests {
         addr
     }
 
+    /// Lobby tests run one at a time: cancelling one must not hit another.
+    static LOBBY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Host and joiner agree on the delay the host measured (loopback: 1).
     fn lobby_agrees_on_the_delay(kind: NetTransportKind, udp: bool) {
         if std::env::var_os("ROOM_NET_DELAY").is_some() {
             return;
         }
+        let _one_at_a_time = LOBBY_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let addr = free_port(udp);
         let host = std::thread::spawn(move || {
             NetPlay::host(HostOpts {
@@ -1269,5 +1400,76 @@ mod tests {
     #[test]
     fn tcp_relay_lobby_negotiates_the_input_delay() {
         lobby_agrees_on_the_delay(NetTransportKind::TcpServer, false);
+    }
+
+    fn udp_host(addr: SocketAddr) -> std::thread::JoinHandle<Result<NetPlay, String>> {
+        std::thread::spawn(move || {
+            NetPlay::host(HostOpts {
+                bind_addr: addr,
+                max_players: 2,
+                fingerprint: 42,
+                rng_seed: 1,
+                map: "MAP01",
+                skill: 3,
+                kind: NetTransportKind::Udp,
+                noise: false,
+                deathmatch: false,
+                bots: 0,
+            })
+        })
+    }
+
+    #[test]
+    fn a_waiting_udp_host_answers_lan_probes_and_can_be_cancelled() {
+        let _one_at_a_time = LOBBY_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let addr = free_port(true);
+        let host = udp_host(addr);
+        let found = crate::lan::discover(&[addr], Duration::from_millis(700)).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].addr, addr);
+        assert_eq!((found[0].players, found[0].max_players), (1, 2));
+        assert_eq!((found[0].fingerprint, found[0].map.as_str()), (42, "MAP01"));
+        let asked = Instant::now();
+        cancel_lobby();
+        let result = host.join().unwrap();
+        assert_eq!(result.err().as_deref(), Some(LOBBY_CANCELLED));
+        assert!(asked.elapsed() < Duration::from_secs(1), "stops at once");
+        // A lobby started after the cancel is not affected: it gets a player.
+        let addr = free_port(true);
+        let host = udp_host(addr);
+        std::thread::sleep(Duration::from_millis(100));
+        let (joined, _) =
+            NetPlay::join(addr, 42, "Ann", NetTransportKind::Udp, false, 2).expect("join");
+        assert!(host.join().unwrap().is_ok());
+        assert_eq!(joined.peer_count, 2);
+    }
+
+    #[test]
+    fn the_fingerprint_ignores_folders_but_not_mods() {
+        let phone = session_fingerprint(
+            "/data/user/0/io.github.roomengine.room/files/bundle/freedoom2.wad",
+            &["/data/x/brutal.pk3".into()],
+            "map01",
+            3,
+        );
+        let desktop = session_fingerprint(
+            "testdata/freedoom/FREEDOOM2.WAD",
+            &["C:\\games\\Brutal.pk3".into()],
+            "MAP01",
+            3,
+        );
+        assert_eq!(phone, desktop);
+        assert_ne!(phone, session_fingerprint("freedoom2.wad", &[], "MAP01", 3));
+        assert_ne!(
+            phone,
+            session_fingerprint("freedoom2.wad", &["brutal.pk3".into()], "MAP01", 4)
+        );
+        // Pinned: builds with other Rust versions must agree.
+        assert_eq!(
+            session_fingerprint("doom2.wad", &[], "MAP01", 3),
+            0xc579_c4de_0bc1_f609
+        );
     }
 }

@@ -13,6 +13,23 @@ pub(crate) enum StoredPayload {
     Inflated(bytes::Bytes),
     /// Path relative to a directory mount root.
     File(PathBuf),
+    /// A stored or deflated zip member, inflated when read (docs/41 M6:
+    /// a 160 MB PK3 no longer sits in memory unpacked). `archive` shares the
+    /// zip's bytes with every other member.
+    Zipped {
+        /// The whole zip file.
+        archive: bytes::Bytes,
+        /// Offset of the member's data.
+        start: usize,
+        /// Bytes of compressed data.
+        compressed: usize,
+        /// Bytes once inflated.
+        size: usize,
+        /// Deflate (`true`) or stored (`false`).
+        deflated: bool,
+        /// CRC-32 of the inflated bytes, checked on read as the zip reader did.
+        crc32: u32,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -128,11 +145,11 @@ fn finalize_path(logical: String, active_filters: &[String]) -> Option<String> {
 
 /// Parse a ZIP/PK3 from memory bytes.
 pub(crate) fn parse_zip(
-    data: &[u8],
+    data: &bytes::Bytes,
     container: ContainerId,
     active_filters: &[String],
 ) -> Result<Vec<ArchiveEntry>, VfsError> {
-    let cursor = Cursor::new(data);
+    let cursor = Cursor::new(data.as_ref());
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| VfsError::parse(e.to_string()))?;
 
     let mut names: Vec<String> = Vec::new();
@@ -157,13 +174,22 @@ pub(crate) fn parse_zip(
         if path.is_empty() {
             continue;
         }
-        let mut file = archive
-            .by_index(idx)
-            .map_err(|e| VfsError::parse(e.to_string()))?;
-        let mut buf = Vec::with_capacity(file.size() as usize);
-        file.read_to_end(&mut buf)
-            .map_err(|e| VfsError::parse(e.to_string()))?;
-        let size = u32::try_from(buf.len()).map_err(|_| VfsError::parse("zip entry too large"))?;
+        let payload = match lazy_member(&mut archive, idx, data) {
+            Some(lazy) => lazy,
+            None => {
+                // Other compression methods (bzip2, LZMA, …) and encrypted
+                // members are unpacked now, as before.
+                let mut file = archive
+                    .by_index(idx)
+                    .map_err(|e| VfsError::parse(e.to_string()))?;
+                let mut buf = Vec::with_capacity(file.size() as usize);
+                file.read_to_end(&mut buf)
+                    .map_err(|e| VfsError::parse(e.to_string()))?;
+                StoredPayload::Inflated(bytes::Bytes::from(buf))
+            }
+        };
+        let size = u32::try_from(payload_len(&payload))
+            .map_err(|_| VfsError::parse("zip entry too large"))?;
         let (ns, short, flags, full_path) = path_to_lump_meta(&path);
         entries.push(ArchiveEntry {
             info: LumpInfo {
@@ -174,10 +200,50 @@ pub(crate) fn parse_zip(
                 size,
                 flags,
             },
-            payload: StoredPayload::Inflated(bytes::Bytes::from(buf)),
+            payload,
         });
     }
     Ok(entries)
+}
+
+/// Where a stored / deflated member's data lies, without unpacking it.
+fn lazy_member(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    idx: usize,
+    data: &bytes::Bytes,
+) -> Option<StoredPayload> {
+    let file = archive.by_index_raw(idx).ok()?;
+    if file.encrypted() {
+        return None;
+    }
+    let deflated = match file.compression() {
+        zip::CompressionMethod::Stored => false,
+        zip::CompressionMethod::Deflated => true,
+        _ => return None,
+    };
+    let start = usize::try_from(file.data_start()?).ok()?;
+    let compressed = usize::try_from(file.compressed_size()).ok()?;
+    let size = usize::try_from(file.size()).ok()?;
+    if start.checked_add(compressed)? > data.len() || (!deflated && compressed != size) {
+        return None;
+    }
+    Some(StoredPayload::Zipped {
+        archive: data.clone(),
+        start,
+        compressed,
+        size,
+        deflated,
+        crc32: file.crc32(),
+    })
+}
+
+/// Size of a payload once read (directory files: on disk now).
+fn payload_len(payload: &StoredPayload) -> usize {
+    match payload {
+        StoredPayload::Inflated(b) => b.len(),
+        StoredPayload::File(path) => std::fs::metadata(path).map_or(0, |m| m.len() as usize),
+        StoredPayload::Zipped { size, .. } => *size,
+    }
 }
 
 /// Walk a directory tree into archive entries.
@@ -240,6 +306,37 @@ pub(crate) fn read_archive_payload(payload: &StoredPayload) -> Result<bytes::Byt
     match payload {
         StoredPayload::Inflated(b) => Ok(b.clone()),
         StoredPayload::File(path) => Ok(bytes::Bytes::from(std::fs::read(path)?)),
+        StoredPayload::Zipped {
+            archive,
+            start,
+            compressed,
+            size,
+            deflated,
+            crc32,
+        } => {
+            let raw = archive.slice(*start..*start + *compressed);
+            let out = if *deflated {
+                let mut out = Vec::with_capacity(*size);
+                flate2::read::DeflateDecoder::new(raw.as_ref())
+                    .read_to_end(&mut out)
+                    .map_err(|e| VfsError::parse(format!("inflate: {e}")))?;
+                if out.len() != *size {
+                    return Err(VfsError::parse(format!(
+                        "inflate: got {} bytes, expected {size}",
+                        out.len()
+                    )));
+                }
+                bytes::Bytes::from(out)
+            } else {
+                raw
+            };
+            let mut crc = flate2::Crc::new();
+            crc.update(&out);
+            if crc.sum() != *crc32 {
+                return Err(VfsError::parse("zip member CRC mismatch"));
+            }
+            Ok(out)
+        }
     }
 }
 
@@ -348,5 +445,103 @@ mod tests {
             ["sprites/a.png", "sprites/b.png"]
         );
         assert_eq!(strip(&["a/x.txt", "b/y.txt"]), ["a/x.txt", "b/y.txt"]);
+    }
+}
+
+#[cfg(test)]
+mod lazy_zip_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    fn zip_with(members: &[(&str, zip::CompressionMethod, &[u8])]) -> bytes::Bytes {
+        let mut out = Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut out);
+            for (name, method, data) in members {
+                w.start_file(
+                    *name,
+                    SimpleFileOptions::default().compression_method(*method),
+                )
+                .unwrap();
+                w.write_all(data).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        bytes::Bytes::from(out.into_inner())
+    }
+
+    #[test]
+    fn stored_and_deflated_members_unpack_on_read_others_at_mount() {
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let data = zip_with(&[
+            (
+                "decorate.txt",
+                zip::CompressionMethod::Stored,
+                b"actor Foo {}",
+            ),
+            ("graphics/big.png", zip::CompressionMethod::Deflated, &big),
+            (
+                "sounds/x.lmp",
+                zip::CompressionMethod::Bzip2,
+                b"bzip2 member",
+            ),
+        ]);
+        let entries = parse_zip(&data, ContainerId(0), &[]).unwrap();
+        let by_path = |p: &str| entries.iter().find(|e| e.info.full_path == p).unwrap();
+        let kinds: Vec<&str> = ["decorate.txt", "graphics/big.png", "sounds/x.lmp"]
+            .iter()
+            .map(|p| match by_path(p).payload {
+                StoredPayload::Zipped {
+                    deflated: false, ..
+                } => "stored",
+                StoredPayload::Zipped { deflated: true, .. } => "deflated",
+                StoredPayload::Inflated(_) => "inflated",
+                StoredPayload::File(_) => "file",
+            })
+            .collect();
+        assert_eq!(kinds, ["stored", "deflated", "inflated"]);
+        let read = |p: &str| read_archive_payload(&by_path(p).payload).unwrap();
+        assert_eq!(read("decorate.txt").as_ref(), b"actor Foo {}");
+        assert_eq!(read("graphics/big.png").as_ref(), big.as_slice());
+        assert_eq!(read("sounds/x.lmp").as_ref(), b"bzip2 member");
+        // Sizes are known without unpacking.
+        assert_eq!(by_path("graphics/big.png").info.size, 200_000);
+    }
+
+    #[test]
+    fn a_damaged_deflate_stream_is_an_error_not_garbage() {
+        let big: Vec<u8> = (0..50_000u32).map(|i| (i * 7 % 256) as u8).collect();
+        let data = zip_with(&[("a.lmp", zip::CompressionMethod::Deflated, &big)]);
+        let entries = parse_zip(&data, ContainerId(0), &[]).unwrap();
+        let StoredPayload::Zipped {
+            start, compressed, ..
+        } = entries[0].payload
+        else {
+            panic!("lazy");
+        };
+        let mut broken = data.to_vec();
+        for b in &mut broken[start..start + compressed / 2] {
+            *b = 0xFF;
+        }
+        let broken = bytes::Bytes::from(broken);
+        let entries = parse_zip(&broken, ContainerId(0), &[]).unwrap();
+        assert!(read_archive_payload(&entries[0].payload).is_err());
+    }
+
+    #[test]
+    fn a_changed_stored_member_fails_its_crc() {
+        let data = zip_with(&[("a.txt", zip::CompressionMethod::Stored, b"hello world")]);
+        let entries = parse_zip(&data, ContainerId(0), &[]).unwrap();
+        let StoredPayload::Zipped { start, .. } = entries[0].payload else {
+            panic!("lazy");
+        };
+        let mut changed = data.to_vec();
+        changed[start] = b'J';
+        let changed = bytes::Bytes::from(changed);
+        let entries = parse_zip(&changed, ContainerId(0), &[]).unwrap();
+        assert!(read_archive_payload(&entries[0].payload).is_err());
     }
 }

@@ -4,24 +4,33 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Native desktop binary (winit + wgpu + cpal)."
+description = "Native app (winit + wgpu + cpal): the `room` desktop binary and the library the mobile shells start."
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "room"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lints]
 workspace = true
 
 [features]
-default = ["gamepad"]
+default = ["gamepad", "cli", "jit"]
+## Command-line parsing for the `room` binary (`clap`). Phones build without it.
+cli = ["dep:clap"]
+## ZScript AOT tier on wasmtime/Cranelift. Off on iOS (no runtime code
+## generation allowed); wasmi runs the same modules without it.
+jit = ["room-sim/zvm-aot-jit"]
 ## Game controllers through gilrs (needs libudev on Linux).
 gamepad = ["dep:gilrs"]
 ## Embed CPython and load `language = "python"` ROOMMOD modules (desktop only).
 python-mods = ["room-python-host/embed"]
 
 [dependencies]
-clap.workspace = true
+clap = { workspace = true, optional = true }
 cpal.workspace = true
 room-audio = { path = "../room-audio" }
 room-console = { path = "../room-console" }
@@ -39,7 +48,7 @@ room-net = { path = "../room-net", features = ["noise"] }
 room-nodebuild = { path = "../room-nodebuild" }
 room-render = { path = "../room-render" }
 room-render-soft = { path = "../room-render-soft", features = ["sim"] }
-room-sim = { path = "../room-sim", features = ["zvm-aot-jit"] }
+room-sim = { path = "../room-sim", features = ["zvm-aot"] }
 room-core = { path = "../room-core" }
 room-testkit = { path = "../room-testkit" }
 room-ui = { path = "../room-ui" }
@@ -47,6 +56,7 @@ room-vfs = { path = "../room-vfs" }
 room-faceswap = { path = "../room-faceswap" }
 room-python-host = { path = "../room-python-host" }
 gilrs = { version = "0.11", optional = true }
+ab_glyph = "0.2.32"
 glam.workspace = true
 image.workspace = true
 pollster.workspace = true

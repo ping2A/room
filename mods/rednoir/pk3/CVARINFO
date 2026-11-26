@@ -1,0 +1,9 @@
+// 0 normal colours, 1 grey world + red blood, 2 grey world + every strong
+// red (blood, red keys, red lights), 3 black and white only.
+user int noir_mode = 1;
+// Contrast of the greys, in percent (100 = as is).
+user int noir_contrast = 130;
+// Film grain, in percent (0 = none).
+user int noir_grain = 20;
+// Darkened corners, in percent (0 = none).
+user int noir_vignette = 35;

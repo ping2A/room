@@ -389,12 +389,23 @@ cmd_vps_health() {
 cmd_vps_admin_tui() {
   load_env_vps
   local admin_bin="$ROOT/bin/room-admin"
+  local adm="http://$(bind_host_port "$ROOM_ADMIN_BIND")"
   if [[ ! -x "$admin_bin" ]]; then
-    err "missing $admin_bin — rebuild with ./room package"
+    err "missing $admin_bin"
+    info "This tree was packaged before room-admin shipped."
+    info "On your laptop (git repo):  ./room package && ./room push <user@host:~/room/>"
+    info "Web console meanwhile:     ${adm}/admin"
     exit 1
   fi
-  local adm="http://$(bind_host_port "$ROOM_ADMIN_BIND")"
   info "admin TUI → $adm"
+  # Prefer explicit ROOM_ADMIN_USER/PASSWORD; otherwise reuse ROOM_ADMIN_BOOTSTRAP
+  # from .env so MFA session login works without retyping (bearer is ignored once
+  # data/admins.json exists).
+  if [[ -z "${ROOM_ADMIN_USER:-}" && -n "${ROOM_ADMIN_BOOTSTRAP:-}" ]]; then
+    ROOM_ADMIN_USER="${ROOM_ADMIN_BOOTSTRAP%%:*}"
+    ROOM_ADMIN_PASSWORD="${ROOM_ADMIN_BOOTSTRAP#*:}"
+    export ROOM_ADMIN_USER ROOM_ADMIN_PASSWORD
+  fi
   exec "$admin_bin" \
     --url "$adm" \
     ${ROOM_ADMIN_TOKEN:+--token "$ROOM_ADMIN_TOKEN"} \

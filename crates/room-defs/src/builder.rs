@@ -397,6 +397,9 @@ impl<'a> DefinitionsBuilder<'a> {
                         defs.gldefs.glow_flats.extend(g.glow_flats);
                         defs.gldefs.glow_walls.extend(g.glow_walls);
                         defs.gldefs.materials.extend(g.materials);
+                        // Custom shaders (`HardwareShader`, incl. post-process):
+                        // a later definition of the same name replaces.
+                        defs.gldefs.hardware_shaders.extend(g.hardware_shaders);
                     }
                     Err(e) => defs.warnings.push(format!("{lump}: {e}")),
                 }
@@ -512,6 +515,25 @@ mod tests {
 
     use super::*;
     use room_vfs::{VfsBuilder, WadWriter};
+
+    #[test]
+    fn gldefs_post_shaders_reach_the_definitions() {
+        let gldefs = b"HardwareShader PostProcess scene\n{\n\tName \"Tint\"\n\tShader \"shaders/tint.fp\" 330\n\tUniform int mode\n}\n";
+        let wad = WadWriter::pwad().add("GLDEFS", gldefs).finish().unwrap();
+        let vfs = VfsBuilder::new()
+            .mount_memory("test.wad", wad)
+            .unwrap()
+            .build()
+            .unwrap();
+        let defs = DefinitionsBuilder::new(&vfs).build().unwrap();
+        let shader = defs
+            .gldefs
+            .hardware_shaders
+            .values()
+            .find(|d| d.name == "Tint")
+            .expect("post shader kept");
+        assert_eq!(shader.kind, crate::HardwareShaderKind::PostProcess);
+    }
 
     #[test]
     fn build_from_wad() {

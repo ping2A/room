@@ -30,12 +30,14 @@ pub mod fuzz;
 pub mod glsl_translate;
 pub mod hardware_shader;
 pub mod hq_resize;
+pub mod hud_sprites;
 pub mod hw_post;
 pub mod iqm_anim;
 pub mod kvx;
 pub mod lightmap;
 pub mod lightmode;
 pub mod lights;
+pub mod load_stats;
 pub mod materials;
 pub mod mesh;
 pub mod mod_zones;
@@ -59,6 +61,7 @@ pub mod ssao;
 pub mod texanim;
 pub mod texture;
 pub mod ue1;
+pub mod upscale;
 pub mod voxel_draw;
 
 pub use bloom::{BLOOM_LEVELS, BloomPass};
@@ -84,6 +87,7 @@ pub use hardware_shader::{
     CompiledHardwareShader, HARDWARE_POST_HOST_WGSL, HardwareShaderCatalog, HardwareShaderError,
     compile_material_glsl, compose_hardware_post_wgsl, create_hardware_post_pipeline,
 };
+pub use hud_sprites::{HudSprites, SpriteQuad};
 pub use hw_post::{
     CompiledPostShader, HardwarePostRunner, POST_VS_WGSL, PostTimes, PostUniformField,
     compile_post_glsl, post_prolog, post_uniform_layout,
@@ -163,6 +167,7 @@ pub use ssao::{
 pub use texanim::TextureAnimator;
 pub use texture::{TextureEntry, TextureFormatKind, TextureManager};
 pub use ue1::{Ue1Model, Ue1Tri, decompress_ue1_vertex, parse_ue1};
+pub use upscale::Upscaler;
 pub use voxel_draw::{
     MAX_VOXEL_WALL_VERTS_PER_FRAME, VoxelActorPose, VoxelCatalog, voxel_spin_degrees,
     voxel_view_angles,

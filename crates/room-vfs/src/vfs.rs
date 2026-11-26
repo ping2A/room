@@ -83,7 +83,7 @@ impl VfsBuilder {
         let name = name.into();
         let data = data.into();
         let source = Arc::new(MemorySource::new(data.clone()));
-        self.mount_source(name, source, Some(data.as_ref()))?;
+        self.mount_source(name, source, Some(data))?;
         Ok(self)
     }
 
@@ -113,9 +113,10 @@ impl VfsBuilder {
             self.append_archive_entries(entries)?;
             return Ok(self);
         }
-        let data = std::fs::read(path)?;
+        // One copy of the file: the source and the parser share these bytes.
+        let data = crate::mapped::load(path)?;
         let source = Arc::new(MemorySource::new(data.clone()));
-        self.mount_source(name, source, Some(&data))?;
+        self.mount_source(name, source, Some(data))?;
         Ok(self)
     }
 
@@ -123,11 +124,11 @@ impl VfsBuilder {
         &mut self,
         name: String,
         source: Arc<dyn ContainerSource>,
-        peek: Option<&[u8]>,
+        peek: Option<bytes::Bytes>,
     ) -> Result<(), VfsError> {
         let bytes = match peek {
-            Some(p) => p.to_vec(),
-            None => source.read_all()?,
+            Some(p) => p,
+            None => bytes::Bytes::from(source.read_all()?),
         };
         let md5 = md5_bytes(&bytes);
         let kind = detect_kind(&bytes, Path::new(&name));
@@ -181,7 +182,7 @@ impl VfsBuilder {
                     info.clone(),
                     LumpData::Archive(ArchiveEntry {
                         info,
-                        payload: StoredPayload::Inflated(bytes::Bytes::from(bytes)),
+                        payload: StoredPayload::Inflated(bytes.clone()),
                     }),
                 ));
             }
@@ -195,15 +196,12 @@ impl VfsBuilder {
         let mut maps: Vec<(String, String, bytes::Bytes)> = Vec::new();
         for e in entries {
             if is_nested_root_wad(&e.info.full_path) && !is_map_wad(&e.info.full_path) {
-                if let StoredPayload::Inflated(ref b) = e.payload {
-                    nested.push((e.info.full_path.clone(), b.clone()));
+                if let Ok(b) = read_archive_payload(&e.payload) {
+                    nested.push((e.info.full_path.clone(), b));
                 }
             }
             if self.nested_map_wads && is_map_wad(&e.info.full_path) {
-                let data = match &e.payload {
-                    StoredPayload::Inflated(b) => Some(b.clone()),
-                    StoredPayload::File(path) => std::fs::read(path).ok().map(bytes::Bytes::from),
-                };
+                let data = read_archive_payload(&e.payload).ok();
                 if let Some(data) =
                     data.filter(|d| d.starts_with(b"PWAD") || d.starts_with(b"IWAD"))
                 {
@@ -227,18 +225,14 @@ impl VfsBuilder {
             self.lumps.push((e.info.clone(), LumpData::Archive(e)));
         }
         for (name, data) in nested {
-            self.mount_source(
-                name,
-                Arc::new(MemorySource::new(data.clone())),
-                Some(data.as_ref()),
-            )?;
+            self.mount_source(name, Arc::new(MemorySource::new(data.clone())), Some(data))?;
         }
         for (name, stem, data) in maps {
             let first = self.lumps.len();
             if let Err(e) = self.mount_source(
                 name.clone(),
                 Arc::new(MemorySource::new(data.clone())),
-                Some(data.as_ref()),
+                Some(data),
             ) {
                 self.warnings.push(format!("{name}: {e}"));
                 continue;
@@ -447,7 +441,7 @@ impl Vfs {
                 }
             }
             ContainerKind::Zip => {
-                let entries = parse_zip(data.as_ref(), id, &[])?;
+                let entries = parse_zip(&data, id, &[])?;
                 for e in entries {
                     new_lumps.push((e.info.clone(), LumpData::Archive(e)));
                 }

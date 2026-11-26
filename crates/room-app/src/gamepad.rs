@@ -13,6 +13,7 @@ pub struct PadBackend {
     #[cfg(feature = "gamepad")]
     active: Option<gilrs::GamepadId>,
     /// Name of the active controller (for the "connected" message).
+    #[cfg(feature = "gamepad")]
     pub name: Option<String>,
 }
 
@@ -37,7 +38,7 @@ impl PadBackend {
         }
         #[cfg(not(feature = "gamepad"))]
         {
-            Self { name: None }
+            Self {}
         }
     }
 

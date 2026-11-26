@@ -1,0 +1,8 @@
+# Catalog entry for room-server (`./room start` packs pk3/ into
+# rednoir.wad, offered in the lobby's Play solo and for new rooms).
+[mod]
+id = "room.example.rednoir"
+name = "Red Noir"
+version = "0.1.0"
+abi = 1
+description = "The world in black, white and grey; only blood stays red. Options → Red Noir."

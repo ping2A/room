@@ -24,7 +24,7 @@ pub struct AudioOut {
     /// Device stream sample rate (Hz).
     pub sample_rate: u32,
     /// Device stream (dropped to stop).
-    _stream: Stream,
+    stream: Stream,
 }
 
 impl AudioOut {
@@ -77,8 +77,23 @@ impl AudioOut {
         Ok(Self {
             shared,
             sample_rate,
-            _stream: stream,
+            stream,
         })
+    }
+}
+
+impl AudioOut {
+    /// Stop (`true`) or restart (`false`) the device stream while the app is
+    /// in the background (docs/41 §3.2). Phones reclaim audio devices from
+    /// background apps; a paused stream is resumed instead of reopened.
+    pub fn set_suspended(&self, suspended: bool) {
+        if suspended {
+            if let Err(e) = self.stream.pause() {
+                eprintln!("room: audio pause: {e}");
+            }
+        } else if let Err(e) = self.stream.play() {
+            eprintln!("room: audio resume: {e}");
+        }
     }
 }
 

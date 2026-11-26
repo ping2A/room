@@ -1,0 +1,8 @@
+# Catalog entry for room-server (`./room start` packs pk3/ into
+# colorworld.wad, offered in the lobby's Play solo and for new rooms).
+[mod]
+id = "room.example.colorworld"
+name = "Color World"
+version = "0.1.0"
+abi = 1
+description = "Recolour the world: rainbow, hue cycle, sepia, thermal, Game Boy, neon edges and more. Options → Color World."

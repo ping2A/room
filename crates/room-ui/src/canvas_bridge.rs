@@ -246,13 +246,6 @@ pub fn blit_draw_list_full(
                             scale_x = s;
                             scale_y = s;
                         }
-                        let inverted;
-                        let palette = if *inverse {
-                            inverted = inverse_palette(cache.palette());
-                            &inverted
-                        } else {
-                            cache.palette()
-                        };
                         let origin_x = pos.x * sx;
                         let origin_y = pos.y * sy;
                         let x0 = origin_x.floor();
@@ -263,7 +256,7 @@ pub fn blit_draw_list_full(
                         let dw = (x1 - x0).max(1.0) as u32;
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         let dh = (y1 - y0).max(1.0) as u32;
-                        let mut pixels = patch.scale_rgba(dw, dh, palette);
+                        let mut pixels = cache.scaled_rgba(name, patch, dw, dh, *inverse);
                         let lit = light.clamp(0.0, 1.0);
                         if *fuzz {
                             // Vanilla `R_DrawFuzzColumn`: ±1 row jitter via
@@ -367,6 +360,154 @@ pub fn blit_draw_list_full(
             }
         }
     }
+}
+
+/// One [`DrawCmd::Patch`] as a textured screen rectangle, for drawing on the
+/// GPU instead of scaling it into the CPU canvas (the weapon, every frame).
+///
+/// `x`, `y`, `w`, `h` are the framebuffer pixels the CPU path would cover
+/// (the same rounding), and the shader samples texel
+/// `(dx * src_w / w, dy * src_h / h)` like [`crate::SoftPatch::scale_rgba`],
+/// so both paths give the same pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatchQuad {
+    /// Patch lump name.
+    pub name: String,
+    /// Drawn with the inverse (greyscale) palette.
+    pub inverse: bool,
+    /// Left edge (framebuffer px).
+    pub x: i32,
+    /// Top edge (framebuffer px).
+    pub y: i32,
+    /// Width (px).
+    pub w: u32,
+    /// Height (px).
+    pub h: u32,
+    /// Light multiplier (applied to RGB bytes, truncated).
+    pub light: f32,
+    /// RGB tint multiplier (applied after light, truncated).
+    pub tint: [f32; 3],
+    /// Alpha multiplier.
+    pub alpha: f32,
+    /// Mirrored left to right.
+    pub flip: bool,
+    /// Mirrored top to bottom.
+    pub mirror: bool,
+}
+
+/// [`PatchQuad`]s for `cmds` (a slice of a list drawn at `fb_w`×`fb_h` and
+/// moved by `offset`), or `None` when one of them needs the CPU path:
+/// fuzz, recolouring, rotation, corner warps, clipping or a non-patch
+/// command. Patches missing from `patches` draw nothing (as on the CPU).
+#[must_use]
+pub fn patch_quads(
+    cmds: &[DrawCmd],
+    virtual_size: (f32, f32),
+    fb_size: (f32, f32),
+    offset: (f32, f32),
+    patches: &PatchCache,
+) -> Option<Vec<PatchQuad>> {
+    let sx = fb_size.0 / virtual_size.0;
+    let sy = fb_size.1 / virtual_size.1;
+    let mut out = Vec::with_capacity(cmds.len());
+    for cmd in cmds {
+        let DrawCmd::Patch {
+            name,
+            pos,
+            size,
+            apply_offsets,
+            inverse,
+            light,
+            fuzz,
+            flip,
+            mirror,
+            angle,
+            tint,
+            alpha,
+            recolor,
+            corners,
+            ..
+        } = cmd
+        else {
+            return None;
+        };
+        if *fuzz
+            || recolor.is_some()
+            || angle.abs() > 0.01
+            || corners.iter().any(|c| c.x.abs() > 1e-3 || c.y.abs() > 1e-3)
+        {
+            return None;
+        }
+        let Some(patch) = patches.get(name) else {
+            continue;
+        };
+        // Same arithmetic as `blit_draw_list_full`.
+        let pos = if *apply_offsets {
+            Vec2::new(
+                pos.x - f32::from(patch.left_offset),
+                pos.y - f32::from(patch.top_offset),
+            )
+        } else {
+            *pos
+        };
+        let dest_w = if size.x > 0.0 {
+            size.x
+        } else {
+            f32::from(patch.width)
+        };
+        let dest_h = if size.y > 0.0 {
+            size.y
+        } else {
+            f32::from(patch.height)
+        };
+        let mut scale_x = (dest_w / f32::from(patch.width).max(1.0)) * sx;
+        let mut scale_y = (dest_h / f32::from(patch.height).max(1.0)) * sy;
+        if (scale_x - scale_y).abs() <= scale_x.max(scale_y) * 0.02 {
+            let s = scale_x.min(scale_y);
+            scale_x = s;
+            scale_y = s;
+        }
+        let origin_x = pos.x * sx;
+        let origin_y = pos.y * sy;
+        let x0 = origin_x.floor();
+        let y0 = origin_y.floor();
+        let x1 = (origin_x + f32::from(patch.width) * scale_x).ceil();
+        let y1 = (origin_y + f32::from(patch.height) * scale_y).ceil();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let w = (x1 - x0).max(1.0) as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let h = (y1 - y0).max(1.0) as u32;
+        // The canvas truncates the blit position to whole pixels.
+        #[allow(clippy::cast_possible_truncation)]
+        let (x, y) = ((x0 + offset.0) as i32, (y0 + offset.1) as i32);
+        out.push(PatchQuad {
+            name: name.clone(),
+            inverse: *inverse,
+            x,
+            y,
+            w,
+            h,
+            // The CPU path skips each multiply when it is (almost) 1.
+            light: if *light < 0.999 {
+                light.clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
+            tint: if tint.iter().all(|&t| t > 0.999) {
+                [1.0; 3]
+            } else {
+                tint.map(|t| t.clamp(0.0, 1.0))
+            },
+            alpha: if *alpha < 0.999 {
+                alpha.clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
+            flip: *flip,
+            mirror: *mirror,
+        });
+    }
+    Some(out)
 }
 
 /// Rasterize a [`DrawCmd::FlatPoly`] (even-odd fill of `edges`, scaled to

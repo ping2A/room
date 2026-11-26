@@ -225,6 +225,9 @@ pub struct HardwarePostRunner {
     user_data: Vec<u8>,
     fields: Vec<PostUniformField>,
     texture_count: usize,
+    /// sRGB screens: raw (non-sRGB) copies of the input and output the
+    /// shader works on, so it sees gamma-space colour as in GZDoom.
+    raw: Option<(wgpu::Texture, wgpu::Texture)>,
     last: Option<(
         wgpu::Texture,
         wgpu::TextureView,
@@ -235,7 +238,9 @@ pub struct HardwarePostRunner {
 }
 
 impl HardwarePostRunner {
-    /// Build the pipeline writing `format`.
+    /// Build the pipeline writing `format`. An sRGB `format` gets a pipeline
+    /// for its raw twin (`Rgba8UnormSrgb` → `Rgba8Unorm`): run it with
+    /// [`Self::run_texture`], which works on the raw bytes.
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -309,7 +314,7 @@ impl HardwarePostRunner {
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: format.remove_srgb_suffix(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -348,6 +353,7 @@ impl HardwarePostRunner {
             user_data: vec![0; shader.uniform_size as usize],
             fields: shader.uniforms.clone(),
             texture_count: shader.textures.len(),
+            raw: None,
             last: None,
         }
     }
@@ -372,6 +378,80 @@ impl HardwarePostRunner {
             self.user_data[at..at + 4].copy_from_slice(&bytes);
         }
         true
+    }
+
+    /// Draw the shader from the texture `input` into the texture `output`
+    /// (same size and format). An sRGB screen is worked on as its raw bytes:
+    /// GZDoom's post shaders see gamma-space colour (what an 8-bit screen
+    /// holds), so `1.0 - c` inverts what the player sees and luminance
+    /// bands fall where they look right; sampling an sRGB view would hand
+    /// them linear light instead. Costs two copies when the screen is sRGB.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Texture,
+        output: &wgpu::Texture,
+        times: PostTimes,
+        user_textures: &[&wgpu::TextureView],
+    ) {
+        let raw_format = input.format().remove_srgb_suffix();
+        if raw_format == input.format() {
+            let view = output.create_view(&wgpu::TextureViewDescriptor::default());
+            self.run(device, queue, encoder, input, &view, times, user_textures);
+            return;
+        }
+        let (w, h) = (input.width(), input.height());
+        let stale = self
+            .raw
+            .as_ref()
+            .is_none_or(|(t, _)| t.width() != w || t.height() != h || t.format() != raw_format);
+        if stale {
+            let make = |label| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: raw_format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            };
+            self.raw = Some((make("hw-post-raw-in"), make("hw-post-raw-out")));
+        }
+        let Some((raw_in, raw_out)) = self.raw.clone() else {
+            return;
+        };
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        // Same bytes, read without the sRGB decode (formats that differ only
+        // in sRGB-ness copy into each other).
+        encoder.copy_texture_to_texture(input.as_image_copy(), raw_in.as_image_copy(), size);
+        let out_view = raw_out.create_view(&wgpu::TextureViewDescriptor::default());
+        self.run(
+            device,
+            queue,
+            encoder,
+            &raw_in,
+            &out_view,
+            times,
+            user_textures,
+        );
+        encoder.copy_texture_to_texture(raw_out.as_image_copy(), output.as_image_copy(), size);
     }
 
     /// Draw the shader from `input` into `output`, then keep `input` as the

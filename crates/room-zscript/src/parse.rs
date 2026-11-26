@@ -40,11 +40,13 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
     if result.unit.version.is_none() {
         result.unit.version = pp.version;
     }
-    // Parse additional sources that weren't pulled in via #include.
-    let included: BTreeMap<String, ()> = pp
-        .files
-        .iter()
-        .flat_map(|f| {
+    // Parse additional sources that weren't pulled in via #include. Each one
+    // is its own root (GZDoom: every archive's `zscript` lump), so its own
+    // `#include`s are expanded too — e.g. Brutal Doom's `zscript.zc` loaded
+    // together with another mod's `ZSCRIPT`.
+    let mut included: BTreeMap<String, ()> = BTreeMap::new();
+    let mark = |files: &[crate::span::SourceFile], included: &mut BTreeMap<String, ()>| {
+        for f in files {
             let full = f.name.to_ascii_lowercase();
             let base = f
                 .name
@@ -52,9 +54,11 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
                 .next()
                 .unwrap_or(&f.name)
                 .to_ascii_lowercase();
-            [(full, ()), (base, ())]
-        })
-        .collect();
+            included.insert(full, ());
+            included.insert(base, ());
+        }
+    };
+    mark(&pp.files, &mut included);
     for (name, text) in sources.iter().skip(1) {
         let key = name.to_ascii_lowercase();
         let base = name
@@ -65,7 +69,17 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
         if included.contains_key(&key) || included.contains_key(&base) {
             continue;
         }
-        let extra = parse_file(name, text);
+        let extra = if text.contains("#include") {
+            let pp = preprocess(name, text, |path| {
+                lookup.get(&path.to_ascii_lowercase()).cloned()
+            });
+            mark(&pp.files, &mut included);
+            let mut r = parse_file_with_version(name, &pp.text, pp.version);
+            r.diagnostics.extend(pp.diagnostics);
+            r
+        } else {
+            parse_file(name, text)
+        };
         result.unit.decls.extend(extra.unit.decls);
         result.diagnostics.extend(extra.diagnostics);
     }
@@ -1968,5 +1982,43 @@ struct PlayerInfo
             .map(|d| d.format_line())
             .collect();
         assert!(errs.is_empty(), "{errs:?}");
+    }
+}
+
+#[cfg(test)]
+mod second_root_tests {
+    use super::*;
+
+    /// Two archives each with a root `zscript` lump: the second root's
+    /// `#include`s must be expanded too (Brutal Doom + another ZScript mod).
+    #[test]
+    fn a_second_root_expands_its_includes() {
+        let sources = vec![
+            (
+                "ZSCRIPT".to_owned(),
+                "version \"4.0\"\nclass First {}\n".to_owned(),
+            ),
+            (
+                "zscript.zc".to_owned(),
+                "version \"4.0\"\n#include \"zscript/b.zc\"\n".to_owned(),
+            ),
+            ("zscript/b.zc".to_owned(), "class Second {}\n".to_owned()),
+        ];
+        let r = parse_sources(&sources);
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        let names: Vec<String> = r
+            .unit
+            .decls
+            .iter()
+            .filter_map(|d| match d {
+                Decl::Class(c) => Some(c.name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["First", "Second"],
+            "Second is parsed once, via the include"
+        );
     }
 }

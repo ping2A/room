@@ -1,0 +1,27 @@
+AddOptionMenu "OptionsMenu"
+{
+	Submenu "Color World", "ColorWorldOptions"
+}
+
+OptionMenu "ColorWorldOptions"
+{
+	Title "Color World"
+	Option "World colors", "colorworld_mode", "ColorWorldModes"
+	StaticText "Recolours everything on screen."
+	Slider "Animation speed (%)", "colorworld_speed", 0, 400, 25, 0
+	Slider "Strength (%)", "colorworld_strength", 0, 100, 5, 0
+}
+
+OptionValue "ColorWorldModes"
+{
+	0, "Normal"
+	1, "Rainbow"
+	2, "Rainbow bands"
+	3, "Hue cycle"
+	4, "Grayscale"
+	5, "Sepia"
+	6, "Inverted"
+	7, "Thermal"
+	8, "Game Boy"
+	9, "Neon edges"
+}

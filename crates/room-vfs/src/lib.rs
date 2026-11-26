@@ -9,6 +9,7 @@ pub mod autoload;
 pub mod error;
 pub mod iwad;
 pub mod lump;
+pub mod mapped;
 pub mod namespace;
 pub mod short_name;
 pub mod source;

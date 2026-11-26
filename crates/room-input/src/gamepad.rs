@@ -227,6 +227,9 @@ pub fn default_pad_binds() -> Vec<(PadButton, Key)> {
         (PadButton::LeftStick, Key::Speed),
         (PadButton::RightStick, Key::Zoom),
         (PadButton::DPadUp, Key::InvUse),
+        // Duke's inventory bar (jetpack, medkit, night vision, …).
+        (PadButton::DPadLeft, Key::InvPrev),
+        (PadButton::DPadRight, Key::InvNext),
     ]
 }
 

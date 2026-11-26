@@ -32,6 +32,17 @@ fn flat_key(name: &str) -> String {
 }
 
 impl SoftPatch {
+    /// Size and offsets.
+    #[must_use]
+    pub fn dims(&self) -> crate::script_sbar::PatchDims {
+        crate::script_sbar::PatchDims {
+            w: f32::from(self.width),
+            h: f32::from(self.height),
+            left: f32::from(self.left_offset),
+            top: f32::from(self.top_offset),
+        }
+    }
+
     /// RGBA of texel (`x`, `y`), wrapping; `None` where transparent.
     #[must_use]
     pub fn texel_wrapped(&self, x: i32, y: i32, palette: &[[u8; 3]; 256]) -> Option<[u8; 4]> {
@@ -246,6 +257,39 @@ pub struct PatchCache {
     patches: BTreeMap<String, SoftPatch>,
     /// Sprite frame table (built on first use), see [`Self::sprite_frame_lump`].
     sprite_frames: Option<SpriteFrames>,
+    /// Sizes and offsets read from picture headers, see [`Self::dims`].
+    dims: std::collections::HashMap<String, Option<crate::script_sbar::PatchDims>>,
+    /// Pictures already scaled to screen size, see [`Self::scaled_rgba`].
+    scaled: ScaledCache,
+}
+
+/// Scaled HUD pictures by (name, width, height, inverse palette). The status
+/// bar is drawn at the same size every frame; scaling it again each time
+/// was most of the HUD's cost on phones.
+#[derive(Default)]
+struct ScaledCache {
+    inner: std::sync::Mutex<ScaledInner>,
+}
+
+#[derive(Default)]
+struct ScaledInner {
+    map: std::collections::HashMap<(String, u32, u32, bool), std::sync::Arc<Vec<u8>>>,
+    bytes: usize,
+}
+
+/// Most bytes of scaled pictures kept (then the cache starts over).
+const SCALED_BUDGET: usize = 48 << 20;
+
+impl Clone for ScaledCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for ScaledCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScaledCache")
+    }
 }
 
 /// `(sprite, frame)` → per-rotation `(lump, flip)` for rotations 1–8.
@@ -317,6 +361,144 @@ fn build_sprite_frames<'a>(names: impl Iterator<Item = &'a str>) -> SpriteFrames
     table
 }
 
+/// What a picture header says about its size.
+enum Header {
+    Dims(crate::script_sbar::PatchDims),
+    /// Not a picture [`PatchCache::ensure`] would load.
+    Invalid,
+    /// A format whose header is not read here.
+    Unknown,
+}
+
+fn dims_of(w: u32, h: u32, left: i32, top: i32) -> Option<crate::script_sbar::PatchDims> {
+    if w == 0 || h == 0 || w > u32::from(u16::MAX) || h > u32::from(u16::MAX) {
+        return None;
+    }
+    let clamp =
+        |v: i32| f32::from(i16::try_from(v).unwrap_or(if v < 0 { i16::MIN } else { i16::MAX }));
+    Some(crate::script_sbar::PatchDims {
+        w: w as f32,
+        h: h as f32,
+        left: clamp(left),
+        top: clamp(top),
+    })
+}
+
+/// Size and offsets from a PNG (`IHDR` + `grAb`) or Doom patch header,
+/// matching what decoding the picture would give.
+fn header_dims(bytes: &[u8]) -> Header {
+    if room_formats::is_png(bytes) {
+        if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+            return Header::Invalid;
+        }
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        let Ok(meta) = room_formats::png_img::scan_zdoom_png_chunks(bytes) else {
+            return Header::Invalid;
+        };
+        let (left, top) = meta.grab.unwrap_or((0, 0));
+        return dims_of(w, h, left, top).map_or(Header::Invalid, Header::Dims);
+    }
+    if room_formats::is_jpeg(bytes)
+        || room_formats::is_bmp(bytes)
+        || room_formats::is_pcx(bytes)
+        || room_formats::is_tga(bytes)
+    {
+        return Header::Unknown;
+    }
+    // Doom patch: width, height, left, top, then one column offset per
+    // column, each inside the lump (what `parse_patch` checks first).
+    if bytes.len() < 8 {
+        return Header::Invalid;
+    }
+    let w = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let h = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let left = i16::from_le_bytes([bytes[4], bytes[5]]);
+    let top = i16::from_le_bytes([bytes[6], bytes[7]]);
+    let table_end = 8 + usize::from(w) * 4;
+    if w == 0 || h == 0 || bytes.len() < table_end {
+        return Header::Invalid;
+    }
+    for c in 0..usize::from(w) {
+        let o = 8 + c * 4;
+        let off = u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as usize;
+        if off < table_end || off >= bytes.len() {
+            // Not a patch `parse_patch` accepts: decode to be sure.
+            return Header::Unknown;
+        }
+    }
+    dims_of(u32::from(w), u32::from(h), i32::from(left), i32::from(top))
+        .map_or(Header::Invalid, Header::Dims)
+}
+
+/// Decode the picture `key` (upper case): Sprites → Graphics → Global → any.
+fn load_patch(vfs: &Vfs, key: &str) -> Option<SoftPatch> {
+    let id = vfs
+        .find(key, Namespace::Sprites)
+        .or_else(|| vfs.find(key, Namespace::Graphics))
+        .or_else(|| vfs.find(key, Namespace::Global))
+        .or_else(|| vfs.find_any_ns(key))?;
+    let bytes = vfs.read(id).ok()?;
+    // Brutal Doom (and most GZDoom mods) ship sprites as PNG, not Doom patches.
+    if room_formats::is_png(&bytes)
+        || room_formats::is_jpeg(&bytes)
+        || room_formats::is_bmp(&bytes)
+        || room_formats::is_pcx(&bytes)
+        || room_formats::is_tga(&bytes)
+    {
+        SoftPatch::from_image(room_formats::decode_image(&bytes).ok()?)
+    } else {
+        let parsed = parse_patch(&bytes).ok()?;
+        if parsed.width == 0 || parsed.height == 0 {
+            return None;
+        }
+        Some(SoftPatch::from_patch(parsed))
+    }
+}
+
+/// `decode` each key, one after another (the web build has no threads).
+#[cfg(target_arch = "wasm32")]
+pub fn decode_parallel<T>(keys: &[String], decode: impl Fn(&str) -> Option<T>) -> Vec<(String, T)> {
+    // The web build has no threads.
+    keys.iter()
+        .filter_map(|k| decode(k).map(|v| (k.clone(), v)))
+        .collect()
+}
+
+/// `decode` each key on up to one thread per core; the keys that decoded,
+/// with their results (order not kept).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn decode_parallel<T: Send>(
+    keys: &[String],
+    decode: impl Fn(&str) -> Option<T> + Sync,
+) -> Vec<(String, T)> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(2, std::num::NonZeroUsize::get)
+        .clamp(1, 8)
+        .min(keys.len());
+    let chunk = keys.len().div_ceil(threads);
+    let decode = &decode;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = keys
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .filter_map(|k| decode(k).map(|v| (k.clone(), v)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
 impl Default for PatchCache {
     fn default() -> Self {
         let mut palette = [[0u8; 3]; 256];
@@ -328,6 +510,8 @@ impl Default for PatchCache {
             palette,
             patches: BTreeMap::new(),
             sprite_frames: None,
+            dims: std::collections::HashMap::new(),
+            scaled: ScaledCache::default(),
         }
     }
 }
@@ -357,6 +541,8 @@ impl PatchCache {
             palette,
             patches: BTreeMap::new(),
             sprite_frames: None,
+            dims: std::collections::HashMap::new(),
+            scaled: ScaledCache::default(),
         }
     }
 
@@ -384,35 +570,103 @@ impl PatchCache {
         slots.get(usize::from(rot.clamp(1, 8) - 1))?.clone()
     }
 
+    /// Size and offsets of the picture [`Self::ensure`] would load for
+    /// `name`, read from its header without decoding it (PNG `IHDR` /
+    /// `grAb`, Doom patch header), or from the loaded picture. World sprites
+    /// only need this: their pixels go to the GPU, not to this cache, and
+    /// decoding each one here as well doubled the cost of a new sprite.
+    pub fn dims(&mut self, vfs: &Vfs, name: &str) -> Option<crate::script_sbar::PatchDims> {
+        let key = name.to_ascii_uppercase();
+        if let Some(p) = self.patches.get(&key) {
+            return Some(p.dims());
+        }
+        if let Some(d) = self.dims.get(&key) {
+            return *d;
+        }
+        let id = vfs
+            .find(&key, Namespace::Sprites)
+            .or_else(|| vfs.find(&key, Namespace::Graphics))
+            .or_else(|| vfs.find(&key, Namespace::Global))
+            .or_else(|| vfs.find_any_ns(&key));
+        let found = match id.and_then(|id| vfs.read(id).ok()) {
+            None => None,
+            Some(bytes) => match header_dims(&bytes) {
+                Header::Dims(d) => Some(d),
+                Header::Invalid => None,
+                // Other image formats: decode once (rare for sprites).
+                Header::Unknown => self.ensure(vfs, &key).map(SoftPatch::dims),
+            },
+        };
+        self.dims.insert(key, found);
+        found
+    }
+
+    /// [`SoftPatch::scale_rgba`] of the loaded picture `name` with this
+    /// cache's palette (inverted when `inverse`), remembered: the same
+    /// picture at the same size is scaled once.
+    #[must_use]
+    pub fn scaled_rgba(
+        &self,
+        name: &str,
+        patch: &SoftPatch,
+        dest_w: u32,
+        dest_h: u32,
+        inverse: bool,
+    ) -> Vec<u8> {
+        let key = (name.to_ascii_uppercase(), dest_w, dest_h, inverse);
+        if let Ok(inner) = self.scaled.inner.lock()
+            && let Some(hit) = inner.map.get(&key)
+        {
+            return hit.as_ref().clone();
+        }
+        let pixels = if inverse {
+            patch.scale_rgba(dest_w, dest_h, &crate::inverse_palette(&self.palette))
+        } else {
+            patch.scale_rgba(dest_w, dest_h, &self.palette)
+        };
+        if let Ok(mut inner) = self.scaled.inner.lock() {
+            if inner.bytes + pixels.len() > SCALED_BUDGET {
+                inner.map.clear();
+                inner.bytes = 0;
+            }
+            if pixels.len() <= SCALED_BUDGET / 4 {
+                inner.bytes += pixels.len();
+                inner.map.insert(key, std::sync::Arc::new(pixels.clone()));
+            }
+        }
+        pixels
+    }
+
     /// Ensure `name` is loaded (Sprites → Graphics → Global).
     pub fn ensure(&mut self, vfs: &Vfs, name: &str) -> Option<&SoftPatch> {
         let key = name.to_ascii_uppercase();
         if self.patches.contains_key(&key) {
             return self.patches.get(&key);
         }
-        let id = vfs
-            .find(&key, Namespace::Sprites)
-            .or_else(|| vfs.find(&key, Namespace::Graphics))
-            .or_else(|| vfs.find(&key, Namespace::Global))
-            .or_else(|| vfs.find_any_ns(&key))?;
-        let bytes = vfs.read(id).ok()?;
-        // Brutal Doom (and most GZDoom mods) ship sprites as PNG, not Doom patches.
-        let patch = if room_formats::is_png(&bytes)
-            || room_formats::is_jpeg(&bytes)
-            || room_formats::is_bmp(&bytes)
-            || room_formats::is_pcx(&bytes)
-            || room_formats::is_tga(&bytes)
-        {
-            SoftPatch::from_image(room_formats::decode_image(&bytes).ok()?)?
-        } else {
-            let parsed = parse_patch(&bytes).ok()?;
-            if parsed.width == 0 || parsed.height == 0 {
-                return None;
-            }
-            SoftPatch::from_patch(parsed)
-        };
+        let started = crate::load_stats::Timer::start();
+        let patch = load_patch(vfs, &key)?;
         self.patches.insert(key.clone(), patch);
+        crate::load_stats::record(started.elapsed());
         self.patches.get(&key)
+    }
+
+    /// Load the pictures `names` not loaded yet, decoding them on several
+    /// threads (level start: the weapon's frames, so firing and reloading
+    /// do not stop to decode them). Returns how many were loaded.
+    pub fn preload(&mut self, vfs: &Vfs, names: &[String]) -> usize {
+        let mut todo: Vec<String> = names
+            .iter()
+            .map(|n| n.to_ascii_uppercase())
+            .filter(|k| !self.patches.contains_key(k))
+            .collect();
+        todo.sort();
+        todo.dedup();
+        let loaded = decode_parallel(&todo, |key| load_patch(vfs, key));
+        let n = loaded.len();
+        for (key, patch) in loaded {
+            self.patches.insert(key, patch);
+        }
+        n
     }
 
     /// Load the flat `name` (`F_START` raw 64×64 or an image lump) for
@@ -727,5 +981,70 @@ mod sprite_frame_tests {
         let a = t.get(&("TROO".into(), 0)).unwrap();
         assert_eq!(a[2].as_ref().unwrap().0, "TROOA3");
         assert_eq!(a[0].as_ref().unwrap().0, "TROOA0");
+    }
+}
+
+#[cfg(test)]
+mod dims_tests {
+    use super::*;
+
+    /// 3×2 RGBA PNG with `grAb` (-5, 7).
+    const PNG: [u8; 94] = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 2, 8, 6,
+        0, 0, 0, 157, 116, 102, 26, 0, 0, 0, 8, 103, 114, 65, 98, 255, 255, 255, 251, 0, 0, 0, 7,
+        115, 133, 126, 147, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 134,
+        25, 144, 57, 0, 155, 126, 11, 245, 114, 176, 185, 60, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+        96, 130,
+    ];
+
+    /// 2×1 Doom patch, offsets (1, -3).
+    fn doom_patch() -> Vec<u8> {
+        let mut b = Vec::new();
+        for v in [2u16, 1] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [1i16, -3] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        for off in [16u32, 22] {
+            b.extend_from_slice(&off.to_le_bytes());
+        }
+        for px in [7u8, 9] {
+            b.extend_from_slice(&[0, 1, 0, px, 0, 255]);
+        }
+        b
+    }
+
+    fn decoded(bytes: &[u8]) -> crate::script_sbar::PatchDims {
+        let patch = if room_formats::is_png(bytes) {
+            SoftPatch::from_image(room_formats::decode_image(bytes).expect("png")).expect("patch")
+        } else {
+            SoftPatch::from_patch(parse_patch(bytes).expect("doom patch"))
+        };
+        patch.dims()
+    }
+
+    #[test]
+    fn headers_give_what_decoding_gives() {
+        for bytes in [PNG.to_vec(), doom_patch()] {
+            let Header::Dims(d) = header_dims(&bytes) else {
+                panic!("no dims");
+            };
+            assert_eq!(d, decoded(&bytes));
+        }
+        let Header::Dims(d) = header_dims(&PNG) else {
+            unreachable!()
+        };
+        assert_eq!((d.w, d.h, d.left, d.top), (3.0, 2.0, -5.0, 7.0));
+    }
+
+    #[test]
+    fn broken_headers_are_not_pictures() {
+        assert!(matches!(header_dims(&PNG[..20]), Header::Invalid));
+        assert!(matches!(header_dims(&[1, 2, 3]), Header::Invalid));
+        // A column offset outside the lump: let the decoder decide.
+        let mut bad = doom_patch();
+        bad[12] = 200;
+        assert!(matches!(header_dims(&bad), Header::Unknown));
     }
 }

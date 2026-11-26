@@ -1,0 +1,7 @@
+// 0 normal, 1 rainbow, 2 rainbow bands, 3 hue cycle, 4 grayscale, 5 sepia,
+// 6 inverted, 7 thermal, 8 Game Boy, 9 neon edges.
+user int colorworld_mode = 1;
+// Animation speed of the moving modes, in percent (100 = normal, 0 = still).
+user int colorworld_speed = 100;
+// How much of the effect, in percent (0 = the normal picture).
+user int colorworld_strength = 100;

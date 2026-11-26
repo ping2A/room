@@ -43,7 +43,7 @@ the shared player weapon logic (`crates/room-sim/src/think_player.rs`
 (`crates/room-sim/src/action.rs` `a_punch`, `a_saw`, `a_fire_*`,
 `player_gun_shot`, `spawn_player_missile`), pickup (`pickup.rs`), slots
 (`weapon_slots.rs`), HUD/bob (`world.rs` `player_hud`), psprite drawing
-(`room-ui/src/weapon.rs`, `room-app/src/main.rs` / `room-web`), and the Duke
+(`room-ui/src/weapon.rs`, `room-app/src/app.rs` / `room-web`), and the Duke
 converter guns (`crates/room-build/src/duke.rs` `GUNS`).
 
 What is correct (keep): Fist, Pistol, Shotgun, Chaingun, Rocket, Plasma and
@@ -231,7 +231,7 @@ done). With W14, ammo is no longer lost because nothing is taken before the
    `weapon_fuzz: bool` (BlurSphere power); add a `light` / `colormap` /
    `fuzz` field to the patch draw command in `room-ui` (`DrawCmd::Texture`
    already has `color`), apply it in `draw_weapon` for both shells
-   (`room-app/src/main.rs` and `room-web`), use the same light mode
+   (`room-app/src/app.rs` and `room-web`), use the same light mode
    equation as the world (`docs/29` U4) so the gun matches the room; keep the
    existing invulnerability inversion.
 
@@ -424,7 +424,7 @@ inherit W2/W3/W4/W7/W14. Specific items:
 | `crates/room-sim/src/class.rs` | W16 (weapon properties) |
 | `crates/room-sim/src/pickup.rs` | W17 |
 | `crates/room-script-abi/src/lib.rs` | W17 (`rule::WEAPON_STAY`) |
-| `crates/room-ui/src/weapon.rs`, `draw.rs`; `room-app/src/main.rs`; `room-web/src/*` | W6 psprite lighting / fuzz |
+| `crates/room-ui/src/weapon.rs`, `draw.rs`; `room-app/src/app.rs`; `room-web/src/*` | W6 psprite lighting / fuzz |
 | `crates/room-build/src/duke.rs` | §3 |
 | `crates/room-dehacked` | W16 frame 1 mapping, BFG cells/shot → `AmmoUse` |
 

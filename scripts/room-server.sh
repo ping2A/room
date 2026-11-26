@@ -203,6 +203,38 @@ import pathlib, struct, subprocess, sys, tomllib
 d = pathlib.Path(sys.argv[1])
 manifest = (d / "room.toml").read_bytes()
 modules = tomllib.loads(manifest.decode()).get("module", [])
+pk3 = d / "pk3"
+if not modules and pk3.is_dir():
+    # Content mod (GLDEFS post shader, ZSCRIPT, CVARINFO, MENUDEF …): the
+    # files of pk3/ become lumps; files in subfolders are named after their
+    # stem and GLDEFS is pointed at those lump names (a WAD has no folders).
+    lumps = [("ROOMMOD", manifest)]
+    renamed = {}
+    for path in sorted(pk3.rglob("*")):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        rel = path.relative_to(pk3).as_posix()
+        if "/" in rel:
+            name = path.stem.upper()[:8]
+            renamed[rel] = name
+        else:
+            name = path.name.upper()[:8]
+        lumps.append((name, path.read_bytes()))
+    for i, (name, body) in enumerate(lumps):
+        if name == "GLDEFS":
+            text = body.decode("utf-8", "replace")
+            for rel, lump in renamed.items():
+                text = text.replace(f'"{rel}"', f'"{lump}"')
+            lumps[i] = (name, text.encode())
+    data, dir_, off = b"", b"", 12
+    for name, body in lumps:
+        dir_ += struct.pack("<ii8s", off, len(body), name.encode())
+        data += body
+        off += len(body)
+    out = d / f"{d.name}.wad"
+    out.write_bytes(b"PWAD" + struct.pack("<ii", len(lumps), off) + data + dir_)
+    print(f"room-server: mod {out} ({len(data) + len(dir_) + 12} bytes)")
+    raise SystemExit(0)
 if not modules:
     sys.exit(f"{d}/room.toml: no [[module]]")
 # Host Python mods: pack .py lumps (desktop `python-mods` feature).
@@ -296,9 +328,47 @@ pid_of() {
   [[ -f "$PID_FILE" ]] && cat "$PID_FILE"
 }
 
+# room-server processes listening on our game/admin ports (a server whose
+# pid file was lost: started by hand, or by a start that failed half-way).
+stray_pids() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local port pid
+  for port in "${BIND##*:}" "${ADMIN_BIND##*:}"; do
+    for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null); do
+      # Only ever stop a room-server, never another program on the port.
+      if ps -p "$pid" -o comm= 2>/dev/null | grep -q 'room-serv'; then
+        echo "$pid"
+      fi
+    done
+  done | sort -u
+}
+
+stop_pid() {
+  local pid="$1"
+  echo "room-server: stopping pid=${pid}"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "room-server: SIGKILL pid=${pid}"
+  kill -9 "$pid" 2>/dev/null || true
+}
+
 do_stop() {
   if ! is_running; then
     rm -f "$PID_FILE"
+    local strays
+    strays="$(stray_pids)"
+    if [[ -n "$strays" ]]; then
+      for pid in $strays; do
+        stop_pid "$pid"
+      done
+      echo "room-server: stopped (it had no pid file)"
+      return 0
+    fi
     echo "room-server: not running"
     return 0
   fi
@@ -407,6 +477,9 @@ do_start() {
       if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
         echo "room-server: port ${port} already in use — stop the other process first" >&2
         lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
+        if [[ -n "$(stray_pids)" ]]; then
+          echo "room-server: it is an older room-server: './room stop' stops it (or './room restart')" >&2
+        fi
         exit 1
       fi
     fi
@@ -518,6 +591,11 @@ do_admin_tui() {
   fi
   # Clear the build chatter so the next thing on screen is the full TUI.
   printf '\033[2J\033[H'
+  if [[ -z "${ROOM_ADMIN_USER:-}" && -n "${ROOM_ADMIN_BOOTSTRAP:-}" ]]; then
+    ROOM_ADMIN_USER="${ROOM_ADMIN_BOOTSTRAP%%:*}"
+    ROOM_ADMIN_PASSWORD="${ROOM_ADMIN_BOOTSTRAP#*:}"
+    export ROOM_ADMIN_USER ROOM_ADMIN_PASSWORD
+  fi
   exec "$bin" \
     --url "${admin_base}" \
     ${ROOM_ADMIN_TOKEN:+--token "$ROOM_ADMIN_TOKEN"} \

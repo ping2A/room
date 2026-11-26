@@ -134,6 +134,36 @@ an automatically converted WebAssembly package (see
 in [`mods/brutal-zscript-rs`](mods/brutal-zscript-rs/README.md). Background:
 [docs/33](docs/33-brutal-doom.md).
 
+### Colour mods: Color World and Red Noir
+
+Two small mods change the colours of the whole 3D view (the weapon
+included; the status bar keeps its colours) with a GLDEFS post-process
+shader driven by ZScript. They are plain GZDoom mods, so they also work in
+GZDoom, and they stack with Brutal Doom.
+
+<p align="center">
+  <img src="docs/media/colorworld.gif" width="49%" alt="Color World on Freedoom: the same arena fight in rainbow, hue cycle, neon edges, thermal, Game Boy and rainbow-band colours">
+  <img src="docs/media/rednoir.gif" width="49%" alt="Red Noir on Freedoom: the arena fight in black, white and grey, with only the blood in red">
+</p>
+
+[**Color World**](mods/colorworld/README.md) (left) has ten looks, picked
+with `colorworld_mode` or in Options → Color World: rainbow, rainbow
+bands, hue cycle, grayscale, sepia, inverted, thermal, Game Boy, neon edges.
+[**Red Noir**](mods/rednoir/README.md) (right) turns the world black, white
+and grey and keeps only the red of blood (`noir_mode`, contrast, film grain
+and dark corners in Options → Red Noir).
+
+```sh
+./scripts/play-doom.sh --file ~/mods/brutal22test6.pk3 --colors rainbow
+./scripts/play-doom.sh --file ~/mods/brutal22test6.pk3 --noir
+./scripts/play-doom.sh --noir --set noir_grain=0   # any option: --set NAME=VALUE
+```
+
+`--colors` and `--noir` build the mod's PK3 when needed
+(`mods/<mod>/pack.sh`). The room server also packs both into its mod
+catalog, so the lobby offers them in **Play solo** and for new rooms once an
+admin allows them (Settings → Mods).
+
 ### Two renderers
 
 The GPU renderer (wgpu: desktop, WebGPU or WebGL 2 in the browser) is the

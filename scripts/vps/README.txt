@@ -4,6 +4,7 @@ Room — VPS package
 Layout
 ------
   bin/room-server   release binary
+  bin/room-admin    ratatui ops console (./room admin-tui)
   web/              static client (wasm + HTML + doom1/doom2/Freedoom when packaged)
   mods/             gameplay mods + voxel.pk3 (royale, bounty, survival, brutal-zscript, …)
   seed/             shipped server library + presets, added to data/ on start:
@@ -57,6 +58,8 @@ Update without wiping data
 Admin
 -----
   Bootstrap user comes from ROOM_ADMIN_BOOTSTRAP in .env (user:pass).
+  `./room admin-tui` reuses that pair for MFA session login (or prompts).
+  Bearer ROOM_ADMIN_TOKEN is ignored once data/admins.json exists.
   After the first login, prefer WebAuthn / password change; remove the
   bootstrap line once data/admins.json exists.
 

@@ -71,34 +71,7 @@ fn is_likely_iwad(lower: &str) -> bool {
 }
 
 fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("testdata/doom"),
-        PathBuf::from("testdata/freedoom"),
-        PathBuf::from("wad"),
-        PathBuf::from("wads"),
-        PathBuf::from("."),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        dirs.push(home.join("Games").join("Doom"));
-        dirs.push(home.join("games").join("doom"));
-        dirs.push(home.join(".local").join("share").join("games").join("doom"));
-        dirs.push(
-            home.join("Library")
-                .join("Application Support")
-                .join("gzdoom"),
-        );
-    }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        dirs.push(PathBuf::from(xdg).join("games").join("doom"));
-    }
-    if let Ok(extra) = std::env::var("DOOMWADDIR") {
-        dirs.push(PathBuf::from(extra));
-    }
-    if let Ok(extra) = std::env::var("ROOM_IWAD_DIR") {
-        dirs.push(PathBuf::from(extra));
-    }
-    dirs
+    crate::platform::current().iwad_search_dirs()
 }
 
 /// Pick the first Freedoom Phase 2 / Doom II style IWAD if present.
@@ -118,21 +91,7 @@ pub fn prefer_doom2(cands: &[IwadCandidate]) -> Option<&IwadCandidate> {
 /// Resolve gzdoom.ini / zdoom.ini import candidates.
 #[must_use]
 pub fn discover_gzdoom_ini() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        out.push(
-            home.join("Library")
-                .join("Application Support")
-                .join("gzdoom")
-                .join("gzdoom.ini"),
-        );
-        out.push(home.join(".config").join("gzdoom").join("gzdoom.ini"));
-        out.push(home.join(".config").join("zdoom").join("zdoom.ini"));
-    }
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        out.push(PathBuf::from(appdata).join("gzdoom").join("gzdoom.ini"));
-    }
+    let mut out = crate::platform::current().gzdoom_ini_candidates();
     out.retain(|p| p.is_file());
     out
 }

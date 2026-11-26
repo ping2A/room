@@ -81,33 +81,7 @@ impl GifRecorder {
 /// `…/room/screenshots` under the platform data dir.
 #[must_use]
 pub fn screenshots_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("room")
-                .join("screenshots");
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(app) = std::env::var_os("APPDATA") {
-            return PathBuf::from(app).join("room").join("screenshots");
-        }
-    }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("room").join("screenshots");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("room")
-            .join("screenshots");
-    }
-    PathBuf::from("screenshots")
+    crate::platform::current().screenshots_dir()
 }
 
 /// Ensure the screenshots directory exists.

@@ -15,6 +15,7 @@ mod font;
 mod hud;
 mod i18n;
 mod intermission;
+pub mod load_stats;
 mod menu;
 mod menudef_runtime;
 mod messages;
@@ -33,7 +34,8 @@ mod zscript_bar;
 pub use acs_hud::{color_by_name, draw_acs_hud_messages, strip_color_codes};
 pub use automap::{AutomapThing, AutomapView, automap_flats, draw_automap, draw_automap_things};
 pub use canvas_bridge::{
-    CanvasSink, blit_draw_list, blit_draw_list_full, blit_draw_list_with_fonts,
+    CanvasSink, PatchQuad, blit_draw_list, blit_draw_list_full, blit_draw_list_with_fonts,
+    inverse_palette, patch_quads,
 };
 pub use doom_text::{
     draw_stcfn_string, draw_stt_percent, draw_stt_string, draw_stt_string_right,

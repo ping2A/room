@@ -43,6 +43,15 @@ pub struct MaterialCatalog {
     /// Names [`Self::get_or_upload`] loaded from the VFS (re-uploaded when
     /// the upscaling setting changes).
     loaded: BTreeMap<String, TextureId>,
+    /// Names with no picture in the VFS (not looked up again every frame).
+    missing: std::collections::HashSet<String>,
+    /// Loading time allowed per frame before new pictures wait for the next
+    /// frame (`None`: load everything at once). See [`Self::begin_frame`].
+    stream_budget: Option<std::time::Duration>,
+    /// Loading time spent this frame.
+    spent: std::time::Duration,
+    /// Pictures that waited: loaded (several threads) at the next frame.
+    deferred: std::collections::BTreeSet<String>,
 }
 
 /// Optional GLDEFS material maps (paths / lump names).
@@ -87,6 +96,10 @@ impl MaterialCatalog {
             sampler_anisotropy: 1,
             hq_resize: crate::hq_resize::HqResize::default(),
             loaded: BTreeMap::new(),
+            missing: std::collections::HashSet::new(),
+            stream_budget: None,
+            spent: std::time::Duration::ZERO,
+            deferred: std::collections::BTreeSet::new(),
         }
     }
 
@@ -164,6 +177,7 @@ impl MaterialCatalog {
 
     /// Load PLAYPAL from the VFS if present.
     pub fn load_playpal(&mut self, vfs: &Vfs) {
+        self.missing.clear();
         if let Some(lump) = vfs
             .find("PLAYPAL", Namespace::Global)
             .or_else(|| vfs.find_any_ns("PLAYPAL"))
@@ -178,6 +192,7 @@ impl MaterialCatalog {
 
     /// Load `PNAMES` + `TEXTURE1`/`TEXTURE2` for composed wall textures.
     pub fn load_texturex(&mut self, vfs: &Vfs) {
+        self.missing.clear();
         if let Some(lump) = vfs
             .find("PNAMES", Namespace::Global)
             .or_else(|| vfs.find_any_ns("PNAMES"))
@@ -357,14 +372,157 @@ impl MaterialCatalog {
         if let Some(id) = self.by_name.get(&key) {
             return Some(*id);
         }
-        let image = self.source_image(vfs, &key)?;
+        if self.missing.contains(&key) {
+            return None;
+        }
+        if self.deferred.contains(&key) {
+            return None;
+        }
+        if self.stream_budget.is_some_and(|b| self.spent >= b) {
+            self.deferred.insert(key);
+            return None;
+        }
+        let started = crate::load_stats::Timer::start();
+        let Some(image) = self.source_image(vfs, &key) else {
+            self.missing.insert(key);
+            self.spent += started.elapsed();
+            return None;
+        };
         let hq = (self.hq_resize.mode != 0).then(|| (self.hq_resize, hq_target(vfs, &key)));
         let id =
             self.textures
                 .upload_image_scaled(device, queue, &image, self.playpal.as_ref(), hq);
         self.by_name.insert(key.clone(), id);
         self.loaded.insert(key, id);
+        crate::load_stats::record(started.elapsed());
+        self.spent += started.elapsed();
         Some(id)
+    }
+
+    /// Spread loading over frames: once `budget` of loading time is spent in
+    /// a frame, [`Self::get_or_upload`] returns `None` for new pictures and
+    /// they load at the next [`Self::begin_frame`] (`None`: no limit). A burst
+    /// of new sprites in a fight then costs a little on several frames
+    /// instead of one long stall.
+    pub fn set_stream_budget(&mut self, budget: Option<std::time::Duration>) {
+        self.stream_budget = budget;
+        if budget.is_none() {
+            self.deferred.clear();
+        }
+    }
+
+    /// `name` waits for the next frame: draw nothing for it this frame.
+    #[must_use]
+    pub fn is_deferred(&self, name: &str) -> bool {
+        !self.deferred.is_empty() && self.deferred.contains(&normalize(name))
+    }
+
+    /// Start a frame: load (on several threads) what waited last frame.
+    pub fn begin_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vfs: &Vfs) {
+        self.spent = std::time::Duration::ZERO;
+        if self.deferred.is_empty() {
+            return;
+        }
+        // A few dozen at a time: one frame never stalls on a whole burst.
+        let batch: Vec<String> = self.deferred.iter().take(32).cloned().collect();
+        for name in &batch {
+            self.deferred.remove(name);
+        }
+        let started = crate::load_stats::Timer::start();
+        let loaded = self.preload(device, queue, vfs, &batch);
+        for name in &batch {
+            if !self.by_name.contains_key(name) {
+                self.missing.insert(name.clone());
+            }
+        }
+        if loaded > 0 {
+            crate::load_stats::record(started.elapsed());
+        }
+        self.spent = started.elapsed();
+    }
+
+    /// Load the textures `names` not loaded yet, decoding them on several
+    /// threads and uploading them here (level start: every sprite the
+    /// level's actors can show, so fights do not stop to decode blood and
+    /// gibs). Returns how many were loaded.
+    pub fn preload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vfs: &Vfs,
+        names: &[String],
+    ) -> usize {
+        let mut todo: Vec<String> = names
+            .iter()
+            .map(|n| normalize(n))
+            .filter(|k| !k.is_empty() && k != "-" && !self.by_name.contains_key(k))
+            .collect();
+        todo.sort();
+        todo.dedup();
+        if todo.is_empty() {
+            return 0;
+        }
+        let threads = std::thread::available_parallelism()
+            .map_or(2, std::num::NonZeroUsize::get)
+            .clamp(1, 8)
+            .min(todo.len());
+        // Only plain lumps decode on other threads: they need nothing but
+        // the VFS (`MaterialCatalog` holds GPU objects, which are not `Sync`
+        // on every target). TEXTUREX composites, sky caps and player colours
+        // decode here.
+        let (plain, special): (Vec<String>, Vec<String>) = todo.into_iter().partition(|k| {
+            !self.texturex.contains_key(k)
+                && crate::sky::parse_sky_cap_name(k).is_none()
+                && crate::player_colors::parse_player_color_name(k).is_none()
+        });
+        let mut decoded: Vec<(String, Image)> = special
+            .iter()
+            .filter_map(|k| self.source_image(vfs, k).map(|img| (k.clone(), img)))
+            .collect();
+        // The web build has no threads (`std::thread` panics there).
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = threads;
+            decoded.extend(plain.iter().filter_map(|k| {
+                load_tx_image(vfs, k)
+                    .or_else(|| load_named_image(vfs, k))
+                    .map(|img| (k.clone(), img))
+            }));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !plain.is_empty() {
+            let chunk = plain.len().div_ceil(threads.min(plain.len()));
+            decoded.extend(std::thread::scope(|scope| {
+                let handles: Vec<_> = plain
+                    .chunks(chunk)
+                    .map(|part| {
+                        scope.spawn(move || {
+                            part.iter()
+                                .filter_map(|k| {
+                                    load_tx_image(vfs, k)
+                                        .or_else(|| load_named_image(vfs, k))
+                                        .map(|img| (k.clone(), img))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap_or_default())
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let n = decoded.len();
+        for (key, image) in decoded {
+            let hq = (self.hq_resize.mode != 0).then(|| (self.hq_resize, hq_target(vfs, &key)));
+            let id =
+                self.textures
+                    .upload_image_scaled(device, queue, &image, self.playpal.as_ref(), hq);
+            self.by_name.insert(key.clone(), id);
+            self.loaded.insert(key, id);
+        }
+        n
     }
 
     /// Change texture upscaling. Images already loaded from the VFS are

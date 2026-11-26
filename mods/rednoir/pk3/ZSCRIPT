@@ -1,0 +1,35 @@
+version "4.0"
+
+// Hands the noir_* CVars to the RedNoir post-process shader every tic.
+// Render-only: nothing here touches the game state. Integers only.
+class RedNoirHandler : EventHandler
+{
+	// Tics since the map started (moves the film grain).
+	int tics;
+
+	override void WorldTick()
+	{
+		tics++;
+		int mode = ReadCVar("noir_mode", 1);
+		PPShader.SetEnabled("RedNoir", mode > 0);
+		if (mode <= 0)
+		{
+			return;
+		}
+		PPShader.SetUniform1i("RedNoir", "mode", mode);
+		PPShader.SetUniform1i("RedNoir", "tics", tics);
+		PPShader.SetUniform1i("RedNoir", "contrast", ReadCVar("noir_contrast", 130));
+		PPShader.SetUniform1i("RedNoir", "grain", ReadCVar("noir_grain", 20));
+		PPShader.SetUniform1i("RedNoir", "vignette", ReadCVar("noir_vignette", 35));
+	}
+
+	static int ReadCVar(string name, int fallback)
+	{
+		CVar v = CVar.FindCVar(name);
+		if (v == null)
+		{
+			return fallback;
+		}
+		return v.GetInt();
+	}
+}

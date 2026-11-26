@@ -443,6 +443,31 @@ impl CvarStore {
         reg_f(self, "joy_sensitivity", 1.0);
         reg_f(self, "joy_speedmultiplier", 1.0);
         reg_b(self, "joy_invertpitch", false);
+        // Render scale (docs/41 M6): 3D view size as a fraction of the screen;
+        // with r_dynres the ceiling, lowered to hold r_dynres_fps.
+        reg_f(self, "r_scale", 1.0);
+        reg_b(self, "r_dynres", false);
+        reg_i(self, "r_dynres_fps", 60);
+        // Draw the weapon in the CPU HUD canvas instead of on the GPU
+        // (comparisons and fallback).
+        reg_b(self, "r_cpuhud", false);
+        // Show engine diagnostics (weapon fire traces, script warnings) on
+        // screen; they always go to the console and the log.
+        reg_i(self, "developer", 0);
+        // Frame-rate cap (0: none). Phones start at 60 (`Platform::default_max_fps`).
+        reg_i(self, "vid_maxfps", 0);
+        // On-screen touch controls (docs/41 M3; defaults as the web client).
+        reg_i(self, "touch_controls", 1);
+        reg_f(self, "touch_look", 1.0);
+        reg_f(self, "touch_look_y", 1.6);
+        reg_b(self, "touch_accel", true);
+        reg_b(self, "touch_tapfire", true);
+        reg_b(self, "touch_invert", false);
+        reg_f(self, "touch_size", 1.0);
+        reg_f(self, "touch_opacity", 1.0);
+        reg_b(self, "touch_lefty", false);
+        reg_b(self, "touch_haptics", true);
+        reg_b(self, "touch_jumpduck", true);
         reg_i(self, "m_doubleclicktime", 250);
         reg_b(self, "snd_reverb", true);
         reg_b(self, "snd_waterreverb", true);

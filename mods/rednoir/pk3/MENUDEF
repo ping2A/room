@@ -1,0 +1,22 @@
+AddOptionMenu "OptionsMenu"
+{
+	Submenu "Red Noir", "RedNoirOptions"
+}
+
+OptionMenu "RedNoirOptions"
+{
+	Title "Red Noir"
+	Option "Colours", "noir_mode", "RedNoirModes"
+	StaticText "Black, white and grey, with red blood."
+	Slider "Contrast (%)", "noir_contrast", 50, 200, 10, 0
+	Slider "Film grain (%)", "noir_grain", 0, 100, 5, 0
+	Slider "Dark corners (%)", "noir_vignette", 0, 100, 5, 0
+}
+
+OptionValue "RedNoirModes"
+{
+	0, "Normal"
+	1, "Red blood only"
+	2, "Every strong red"
+	3, "Black and white"
+}

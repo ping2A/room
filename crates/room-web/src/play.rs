@@ -81,6 +81,9 @@ pub struct PlaySession {
     pub patches: PatchCache,
     /// GLDEFS (brightmaps / object lights) from the mounted VFS.
     gldefs: GlDefs,
+    /// Different for every session (the page rebuilds its post shaders
+    /// when it changes).
+    pub session_id: u64,
     /// A mod's SBARINFO bar (replaces the stock bar).
     sbarinfo_bar: Option<room_ui::SbarInfoBar>,
     /// Where in the HUD list this frame's SBARINFO bar goes.
@@ -562,7 +565,9 @@ impl PlaySession {
                 .with_episodes(mapinfo.episodes.as_slice())
                 .with_player_classes(game.menu_player_classes())
         });
+        static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut session = Self {
+            session_id: NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             vfs,
             game,
             mod_options,
@@ -4885,5 +4890,56 @@ mod net_save_tests {
         }
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
+    }
+}
+
+impl PlaySession {
+    /// GLDEFS `HardwareShader PostProcess` definitions with their GLSL
+    /// (shaders whose file is missing are left out, with a console note).
+    pub fn post_shader_sources(&self) -> Vec<(room_defs::gldefs::HardwareShaderDef, String)> {
+        let mut out = Vec::new();
+        for def in self.gldefs.hardware_shaders.values() {
+            if def.kind != room_defs::HardwareShaderKind::PostProcess {
+                continue;
+            }
+            // A path in a PK3; a lump name in a WAD (no folders there).
+            match self
+                .vfs
+                .find_full(&def.shader)
+                .or_else(|| {
+                    (!def.shader.contains('/'))
+                        .then(|| self.vfs.find_any_ns(&def.shader))
+                        .flatten()
+                })
+                .and_then(|id| self.vfs.read(id).ok())
+            {
+                Some(bytes) => {
+                    out.push((def.clone(), String::from_utf8_lossy(&bytes).into_owned()))
+                }
+                None => web_sys::console::warn_1(
+                    &format!(
+                        "room-web: post shader {}: {} not found",
+                        def.name, def.shader
+                    )
+                    .into(),
+                ),
+            }
+        }
+        out
+    }
+
+    /// The scripts' `PPShader` calls since the last frame.
+    pub fn take_post_shader_ops(&mut self) -> Vec<room_sim::zs_native_ops::PostShaderOp> {
+        self.game
+            .world_mut()
+            .map(|w| std::mem::take(&mut w.post_shader_ops))
+            .unwrap_or_default()
+    }
+
+    /// Game time in seconds (`InputTimeGame`).
+    pub fn game_seconds(&self) -> f32 {
+        self.game
+            .world()
+            .map_or(0.0, |w| w.level.maptime as f32 / 35.0)
     }
 }

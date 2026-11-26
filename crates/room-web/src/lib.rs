@@ -42,6 +42,9 @@ mod play;
 mod web_audio;
 
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
+mod web_post;
+
+#[cfg(all(feature = "browser", target_arch = "wasm32"))]
 mod input_hub;
 
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
@@ -150,6 +153,8 @@ mod browser {
         soft_visibility: f64,
         /// Software renderer for the current map, kept between frames.
         soft: Option<((usize, u32), room_render_soft::sim::SoftWorldView)>,
+        /// The mods' GLDEFS post shaders (Color World, Red Noir, …).
+        web_post: Option<crate::web_post::WebPost>,
     }
 
     /// WebGPU canvas preferred format is non-sRGB (`bgra8unorm`). Pipelines
@@ -548,6 +553,7 @@ mod browser {
             soft_fov: 90.0,
             soft_visibility: 8.0,
             soft: None,
+            web_post: None,
         }));
         web_sys::console::log_1(
             &format!(
@@ -3394,6 +3400,60 @@ mod browser {
             }
         }
         s.scene_color = scene_color;
+        // Mods' GLDEFS post shaders, on the scene before the post chain.
+        {
+            let FrameState {
+                mode,
+                gpu,
+                scene_color,
+                post_ping,
+                web_post,
+                pass,
+                ..
+            } = &mut *s;
+            if let Mode::Play(play) = mode {
+                let ops = play.take_post_shader_ops();
+                if web_post
+                    .as_ref()
+                    .is_none_or(|p| p.session != play.session_id)
+                    && let Some((tex, _)) = scene_color.as_ref()
+                {
+                    *web_post = Some(crate::web_post::WebPost::new(
+                        &gpu.device,
+                        tex.format(),
+                        play.session_id,
+                        play.post_shader_sources(),
+                    ));
+                }
+                let game = play.game_seconds();
+                if let Some(post) = web_post.as_mut() {
+                    post.apply(ops);
+                    if soft_pixels.is_none()
+                        && post.any_enabled()
+                        && let (Some(scene), Some(ping)) =
+                            (scene_color.as_ref(), post_ping.as_ref())
+                    {
+                        let mut encoder =
+                            gpu.device
+                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                    label: Some("mod-post"),
+                                });
+                        post.run(
+                            gpu,
+                            &mut encoder,
+                            &scene.0,
+                            &ping.0,
+                            room_render::PostTimes {
+                                delta: 1.0 / 60.0,
+                                time: pass.time,
+                                game,
+                            },
+                        );
+                        gpu.queue.submit(Some(encoder.finish()));
+                    }
+                }
+            }
+        }
         let t_world = now_ms();
         {
             let settings = s.render_settings.clone();

@@ -5,13 +5,14 @@ use room_vfs::{Namespace, Vfs};
 use std::fmt;
 
 /// CLI / CVar-style MIDI device choice (`snd_mididevice` subset).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum MidiBackend {
     /// SoftFont if available, else OPL/`GENMIDI`, else silent.
     #[default]
     Auto,
     /// Force SoftFont (`rustysynth`).
-    #[value(name = "sf2")]
+    #[cfg_attr(feature = "cli", value(name = "sf2"))]
     SoftFont,
     /// Force OPL3 + IWAD `GENMIDI`.
     Opl,

@@ -1,0 +1,34 @@
+version "4.0"
+
+// Hands the colorworld_* CVars to the ColorWorld post-process shader every
+// tic. Render-only: nothing here touches the game state. Integers only.
+class ColorWorldHandler : EventHandler
+{
+	// Tics since the map started (the animation clock).
+	int tics;
+
+	override void WorldTick()
+	{
+		tics++;
+		int mode = ReadCVar("colorworld_mode", 1);
+		PPShader.SetEnabled("ColorWorld", mode > 0);
+		if (mode <= 0)
+		{
+			return;
+		}
+		PPShader.SetUniform1i("ColorWorld", "mode", mode);
+		PPShader.SetUniform1i("ColorWorld", "tics", tics);
+		PPShader.SetUniform1i("ColorWorld", "speed", ReadCVar("colorworld_speed", 100));
+		PPShader.SetUniform1i("ColorWorld", "strength", ReadCVar("colorworld_strength", 100));
+	}
+
+	static int ReadCVar(string name, int fallback)
+	{
+		CVar v = CVar.FindCVar(name);
+		if (v == null)
+		{
+			return fallback;
+		}
+		return v.GetInt();
+	}
+}

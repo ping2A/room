@@ -1466,6 +1466,11 @@ impl UnlitPass {
                 None
             };
             let Some(id) = catalog.get_or_upload(&gpu.device, &gpu.queue, vfs, &r.name) else {
+                // Loading next frame (`MaterialCatalog::set_stream_budget`):
+                // nothing this frame rather than a white placeholder.
+                if catalog.is_deferred(&r.name) {
+                    continue;
+                }
                 // Still draw with the pass default albedo (solid white) so missing
                 // monster/item sprites stay visible instead of silently vanishing.
                 pass.set_bind_group(1, &self.default_mat_bind, &[]);

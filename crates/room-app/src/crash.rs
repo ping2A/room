@@ -19,29 +19,7 @@ pub fn install() {
 }
 
 fn crash_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Logs")
-                .join("room");
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("room").join("logs");
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("room")
-            .join("logs");
-    }
-    PathBuf::from("room-logs")
+    crate::platform::current().crash_dir()
 }
 
 fn write_report(info: &std::panic::PanicHookInfo<'_>) -> std::io::Result<()> {
