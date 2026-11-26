@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Room on Android (docs/41 M2): a NativeActivity, so the APK has no Java
+     code (ADR 0009). The activity loads libroom_mobile.so and calls its
+     android_main. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- wgpu draws through Vulkan, or GLES 3 on devices without it. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <!-- Netplay (UDP/TCP) and the web lobby. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Room"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:hasCode="false"
+        android:isGame="true"
+        android:appCategory="game"
+        android:allowBackup="true">
+
+        <!-- configChanges: rotation and keyboard changes keep the same
+             activity, so the game is never restarted; the window is resized
+             instead. -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="room_mobile" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

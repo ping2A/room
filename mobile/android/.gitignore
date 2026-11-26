@@ -1,0 +1,13 @@
+# Built by scripts/build-android.sh
+app/src/main/jniLibs/
+app/src/main/assets/
+# Gradle / Android Studio
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+# scripts/android-logs.sh output
+last-run.log
+last-run-full.log
