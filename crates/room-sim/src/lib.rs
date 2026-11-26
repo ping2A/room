@@ -5,6 +5,21 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 mod acs;
+
+static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn the terminal traces of shots and line specials on or off (the app
+/// follows the `developer` CVar or `ROOM_SIM_TRACE=1`). Off by default: on a
+/// phone every line goes through logcat and the log file.
+pub fn set_trace(on: bool) {
+    TRACE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`set_trace`] turned the terminal traces on.
+#[must_use]
+pub fn trace_on() -> bool {
+    TRACE.load(std::sync::atomic::Ordering::Relaxed)
+}
 pub use acs::{
     puke_named, puke_script, push_acs_library, push_acs_library_tree, start_death_scripts,
     start_enter_scripts, start_library_open_scripts, start_respawn_scripts, start_return_scripts,

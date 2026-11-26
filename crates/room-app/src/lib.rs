@@ -25,6 +25,7 @@ mod midi_device;
 mod netplay;
 mod perf;
 pub mod platform;
+mod radar;
 mod render_scale;
 mod screen_capture;
 mod shader_cvars;

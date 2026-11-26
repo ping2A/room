@@ -189,6 +189,13 @@ pub enum TouchButton {
     WeaponPrev,
     /// Toggle the automap.
     Map,
+    /// The round minimap radar (top-left); a tap opens the full automap.
+    /// The app draws it; the overlay draws nothing for it.
+    Radar,
+    /// Zoom the automap in (shown while it is open).
+    MapZoomIn,
+    /// Zoom the automap out (shown while it is open).
+    MapZoomOut,
     /// Open / close the game menu.
     Menu,
     /// Weapon picker slot `0..=9`.
@@ -211,6 +218,9 @@ impl TouchButton {
             Self::WeaponNext => ">".into(),
             Self::WeaponPrev => "<".into(),
             Self::Map => "MAP".into(),
+            Self::Radar => String::new(),
+            Self::MapZoomIn => "+".into(),
+            Self::MapZoomOut => "-".into(),
             Self::Menu => "=".into(),
             Self::Slot(n) => n.to_string(),
         }
@@ -279,6 +289,13 @@ impl Placed {
     }
 }
 
+/// The radar's diameter (dp): `clamp(76px, 24vmin, 116px)`, as on the web.
+#[must_use]
+pub fn radar_diameter_dp(screen: &Screen) -> f32 {
+    let vmin = screen.width.min(screen.height) / screen.scale.max(0.1);
+    (vmin * 0.24).clamp(76.0, 116.0)
+}
+
 /// The bottom cluster as in `touch.js`: `(button, size, distance from the
 /// side edge, distance from the bottom)`, all dp, measured to the box edge.
 const CLUSTER: [(TouchButton, f32, f32, f32); 8] = [
@@ -320,6 +337,10 @@ pub struct LayoutOptions {
     pub duke: bool,
     /// Weapon picker open.
     pub slots_open: bool,
+    /// Automap open: zoom buttons beside MAP.
+    pub map_open: bool,
+    /// Show the minimap radar in the top corner opposite the top bar.
+    pub radar: bool,
     /// Screen area controls must not cover (the status bar). The bottom
     /// cluster and the resting stick are lifted above it where they would.
     pub avoid: Option<Rect>,
@@ -408,6 +429,13 @@ impl TouchLayout {
                 (TouchButton::ItemPrev, 152.0),
             ]);
         }
+        if opts.map_open {
+            let at = top_bar.last().map_or(56.0, |&(_, edge)| edge);
+            top_bar.extend([
+                (TouchButton::MapZoomIn, at + 48.0),
+                (TouchButton::MapZoomOut, at + 96.0),
+            ]);
+        }
         for (button, from_edge) in top_bar {
             let edge = from_edge * dp + top_half;
             let cx = if s.lefty {
@@ -421,6 +449,22 @@ impl TouchLayout {
                 cy: top_y,
                 r: top_half,
                 shape: Shape::Square,
+            });
+        }
+        if opts.radar {
+            let d = radar_diameter_dp(screen) * dp;
+            let edge = 8.0 * dp + d / 2.0;
+            let cx = if s.lefty {
+                screen.width - screen.inset_right - edge
+            } else {
+                screen.inset_left + edge
+            };
+            buttons.push(Placed {
+                button: TouchButton::Radar,
+                cx,
+                cy: screen.inset_top + edge,
+                r: d / 2.0,
+                shape: Shape::Circle,
             });
         }
         if opts.slots_open {
@@ -581,6 +625,8 @@ pub struct TouchFrame {
     pub toggle_menu: bool,
     /// Automap button pressed.
     pub toggle_map: bool,
+    /// Automap zoom steps (`+1` per tap on `+`, `-1` per tap on `-`).
+    pub map_zoom: i32,
     /// Menu navigation ([`TouchMode::Menu`] / [`TouchMode::TapToContinue`]).
     pub menu: Vec<MenuAction>,
     /// Vibrations to play (empty when haptics are off).
@@ -839,6 +885,18 @@ impl TouchState {
                     self.out.toggle_map = true;
                     self.buzz(s, Buzz::Light);
                 }
+                TouchButton::Radar => {
+                    self.out.toggle_map = true;
+                    self.buzz(s, Buzz::Light);
+                }
+                TouchButton::MapZoomIn | TouchButton::MapZoomOut => {
+                    self.out.map_zoom += if button == TouchButton::MapZoomIn {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.buzz(s, Buzz::Light);
+                }
                 TouchButton::Menu => {
                     self.out.toggle_menu = true;
                     self.buzz(s, Buzz::Light);
@@ -1084,6 +1142,8 @@ mod tests {
                         let opts = LayoutOptions {
                             duke,
                             slots_open: true,
+                            map_open: true,
+                            radar: true,
                             avoid: None,
                         };
                         let l = TouchLayout::new(&sc, &s, &opts);
@@ -1478,6 +1538,70 @@ mod tests {
         assert!(f.keys.is_empty(), "top buttons hold nothing");
         let f = t.take_frame();
         assert!(!f.toggle_map && !f.toggle_menu, "one-shot");
+    }
+
+    #[test]
+    fn radar_sits_in_the_free_corner_and_opens_the_map() {
+        let (mut t, plain, s) = setup();
+        assert!(plain.get(TouchButton::Radar).is_none(), "only when asked");
+        let opts = LayoutOptions {
+            radar: true,
+            ..LayoutOptions::default()
+        };
+        let sc = screen(1);
+        let l = TouchLayout::new(&sc, &s, &opts);
+        let r = l.get(TouchButton::Radar).expect("radar");
+        let d = radar_diameter_dp(&sc);
+        assert!((76.0..=116.0).contains(&d));
+        assert!((r.r * 2.0 - d * l.scale).abs() < 0.5);
+        assert!(r.cx < sc.width / 2.0 && r.cy < sc.height / 2.0, "top-left");
+        for b in l.buttons.iter().filter(|b| b.button != TouchButton::Radar) {
+            assert!(
+                !r.rect().intersects(&b.rect()),
+                "radar covers {:?}",
+                b.button
+            );
+        }
+        let (x, y) = (r.cx, r.cy);
+        t.event(ev(1, TouchPhase::Started, x, y, 0.0), &l, &s);
+        t.event(ev(1, TouchPhase::Ended, x, y, 60.0), &l, &s);
+        let f = t.take_frame();
+        assert!(f.toggle_map, "a tap on the radar opens the automap");
+        assert_eq!(f.look, (0, 0), "and does not turn the view");
+        // Left-handed: the top bar moves left, the radar right.
+        let lefty = TouchSettings { lefty: true, ..s };
+        let l = TouchLayout::new(&sc, &lefty, &opts);
+        assert!(l.get(TouchButton::Radar).expect("radar").cx > sc.width / 2.0);
+    }
+
+    #[test]
+    fn open_automap_shows_zoom_buttons() {
+        let (mut t, closed, s) = setup();
+        assert!(closed.get(TouchButton::MapZoomIn).is_none());
+        let open = TouchLayout::new(
+            &screen(1),
+            &s,
+            &LayoutOptions {
+                map_open: true,
+                ..LayoutOptions::default()
+            },
+        );
+        let (ix, iy) = center(&open, TouchButton::MapZoomIn);
+        let (ox, oy) = center(&open, TouchButton::MapZoomOut);
+        let (mx, _) = center(&open, TouchButton::Map);
+        let step = 48.0 * open.scale;
+        assert!(
+            (mx - ix - step).abs() < 0.5 && (ix - ox - step).abs() < 0.5,
+            "MAP, +, - side by side: {mx} {ix} {ox}"
+        );
+        t.event(ev(1, TouchPhase::Started, ix, iy, 0.0), &open, &s);
+        t.event(ev(1, TouchPhase::Ended, ix, iy, 50.0), &open, &s);
+        t.event(ev(2, TouchPhase::Started, ix, iy, 100.0), &open, &s);
+        t.event(ev(3, TouchPhase::Started, ox, oy, 100.0), &open, &s);
+        let f = t.take_frame();
+        assert_eq!(f.map_zoom, 1, "two + taps and one -");
+        assert!(f.keys.is_empty(), "zoom buttons hold nothing");
+        assert_eq!(t.take_frame().map_zoom, 0, "one-shot");
     }
 
     #[test]

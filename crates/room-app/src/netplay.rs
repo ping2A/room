@@ -1301,6 +1301,14 @@ thread_local! {
 /// `seats << 8 | max` while a host waits for players.
 static LOBBY_PROGRESS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
+/// `ROOM_TEST_AWAY="frame:seconds"` → `(frame, seconds)`.
+pub fn parse_away_test(v: &str) -> Option<(u64, f32)> {
+    let (frame, secs) = v.split_once(':')?;
+    let frame = frame.trim().parse().ok()?;
+    let secs: f32 = secs.trim().parse().ok()?;
+    (secs > 0.0 && secs.is_finite()).then_some((frame, secs))
+}
+
 /// Stop the host or join wait running on another thread (the launcher's
 /// Cancel). It returns [`LOBBY_CANCELLED`] within a few milliseconds.
 /// Lobbies started after the call are not affected.
@@ -1337,6 +1345,16 @@ pub fn lobby_progress() -> Option<(u8, u8)> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    #[test]
+    fn away_test_hook_parses() {
+        assert_eq!(parse_away_test("120:5"), Some((120, 5.0)));
+        assert_eq!(parse_away_test(" 3 : 0.5 "), Some((3, 0.5)));
+        assert_eq!(parse_away_test("120"), None);
+        assert_eq!(parse_away_test("x:5"), None);
+        assert_eq!(parse_away_test("1:0"), None);
+    }
+
     use super::*;
 
     fn free_port(udp: bool) -> SocketAddr {

@@ -6,6 +6,7 @@ use crate::config::{AppConfig, StartError};
 use crate::lifecycle::ResumeStep;
 
 mod launcher_input;
+mod play_overlay;
 mod touch_input;
 
 /// Report a start-up failure on stderr (`room: …`, as the binary always
@@ -773,6 +774,11 @@ fn build_app(
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|&n| n > 0),
         background_test_last: 0,
+        away_test: std::env::var("ROOM_TEST_AWAY")
+            .ok()
+            .and_then(|v| crate::netplay::parse_away_test(&v)),
+        net_away: None,
+        away_test_until: None,
         frames: 0,
         elapsed_ms: 0,
         title_anim_origin: 0,
@@ -934,6 +940,7 @@ fn build_app(
         touch: room_input::touch::TouchState::new(),
         touch_layout: None,
         touch_overlay: crate::touch_overlay::TouchOverlay::default(),
+        radar_cache: crate::radar::RadarCache::default(),
         touch_keys: Vec::new(),
         touch_analog: None,
         launcher: None,
@@ -2871,6 +2878,15 @@ struct ViewerApp {
     /// Test hook: `ROOM_TEST_BACKGROUND=N` sends the app to the background and
     /// back every N frames, as a phone does (docs/41 M2).
     background_test_every: Option<u64>,
+    /// Test hook `ROOM_TEST_AWAY="frame:seconds"`: leave the screen at that
+    /// frame and come back after that many seconds (seat away in netplay).
+    away_test: Option<(u64, f32)>,
+    /// Netplay while the app is off screen: the last background tic time.
+    /// The seat keeps sending empty tic commands (the player stands still),
+    /// so the other players are not held up.
+    net_away: Option<std::time::Instant>,
+    /// [`Self::away_test`]: when to come back.
+    away_test_until: Option<std::time::Instant>,
     background_test_last: u64,
     frames: u64,
     /// Monotonic wall time used by title, ANM and finale frame selection.
@@ -3036,6 +3052,8 @@ struct ViewerApp {
     touch: room_input::touch::TouchState,
     touch_layout: Option<room_input::touch::TouchLayout>,
     touch_overlay: crate::touch_overlay::TouchOverlay,
+    /// Minimap radar image (phones, `touch_radar`).
+    radar_cache: crate::radar::RadarCache,
     touch_keys: Vec<Key>,
     touch_analog: Option<(f32, f32)>,
     /// Launcher screen (docs/41 M4); `Some` while it is showing.
@@ -4022,6 +4040,10 @@ impl ViewerApp {
 
 impl ApplicationHandler for ViewerApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.net_away.take().is_some() {
+            eprintln!("room: netplay: back in the game");
+            self.last_frame = std::time::Instant::now();
+        }
         let resume = self
             .lifecycle
             .resumed(self.window.is_some(), self.surface.is_some());
@@ -4172,6 +4194,10 @@ impl ApplicationHandler for ViewerApp {
                 audio.set_suspended(true);
             }
             eprintln!("room: suspended");
+            if self.net.is_some() && self.duke_session.is_none() && self.play.is_some() {
+                eprintln!("room: netplay: seat away (standing still until back)");
+                self.net_away = Some(std::time::Instant::now());
+            }
         }
     }
 
@@ -5093,6 +5119,35 @@ impl ApplicationHandler for ViewerApp {
                 ApplicationHandler::suspended(self, event_loop);
                 ApplicationHandler::resumed(self, event_loop);
             }
+        }
+        if let Some((frame, secs)) = self.away_test
+            && self.frames >= frame
+            && self.surface.is_some()
+        {
+            self.away_test = None;
+            self.away_test_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs));
+            ApplicationHandler::suspended(self, event_loop);
+        }
+        if let Some(until) = self.away_test_until
+            && std::time::Instant::now() >= until
+        {
+            self.away_test_until = None;
+            ApplicationHandler::resumed(self, event_loop);
+        }
+        if let Some(last) = self.net_away
+            && !self.lifecycle.is_running()
+        {
+            // Off screen in netplay: run the game's tics with an empty
+            // command, without drawing, at the tic rate.
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last).as_secs_f32().min(0.25);
+            self.net_away = Some(now);
+            self.tick_play(dt);
+            let rate = self.play.as_ref().map_or(35, GameRuntime::tic_rate).max(1);
+            let next = now + std::time::Duration::from_secs_f32(1.0 / rate as f32);
+            let next = self.away_test_until.map_or(next, |u| next.min(u));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         }
         if let Some(w) = self.window.clone() {
             if self.lifecycle.is_running() {
@@ -6202,6 +6257,9 @@ impl ViewerApp {
             } else {
                 Vec::new()
             };
+            // Minimap radar (touch screens): built before the GPU state is
+            // borrowed below.
+            let radar_sprite = self.radar_sprite();
             let (
                 Some(surface),
                 Some(gpu),
@@ -6332,6 +6390,9 @@ impl ViewerApp {
             // `ui` commands of the weapon and its layers (drawn on the GPU when
             // nothing in the canvas lies under them).
             let mut psprite_range: Option<(usize, usize)> = None;
+            // `ui` commands of the ACS `HudMessage`s (their pictures can go to
+            // the GPU too: Brutal Doom's screen blood is a full-window picture).
+            let mut hud_msg_range: Option<(usize, usize)> = None;
             // SBARINFO bar: its commands, own screen placement, and where in
             // `ui` it goes (above the weapon, under messages and scores).
             let mut sbarinfo_out: Option<(usize, room_ui::SbarInfoOutput)> = None;
@@ -6475,14 +6536,33 @@ impl ViewerApp {
                                         })
                                 })
                         });
+                        // The whole window, not the centred 320×200 box: on
+                        // a wide phone that box left the 3D view showing on
+                        // both sides of a small map. Stops at the status bar
+                        // when it is shown.
+                        let (fb_w, fb_h) = self
+                            .config
+                            .as_ref()
+                            .map_or((320.0, 200.0), |c| (c.width as f32, c.height as f32));
+                        let (map_x, map_y, map_w, map_h) =
+                            play_overlay::automap_window_rect(fb_w, fb_h, !self.hud.fullscreen);
+                        if !self.hud.fullscreen && self.duke_session.is_none() {
+                            // Black under the status bar and beside it, so the
+                            // 3D view does not show through at the bottom.
+                            let (x, y, w, h) = play_overlay::window_rect(fb_w, fb_h);
+                            ui.fill(
+                                room_ui::Rect::new(x, y, w, h),
+                                room_ui::Rgba::new(0.0, 0.0, 0.0, 1.0),
+                            );
+                        }
                         let view = AutomapView {
                             center_x: f64::from(self.camera.eye.x),
                             center_y: f64::from(self.camera.eye.y),
                             scale: self.automap_scale,
-                            screen_x: 0.0,
-                            screen_y: 0.0,
-                            width: 320.0,
-                            height: 168.0,
+                            screen_x: map_x,
+                            screen_y: map_y,
+                            width: map_w,
+                            height: map_h,
                             angle_deg: self.yaw.to_degrees(),
                             allmap,
                             // Play mode: only show linedefs the player has walked near.
@@ -7068,6 +7148,7 @@ impl ViewerApp {
                                     m
                                 })
                                 .collect();
+                            let first = ui.cmds.len();
                             room_ui::draw_acs_hud_messages(
                                 &mut ui,
                                 &shown,
@@ -7082,6 +7163,7 @@ impl ViewerApp {
                                         .map(|p| (f32::from(p.width), f32::from(p.height)))
                                 },
                             );
+                            hud_msg_range = Some((first, ui.cmds.len()));
                         }
                     }
                     if let Some(world) = self.play.as_ref().and_then(|g| g.world()) {
@@ -7322,6 +7404,67 @@ impl ViewerApp {
                     } else {
                         (*at).min(a)
                     };
+                }
+                if let Some((c, d)) = hud_msg_range.as_mut()
+                    && *c >= b
+                {
+                    *c -= b - a;
+                    *d -= b - a;
+                }
+            }
+            // HudMessage pictures on the GPU, above the weapon. Scaling and
+            // blending a full-window picture (Brutal Doom's blood on the
+            // screen) on the CPU took 60-150 ms a frame on phones. Only when
+            // the weapon itself is on the GPU (or there is none), so the
+            // pictures stay above it; whatever the canvas draws (status bar,
+            // text) lands above them.
+            let mut gpu_overlays: Vec<room_ui::PatchQuad> = Vec::new();
+            let weapon_on_gpu =
+                !gpu_psprites.is_empty() || psprite_range.is_none_or(|(a, b)| a == b);
+            if let Some((c, d)) = hud_msg_range
+                && c < d
+                && d <= ui.cmds.len()
+                && weapon_on_gpu
+                && hud.cmds.len() == 1
+                && duke_palette_state.is_none()
+                && self.hud_sprites.is_some()
+                && !cvar_bool(&self.console.cvars, "r_cpuhud")
+            {
+                let mut moved = Vec::new();
+                for i in c..d {
+                    if !matches!(ui.cmds[i], DrawCmd::Patch { .. }) {
+                        continue;
+                    }
+                    let Some(quads) = room_ui::patch_quads(
+                        &ui.cmds[i..=i],
+                        (ui.virtual_w, ui.virtual_h),
+                        (320.0 * scale, 200.0 * scale),
+                        (ox, oy),
+                        &self.patches,
+                    ) else {
+                        continue;
+                    };
+                    // Small glyphs are cheap on the CPU; keep the quad budget
+                    // for pictures that cover a real part of the window.
+                    let big = quads
+                        .iter()
+                        .any(|q| u64::from(q.w) * u64::from(q.h) >= 64 * 64);
+                    if !big
+                        || gpu_psprites.len() + gpu_overlays.len() + quads.len()
+                            > room_render::hud_sprites::MAX_QUADS
+                    {
+                        continue;
+                    }
+                    gpu_overlays.extend(quads);
+                    moved.push(i);
+                }
+                for &i in moved.iter().rev() {
+                    ui.cmds.remove(i);
+                    if let Some((at, _)) = sbarinfo_out.as_mut()
+                        && *at > i
+                    {
+                        *at -= 1;
+                    }
                 }
             }
             // The SBARINFO bar has its own placement: draw `ui` up to its
@@ -7653,13 +7796,18 @@ impl ViewerApp {
             if self.launcher.is_some() {
                 launcher_backdrops =
                     launcher_input::paint_launcher(&mut hud, &self.launcher_frame, (fb_w, fb_h));
-            } else if let Some(layout) = self.touch_layout.as_ref().filter(|_| self.touch_shown) {
-                for sprite in self.touch_overlay.sprites(layout, &self.touch) {
-                    hud.blit_rgba(sprite.x, sprite.y, sprite.w, sprite.h, sprite.rgba);
+            } else if self.touch_layout.is_some() && self.touch_shown {
+                if let Some((x, y, size, rgba)) = radar_sprite {
+                    hud.blit_rgba(x, y, size, size, rgba);
+                }
+                if let Some(layout) = self.touch_layout.as_ref() {
+                    for sprite in self.touch_overlay.sprites(layout, &self.touch) {
+                        hud.blit_rgba(sprite.x, sprite.y, sprite.w, sprite.h, sprite.rgba);
+                    }
                 }
             }
-            // `vid_fps` (launcher: "Show frame rate"; on by default on
-            // phones): frame rate, frame times and a graph of the last
+            // `vid_fps` (launcher: "Show frame rate", pause menu: "FPS
+            // graph"; off by default): frame rate, frame times and a graph of the last
             // frames, top centre (phones have no window title to show it in).
             // Rebuilt 5 times a second so the HUD rows it covers are not
             // uploaded every frame.
@@ -8010,6 +8158,7 @@ impl ViewerApp {
                     let mut quads: Vec<room_render::SpriteQuad> =
                         launcher_backdrops.iter().map(|b| b.quad.clone()).collect();
                     quads.extend(sprite_quads(&gpu_psprites, 1.0));
+                    quads.extend(sprite_quads(&gpu_overlays, 1.0));
                     let patches = &self.patches;
                     let mut fetch = |key: &str| {
                         if let Some(b) = launcher_backdrops.iter().find(|b| b.quad.key == key) {
@@ -8194,15 +8343,20 @@ impl ViewerApp {
                     };
                     bits.weapon_select = slot;
                 }
-                let cmd = TicCmd {
-                    buttons: Buttons(bits.buttons),
-                    pitch: bits.pitch,
-                    yaw: bits.yaw,
-                    roll: bits.roll,
-                    forward_move: bits.forward_move,
-                    side_move: bits.side_move,
-                    up_move: bits.up_move,
-                    weapon_select: bits.weapon_select,
+                let cmd = if self.net_away.is_some() {
+                    // Seat away (off screen): stand still, fire nothing.
+                    TicCmd::default()
+                } else {
+                    TicCmd {
+                        buttons: Buttons(bits.buttons),
+                        pitch: bits.pitch,
+                        yaw: bits.yaw,
+                        roll: bits.roll,
+                        forward_move: bits.forward_move,
+                        side_move: bits.side_move,
+                        up_move: bits.up_move,
+                        weapon_select: bits.weapon_select,
+                    }
                 };
                 if rollback && let Some(net) = self.net.as_mut() {
                     // Rollback: never wait; released frames run next, then the
@@ -8462,8 +8616,14 @@ impl ViewerApp {
                     // Diagnostics go to the console and the log; on screen
                     // only with `developer` on (as in GZDoom).
                     let developer = cvar_bool(&self.console.cvars, "developer");
+                    let trace = developer || env_trace();
+                    room_sim::set_trace(trace);
                     for line in world.drain_debug() {
-                        eprintln!("room: {line}");
+                        // The terminal / log copy only when asked: on a phone
+                        // each line costs a logcat write and a file write.
+                        if trace {
+                            eprintln!("room: {line}");
+                        }
                         if developer {
                             self.messages.push(line.clone(), 105);
                         }
@@ -10850,7 +11010,9 @@ impl ViewerApp {
     /// at draw time so a flag change does not need another snapshot.
     /// Copy one tic's status-bar / weapon-sprite numbers into the HUD.
     fn apply_hud_snap(&mut self, h: room_sim::PlayerHud) {
-        if h.health < self.last_player_hp {
+        if h.health < self.last_player_hp
+            && (cvar_bool(&self.console.cvars, "developer") || env_trace())
+        {
             let seat = usize::from(self.local_seat);
             let drop = self.last_player_hp - h.health;
             let (who, detail) = self.format_hit_debug(seat, drop);
@@ -11892,7 +12054,13 @@ impl ViewerApp {
             self.set_play_look(self.mouse_look_enabled());
         } else {
             world.paused = true;
-            let mut stack = MenuStack::pause();
+            let mut stack = MenuStack {
+                stack: vec![play_overlay::pause_menu(
+                    cvar_bool(&self.console.cvars, "vid_fps"),
+                    self.from_launcher,
+                )],
+                ..MenuStack::default()
+            };
             stack.menudef = menudef;
             self.menu = Some(stack);
             self.messages.push("Paused", 35);
@@ -11925,7 +12093,13 @@ impl ViewerApp {
         };
         if !world.paused {
             world.paused = true;
-            let mut stack = MenuStack::pause();
+            let mut stack = MenuStack {
+                stack: vec![play_overlay::pause_menu(
+                    cvar_bool(&self.console.cvars, "vid_fps"),
+                    self.from_launcher,
+                )],
+                ..MenuStack::default()
+            };
             stack.menudef = menudef;
             self.menu = Some(stack);
             self.keys.attack.clear();
@@ -12161,7 +12335,16 @@ impl ViewerApp {
                 self.messages.push("Read This — help screen TBD", 70);
             }
             MenuCommand::Other(action) => {
-                if action == "duke_pause_resume" {
+                if action == play_overlay::PAUSE_FPS {
+                    let on = !cvar_bool(&self.console.cvars, "vid_fps");
+                    let _ = self
+                        .console
+                        .cvars
+                        .set("vid_fps", if on { "true" } else { "false" });
+                    if let Some(stack) = self.menu.as_mut() {
+                        stack.replace_top(play_overlay::pause_menu(on, self.from_launcher));
+                    }
+                } else if action == "duke_pause_resume" {
                     self.close_duke_menu();
                 } else if action == "duke_pause_save" {
                     self.menu = Some(MenuStack {
@@ -14652,6 +14835,13 @@ fn window_size() -> LogicalSize<f64> {
 /// GPU quads for the weapon's [`room_ui::PatchQuad`]s, scaled by `k` (1 on
 /// the screen; the scene's resolution over the screen's when the weapon is
 /// drawn into the scene).
+/// `ROOM_SIM_TRACE=1`: print shots, specials, weapon states and hits to the
+/// terminal without turning on `developer` (which also shows them on screen).
+fn env_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ROOM_SIM_TRACE").is_some_and(|v| v != "0"))
+}
+
 fn sprite_quads(quads: &[room_ui::PatchQuad], k: f32) -> Vec<room_render::SpriteQuad> {
     quads
         .iter()

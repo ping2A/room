@@ -468,6 +468,7 @@ impl CvarStore {
         reg_b(self, "touch_lefty", false);
         reg_b(self, "touch_haptics", true);
         reg_b(self, "touch_jumpduck", true);
+        reg_b(self, "touch_radar", true);
         reg_i(self, "m_doubleclicktime", 250);
         reg_b(self, "snd_reverb", true);
         reg_b(self, "snd_waterreverb", true);

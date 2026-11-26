@@ -117,7 +117,12 @@ impl TouchOverlay {
                 h,
             ));
         }
-        for b in &layout.buttons {
+        // The radar is drawn by the app (`radar.rs`), not as a button.
+        for b in layout
+            .buttons
+            .iter()
+            .filter(|b| b.button != TouchButton::Radar)
+        {
             let size = (b.r * 2.0).round().max(2.0) as u32;
             out.push(self.sprite(
                 SpriteKey::Button {
@@ -352,6 +357,8 @@ mod tests {
             &LayoutOptions {
                 duke,
                 slots_open: state.slots_open(),
+                map_open: false,
+                radar: true,
                 avoid: Some(bar(sc)),
             },
         );
@@ -393,7 +400,12 @@ mod tests {
     fn buttons_are_drawn_where_they_are_hit() {
         let sc = Screen::new(2400.0, 1080.0, 2.625);
         let (l, px) = render(&sc, true, &TouchState::new());
-        for b in &l.buttons {
+        assert!(
+            l.get(TouchButton::Radar).is_some(),
+            "the radar has a hit area"
+        );
+        // The radar is drawn by `radar.rs`, not by the overlay.
+        for b in l.buttons.iter().filter(|b| b.button != TouchButton::Radar) {
             // The rim sits just inside the edge; the far outside is untouched.
             let rim = at(&px, sc.width as u32, b.cx, b.cy - b.r + 2.0);
             assert_ne!(rim, BG, "{:?} rim", b.button);

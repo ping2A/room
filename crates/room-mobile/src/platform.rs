@@ -153,8 +153,9 @@ impl Platform for MobilePlatform {
     fn default_cvars(&self) -> Vec<(&'static str, &'static str)> {
         // Phones vary too much for one 3D resolution: start at full and let
         // it drop when frames run late (docs/41 M6). Settings can turn it off.
-        // The frame-rate panel is on: phone players asked to see it.
-        vec![("r_dynres", "true"), ("vid_fps", "true")]
+        // The frame-rate graph stays off (the CVar default); the pause menu
+        // and the launcher's settings turn it on.
+        vec![("r_dynres", "true")]
     }
 
     fn thermal(&self) -> Thermal {
@@ -221,8 +222,8 @@ mod tests {
         );
         assert_eq!(
             p.default_cvars(),
-            [("r_dynres", "true"), ("vid_fps", "true")],
-            "phones lower the 3D resolution to keep speed and show the frame rate"
+            [("r_dynres", "true")],
+            "phones lower the 3D resolution to keep speed; the frame-rate graph starts off"
         );
     }
 

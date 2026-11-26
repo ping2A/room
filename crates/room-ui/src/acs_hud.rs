@@ -366,6 +366,51 @@ mod tests {
     }
 
     #[test]
+    fn screen_blood_picture_becomes_one_gpu_quad() {
+        // Brutal Doom: SetFont("BLDSCRN"); SetHudSize(320, 200); HudMessage(s:"A"; …)
+        // draws the picture over the whole view. The app moves such pictures
+        // to GPU quads (CPU scaling them cost 60-150 ms a frame on phones).
+        let mut m = msg("A", 160.0, 100.0);
+        m.font = "BLDSCRN".into();
+        m.hud_w = 320;
+        m.hud_h = -200;
+        let mut list = UiDrawList::new();
+        draw_acs_hud_messages(&mut list, &[m], 0, true, 1.6, &|name| {
+            (name == "BLDSCRN").then_some((320.0, 200.0))
+        });
+        assert_eq!(list.cmds.len(), 1, "{:?}", list.cmds);
+        let mut cache = crate::PatchCache::default();
+        cache.insert(
+            "BLDSCRN",
+            crate::patches::SoftPatch {
+                width: 320,
+                height: 200,
+                left_offset: 0,
+                top_offset: 0,
+                indices: vec![0; 320 * 200],
+                alpha: vec![255; 320 * 200],
+                rgba: None,
+            },
+        );
+        let quads = crate::patch_quads(
+            &list.cmds,
+            (list.virtual_w, list.virtual_h),
+            (2520.0, 1080.0),
+            (0.0, 0.0),
+            &cache,
+        )
+        .expect("a plain picture converts");
+        assert_eq!(quads.len(), 1);
+        let q = &quads[0];
+        assert!(
+            q.w >= 2000 && q.h >= 1000,
+            "covers the window: {}x{}",
+            q.w,
+            q.h
+        );
+    }
+
+    #[test]
     fn other_seats_messages_are_hidden() {
         let mut m = msg("hi", 0.5, 0.5);
         m.seat = Some(1);

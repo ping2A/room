@@ -2385,7 +2385,7 @@ pub fn activate_line(
     // Doom-format maps already translated into Hexen numbers at load for
     // some paths; raw Doom specials may still be present — treat as Hexen id.
     let ok = execute_special(world, special, &args, activator, Some(line_id)) != 0;
-    if !cfg!(test) {
+    if !cfg!(test) && crate::trace_on() {
         let act = match activation {
             ActivationType::Use => "USE",
             ActivationType::Cross => "WALK",

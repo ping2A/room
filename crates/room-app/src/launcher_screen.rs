@@ -84,7 +84,7 @@ struct Row {
 }
 
 /// Touch settings on the settings page: CVar, label, values to cycle through.
-const SETTINGS: [(&str, &str, &[&str]); 12] = [
+const SETTINGS: [(&str, &str, &[&str]); 13] = [
     ("touch_size", "Button size", &["0.8", "1", "1.2", "1.4"]),
     (
         "touch_opacity",
@@ -105,6 +105,7 @@ const SETTINGS: [(&str, &str, &[&str]); 12] = [
         &["false", "true"],
     ),
     ("touch_haptics", "Vibration", &["false", "true"]),
+    ("touch_radar", "Minimap radar", &["false", "true"]),
     (
         "r_scale",
         "3D resolution",
@@ -121,7 +122,7 @@ const SETTINGS: [(&str, &str, &[&str]); 12] = [
 ];
 
 /// The CVars the settings page reads.
-pub(crate) const SETTING_CVARS: [&str; 12] = [
+pub(crate) const SETTING_CVARS: [&str; 13] = [
     "touch_size",
     "touch_opacity",
     "touch_look",
@@ -130,11 +131,26 @@ pub(crate) const SETTING_CVARS: [&str; 12] = [
     "touch_tapfire",
     "touch_jumpduck",
     "touch_haptics",
+    "touch_radar",
     "r_scale",
     "r_dynres",
     "vid_maxfps",
     "vid_fps",
 ];
+
+/// A file size for a row: KB under 1 MB, then MB with one decimal under 10.
+fn size_text(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if bytes < MB {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else if bytes < 10 * MB {
+        #[allow(clippy::cast_precision_loss)]
+        let mb = bytes as f64 / MB as f64;
+        format!("{mb:.1} MB")
+    } else {
+        format!("{} MB", (bytes + MB / 2) / MB)
+    }
+}
 
 /// Row height (dp).
 const ROW_DP: f32 = 46.0;
@@ -518,6 +534,8 @@ impl LauncherScreen {
                         let s = if mods == 1 { "" } else { "s" };
                         detail.push_str(&format!("{sep}{mods} mod{s}"));
                     }
+                    let sep = if detail.is_empty() { "" } else { ", " };
+                    detail.push_str(&format!("{sep}{}", size_text(g.size)));
                     rows.push(Row {
                         label: g.title.clone(),
                         detail,
@@ -581,7 +599,7 @@ impl LauncherScreen {
                         let on = self.mods.contains(&m.path);
                         rows.push(Row {
                             label: format!("[{}] {}", if on { "X" } else { " " }, m.title),
-                            detail: format!("{} KB", m.size.div_ceil(1024)),
+                            detail: size_text(m.size),
                             action: Action::ToggleMod(m.path.clone()),
                         });
                     }
@@ -1938,6 +1956,14 @@ mod tests {
     fn setting_cvars_match_the_settings_page() {
         let names: Vec<&str> = SETTINGS.iter().map(|(n, _, _)| *n).collect();
         assert_eq!(names, SETTING_CVARS);
+    }
+
+    #[test]
+    fn sizes_read_well() {
+        assert_eq!(size_text(1), "1 KB");
+        assert_eq!(size_text(300 * 1024), "300 KB");
+        assert_eq!(size_text(5 * 1024 * 1024 + 300_000), "5.3 MB");
+        assert_eq!(size_text(159 * 1024 * 1024 + 900_000), "160 MB");
     }
 
     #[test]

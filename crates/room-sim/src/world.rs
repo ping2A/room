@@ -1562,7 +1562,7 @@ impl World {
     pub fn push_shot_trace(&mut self, shot: ShotTrace) {
         // Terminal trace in play builds so player↔monster shots are visible without HIT.
         // Not in the browser: there is no terminal and no wall clock (std time panics).
-        if !cfg!(test) && !cfg!(target_arch = "wasm32") {
+        if !cfg!(test) && !cfg!(target_arch = "wasm32") && crate::trace_on() {
             let kind = match shot.kind {
                 ShotKind::Hitscan => "hitscan",
                 ShotKind::Missile => "missile",

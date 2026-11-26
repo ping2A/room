@@ -184,6 +184,8 @@ impl ViewerApp {
             &LayoutOptions {
                 duke: self.duke_session.is_some(),
                 slots_open: self.touch.slots_open(),
+                map_open: self.automap && self.menu.is_none() && self.duke_menu.is_none(),
+                radar: self.radar_on(),
                 avoid: self.touch_avoid(w, h),
             },
         ))
@@ -191,6 +193,86 @@ impl ViewerApp {
 
     fn touch_now_ms(&self) -> f64 {
         self.start_instant.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// The minimap radar shows: a Doom level is running with the touch
+    /// controls, no menu and no automap, and `touch_radar` is on.
+    pub(super) fn radar_on(&self) -> bool {
+        self.touch_shown
+            && !self.automap
+            && self.menu.is_none()
+            && self.duke_menu.is_none()
+            && self.duke_session.is_none()
+            && self.launcher.is_none()
+            && self.cvar_b("touch_radar", true)
+            && self
+                .play
+                .as_ref()
+                .is_some_and(|g| g.state == GameState::Level && g.world().is_some())
+    }
+
+    /// The radar image for this frame (cached while nothing it shows
+    /// changes), with where it goes: `(x, y, size, rgba)`.
+    pub(super) fn radar_sprite(&mut self) -> Option<(f32, f32, u32, Vec<u8>)> {
+        if !self.radar_on() {
+            return None;
+        }
+        let placed = *self
+            .touch_layout
+            .as_ref()?
+            .get(room_input::touch::TouchButton::Radar)?;
+        let dp = self.touch_layout.as_ref()?.scale;
+        let size = (placed.r * 2.0).round().max(8.0) as u32;
+        let seat = usize::from(self.local_seat);
+        let world = self.play.as_ref()?.world()?;
+        let allmap = world
+            .players
+            .get(seat)
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| {
+                p.allmap
+                    || p.mo
+                        .is_some_and(|mo| room_sim::powerups::reveals_map(world, mo))
+            });
+        let now = std::time::Instant::now();
+        let cache = &mut self.radar_cache;
+        // Explored lines change as the player walks: re-read a few times a
+        // second, as the web radar does.
+        if cache
+            .lines_at
+            .is_none_or(|at| now.duration_since(at).as_millis() > 350)
+            || cache.map != world.map.name
+        {
+            cache.lines = crate::radar::lines(&world.map);
+            cache.lines_at = Some(now);
+            cache.map.clone_from(&world.map.name);
+        }
+        let pose = crate::radar::Pose {
+            x: self.camera.eye.x,
+            y: self.camera.eye.y,
+            yaw_deg: self.yaw.to_degrees(),
+        };
+        let seen = cache.lines.iter().filter(|l| l.seen).count();
+        // Half-unit / quarter-degree steps: standing still re-uses the image.
+        #[allow(clippy::cast_possible_truncation)]
+        let key = (
+            (pose.x * 2.0).round() as i32,
+            (pose.y * 2.0).round() as i32,
+            (pose.yaw_deg * 4.0).round() as i32,
+            seen,
+            allmap,
+            size,
+        );
+        if cache.key != Some(key) {
+            cache.rgba = crate::radar::render(&cache.lines, pose, allmap, size, dp);
+            cache.key = Some(key);
+        }
+        Some((
+            (placed.cx - placed.r).round(),
+            (placed.cy - placed.r).round(),
+            size,
+            cache.rgba.clone(),
+        ))
     }
 
     /// A finger event from winit.
@@ -294,6 +376,9 @@ impl ViewerApp {
         }
         if frame.toggle_map {
             self.automap = !self.automap;
+        }
+        if frame.map_zoom != 0 && self.automap {
+            self.zoom_automap(1.25_f32.powi(frame.map_zoom));
         }
         if frame.toggle_menu {
             self.touch_menu_button(event_loop);
