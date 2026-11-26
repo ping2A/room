@@ -1,0 +1,6 @@
+// Parent is intentionally absent from wadsrc / fixture (BD0 reporter).
+actor BdCheckToken : BdCheckMissingBase 9903
+{
+  Inventory.Amount 1
+  +INVENTORY.UNDROPPABLE
+}

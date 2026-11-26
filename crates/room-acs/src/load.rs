@@ -1227,6 +1227,7 @@ fn read_i32(bytes: &[u8], off: usize) -> Result<i32, AcsError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod strbin_tests {
     #[test]
     fn strbin_decodes_acc_escapes() {
@@ -1239,7 +1240,7 @@ mod strbin_tests {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::vec_init_then_push)]
     use super::*;
 
     fn fixture_delay_terminate() -> Vec<u8> {

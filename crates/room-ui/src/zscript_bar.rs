@@ -11,12 +11,12 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 thread_local! {
-    static PENDING: RefCell<Vec<DrawCmd>> = RefCell::new(Vec::new());
-    static HUD: RefCell<HudSnap> = RefCell::new(HudSnap {
+    static PENDING: RefCell<Vec<DrawCmd>> = const { RefCell::new(Vec::new()) };
+    static HUD: RefCell<HudSnap> = const { RefCell::new(HudSnap {
         health: 0,
         armor: 0,
         ammo: 0,
-    });
+    }) };
 }
 
 #[derive(Clone, Copy, Default)]

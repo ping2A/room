@@ -1,0 +1,16 @@
+# Shotgun — docs/30 §1
+held 37
+full 44
+Fire:
+SHTG A 3
+SHTG A 7 A_FireShotgun
+SHTG B 5
+SHTG C 5
+SHTG D 4
+SHTG C 5
+SHTG B 5
+SHTG A 3
+SHTG A 7 A_ReFire
+Flash:
+SHTF A 4 A_Light1
+SHTF B 3 A_Light2

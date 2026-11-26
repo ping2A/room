@@ -1,0 +1,9 @@
+# Fist — docs/30 §1
+held 17
+full 22
+Fire:
+PUNG B 4
+PUNG C 4 A_Punch
+PUNG D 5
+PUNG C 4
+PUNG B 5 A_ReFire

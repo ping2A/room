@@ -1,6 +1,6 @@
 //! Post-load sprite classification — partial Chocolate `spawn` (D5).
 //!
-//! [`BuildWorld::load_map_bytes`] already places sprites on lists using the
+//! `BuildWorld::load_map_bytes` already places sprites on lists using the
 //! map's `statnum`. This pass reassigns statuses for markers / effectors /
 //! CON actors and soft-culls SP-only / over-skill pickups onto [`STAT_MISC`]
 //! with `xrepeat == 0` (later removed by [`crate::explosions::moveexplosions`]).
@@ -1290,7 +1290,7 @@ fn skip_spawn_makeitfall(pic: i16) -> bool {
 /// One-shot Chocolate spawn `makeitfall` for STAT_DUMMY (not per-tic).
 ///
 /// Skips RECON/EGG. Pickups use `getzrange` (Chocolate after `changespritestat(2)`).
-/// [`DUMMY_ENEMIES`] use flat `sector.floorz` (Chocolate `makeitfall` before
+/// `DUMMY_ENEMIES` use flat `sector.floorz` (Chocolate `makeitfall` before
 /// the stat change).
 pub fn spawn_makeitfall_dummy(
     lists: &SpriteLists,

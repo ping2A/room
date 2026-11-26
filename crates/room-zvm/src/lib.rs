@@ -35,8 +35,8 @@ pub use heap::{HeapImage, HeapKindImage, HeapSlotImage, ObjHandle, ObjKind, StrH
 pub use interp::{DEFAULT_FUEL, DEFAULT_STACK_LIMIT, Value, Zvm, ZvmConfig};
 pub use map_natives::{ZsMapKind, ZsMapObjects, ZsPlane};
 pub use natives::{
-    NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx, ZvmPlayHost,
-    format_printf, register_bd_natives, vararg_values,
+    InventoryEntry, NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx,
+    ZvmPlayHost, format_printf, register_bd_natives, vararg_values,
 };
 pub use opcode::{Op, has_ext, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};

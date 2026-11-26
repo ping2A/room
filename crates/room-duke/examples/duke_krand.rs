@@ -9,6 +9,9 @@
 //! `ROOM_SHOW=i,j` sprite fields after load, `ROOM_SECT=i,j` sector planes,
 //! `ROOM_TEMPS=i,j` CON temps, `ROOM_PT=1` per-tic player action state,
 //! `ROOM_CON_OP_TRACE=<sprite>` every CON opcode that sprite executes.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_build_engine::numeric::krand_log;
 use std::path::PathBuf;
 fn main() {

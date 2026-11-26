@@ -1,0 +1,5 @@
+yaw=0      pitch=30      scale_y=1.0237 tilt=42.3601
+yaw=45     pitch=30      scale_y=1.0003 tilt=31.4822
+yaw=45     pitch=60      scale_y=1.2134 tilt=25.5018
+yaw=135    pitch=35.264  scale_y=1.0023 tilt=31.4147
+yaw=90     pitch=0       scale_y=1.2148 tilt=34.5970

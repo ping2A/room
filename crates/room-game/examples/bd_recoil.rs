@@ -1,5 +1,8 @@
 //! Fire a weapon slot and print the player's view pitch / angle and quake
 //! intensity every tic (recoil and camera-shake check).
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_vfs::VfsBuilder;
 use std::sync::Arc;
@@ -120,7 +123,7 @@ fn main() {
         );
     }
     let mut v: Vec<_> = spawned.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("SPAWNED {:?}", &v[..v.len().min(12)]);
     let w = game.world().unwrap();
     let mut alive: std::collections::BTreeMap<String, (u32, String)> = Default::default();

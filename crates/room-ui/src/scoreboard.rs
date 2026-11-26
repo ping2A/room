@@ -80,12 +80,9 @@ pub fn draw_scoreboard(
             right(list, cols[0].1, y, &line.frags.to_string());
             right(list, cols[1].1, y, &line.deaths.to_string());
         } else {
-            let pct = |n: u32, of: u32| {
-                if of == 0 {
-                    n.to_string()
-                } else {
-                    format!("{}%", n.saturating_mul(100) / of)
-                }
+            let pct = |n: u32, of: u32| match n.saturating_mul(100).checked_div(of) {
+                Some(p) => format!("{p}%"),
+                None => n.to_string(),
             };
             right(list, cols[0].1, y, &pct(line.kills, totals[0]));
             right(list, cols[1].1, y, &pct(line.items, totals[1]));

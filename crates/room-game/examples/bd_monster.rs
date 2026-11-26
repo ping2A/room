@@ -1,5 +1,8 @@
 //! Spawn a monster near the player on a Brutal Doom map and trace its missiles.
 //! `bd_monster IWAD PK3 MAP CLASS TICS [dx]`
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_core::{Angle, DVec3};
 use room_game::{GameOptions, Headless, Skill};
 use room_vfs::VfsBuilder;
@@ -189,9 +192,7 @@ fn main() {
             let n = &w.classes.get(act.class).unwrap().name;
             let first = seen.insert(aid);
             let is_watch = !watch.is_empty() && n.eq_ignore_ascii_case(&watch);
-            if (first && act.flags & 0 == 0 && (is_watch || watch.is_empty() && first))
-                || (is_watch && !first)
-            {
+            if (first && (is_watch || watch.is_empty())) || (is_watch && !first) {
                 if watch.is_empty() && !first {
                     continue;
                 }

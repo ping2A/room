@@ -821,12 +821,13 @@ fn freedoom2_demo1_vanilla_full_playback() {
                     .map(|c| c.name.as_str())
                     .unwrap_or("-");
                 eprintln!(
-                    "SHOTINV@{} ready={} pending={} y={:.0} inv={} pos=({:.1},{:.1})",
+                    "SHOTINV@{} ready={} pending={} y={:.0} inv={} on_map={} pos=({:.1},{:.1})",
                     t,
                     wpn,
                     pending,
                     pl.pspr_y,
                     shot,
+                    map_shots,
                     p.pos.x(),
                     p.pos.y()
                 );
@@ -861,7 +862,7 @@ fn freedoom2_demo1_vanilla_full_playback() {
         .unwrap();
     let a = game.world().unwrap().actors.get(mo).unwrap();
     // Chocolate DEMO1 ends dead at bit-exact XY (hp=-2).
-    const END_X: f64 = 1468.330_582;
+    const END_X: f64 = 1_468.330_582;
     const END_Y: f64 = -315.818_542;
     if std::env::var_os("ROOM_WRITE_DEMO1_POS").is_some() {
         eprintln!(

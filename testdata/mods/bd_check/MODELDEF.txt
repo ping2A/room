@@ -1,0 +1,8 @@
+Model BdCheckDecal
+{
+	Path "models"
+	Model 0 "decal.md3"
+	Skin 0 "decal.png"
+	Scale 1.0 1.0 1.0
+	FrameIndex DECA A 0 0
+}

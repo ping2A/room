@@ -170,6 +170,7 @@ pub fn parse_relay(bytes: &[u8]) -> Result<(u8, &[u8]), NetError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

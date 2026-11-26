@@ -12,6 +12,9 @@
 //! Without it (or without Freedoom) the tests print `skip:` and pass, so set
 //! `ROOM_REQUIRE_BRUTALDOOM=1` to make a missing pk3 a failure.
 
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use bytes::Bytes;
 use room_core::DVec3;
 use room_game::{GameOptions, Headless, Skill};

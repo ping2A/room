@@ -166,8 +166,10 @@ impl Zvm {
                 )
             })
             .collect();
-        let mut play = crate::natives::ZvmPlayHost::default();
-        play.object_layouts = object_layouts;
+        let play = crate::natives::ZvmPlayHost {
+            object_layouts,
+            ..Default::default()
+        };
         Self {
             program: std::sync::Arc::new(program),
             heap: ZvmHeap::new(),

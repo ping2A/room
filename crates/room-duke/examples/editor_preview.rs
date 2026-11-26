@@ -1,4 +1,7 @@
 //! Render a raw Build map the way the web editor's native preview does.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_build_engine::world::BuildWorld;
 
 fn main() {

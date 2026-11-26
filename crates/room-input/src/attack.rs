@@ -232,10 +232,12 @@ mod tests {
     fn hold_is_shorter_than_plasma_refire_window() {
         // Plasma: Fire A 3 tics then A_ReFire. Hold must end before that so a
         // tap is one bolt (see think_player weapon fire tests).
-        assert!(
-            ATTACK_HOLD_TICS <= 3,
-            "ATTACK_HOLD_TICS={ATTACK_HOLD_TICS} would auto-refire plasma on a tap"
-        );
+        const {
+            assert!(
+                ATTACK_HOLD_TICS <= 3,
+                "ATTACK_HOLD_TICS would auto-refire plasma on a tap"
+            );
+        }
     }
 
     #[test]

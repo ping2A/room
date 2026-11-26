@@ -1747,7 +1747,7 @@ fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
                 let value = emit_math_call(f, lx, &name, args);
                 return f2i(f, lx, value);
             }
-            return emit_unresolved_call(f, lx, callee, args, 0);
+            emit_unresolved_call(f, lx, callee, args, 0)
         }
         Expr::Float(v, _) => load_i(f, lx, *v as i64),
         Expr::String(s, _) | Expr::Name(s, _) => load_i(f, lx, i64::from(!s.is_empty())),
@@ -2490,8 +2490,7 @@ fn emit_array_call(
         }
     }
     let id = lx.native_id(native);
-    let ret_bank = if native == "Array.Size" { 0 } else { 0 };
-    f.emit_ext(Op::CallNat, 1, ret_bank, 0, id);
+    f.emit_ext(Op::CallNat, 1, 0, 0, id);
     if matches!(
         native,
         "Array.Size" | "Array.Find" | "Array.FindS" | "Array.FindA" | "Array.PushA"
@@ -3845,6 +3844,7 @@ fn layout_base(
     base
 }
 
+#[allow(clippy::type_complexity)] // (name, slot, kind) lists per register bank
 fn layout_members(
     name: &str,
     parent: &str,
@@ -3870,8 +3870,8 @@ fn layout_members(
         if let Member::FlagDef { name, .. } = member {
             // `flagdef NoGravity` is the bool field `bNoGravity`.
             let fname = format!("b{name}").to_ascii_lowercase();
-            if !layout.fields.contains_key(&fname) {
-                layout.fields.insert(fname, (0, n_i));
+            if let std::collections::btree_map::Entry::Vacant(e) = layout.fields.entry(fname) {
+                e.insert((0, n_i));
                 n_i += 1;
             }
             continue;
@@ -4107,6 +4107,7 @@ fn prepare_sig_args(
     // not lower in the caller's scope is dropped (and stays zero).
     // Natives read their own defaults for missing arguments (they are shared
     // with DECORATE calls), so only script functions get them filled here.
+    #[allow(clippy::needless_range_loop)] // `k` indexes `user`, `sig.defaults` and `sig.vec_params`
     for k in args.len()..user.len() {
         if sig.native {
             break;

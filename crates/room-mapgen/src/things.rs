@@ -573,6 +573,7 @@ pub fn place(
             out.monsters += 1;
             Some(())
         };
+        #[allow(clippy::needless_range_loop)] // `room` indexes `dist` and `layout.rooms`
         for room in 1..layout.rooms.len() {
             if dist[room] == u32::MAX {
                 continue;

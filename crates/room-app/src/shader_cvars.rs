@@ -89,13 +89,7 @@ fn float_val(cvars: &CvarStore, name: &str) -> f64 {
     match cvars.get(name) {
         Some(CvarValue::Float(f)) => *f,
         Some(CvarValue::Int(i)) => f64::from(*i),
-        Some(CvarValue::Bool(b)) => {
-            if *b {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        Some(CvarValue::Bool(b)) if *b => 1.0,
         _ => 0.0,
     }
 }

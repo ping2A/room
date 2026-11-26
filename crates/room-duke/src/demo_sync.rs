@@ -623,7 +623,11 @@ mod tests {
     fn demo1_real_sync_floor() {
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let diff = demo1_frontier_real(
@@ -642,7 +646,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -671,7 +679,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -699,7 +711,11 @@ mod tests {
         use crate::player::DukeInput;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -728,7 +744,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -757,7 +777,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -787,7 +811,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -817,7 +845,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -847,7 +879,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -877,7 +913,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -907,7 +947,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -936,7 +980,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -965,7 +1013,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -995,7 +1047,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -1025,7 +1081,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 65, "DEMO1_PAD_PRE must cover tic65");
@@ -1056,7 +1116,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 82, "DEMO1_PAD_PRE must cover tic82");
@@ -1087,7 +1151,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 89, "DEMO1_PAD_PRE must cover tic89");
@@ -1118,7 +1186,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 119, "DEMO1_PAD_PRE must cover tic119");
@@ -1155,7 +1227,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 120, "DEMO1_PAD_PRE must cover tic120");
@@ -1192,7 +1268,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(DEMO1_PAD_PRE.len() > 123, "DEMO1_PAD_PRE must cover tic123");
@@ -1228,7 +1308,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         assert!(
@@ -5863,7 +5947,11 @@ mod tests {
         use room_build_engine::numeric::krand_step;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -5977,17 +6065,22 @@ mod tests {
                     ));
                 }
             }
-            let _ = std::fs::write(&out, &s.replace("\n", "\n"));
+            let _ = std::fs::write(&out, &s);
             break;
         }
     }
 
+    #[allow(dead_code)] // manual DEMO1 probe: call it from a test while debugging
     fn demo1_tic154_octa_probe() {
         use crate::player::DukeInput;
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6059,7 +6152,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6130,7 +6227,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6227,7 +6328,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6336,7 +6441,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let tic = DEMO1_PAD_PRE.len(); // next unlocked emit tic
@@ -6436,7 +6545,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6478,7 +6591,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6565,7 +6682,11 @@ mod tests {
         use room_build_engine::types::SectorT;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6613,7 +6734,7 @@ mod tests {
             let (sin2, cos2) = sincos_q14(i32::from(sa));
             let vx = cos2;
             let vy = sin2;
-            let topt = vx
+            let _topt = vx
                 .wrapping_mul(ex.wrapping_sub(sx))
                 .wrapping_add(vy.wrapping_mul(ey.wrapping_sub(sy)));
             let bot = vx.wrapping_mul(vx).wrapping_add(vy.wrapping_mul(vy));
@@ -6654,7 +6775,11 @@ mod tests {
         use crate::shoot::{BLOOD, JIBS6, SHOTSPARK1, SMALLSMOKE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6732,7 +6857,12 @@ mod tests {
         use crate::shoot::{JIBS6, SMALLSMOKE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+            || !root.join("traces/ROOM135-sprites.txt").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6804,7 +6934,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6857,7 +6991,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6892,7 +7030,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6928,7 +7070,11 @@ mod tests {
         use room_build_engine::numeric::krand_step;
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -6959,7 +7105,6 @@ mod tests {
             session.randomseed, session.global_random
         );
         {
-            use crate::actors::moveactors;
             use crate::explosions::moveexplosions;
             use crate::fta::movefta;
             use crate::moveplayers::moveplayers;
@@ -7085,7 +7230,7 @@ mod tests {
                     let before = VM_TRANDS.load(std::sync::atomic::Ordering::Relaxed);
                     let seed_b = session.randomseed;
                     // Run just this sprite via a one-shot list clone.
-                    let mut lists = session.lists.clone();
+                    let lists = session.lists.clone();
                     // Temporarily isolate: moveactors walks full list — instead call execute once.
                     let pic_i = session.picnum.get(iu).copied().unwrap_or(0);
                     let entry = script.actorscrptr.get(pic_i as usize).copied().unwrap_or(0);
@@ -7215,7 +7360,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let tic = DEMO1_PAD_PRE.len(); // next unlocked emit tic
@@ -7445,7 +7594,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -7539,7 +7692,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -7644,7 +7801,8 @@ mod tests {
     fn demo1_load_seed_matches_chocolate_without_fixups() {
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file() || !root.join("demos/DEMO1.DMO").is_file() {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -7774,7 +7932,8 @@ mod tests {
         let grp = root.join("duke3d.grp");
         let demo = root.join("demos/DEMO1.DMO");
         let trace = root.join("traces/DEMO1.trace");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file() || !demo.is_file() || !trace.is_file() {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -7862,7 +8021,8 @@ mod tests {
     fn demo1_print_swim_labels() {
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file() || !root.join("demos/DEMO1.DMO").is_file() {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -7883,6 +8043,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)] // manual DEMO1 probe: call it from a test while debugging
     fn demo1_tic23_diff() {
         use crate::player::DukeInput;
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
@@ -7890,7 +8051,8 @@ mod tests {
         let grp = root.join("duke3d.grp");
         let demo = root.join("demos/DEMO1.DMO");
         let trace = root.join("traces/DEMO1.trace");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file() || !demo.is_file() || !trace.is_file() {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8015,8 +8177,8 @@ mod tests {
             std::fs::read_to_string(root.join("traces/DEMO1-tic23-sprites.txt")),
         ) {
             let mut want = None;
-            for L in choc_dump.lines() {
-                let p: Vec<_> = L.split_whitespace().collect();
+            for line in choc_dump.lines() {
+                let p: Vec<_> = line.split_whitespace().collect();
                 if p.len() >= 6 && p[0] == "369" {
                     want = p[5].parse::<i32>().ok();
                 }
@@ -8037,7 +8199,11 @@ mod tests {
         use room_build_engine::types::{SectorT, WallT};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8222,7 +8388,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8272,7 +8442,11 @@ mod tests {
         use room_build_engine::helpers::{getangle, sincos_q14};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8321,7 +8495,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8405,7 +8583,11 @@ mod tests {
         use crate::session::{DEMO1_PAD_PRE, DEMO1_PAD_PRE_EXPLODE};
         let root = duke_root();
         let grp = root.join("duke3d.grp");
-        if !grp.is_file() {
+        // Demos and Chocolate traces are local-only (not in git); skip without them.
+        if !grp.is_file()
+            || !root.join("demos/DEMO1.DMO").is_file()
+            || !root.join("traces/DEMO1.trace").is_file()
+        {
             return;
         }
         let grp_b = std::fs::read(&grp).unwrap();
@@ -8416,7 +8598,7 @@ mod tests {
         session.rng_pad_per_tic = DEMO1_TIC0_EXTRA_KRANDS;
         for (i, inp) in dmo.tics.iter().take(198).enumerate() {
             let mut p = DEMO1_PAD_PRE.get(i).copied().unwrap_or(0);
-            let mut e = DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0);
+            let e = DEMO1_PAD_PRE_EXPLODE.get(i).copied().unwrap_or(0);
             if i == 197 {
                 p = 2;
             }

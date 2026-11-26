@@ -1,0 +1,9 @@
+// Synthetic BD0 fixture — exercises parse gaps, flags, parents (docs/33).
+#include "actors/ok.dec"
+#include "actors/bad_light.dec"
+#include "actors/missing_parent.dec"
+#include "actors/unknown_flag.dec"
+#include "actors/unknown_prop.dec"
+#include "actors/fail_label.dec"
+
+#include "actors/dual_flame.dec"

@@ -1776,8 +1776,7 @@ fn sbar_find_inventory(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
             .items
             .iter()
             .find(|(_, l)| {
-                l.first().is_some_and(|c| *c == class)
-                    || (subclass && l.iter().any(|c| *c == class))
+                l.first().is_some_and(|c| *c == class) || (subclass && l.contains(&class))
             })
             .map(|(h, _)| *h)
     });

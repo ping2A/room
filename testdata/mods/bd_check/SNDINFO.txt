@@ -1,0 +1,2 @@
+bdcheck/kick	DSPISTOL
+$alias bdcheck/kick2 bdcheck/kick

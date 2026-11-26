@@ -582,11 +582,11 @@ impl ModHud {
             if o + 2 + 1 + 2 > bin.len() {
                 return Err("modhud truncated".into());
             }
-            let module = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            let module = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
             let seat1 = bin[o];
             o += 1;
-            let id = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            let id = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
             let mut w = HudWidget::default();
             let need =
@@ -606,45 +606,45 @@ impl ModHud {
             o += 1;
             w.flags = bin[o];
             o += 1;
-            w.x = i16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.x = i16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.y = i16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.y = i16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.w = i16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.w = i16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.h = i16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.h = i16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.z = i16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.z = i16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.color = u32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.color = u32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
-            w.color2 = u32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.color2 = u32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
             w.text_color = bin[o];
             o += 1;
-            w.value = i32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.value = i32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
-            w.max = i32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.max = i32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
-            w.segments = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.segments = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.alpha = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.alpha = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.fade_in = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.fade_in = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.hold = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.hold = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.fade_out = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap());
+            w.fade_out = u16::from_le_bytes([bin[o], bin[o + 1]]);
             o += 2;
-            w.actor = u64::from_le_bytes(bin[o..o + 8].try_into().unwrap());
+            w.actor = u64::from_le_bytes(std::array::from_fn(|i| bin[o + i]));
             o += 8;
             for c in &mut w.world_xyz {
-                *c = i32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+                *c = i32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
                 o += 4;
             }
-            w.created_tic = u32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.created_tic = u32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
-            w.updated_tic = u32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+            w.updated_tic = u32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
             o += 4;
             let (name, n) = read_str(bin, o)?;
             w.name = name;
@@ -691,7 +691,7 @@ fn read_str(bin: &[u8], o: usize) -> Result<(String, usize), String> {
     if o + 2 > bin.len() {
         return Err("modhud string truncated".into());
     }
-    let n = u16::from_le_bytes(bin[o..o + 2].try_into().unwrap()) as usize;
+    let n = u16::from_le_bytes([bin[o], bin[o + 1]]) as usize;
     let start = o + 2;
     if start + n > bin.len() {
         return Err("modhud string body truncated".into());
@@ -702,7 +702,7 @@ fn read_str(bin: &[u8], o: usize) -> Result<(String, usize), String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::field_reassign_with_default)]
     use super::*;
 
     fn sample() -> HudWidget {

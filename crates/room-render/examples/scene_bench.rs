@@ -1,4 +1,7 @@
 //! Time the per-frame CPU scene build the web client runs on MAP01.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use glam::Vec3;
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;

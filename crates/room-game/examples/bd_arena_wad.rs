@@ -1,6 +1,9 @@
 //! Write a small UDMF test arena PWAD (`MAP01`): one big lit room, the player
 //! at the west end facing east, and a monster `ednum` 512 units ahead.
 //! Usage: bd_arena_wad OUT.wad [ednum=3001] [count=1]
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let out = a.get(1).cloned().unwrap_or_else(|| "arena.wad".into());
@@ -14,7 +17,7 @@ fn main() {
         b = b.thing(
             ednum,
             900.0 + f64::from(i) * 48.0,
-            (256.0 + 110.0 + f64::from(i % 3 - 1) * 96.0),
+            256.0 + 110.0 + f64::from(i % 3 - 1) * 96.0,
             180,
         );
     }

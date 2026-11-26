@@ -259,7 +259,7 @@ pub mod game {
         pub const BONUSCOUNT: i32 = 8;
         /// Weapon muzzle / flash extralight.
         pub const EXTRALIGHT: i32 = 9;
-        /// Ready weapon inventory class ([`ClassRef`] bits; BE10).
+        /// Ready weapon inventory class (`ClassRef` bits; BE10).
         pub const READY_WEAPON: i32 = 10;
         /// Total damage dealt to other players this match (BE10).
         pub const DAMAGE_DEALT: i32 = 11;
@@ -291,7 +291,7 @@ pub mod game {
         pub const REACTION_TIME: i32 = 9;
         /// Friendly to players (settable 0/1).
         pub const FRIENDLY: i32 = 10;
-        /// Last damaging weapon class ([`ClassRef`] bits) on a player pawn (BE10).
+        /// Last damaging weapon class (`ClassRef` bits) on a player pawn (BE10).
         pub const LAST_DAMAGE_TYPE: i32 = 11;
         /// Missile impact kind (`docs/31` MA4): 0 none, 1 actor…6 liquid.
         pub const HIT_KIND: i32 = 12;
@@ -540,7 +540,7 @@ pub mod action_caller {
 /// Packed payload for WASM state actions (`docs/31` MA1).
 ///
 /// Layout (little-endian, 24 bytes): `self_: u64`, `player: i32`, `state: u32`,
-/// `caller: u32`. `state` is the engine [`StateId`] raw value.
+/// `caller: u32`. `state` is the engine `StateId` raw value.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionPayload {
@@ -838,7 +838,7 @@ pub mod hud {
         pub const BOTTOM_RIGHT: u8 = 8;
     }
 
-    /// Text alignment. [`WRAP`] combines with the low 2 bits.
+    /// Text alignment. `WRAP` combines with the low 2 bits.
     pub mod align {
         /// Left.
         pub const LEFT: u8 = 0;
@@ -1381,7 +1381,7 @@ pub struct MatchStandingV1 {
     pub kills: i32,
     /// Assist count (mod-defined; engine stores as given).
     pub assists: i32,
-    /// Damage dealt (typically matches [`player_prop::DAMAGE_DEALT`]).
+    /// Damage dealt (typically matches `player_prop::DAMAGE_DEALT`).
     pub damage: i32,
     /// Teammate revives credited to this seat.
     pub revives: i32,

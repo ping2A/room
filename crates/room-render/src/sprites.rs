@@ -439,6 +439,7 @@ mod tests {
         assert_eq!(sprite_lump_candidates_rot("POSS", 28, 1)[0].0, "POSS]1");
     }
 
+    #[test]
     fn candidates_include_mirror_compound() {
         let c = sprite_lump_candidates_rot("TROO", 0, 2);
         assert!(c.iter().any(|(n, flip)| n == "TROOA2" && !flip));

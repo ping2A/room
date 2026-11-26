@@ -156,7 +156,7 @@ pub fn nsqrtasm(mut param: u32) -> i32 {
 #[track_caller]
 pub fn krand_step(randomseed: &mut i32) -> i32 {
     krand_log::record(*randomseed);
-    *randomseed = randomseed.wrapping_mul(2_758_4621).wrapping_add(1);
+    *randomseed = randomseed.wrapping_mul(27_584_621).wrapping_add(1);
     ((*randomseed as u32) >> 16) as i32
 }
 

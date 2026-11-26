@@ -211,7 +211,7 @@ impl Report {
                 let samples = self
                     .con_error_samples
                     .get(head)
-                    .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join(", "))
+                    .map(|lines| lines.to_vec().join(", "))
                     .unwrap_or_default();
                 out.push_str(&format!(
                     "  - `{head}`: {count} (sample lines: {samples})\n"

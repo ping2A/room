@@ -63,7 +63,9 @@ fn android_main(app: AndroidApp) {
     // A copy of the log and the screenshots in `Documents/Room`, which the
     // Files app shows (`Android/data` is hidden from it since Android 11).
     let shared = shared_dir();
-    let shared_log = shared.as_deref().map(|dir| (dir, logcat::open_shared_log(dir)));
+    let shared_log = shared
+        .as_deref()
+        .map(|dir| (dir, logcat::open_shared_log(dir)));
     // Each start-up step is logged straight to logcat (`adb logcat -s room`)
     // and the file, so the last line shows where a start that dies stopped.
     logcat::log_line(&format!(

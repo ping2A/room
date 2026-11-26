@@ -21,6 +21,11 @@ missing_docs = "warn"
 unwrap_used = "deny"
 expect_used = "warn"
 float_arithmetic = "allow"
+# Style lints this codebase deliberately does not follow: parallel-array index loops,
+# `let mut x = T::default(); x.f = ..` setup in tests, and tuple-heavy signatures.
+needless_range_loop = "allow"
+field_reassign_with_default = "allow"
+type_complexity = "allow"
 
 [workspace.dependencies]
 anyhow = "1.0"

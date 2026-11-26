@@ -1,0 +1,94 @@
+gamevar ed2ref_wrap 0 0
+gamevar ed2ref_division 0 0
+gamevar ed2ref_comparison 0 0
+gamevar ed2ref_loop_count 0 0
+gamevar ed2ref_loop_index 0 0
+gamevar ed2ref_switch 0 0
+gamevar ed2ref_state 0 0
+gamevar ed2ref_sqrt 0 0
+gamevar ed2ref_hypotenuse 0 0
+gamevar ed2ref_random 0 0
+gamevar ed2ref_seed 0 0
+
+definequote 4050 "ED2REF|wrap|%d"
+definequote 4051 "ED2REF|division|%d"
+definequote 4052 "ED2REF|comparison|%d"
+definequote 4053 "ED2REF|loop|%d"
+definequote 4054 "ED2REF|switch|%d"
+definequote 4055 "ED2REF|state-order|%d"
+definequote 4056 "ED2REF|sqrt|%d"
+definequote 4057 "ED2REF|hypotenuse|%d"
+definequote 4058 "ED2REF|random|%d"
+definequote 4059 "ED2REF|randomseed|%d"
+
+defstate ed2ref_composed_state
+add ed2ref_state 1
+ends
+
+prependstate ed2ref_composed_state
+add ed2ref_state 100
+ends
+
+appendstate ed2ref_composed_state
+add ed2ref_state 10
+ends
+
+appendevent EVENT_INIT
+set ed2ref_wrap 2147483647
+add ed2ref_wrap 1
+qsprintf 4050 4050 ed2ref_wrap
+echo 4050
+
+set ed2ref_division -7
+div ed2ref_division 3
+qsprintf 4051 4051 ed2ref_division
+echo 4051
+
+set ed2ref_comparison 0
+ifae 3 3 add ed2ref_comparison 1 else add ed2ref_comparison 2
+ifxor 5 5 add ed2ref_comparison 4 else add ed2ref_comparison 8
+qsprintf 4052 4052 ed2ref_comparison
+echo 4052
+
+for ed2ref_loop_index range 3
+{
+add ed2ref_loop_count 1
+add ed2ref_loop_index 100
+}
+qsprintf 4053 4053 ed2ref_loop_count
+echo 4053
+
+set ed2ref_switch 0
+switch 2
+case 1
+set ed2ref_switch 10
+break
+case 2
+set ed2ref_switch 20
+break
+default
+set ed2ref_switch -1
+endswitch
+qsprintf 4054 4054 ed2ref_switch
+echo 4054
+
+state ed2ref_composed_state
+qsprintf 4055 4055 ed2ref_state
+echo 4055
+
+sqrt 17 ed2ref_sqrt
+qsprintf 4056 4056 ed2ref_sqrt
+echo 4056
+
+calchypotenuse ed2ref_hypotenuse 3 4
+qsprintf 4057 4057 ed2ref_hypotenuse
+echo 4057
+
+set randomseed 1996
+rand ed2ref_random 255
+set ed2ref_seed randomseed
+qsprintf 4058 4058 ed2ref_random
+echo 4058
+qsprintf 4059 4059 ed2ref_seed
+echo 4059
+endevent

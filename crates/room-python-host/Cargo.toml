@@ -19,6 +19,7 @@ missing_docs = "allow"
 [lints.clippy]
 unwrap_used = "allow"
 expect_used = "allow"
+type_complexity = "allow"
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["auto-initialize", "abi3-py310"], optional = true }

@@ -21,7 +21,7 @@ pub mod flags {
 pub mod err {
     /// Parameters invalid.
     pub const BAD_PARAMS: i32 = -1;
-    /// More than [`MAX_ZONES`] distinct ids.
+    /// More than `MAX_ZONES` distinct ids.
     pub const CAP: i32 = -2;
     /// Unknown zone id on clear.
     pub const MISSING: i32 = -3;

@@ -741,14 +741,11 @@ fn read_prop_args(sc: &mut Scanner<'_>) -> Result<Vec<String>, DecorateError> {
 fn read_goto_label(sc: &mut Scanner<'_>) -> Result<String, DecorateError> {
     let mut label = sc.must_get_ident()?.to_owned();
     // `Super::Spawn` — scanner may emit `ColonColon` or `Colon`×2.
-    if sc.check_punct(Punct::ColonColon)? {
+    let scoped = sc.check_punct(Punct::ColonColon)?
+        || (sc.check_punct(Punct::Colon)? && sc.check_punct(Punct::Colon)?);
+    if scoped {
         label.push_str("::");
         label.push_str(sc.must_get_ident()?);
-    } else if sc.check_punct(Punct::Colon)? {
-        if sc.check_punct(Punct::Colon)? {
-            label.push_str("::");
-            label.push_str(sc.must_get_ident()?);
-        }
     }
     while sc.check_punct(Punct::Dot)? {
         label.push('.');
@@ -2310,7 +2307,7 @@ actor AlsoGood : Actor { Health 2 States { Spawn: POSS A -1 Stop } }
         let names: Vec<_> = res.ir.actors.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"Good"), "{names:?}");
         assert!(names.contains(&"AlsoGood"), "{names:?}");
-        assert!(!names.iter().any(|n| *n == "Broken"));
+        assert!(!names.contains(&"Broken"));
         assert!(!res.errors.is_empty());
     }
 

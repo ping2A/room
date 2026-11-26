@@ -1,0 +1,23 @@
+// Minimal Brutal Doom-shaped EventHandler (docs/33 §3.10 / docs/34 ZS0–ZS4).
+class Script_DamageMult : EventHandler
+{
+    override void PlayerEntered(PlayerEvent e)
+    {
+        if (skill >= 6)
+        {
+            PlayerInfo p = players[e.PlayerNumber];
+            if (p && p.mo)
+            {
+                p.mo.GiveInventory("Damage_Control", 1);
+            }
+        }
+    }
+
+    override void WorldThingSpawned(WorldEvent e)
+    {
+        if (skill >= 6 && e.Thing && e.Thing.bISMONSTER)
+        {
+            e.Thing.GiveInventory("Damage_Control", 1);
+        }
+    }
+}

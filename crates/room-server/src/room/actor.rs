@@ -49,6 +49,7 @@ pub enum LeaveReason {
 pub type PlayerTx = mpsc::Sender<Bytes>;
 
 /// Commands into the room actor.
+#[allow(clippy::large_enum_variant)] // short-lived channel messages; boxing buys nothing
 pub enum RoomCmd {
     /// Legacy FTRL client joined (seat assigned by actor).
     LegacyJoin {
@@ -403,7 +404,7 @@ pub struct CreateRoomRequest {
     /// `time_limit` (minutes), else the node default.
     #[serde(default)]
     pub time_limit_secs: Option<u32>,
-    /// One of [`GAMES`]; absent = `doom`.
+    /// One of `GAMES`; absent = `doom`.
     #[serde(default)]
     pub game: Option<String>,
     /// Fill empty seats with sim bots (BE8).
@@ -1342,24 +1343,6 @@ fn time_limit_window(started: bool, limit_secs: u32) -> Duration {
         limit.max(UNSTARTED_ROOM_MIN)
     };
     limit + TIME_LIMIT_SLACK
-}
-
-#[cfg(test)]
-mod time_limit_tests {
-    use super::*;
-
-    #[test]
-    fn short_limits_do_not_close_a_room_that_has_not_started() {
-        // 30 s match, bot-fill start after 60 s: the waiting room must live.
-        assert!(time_limit_window(false, 30) > Duration::from_secs(10 * 60));
-        // Once started, the 30 s match ends the room 30 s + slack later.
-        assert_eq!(time_limit_window(true, 30), Duration::from_secs(60));
-        // Long limits keep their own length either way.
-        assert_eq!(
-            time_limit_window(false, 3600),
-            Duration::from_secs(3600) + TIME_LIMIT_SLACK
-        );
-    }
 }
 
 /// A seat reports the end of the match. Close once most seats agree; put it
@@ -2439,4 +2422,22 @@ pub fn make_create_response(id: &str, settings: RoomSettings, rng_seed: u32) -> 
 /// Generate seed for a new room.
 pub fn new_rng_seed() -> u32 {
     random_u32().unwrap_or(1)
+}
+
+#[cfg(test)]
+mod time_limit_tests {
+    use super::*;
+
+    #[test]
+    fn short_limits_do_not_close_a_room_that_has_not_started() {
+        // 30 s match, bot-fill start after 60 s: the waiting room must live.
+        assert!(time_limit_window(false, 30) > Duration::from_secs(10 * 60));
+        // Once started, the 30 s match ends the room 30 s + slack later.
+        assert_eq!(time_limit_window(true, 30), Duration::from_secs(60));
+        // Long limits keep their own length either way.
+        assert_eq!(
+            time_limit_window(false, 3600),
+            Duration::from_secs(3600) + TIME_LIMIT_SLACK
+        );
+    }
 }

@@ -284,9 +284,7 @@ pub(crate) fn aim_line_attack_target(
                 if line.back_sector.is_none() || blocks_hitscan(world, lid as u32) {
                     return None; // solid / blockhitscan wall — no target
                 }
-                let Some((open_bottom, open_top)) = line_opening_z(world, line) else {
-                    return None;
-                };
+                let (open_bottom, open_top) = line_opening_z(world, line)?;
                 if open_top <= open_bottom {
                     return None;
                 }
@@ -406,10 +404,8 @@ pub fn line_pick_actor(
             continue;
         };
         let dist = frac * range;
-        if dist > 1e-6 && dist <= range {
-            if best.map(|(d, _)| dist < d).unwrap_or(true) {
-                best = Some((dist, id));
-            }
+        if dist > 1e-6 && dist <= range && best.map(|(d, _)| dist < d).unwrap_or(true) {
+            best = Some((dist, id));
         }
     }
     best.map(|(_, id)| id)
@@ -714,8 +710,7 @@ fn line_attack_from(
         hit.distance += d;
         return hit;
     }
-    if thing_dist == Some(nearest) {
-        let (id, dist, pos) = best.unwrap();
+    if let Some((id, dist, pos)) = best.filter(|_| thing_dist == Some(nearest)) {
         if std::env::var_os("ROOM_TRACE_WALL").is_some()
             && (1330..=1335).contains(&world.level.time)
         {
@@ -740,8 +735,7 @@ fn line_attack_from(
         record_hitscan(world, source, origin, &hit, damage);
         return hit;
     }
-    if wall_dist == Some(nearest) {
-        let (wd, wpos, lid) = wall.unwrap();
+    if let Some((wd, wpos, lid)) = wall.filter(|_| wall_dist == Some(nearest)) {
         if std::env::var_os("ROOM_TRACE_WALL").is_some()
             && (1330..=1335).contains(&world.level.time)
         {
@@ -932,6 +926,7 @@ pub fn rail_attack_offset_puff(
         distance: wall_dist.min(range),
     };
     let mut count = 0i32;
+    #[allow(clippy::explicit_counter_loop)] // `count` only advances on rays that land
     for (id, dist, pos) in hits {
         if dist > wall_dist {
             break;
@@ -1186,8 +1181,9 @@ fn line_blocks_shot_sloped(
     if open_top <= open_bottom {
         return true;
     }
-    let front = line.front_sector.unwrap();
-    let back = line.back_sector.unwrap();
+    let (Some(front), Some(back)) = (line.front_sector, line.back_sector) else {
+        return true;
+    };
     let Some(fs) = world.sectors.get(front.raw() as usize) else {
         return true;
     };
@@ -1605,8 +1601,7 @@ fn view_trace_with_slope(
         .into_iter()
         .flatten()
         .fold(f64::INFINITY, f64::min);
-    if thing_dist == Some(nearest) {
-        let (id, dist, pos) = best.unwrap();
+    if let Some((id, dist, pos)) = best.filter(|_| thing_dist == Some(nearest)) {
         return ViewTrace {
             kind: trace_kind::ACTOR as u8,
             actor: Some(id),
@@ -1616,8 +1611,7 @@ fn view_trace_with_slope(
             distance: dist,
         };
     }
-    if wall_dist == Some(nearest) {
-        let (wd, wpos, lid) = wall.unwrap();
+    if let Some((wd, wpos, lid)) = wall.filter(|_| wall_dist == Some(nearest)) {
         return ViewTrace {
             kind: trace_kind::LINE as u8,
             actor: None,

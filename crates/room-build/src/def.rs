@@ -2175,9 +2175,16 @@ mod tests {
 
     #[test]
     fn parses_the_bundled_brutal_active_skybox_resources() {
-        let source =
-            include_str!("../../../testdata/brutal-duke-v0.2.0/brutal/resources/skyboxes.def");
-        let document = DefDocument::parse(source).unwrap();
+        // Brutal Duke is a local-only third-party fixture (not in git); skip when absent.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/brutal-duke-v0.2.0/brutal/resources/skyboxes.def"
+        );
+        let Ok(source) = std::fs::read_to_string(path) else {
+            eprintln!("skip: {path} not present");
+            return;
+        };
+        let document = DefDocument::parse(&source).unwrap();
         let skyboxes = document.skyboxes().unwrap();
         // The file contains 22 textual declarations; four legacy add-on
         // sections are disabled inside block comments.

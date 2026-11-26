@@ -338,14 +338,14 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
                 }
             }
         }
-        if cmd.buttons.any(Buttons::USE) && !world.no_player_respawn {
-            if world.fire_player_respawning(seat, mo)
-                && world.respawn_player_at_seat(player, seat as usize)
-            {
-                world.fire_player_respawned(seat, mo);
-                if let Some(mo) = player.mo {
-                    crate::acs::start_respawn_scripts(world, mo);
-                }
+        if cmd.buttons.any(Buttons::USE)
+            && !world.no_player_respawn
+            && world.fire_player_respawning(seat, mo)
+            && world.respawn_player_at_seat(player, seat as usize)
+        {
+            world.fire_player_respawned(seat, mo);
+            if let Some(mo) = player.mo {
+                crate::acs::start_respawn_scripts(world, mo);
             }
         }
         player.prev_buttons = raw.buttons.0;
@@ -381,11 +381,15 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     }
     // Jump edge while grounded (`JumpZ` impulse → `z_movement`).
     let jump = cmd.buttons.any(Buttons::JUMP);
-    if jump && !player.jump_down && player.on_ground && !player.crouching && !world.no_jump {
-        if world.try_actor_jump(mo) {
-            player.on_ground = false;
-            play_player_sound(world, mo, "player/male/jump");
-        }
+    if jump
+        && !player.jump_down
+        && player.on_ground
+        && !player.crouching
+        && !world.no_jump
+        && world.try_actor_jump(mo)
+    {
+        player.on_ground = false;
+        play_player_sound(world, mo, "player/male/jump");
     }
     player.jump_down = jump;
     // GZDoom `P_MovePlayer` flight: `upmove` sets vertical speed; jump climbs at 3.
@@ -939,7 +943,7 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 .position(|p| p.as_ref().and_then(|p| p.mo) == Some(mo))
                 .map(|s| s as i32)
                 .unwrap_or(-1);
-            if let Some(jump) = crate::script_mods::dispatch_state_action(
+            if let Some(Some(j)) = crate::script_mods::dispatch_state_action(
                 world,
                 module_index,
                 callback_id,
@@ -948,10 +952,8 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 state,
                 room_script_abi::action_caller::PSPRITE,
             ) {
-                if let Some(j) = jump {
-                    state = j;
-                    continue;
-                }
+                state = j;
+                continue;
             }
         } else if let Some(action) = action {
             match action.as_str() {
@@ -2965,7 +2967,7 @@ fn update_player_body_sprite(world: &mut World, mo: ActorId, cmd: &crate::player
     if attacking {
         if let Some(mis) = missile {
             // Frames E/F (4–5) are the attack pose; don't restart every tic.
-            if frame < 4 || frame > 5 {
+            if !(4..=5).contains(&frame) {
                 world.set_state(mo, Some(mis), true);
             }
         }

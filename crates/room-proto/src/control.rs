@@ -216,7 +216,7 @@ pub const KNOWN_PACKS: &[&str] = &["voxel"];
 /// `true` when `name` is a known content pack (e.g. `voxel`).
 #[must_use]
 pub fn is_known_pack(name: &str) -> bool {
-    KNOWN_PACKS.iter().any(|p| *p == name)
+    KNOWN_PACKS.contains(&name)
 }
 
 /// One ICE server entry (STUN/TURN) for `welcome.media`.

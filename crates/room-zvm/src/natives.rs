@@ -742,6 +742,9 @@ mod play_natives {
     use crate::trap::Trap;
     use std::collections::BTreeMap;
 
+    /// One mirrored inventory item: class (lower case), amount, max amount.
+    pub type InventoryEntry = (String, i32, i32);
+
     /// Play-scope data natives read during a call (`docs/34` §14.3.3).
     ///
     /// Owned by the [`crate::Zvm`] that is running, so two worlds do not share skill,
@@ -849,7 +852,7 @@ mod play_natives {
         /// Per call: the calling actor's target object.
         pub self_target: ObjHandle,
         /// Per call: mirrored actors' inventory `(class lowercase, amount, max)`.
-        pub inventory: Vec<(ObjHandle, Vec<(String, i32, i32)>)>,
+        pub inventory: Vec<(ObjHandle, Vec<InventoryEntry>)>,
         /// Results of a multi-return native (`int, int F()`), set by the native.
         pub multi_ret: Vec<crate::interp::Value>,
     }
@@ -6361,9 +6364,16 @@ mod play_natives {
     }
 }
 
-pub use play_natives::{ZvmPlayHost, register_bd_natives};
+pub use play_natives::{InventoryEntry, ZvmPlayHost, register_bd_natives};
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::drop_non_drop,
+    clippy::field_reassign_with_default,
+    clippy::needless_borrow
+)]
 mod tests {
     use super::*;
     use crate::heap::{ObjHandle, StrHandle, ZvmHeap};
@@ -6811,9 +6821,10 @@ mod tests {
                 s: &mut s,
                 a: &mut a,
             };
-            get(&mut ctx, &mut regs).expect("empty name");
+            get(&mut ctx, &mut regs).expect("default name");
         }
-        assert_eq!(ctx.heap.str(s[1]), "");
+        // Before the menu sets a name, the `name` CVar default answers.
+        assert_eq!(ctx.heap.str(s[1]), "Player");
         s[0] = ctx.heap.intern_string("Aly");
         {
             let mut regs = NativeRegs {
@@ -9320,7 +9331,8 @@ mod tests {
         assert_eq!(call_font_int("levellocals.getudmfint", ""), 0);
         assert_eq!(call_font_int("InputGridChars.ByteAt", ""), 0);
         assert_eq!(call_string("levellocals.getclustername", "", &[], &[]), "");
-        assert_eq!(call_math("levellocals.vec3diff", &[9.0, 8.0, 7.0]), 0.0);
+        // Real since portal support: (0,0,0) - (9,8,7) with no portal between them.
+        assert_eq!(call_math("levellocals.vec3diff", &[9.0, 8.0, 7.0]), -9.0);
         assert_eq!(call_font_int("playerpawn.CheckKeys", ""), 0);
         assert_eq!(call_font_int("playerinfo.poisondamage", ""), 0);
         assert_eq!(call_font_int("playerinfo.getteam", ""), 0);

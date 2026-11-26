@@ -271,7 +271,7 @@ impl Default for PspLayer {
 /// One local / net player slot.
 #[derive(Clone, Debug, Default)]
 pub struct Player {
-    /// Extra weapon layers by id (see [`PspLayer`]).
+    /// Extra weapon layers by id (see `PspLayer`).
     pub psp_layers: std::collections::BTreeMap<i32, PspLayer>,
     /// Layer whose state action is running (`OverlayID()`); 1 is the gun.
     pub psp_current: i32,
@@ -290,7 +290,7 @@ pub struct Player {
     pub input_capture: u32,
     /// Module index that owns the capture (`u16::MAX` = none).
     pub capture_module: u16,
-    /// `maptime` when capture was set (auto-release after [`MAX_CAPTURE_TICS`]).
+    /// `maptime` when capture was set (auto-release after `MAX_CAPTURE_TICS`).
     pub capture_started: u32,
     /// Previous tic's raw button bits (for pressed/released edges).
     pub prev_buttons: u32,

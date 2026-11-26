@@ -1,4 +1,7 @@
 //! Print which lump a sprite name resolves to and its decoded pixels summary.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_vfs::{Namespace, VfsBuilder};
 fn main() {
     let a: Vec<String> = std::env::args().collect();

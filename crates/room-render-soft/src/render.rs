@@ -3057,6 +3057,7 @@ pub(crate) fn point_on_line(x: i32, y: i32, lx: i32, ly: i32, ldx: i32, ldy: i32
 /// `R_InitTranslationTables`: the green ramp 0x70–0x7f to gray, brown, red.
 fn translation_tables() -> [[u8; 256]; 3] {
     let mut t = [[0u8; 256]; 3];
+    #[allow(clippy::needless_range_loop)] // `i` indexes three parallel tables
     for i in 0..256usize {
         let v = i as u8;
         if (0x70..=0x7f).contains(&v) {

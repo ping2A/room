@@ -13,6 +13,8 @@ path = "src/lib.rs"
 name = "room"
 path = "src/main.rs"
 required-features = ["cli"]
+# Same name as room-cli's `room` bin; rustdoc can only write one of them.
+doc = false
 
 [lints]
 workspace = true

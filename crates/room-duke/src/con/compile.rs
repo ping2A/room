@@ -6098,7 +6098,7 @@ ends\n\
         let img = compile(src, &mut NullIncludes);
         assert_eq!(img.errors, 0);
         assert_eq!(img.labels.get("A").map(|l| l.value), Some(1));
-        assert!(img.labels.get("B").is_none());
+        assert!(!img.labels.contains_key("B"));
         assert_eq!(img.labels.get("C").map(|l| l.value), Some(3));
     }
 

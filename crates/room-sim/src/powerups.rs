@@ -295,8 +295,8 @@ fn init_effect(world: &mut World, p: &mut Player, mo: ActorId, st: &mut PowerSta
             }
             if world.level.maptime & 1 == 0 {
                 world.level.frozen_power = true;
-            } else if st.tics < i32::MAX {
-                st.tics += 1;
+            } else {
+                st.tics = st.tics.saturating_add(1);
             }
         }
         "weaponlevel2" => {

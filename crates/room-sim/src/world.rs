@@ -651,7 +651,7 @@ pub struct World {
     pub match_tics_left: u32,
     /// Bitmask of seats driven by [`crate::bot::run_bot_brains`] (`docs/28` BE8).
     pub bot_seats: u64,
-    /// Bot difficulty for every bot seat ([`crate::bot::skill`]; `0` = normal).
+    /// Bot difficulty for every bot seat (`crate::bot::skill`; `0` = normal).
     pub bot_skill: u8,
     /// Seats whose display name was picked by [`World::set_seat_bot`].
     pub bot_named: u64,
@@ -1714,7 +1714,7 @@ impl World {
         Self::from_map_with_skill_mode(map, classes, states, skill, SimMathMode::Double)
     }
 
-    /// Like [`from_map_with_skill`], with an explicit math mode so vanilla demo
+    /// Like `from_map_with_skill`, with an explicit math mode so vanilla demo
     /// `P_Random` runs during map-thing / light spawn (Doom: things then specials).
     pub fn from_map_with_skill_mode(
         map: MapGeometry,
@@ -2742,7 +2742,7 @@ impl World {
 
     /// Spawn coop players 2..=N (`total` clamped 1..=[`MAX_PLAYERS`]).
     ///
-    /// Player 1 is already created in [`Self::spawn_map_things`]. Uses Player 2–4
+    /// Player 1 is already created in `Self::spawn_map_things`. Uses Player 2–4
     /// starts, then deathmatch starts (type 11), then Player 1 + offset + telefog
     /// (`docs/28` BE12). Also enables multiplayer-only map things when `total > 1`.
     pub fn spawn_coop_players(&mut self, total: u8) -> Result<u8, SimError> {
@@ -2943,7 +2943,7 @@ impl World {
 
     /// Mark a seat as sim-driven bot (`docs/28` BE8).
     /// A bot seat with no session name gets a callsign from
-    /// [`crate::bot::BOT_NAMES`], picked from the match seed so every peer
+    /// `crate::bot::BOT_NAMES`, picked from the match seed so every peer
     /// agrees (names are in the checksum) and each match differs.
     pub fn set_seat_bot(&mut self, seat: u8, bot: bool) {
         let i = usize::from(seat.min(MAX_PLAYERS as u8 - 1));
@@ -3451,15 +3451,20 @@ impl World {
         angle: Angle,
     ) -> Result<ActorId, SimError> {
         let class = self.classes.replacement(class);
-        let def = self.classes.get(class).cloned().unwrap_or_else(|| {
-            let mut d = self
-                .classes
-                .find_name("Actor")
-                .and_then(|id| self.classes.get(id).cloned())
-                .expect("Actor class required for spawn fallback");
-            d.id = class;
-            d
-        });
+        let def = match self.classes.get(class).cloned() {
+            Some(def) => def,
+            None => {
+                let mut d = self
+                    .classes
+                    .find_name("Actor")
+                    .and_then(|id| self.classes.get(id).cloned())
+                    .ok_or_else(|| {
+                        SimError::Message("Actor class required for spawn fallback".into())
+                    })?;
+                d.id = class;
+                d
+            }
+        };
         let spawn_state = self.states.find_label(class, "Spawn");
         let (sprite, frame) = if let Some(sid) = spawn_state {
             if let Some(st) = self.states.get(sid) {
@@ -4465,23 +4470,19 @@ impl World {
 
     /// Release Mod HUD input captures owned by `module`.
     pub fn clear_module_captures(&mut self, module: u16) {
-        for slot in &mut self.players {
-            if let Some(p) = slot {
-                if p.capture_module == module {
-                    p.input_capture = 0;
-                    p.capture_module = u16::MAX;
-                }
+        for p in self.players.iter_mut().flatten() {
+            if p.capture_module == module {
+                p.input_capture = 0;
+                p.capture_module = u16::MAX;
             }
         }
     }
 
     /// Release all input captures (map change / unload).
     pub fn clear_all_captures(&mut self) {
-        for slot in &mut self.players {
-            if let Some(p) = slot {
-                p.input_capture = 0;
-                p.capture_module = u16::MAX;
-            }
+        for p in self.players.iter_mut().flatten() {
+            p.input_capture = 0;
+            p.capture_module = u16::MAX;
         }
     }
 
@@ -5430,7 +5431,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, hp) in hits {
             if hp <= 0 {
                 continue;
@@ -5458,7 +5459,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, cstat) in hits {
             let Some(id) = ids.iter().copied().find(|&id| {
                 if Some(id) == player_mo {
@@ -5493,7 +5494,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, xrepeat, yrepeat, clipdist) in hits {
             let Some(id) = ids.iter().copied().find(|&id| {
                 if Some(id) == player_mo {
@@ -5524,7 +5525,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, pal) in hits {
             let Some(id) = ids.iter().copied().find(|&id| {
                 if Some(id) == player_mo {
@@ -5553,7 +5554,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, yaw) in hits {
             let Some(id) = ids.iter().copied().find(|&id| {
                 if Some(id) == player_mo {
@@ -5578,7 +5579,7 @@ impl World {
             .first()
             .and_then(|p| p.as_ref())
             .and_then(|p| p.mo);
-        let ids: Vec<_> = self.thinkers.default.iter().copied().collect();
+        let ids: Vec<_> = self.thinkers.default.to_vec();
         for &(x, y, z) in hits {
             let Some(id) = ids.iter().copied().find(|&id| {
                 if Some(id) == player_mo {
@@ -7001,10 +7002,10 @@ impl World {
         };
         let mut touched = Vec::new();
         for (i, line) in self.map.lines.iter().enumerate() {
-            if line.front_sector == Some(sid) || line.back_sector == Some(sid) {
-                if (i32::from(line.flags) & ML_MAPPED) == 0 {
-                    touched.push(i as u32);
-                }
+            if (line.front_sector == Some(sid) || line.back_sector == Some(sid))
+                && (i32::from(line.flags) & ML_MAPPED) == 0
+            {
+                touched.push(i as u32);
             }
         }
         if touched.is_empty() {
@@ -8401,7 +8402,7 @@ fn tick_contact_damage(world: &mut World) {
     for (target, source, dmg) in hits {
         crate::damage::damage_mobj(world, target, Some(source), Some(source), dmg);
     }
-    let mut victims: Vec<ActorId> = world.thinkers.default.iter().copied().collect();
+    let mut victims: Vec<ActorId> = world.thinkers.default.to_vec();
     for p in world.players.iter().flatten() {
         if let Some(mo) = p.mo {
             if !victims.contains(&mo) {
@@ -8536,6 +8537,75 @@ fn tick_quakes(world: &mut World) {
         } else {
             i += 1;
         }
+    }
+}
+
+impl World {
+    /// Apply the UZDoom 5.0 sky / fog MAPINFO keys (`skyfog`, `skymist`,
+    /// `skymistyscale`, `useskymist`, `thickfogdistance`, `thickfogmultiplier`).
+    pub fn apply_mapinfo_fog(&mut self, extras: &std::collections::BTreeMap<String, String>) {
+        let num = |k: &str| extras.get(k).and_then(|v| v.trim().parse::<f64>().ok());
+        if let Some(v) = num("skyfog") {
+            self.sky_fog = v.max(0.0) as f32;
+        }
+        if let Some(v) = extras.get("skymist") {
+            let mut it = v.splitn(2, ',');
+            let tex = it.next().unwrap_or("").trim();
+            if !tex.is_empty() {
+                self.sky_mist = Some(tex.to_owned());
+            }
+            if let Some(sp) = it.next().and_then(|s| s.trim().parse::<f64>().ok()) {
+                // UZDoom: speed * TICRATE / 1000.
+                self.sky_mist_speed = sp * 35.0 / 1000.0;
+            }
+        }
+        if let Some(v) = num("skymistyscale") {
+            self.sky_mist_yscale = v.clamp(0.002, 544.0);
+        }
+        if let Some(v) = extras.get("useskymist") {
+            self.use_sky_mist = !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "no" | "off"
+            );
+        }
+        if let Some(v) = num("thickfogdistance") {
+            self.thick_fog_distance = v;
+        }
+        if let Some(v) = num("thickfogmultiplier") {
+            self.thick_fog_multiplier = v;
+        }
+    }
+
+    /// Apply queued `Level.SetSkyFog` / `SetThickFog` / `ChangeSkyMist` calls.
+    pub fn apply_zscript_level_ops(&mut self) {
+        for op in self.zscript.take_level_ops() {
+            match op {
+                room_zvm::ZsLevelOp::SkyFog(v) => self.sky_fog = v.max(0) as f32,
+                room_zvm::ZsLevelOp::ThickFog(d, m) => {
+                    self.thick_fog_distance = d;
+                    self.thick_fog_multiplier = m;
+                }
+                room_zvm::ZsLevelOp::SkyMist {
+                    texture,
+                    use_mist,
+                    yscale,
+                } => {
+                    self.sky_mist = texture;
+                    self.use_sky_mist = use_mist;
+                    self.sky_mist_yscale = yscale.clamp(0.002, 544.0);
+                }
+            }
+        }
+    }
+
+    /// Thick fog for the renderer: `(distance, multiplier)` when active.
+    pub fn thick_fog(&self) -> Option<(f32, f32)> {
+        (self.thick_fog_distance > 0.0 && self.thick_fog_multiplier > 0.0).then_some({
+            (
+                self.thick_fog_distance as f32,
+                self.thick_fog_multiplier as f32,
+            )
+        })
     }
 }
 
@@ -10298,74 +10368,5 @@ actor ZombieMan : Actor 3004
         // Toggling off does not change health.
         assert!(!w.toggle_god(0));
         assert_eq!(w.actors.get(mo).unwrap().health, 100);
-    }
-}
-
-impl World {
-    /// Apply the UZDoom 5.0 sky / fog MAPINFO keys (`skyfog`, `skymist`,
-    /// `skymistyscale`, `useskymist`, `thickfogdistance`, `thickfogmultiplier`).
-    pub fn apply_mapinfo_fog(&mut self, extras: &std::collections::BTreeMap<String, String>) {
-        let num = |k: &str| extras.get(k).and_then(|v| v.trim().parse::<f64>().ok());
-        if let Some(v) = num("skyfog") {
-            self.sky_fog = v.max(0.0) as f32;
-        }
-        if let Some(v) = extras.get("skymist") {
-            let mut it = v.splitn(2, ',');
-            let tex = it.next().unwrap_or("").trim();
-            if !tex.is_empty() {
-                self.sky_mist = Some(tex.to_owned());
-            }
-            if let Some(sp) = it.next().and_then(|s| s.trim().parse::<f64>().ok()) {
-                // UZDoom: speed * TICRATE / 1000.
-                self.sky_mist_speed = sp * 35.0 / 1000.0;
-            }
-        }
-        if let Some(v) = num("skymistyscale") {
-            self.sky_mist_yscale = v.clamp(0.002, 544.0);
-        }
-        if let Some(v) = extras.get("useskymist") {
-            self.use_sky_mist = !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "false" | "0" | "no" | "off"
-            );
-        }
-        if let Some(v) = num("thickfogdistance") {
-            self.thick_fog_distance = v;
-        }
-        if let Some(v) = num("thickfogmultiplier") {
-            self.thick_fog_multiplier = v;
-        }
-    }
-
-    /// Apply queued `Level.SetSkyFog` / `SetThickFog` / `ChangeSkyMist` calls.
-    pub fn apply_zscript_level_ops(&mut self) {
-        for op in self.zscript.take_level_ops() {
-            match op {
-                room_zvm::ZsLevelOp::SkyFog(v) => self.sky_fog = v.max(0) as f32,
-                room_zvm::ZsLevelOp::ThickFog(d, m) => {
-                    self.thick_fog_distance = d;
-                    self.thick_fog_multiplier = m;
-                }
-                room_zvm::ZsLevelOp::SkyMist {
-                    texture,
-                    use_mist,
-                    yscale,
-                } => {
-                    self.sky_mist = texture;
-                    self.use_sky_mist = use_mist;
-                    self.sky_mist_yscale = yscale.clamp(0.002, 544.0);
-                }
-            }
-        }
-    }
-
-    /// Thick fog for the renderer: `(distance, multiplier)` when active.
-    pub fn thick_fog(&self) -> Option<(f32, f32)> {
-        (self.thick_fog_distance > 0.0 && self.thick_fog_multiplier > 0.0).then(|| {
-            (
-                self.thick_fog_distance as f32,
-                self.thick_fog_multiplier as f32,
-            )
-        })
     }
 }

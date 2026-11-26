@@ -1310,7 +1310,7 @@ impl AcsHost for WorldAcsHost<'_> {
 
     fn print_name(&self, which: i32, activator: u64) -> String {
         match which {
-            -1 | -2 | -3 => String::new(),
+            -3..=-1 => String::new(),
             _ => {
                 let seat = if which == 0 {
                     let me = unpack_actor(activator);
@@ -2578,7 +2578,8 @@ impl AcsHost for WorldAcsHost<'_> {
                 block_mode::EVERYTHING => flags |= ML_BLOCKING | ML_BLOCKEVERYTHING,
                 block_mode::RAILING => flags |= ML_BLOCKING | ML_RAILING,
                 block_mode::PLAYERS => flags |= ML_BLOCK_PLAYERS,
-                block_mode::CREATURES | _ => flags |= ML_BLOCKING,
+                block_mode::CREATURES => flags |= ML_BLOCKING,
+                _ => flags |= ML_BLOCKING, // unknown modes act like CREATURES
             }
             self.world.line_flags.insert(li, flags);
         }

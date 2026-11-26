@@ -173,7 +173,8 @@ pub fn enable_aot(vm: &mut room_zvm::Zvm) -> Result<Stats, CodegenError> {
 pub fn compile_cached(program: &CompiledProgram) -> Result<std::sync::Arc<Artifact>, CodegenError> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<(u64, u64), Arc<Artifact>>>> = OnceLock::new();
+    type Cache = Mutex<HashMap<(u64, u64), Arc<Artifact>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     let key = program_digest(program);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {

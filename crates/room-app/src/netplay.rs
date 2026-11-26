@@ -1340,7 +1340,7 @@ mod tests {
     use super::*;
 
     fn free_port(udp: bool) -> SocketAddr {
-        let addr = if udp {
+        if udp {
             std::net::UdpSocket::bind("127.0.0.1:0")
                 .unwrap()
                 .local_addr()
@@ -1350,8 +1350,7 @@ mod tests {
                 .unwrap()
                 .local_addr()
                 .unwrap()
-        };
-        addr
+        }
     }
 
     /// Lobby tests run one at a time: cancelling one must not hit another.

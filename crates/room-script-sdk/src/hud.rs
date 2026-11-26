@@ -12,8 +12,8 @@
 //!     .show();
 //! ```
 //!
-//! [`HudBuilder::seat`] takes a 0-based player slot; `-1` is every seat
-//! (import `seat1` = 0). [`show`](HudBuilder::show) writes one stack buffer
+//! [`HudBuilder::seat`](crate::hud::HudBuilder::seat) takes a 0-based player slot; `-1` is every seat
+//! (import `seat1` = 0). [`show`](crate::hud::HudBuilder::show) writes one stack buffer
 //! and calls `hud_widget_set`.
 
 use crate::game;

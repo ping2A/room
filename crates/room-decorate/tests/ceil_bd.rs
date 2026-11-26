@@ -1,3 +1,8 @@
+//! DECORATE parsing of Brutal Doom ceiling-actor definitions.
+
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use room_decorate::parse_decorate;
 
 #[test]

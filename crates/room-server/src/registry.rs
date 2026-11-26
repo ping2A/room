@@ -48,7 +48,7 @@ pub enum RegistryError {
     /// Requested mod is in the catalog but an admin has not allowed it.
     #[error("mod not allowed")]
     ModNotAllowed,
-    /// Requested game is not one of [`GAMES`].
+    /// Requested game is not one of `GAMES`.
     #[error("unknown game")]
     UnknownGame,
     /// Atomic Duke mode must be 0, 1, or 2.
@@ -465,7 +465,7 @@ impl RoomRegistry {
             game_mod,
             packs,
             time_limit_secs,
-            game: game.into(),
+            game,
             fill_bots: req.fill_bots,
             quick_play: req.quick_play,
             start_delay_secs: req
@@ -473,10 +473,7 @@ impl RoomRegistry {
                 .filter(|&s| s > 0)
                 .map_or(0, |s| s.clamp(MIN_START_DELAY_SECS, MAX_START_DELAY_SECS)),
             // Normal (2) is stored as 0 so it never reaches the wire.
-            bot_skill: match req.bot_skill {
-                Some(s @ (1 | 3 | 4)) => s,
-                _ => 0,
-            },
+            bot_skill: req.bot_skill.unwrap_or_default(),
         };
         let id = new_room_id().map_err(|_| RegistryError::Rng)?;
         let rng_seed = new_rng_seed();

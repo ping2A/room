@@ -281,7 +281,7 @@ pub fn validate_world_bin(bin: &[u8]) -> Result<(), SaveError> {
         .checked_mul(8 + 8 + 2)
         .ok_or_else(|| SaveError::Message("sector size overflow".into()))?;
     if o.checked_add(sector_bytes)
-        .map_or(true, |end| end > bin.len())
+        .is_none_or(|end| end > bin.len())
     {
         return Err(SaveError::Message("sectors truncated".into()));
     }

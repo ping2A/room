@@ -71,6 +71,7 @@ pub struct ZscriptRuntime {
     /// Actor index → generation last synced into its script object.
     actor_gen: BTreeMap<u32, u32>,
     /// `(class id, field)` → `(bank, slot)` with parents walked.
+    #[allow(clippy::type_complexity)]
     field_cache: std::cell::RefCell<BTreeMap<(u32, &'static str), Option<(u8, usize)>>>,
     /// Map (MD5, portal revision) the published portal snapshot is for.
     portal_key: Option<([u8; 16], u32)>,
@@ -96,8 +97,8 @@ impl Clone for ZscriptRuntime {
             modify_objs: self.modify_objs.clone(),
             actor_proxies: self.actor_proxies.clone(),
             event_actor_proxies: self.event_actor_proxies.clone(),
-            target_sentinel: self.target_sentinel.clone(),
-            map_handlers_active: self.map_handlers_active.clone(),
+            target_sentinel: self.target_sentinel,
+            map_handlers_active: self.map_handlers_active,
             actor_gen: self.actor_gen.clone(),
             field_cache: self.field_cache.clone(),
             portal_key: self.portal_key,
@@ -120,6 +121,7 @@ pub(crate) struct ActorFieldSnap {
     /// Integer fields.
     pub ints: Vec<(&'static str, i64)>,
     /// Actor pointers as `(index, generation, class)`.
+    #[allow(clippy::type_complexity)]
     pub ptrs: Vec<(&'static str, Option<(u32, u32, String)>)>,
 }
 
@@ -275,7 +277,7 @@ impl ZscriptRuntime {
         sight: Vec<(ObjHandle, bool)>,
         melee_ok: bool,
         self_target: ObjHandle,
-        inventory: Vec<(ObjHandle, Vec<(String, i32, i32)>)>,
+        inventory: Vec<(ObjHandle, Vec<room_zvm::InventoryEntry>)>,
     ) {
         if let Some(vm) = self.vm.as_mut() {
             vm.play.sight = sight;
@@ -1090,7 +1092,9 @@ impl ZscriptRuntime {
             return Ok(());
         };
         let handler = self.handler_instance(class)?;
-        let vm = self.vm.as_mut().unwrap();
+        let Some(vm) = self.vm.as_mut() else {
+            return Ok(());
+        };
         if method.eq_ignore_ascii_case("WorldThingSpawned") {
             let thing = vm.heap.new_object(0, 2, 0, 0);
             if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get_mut(thing) {
@@ -1125,9 +1129,8 @@ impl ZscriptRuntime {
         {
             let event = new_typed_object(vm, "WorldEvent");
             let _ = call_handler_with_event(vm, &resolved, handler, event)?;
-        } else if method.eq_ignore_ascii_case("OnRegister") {
-            let _ = vm.call_method_self(&resolved, handler)?;
         } else {
+            // `OnRegister` and every other no-argument handler.
             let _ = vm.call_method_self(&resolved, handler)?;
         }
         Ok(())
@@ -2152,7 +2155,7 @@ fn portal_info(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::field_reassign_with_default)]
 
     use super::*;
     use room_zvm::{CompiledFunction, Op};

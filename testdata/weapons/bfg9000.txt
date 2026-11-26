@@ -1,0 +1,11 @@
+# BFG9000 — docs/30 §1
+held 40
+full 60
+Fire:
+BFGG A 20 A_BFGsound
+BFGG B 10 A_GunFlash
+BFGG B 10 A_FireBFG
+BFGG B 20 A_ReFire
+Flash:
+BFGF A 11 A_Light1
+BFGF B 6 A_Light2

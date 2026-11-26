@@ -1,5 +1,8 @@
 //! BD headless soak: report state-cycle-limit hits (class + chain) and
 //! per-actor sprite flicker (visible → hidden ≤2 tics → visible).
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_sim::TicCmd;
 use room_ui::PatchCache;
@@ -129,7 +132,7 @@ fn main() {
                 }
             }
             let mut hv: Vec<_> = hist.into_iter().collect();
-            hv.sort_by(|a, b| b.1.cmp(&a.1));
+            hv.sort_by_key(|e| std::cmp::Reverse(e.1));
             println!(
                 "t={t} thinkers={} live={live} ms={dt:.1} top={:?}",
                 w.thinkers.default.len(),
@@ -216,7 +219,7 @@ fn main() {
         println!("  {v}x {k}");
     }
     let mut f: Vec<_> = flicker.into_iter().collect();
-    f.sort_by(|a, b| b.1.cmp(&a.1));
+    f.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("monster flicker (hidden 1–2 tics between visible tics):");
     for (k, v) in f.iter().take(25) {
         println!("  {v}x {k}");

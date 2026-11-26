@@ -1,0 +1,25 @@
+clearskills
+
+skill baby
+{
+	AmmoFactor = 2
+	DamageFactor = 0.5
+	SpawnFilter = Baby
+	Name = "I'm too young to die"
+}
+
+skill nightmare
+{
+	AmmoFactor = 2
+	FastMonsters
+	DisableCheats
+	RespawnTime = 12
+	SpawnFilter = Nightmare
+	Name = "Nightmare!"
+	MustConfirm = "Are you sure?"
+}
+
+gameinfo
+{
+	AddEventHandlers = "BdCheckHandler"
+}

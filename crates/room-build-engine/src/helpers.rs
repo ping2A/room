@@ -122,9 +122,9 @@ pub fn radarang_from_tables_dat(data: &[u8]) -> Option<[i16; 1280]> {
         return None;
     }
     let mut t = [0i16; 1280];
-    for i in 0..640 {
+    for (i, slot) in t.iter_mut().take(640).enumerate() {
         let o = SIN_BYTES + i * 2;
-        t[i] = i16::from_le_bytes([data[o], data[o + 1]]);
+        *slot = i16::from_le_bytes([data[o], data[o + 1]]);
     }
     for i in 0..640 {
         t[1279 - i] = -t[i];

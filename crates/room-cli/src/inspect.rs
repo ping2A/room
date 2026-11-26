@@ -439,8 +439,7 @@ fn describe_vfs(r: &mut Report, vfs: &Vfs, want_lumps: bool) {
         });
         i = j;
     }
-    r.maps
-        .sort_by(|a, b| map_key(&a.name).cmp(&map_key(&b.name)));
+    r.maps.sort_by_key(|a| map_key(&a.name));
     map_titles(r, vfs);
 
     // Content by category.

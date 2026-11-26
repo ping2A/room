@@ -23,6 +23,7 @@ use crate::shoot::{BLOOD, JIBS6, SHOTGUNSHELL, SMALLSMOKE};
 use crate::spawn::WATERBUBBLE;
 use crate::stat::STAT_MISC;
 
+/// Test-only counter of `TRAND` draws made by explosions.
 #[cfg(test)]
 pub static EXPLOSION_TRANDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 

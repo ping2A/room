@@ -77,8 +77,11 @@ impl std::fmt::Display for BdReport {
     }
 }
 
+/// Raw lumps by name, as read from the pk3.
+pub type Lumps = BTreeMap<String, Vec<u8>>;
+
 /// Read BD's ZScript sources and the [`BD_LUMPS`] from `brutal22test6.pk3`.
-pub fn read_pk3(path: &Path) -> Result<(Vec<(String, String)>, BTreeMap<String, Vec<u8>>), String> {
+pub fn read_pk3(path: &Path) -> Result<(Vec<(String, String)>, Lumps), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
     let mut sources = Vec::new();

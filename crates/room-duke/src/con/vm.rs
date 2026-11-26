@@ -13,6 +13,7 @@ use room_build_engine::types::{SectorT, SpriteT};
 /// Chocolate `CLIPMASK1` for `furthestcanseepoint` hitscan.
 const CLIPMASK1: u32 = (256 << 16) + 64;
 
+/// Test-only counter of `TRAND` draws made by the VM.
 #[cfg(test)]
 pub static VM_TRANDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -55,7 +56,7 @@ pub struct ActorConTemps {
     /// bullet holes).
     #[serde(default)]
     pub t_data_extra: [i32; 4],
-    /// Atomic SAV pointer-kind bits for T2/T5/T6 (g_t[1]/[4]/[5]).
+    /// Atomic SAV pointer-kind bits for T2/T5/T6 (g_t\[1\]/\[4\]/\[5\]).
     #[serde(default)]
     pub script_pointer_mask: u8,
     /// Chocolate `hittype[i].timetosleep` — used by `movefta`.
@@ -3037,7 +3038,7 @@ ends\n\
         assert_eq!(img.errors, 0);
         let entry = img.labels.get("T").unwrap().value as usize;
 
-        let mut seed = 1;
+        let seed = 1;
         let mut low_temps = ActorConTemps::default();
         let mut low = ConVm::new(&img.script, entry, seed, &mut low_temps);
         low.env = Some(ConSpriteEnv {

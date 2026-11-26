@@ -1,5 +1,8 @@
 //! BD: list actors near the player that the renderer would draw
 //! (not DONTDRAW, sprite has a patch) — finds "phantom gun" billboards.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_sim::TicCmd;
 use room_ui::PatchCache;

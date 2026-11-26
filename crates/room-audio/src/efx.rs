@@ -92,8 +92,8 @@ fn late_delay_average() -> f32 {
 
 /// OpenAL Soft's first-order 2D stereo decoder (N3D: W, Y, X per side).
 const STEREO_DECODER: [[f32; 3]; 2] = [
-    [5.0e-1, 2.886_751_35e-1, 5.523_056_43e-2],
-    [5.0e-1, -2.886_751_35e-1, 5.523_056_43e-2],
+    [5.0e-1, 2.886_751_4e-1, 5.523_056_4e-2],
+    [5.0e-1, -2.886_751_4e-1, 5.523_056_4e-2],
 ];
 
 /// EAX-reverb parameters as OpenAL sees them (`AL_EAXREVERB_*`, clamped).
@@ -940,8 +940,8 @@ impl EfxReverb {
     #[inline]
     pub fn process_bformat(&mut self, b: [f32; 4]) -> (f32, f32) {
         let off = self.off;
-        for c in 0..NUM_LINES {
-            let v = B2A[c][0] * b[0] + B2A[c][1] * b[1] + B2A[c][2] * b[2] + B2A[c][3] * b[3];
+        for (c, row) in B2A.iter().enumerate().take(NUM_LINES) {
+            let v = row[0] * b[0] + row[1] * b[1] + row[2] * b[2] + row[3] * b[3];
             self.main.set(c, off, v);
         }
         let (mut l, mut r) = self.pipes[self.cur].process(&self.main, off, &self.cubic);
@@ -986,6 +986,7 @@ pub fn send_distance_gain(distance: f32, dry: f32, decay_time: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::reverb::{ENV_OFF, EnvironmentTable};

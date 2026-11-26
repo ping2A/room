@@ -12,7 +12,7 @@ macro_rules! game_imports {
         #[cfg(not(target_arch = "wasm32"))]
         mod native {
             $(
-                #[allow(clippy::unused_unit)]
+                #[allow(clippy::unused_unit, clippy::too_many_arguments)]
                 pub unsafe fn $name($(_: $t),*) $(-> $r)? {
                     Default::default()
                 }

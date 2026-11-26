@@ -1,4 +1,8 @@
 //! Write `mods/doom1-royale/maps/ROYALE01.wad` (run from repo root).
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use room_testkit::royale01;
 use std::path::PathBuf;
 

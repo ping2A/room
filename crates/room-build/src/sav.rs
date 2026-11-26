@@ -2674,8 +2674,7 @@ impl SavHeader {
         };
         let msy = msy_blob.as_deref().and_then(|b| parse_i32_payload(b, 2048));
         let spriteqloc = if msy_blob.is_some() {
-            kdfread_one(bytes, &mut pos, 2)
-                .and_then(|b| Some(i32::from(i16::from_le_bytes([b[0], b[1]]))))
+            kdfread_one(bytes, &mut pos, 2).map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
         } else {
             None
         };
@@ -2963,18 +2962,12 @@ impl SavHeader {
             None
         };
         let camsprite = if ffire.is_some() {
-            kdfread_one(bytes, &mut pos, 2).and_then(|b| {
-                let n = i16::from_le_bytes([b[0], b[1]]);
-                Some(i32::from(n))
-            })
+            kdfread_one(bytes, &mut pos, 2).map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
         } else {
             None
         };
         let connecthead = if camsprite.is_some() {
-            kdfread_one(bytes, &mut pos, 2).and_then(|b| {
-                let n = i16::from_le_bytes([b[0], b[1]]);
-                Some(i32::from(n))
-            })
+            kdfread_one(bytes, &mut pos, 2).map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
         } else {
             None
         };
@@ -3024,10 +3017,7 @@ impl SavHeader {
             None
         };
         let global_random = if randomseed.is_some() {
-            kdfread_one(bytes, &mut pos, 2).and_then(|b| {
-                let n = i16::from_le_bytes([b[0], b[1]]);
-                Some(i32::from(n))
-            })
+            kdfread_one(bytes, &mut pos, 2).map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
         } else {
             None
         };
@@ -3142,6 +3132,7 @@ impl SavHeader {
 
 /// What [`identify_save`] found.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // One per save load; not stored in bulk.
 pub enum LoadedSave {
     /// Room `.fsave` ZIP.
     Room,

@@ -248,9 +248,10 @@ pub fn palette_for(pl: &Player, waterlevel: i32) -> u8 {
         ((cnt + 7) >> 3).min(7) as u8 + 1
     } else if pl.bonus_count > 0 {
         ((pl.bonus_count + 7) >> 3).min(3) as u8 + 9
-    } else if pl.radsuit_tics > 4 * 32 || pl.radsuit_tics & 8 != 0 {
-        13
-    } else if pl.infrared && infrared_palette_on(pl.infrared_tics) {
+    } else if pl.radsuit_tics > 4 * 32
+        || pl.radsuit_tics & 8 != 0
+        || (pl.infrared && infrared_palette_on(pl.infrared_tics))
+    {
         13
     } else if waterlevel >= 3 {
         14

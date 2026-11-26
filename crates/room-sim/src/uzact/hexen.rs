@@ -762,7 +762,7 @@ pub(super) fn dispatch(
                 .actors
                 .get(id)
                 .and_then(|a| a.ext.scratch.get("blocking").copied())
-                .and_then(|_| None::<ActorId>)
+                .and(None::<ActorId>)
                 .or_else(|| last_hit_actor(w, id))
                 .filter(|&b| has_flag(w, b, "SHOOTABLE"));
             if let Some(b) = hit {
@@ -2936,7 +2936,7 @@ fn serpent_check_for_attack(w: &mut World, id: ActorId) {
     // `CheckMeleeRange2`: in range but not quite in reach.
     let near2 = target(w, id).is_some_and(|t| {
         let d = dist2d(w, id, t);
-        d >= MELEE_RANGE && d < 2.0 * MELEE_RANGE && check_sight(w, id, t)
+        (MELEE_RANGE..2.0 * MELEE_RANGE).contains(&d) && check_sight(w, id, t)
     });
     if near2 {
         let _ = set_label(w, id, "Walk");
@@ -3127,18 +3127,16 @@ fn sorc_ball_orbit(w: &mut World, id: ActorId) -> ActionResult {
                 do_fire_spell(w, id, parent, me);
             }
         }
-        SORC_FIRING_SPELL => {
-            if stop == me {
-                let v = s2(w, id);
-                set_s2(w, id, v - 1);
-                if v <= 0 {
-                    set_arg(w, parent, 3, SORC_STOPPED);
-                    if health(w, parent) > 0 {
-                        let _ = set_label(w, parent, "Attack2");
-                    }
-                } else {
-                    sorc_offense2(w, id);
+        SORC_FIRING_SPELL if stop == me => {
+            let v = s2(w, id);
+            set_s2(w, id, v - 1);
+            if v <= 0 {
+                set_arg(w, parent, 3, SORC_STOPPED);
+                if health(w, parent) > 0 {
+                    let _ = set_label(w, parent, "Attack2");
                 }
+            } else {
+                sorc_offense2(w, id);
             }
         }
         _ => {}

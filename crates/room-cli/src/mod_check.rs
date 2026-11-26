@@ -485,7 +485,7 @@ fn scan_acs_chunks(bytes: &[u8], report: &mut ModCheckReport) {
             let size = u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
                 as usize;
             if size > 0 && size < 16_000_000 && i + 8 + size <= bytes.len() {
-                if TRACK.iter().any(|k| *k == id) {
+                if TRACK.contains(&id) {
                     let key = String::from_utf8_lossy(id).into_owned();
                     *report.acs_chunks_seen.entry(key).or_insert(0) += 1;
                 }
@@ -697,7 +697,7 @@ actor Bar : Actor { Health 2 States { Spawn: POSS A -1 Stop } }
         if !path.is_file() {
             return;
         }
-        let report = run_mod_check(&[path.clone()], None).expect("BD mod check");
+        let report = run_mod_check(std::slice::from_ref(&path), None).expect("BD mod check");
         // BD0/BD1/BD2 commercial bar (docs/33): full parse, no unknown tables.
         assert!(
             report.actors_total > 4000,

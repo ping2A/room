@@ -1,0 +1,7 @@
+height 32;
+
+statusbar normal
+{
+	drawnumber 3, INDEXFONT, untranslated, ammo1, 44, 171;
+	drawnumber 3, INDEXFONT, untranslated, ammo2, 66, 171;
+}

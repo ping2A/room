@@ -13,9 +13,9 @@ pub mod data;
 mod finetangent;
 pub mod fixed;
 pub mod level;
-pub mod shot;
 pub mod preview;
 pub mod render;
+pub mod shot;
 #[cfg(feature = "sim")]
 pub mod sim;
 

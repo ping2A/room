@@ -294,8 +294,8 @@ impl Ctx<'_> {
         let p = (((i64::from(col) << 16) + 0x8000 - seg.sxa) << 16) / span;
         let p = p.clamp(0, 1 << 16);
         let iz = seg.iza + (((seg.izb - seg.iza) * p) >> 16);
-        let tz = (seg.ta * seg.iza >> 16)
-            + ((((seg.tb * seg.izb >> 16) - (seg.ta * seg.iza >> 16)) * p) >> 16);
+        let tz = ((seg.ta * seg.iza) >> 16)
+            + (((((seg.tb * seg.izb) >> 16) - ((seg.ta * seg.iza) >> 16)) * p) >> 16);
         let iz = iz.max(1);
         let depth = (1_i64 << 30) / iz;
         let t = ((tz << 16) / iz).clamp(0, 1 << 16);
@@ -305,8 +305,8 @@ impl Ctx<'_> {
     fn wall_point(&self, wall: usize, t: i64) -> (i32, i32) {
         let a = &self.world.walls[wall];
         let b = &self.world.walls[a.point2 as usize];
-        let x = i64::from(a.x) + ((i64::from(b.x) - i64::from(a.x)) * t >> 16);
-        let y = i64::from(a.y) + ((i64::from(b.y) - i64::from(a.y)) * t >> 16);
+        let x = i64::from(a.x) + (((i64::from(b.x) - i64::from(a.x)) * t) >> 16);
+        let y = i64::from(a.y) + (((i64::from(b.y) - i64::from(a.y)) * t) >> 16);
         (x as i32, y as i32)
     }
 
@@ -694,7 +694,7 @@ impl Ctx<'_> {
                     } else {
                         (z0 - posz as f64) * fy as f64 / 16.0 / denom
                     };
-                    if !(t > 0.0) || !t.is_finite() {
+                    if t <= 0.0 || !t.is_finite() {
                         self.zbuf[idx] = i32::MAX - 1;
                         self.frame.put(col, y, flat);
                         continue;

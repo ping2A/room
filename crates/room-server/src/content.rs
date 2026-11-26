@@ -78,7 +78,7 @@ pub struct ContentEntry {
     pub kind: ContentKind,
     /// Size in bytes.
     pub size: u64,
-    /// [`content_fingerprint`] (16 hex digits).
+    /// `content_fingerprint` (16 hex digits).
     pub fingerprint: String,
     /// Maps found in the file (WAD map markers, `maps/NAME.wad` in archives).
     pub maps: Vec<String>,
@@ -791,9 +791,7 @@ fn duke_grp_maps(bytes: &[u8]) -> Option<Vec<String>> {
         return None;
     }
     let count = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-    let Some(dir_end) = count.checked_mul(16).and_then(|n| n.checked_add(16)) else {
-        return None;
-    };
+    let dir_end = count.checked_mul(16).and_then(|n| n.checked_add(16))?;
     if dir_end > bytes.len() || count > (bytes.len() - 16) / 16 {
         return None;
     }
@@ -805,9 +803,7 @@ fn duke_grp_maps(bytes: &[u8]) -> Option<Vec<String>> {
         let name_end = entry[..12].iter().position(|&b| b == 0).unwrap_or(12);
         let name = String::from_utf8_lossy(&entry[..name_end]).to_ascii_uppercase();
         let size = u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
-        let Some(next) = body_at.checked_add(size) else {
-            return None;
-        };
+        let next = body_at.checked_add(size)?;
         if next > bytes.len() {
             return None;
         }

@@ -153,7 +153,6 @@ impl<'a> TileSet<'a> {
     }
 
     /// Tile numbers with pixel data, in ascending order.
-    #[must_use]
     pub fn tile_numbers(&self) -> impl Iterator<Item = u16> + '_ {
         self.tiles.keys().copied()
     }

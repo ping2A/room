@@ -71,7 +71,7 @@ pub fn fuzz_modulate(kind: FuzzType, u: f32, v: f32, time: f32) -> (f32, f32) {
 
 fn hash21(x: f32, y: f32) -> f32 {
     let s = x * 127.1 + y * 311.7;
-    (s.sin() * 43758.5453).fract().abs()
+    (s.sin() * 43_758.547).fract().abs()
 }
 
 #[cfg(test)]

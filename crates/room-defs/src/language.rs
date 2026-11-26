@@ -239,8 +239,7 @@ fn read_language_value(sc: &mut Scanner<'_>) -> Result<String, DefsError> {
     // Drop leading whitespace without tokenizing (avoids UTF-8 surprises later).
     {
         let rem = sc.remaining();
-        let trimmed =
-            rem.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        let trimmed = rem.trim_start_matches([' ', '\t', '\r', '\n']);
         let n = rem.len() - trimmed.len();
         if n > 0 {
             sc.bump_bytes(n);

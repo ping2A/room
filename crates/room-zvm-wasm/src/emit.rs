@@ -345,6 +345,7 @@ impl<'a> FuncGen<'a> {
         self.trap(abi::TRAP_STACK, 0, 0);
         self.e(I::End);
         let mask = abi::entry_mask(self.func);
+        #[allow(clippy::needless_range_loop)] // `bank` indexes four parallel per-bank tables
         for bank in 0..4 {
             for r in 0..self.layout.counts[bank] {
                 if !mask[bank][r as usize] {
@@ -366,8 +367,8 @@ impl<'a> FuncGen<'a> {
         self.e(I::Unreachable);
         self.e(I::End);
         let mut locals: Vec<(u32, ValType)> = Vec::new();
-        for bank in 0..4 {
-            locals.push((self.layout.counts[bank], BANK_TYPES[bank]));
+        for (count, ty) in self.layout.counts.iter().zip(BANK_TYPES) {
+            locals.push((*count, ty));
         }
         for t in &self.temps {
             locals.push((1, *t));

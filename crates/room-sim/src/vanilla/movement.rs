@@ -282,7 +282,7 @@ pub fn check_position_fixed(
     result
 }
 
-/// Fixed-point [`crate::physics::try_move_ex`].
+/// Fixed-point `crate::physics::try_move_ex`.
 pub fn try_move_fixed(world: &mut World, actor_id: ActorId, new_pos: DVec3) -> TryMoveResult {
     let Some(actor) = world.actors.get(actor_id).cloned() else {
         return TryMoveResult {

@@ -295,9 +295,8 @@ pub fn short_names_in(vfs: &Vfs) -> BTreeSet<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
     use crate::vfs::VfsBuilder;
     use crate::write::WadWriter;

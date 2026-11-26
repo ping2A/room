@@ -1,0 +1,2 @@
+server int bd_check_server = 1;
+user bool bd_check_user = true;

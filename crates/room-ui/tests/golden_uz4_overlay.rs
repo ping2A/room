@@ -6,6 +6,9 @@
 //!
 //! Regenerate: `ROOM_UPDATE_GOLDEN=1 cargo test -p room-ui --test golden_uz4_overlay`
 
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use room_ui::{
     CanvasSink, PatchCache, SoftPatch, UiDrawList, blit_draw_list_full, draw_weapon_tinted,
 };

@@ -1,0 +1,15 @@
+# Software renderer reference views (docs/40 SR0 / SR1).
+# Columns: IWAD (file name in testdata/freedoom), map, pose name, x, y, z, angle.
+# x / y / z in map units (z "auto" = floor under the eye + 41, Doom's view
+# height), angle in degrees (0 = east, 90 = north).
+# Captures: ./scripts/vanilla-soft-capture.sh writes testdata/soft/<iwad>/<map>-<name>.idx
+freedoom1.wad E1M1 start-e    -416 256 auto 0
+freedoom1.wad E1M1 start-n    -416 256 auto 90
+freedoom1.wad E1M1 start-w    -416 256 auto 180
+freedoom1.wad E1M1 start-s    -416 256 auto 270
+freedoom1.wad E1M1 start-ne   -416 256 auto 45
+freedoom2.wad MAP01 start-e   -192 -192 auto 0
+freedoom2.wad MAP01 start-n   -192 -192 auto 90
+freedoom2.wad MAP01 start-w   -192 -192 auto 180
+freedoom2.wad MAP01 start-s   -192 -192 auto 270
+freedoom2.wad MAP01 start-sw  -192 -192 auto 225

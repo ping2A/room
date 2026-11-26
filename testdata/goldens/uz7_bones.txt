@@ -1,0 +1,13 @@
+bind / no animation                  2.000   0.000   0.000
+swing tic 0                          2.000   0.000   0.000
+swing tic 1                          1.707   0.707   0.000
+swing tic 1.5                        1.383   0.924   0.000
+swing tic 2                          1.000   1.000   0.000
+swing->lift tic 10                   1.000   1.000   0.000
+swing->lift tic 12                   1.707   0.707   0.000
+swing->lift tic 14                   2.000   0.000   0.000
+swing->lift tic 15                   2.000   0.000   2.000
+add rot arm tic 0                    2.000   0.000   0.000
+add rot arm tic 5                    1.707   0.707   0.000
+add rot arm tic 10                   1.000   1.000   0.000
+replace translation arm              1.000   3.000   0.000

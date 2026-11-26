@@ -2167,7 +2167,7 @@ impl ClassRegistry {
             // Default bodies are often one reconstructed line (`Health 42 ; + NOGRAVITY`);
             // split on `;` and newlines so each stmt applies.
             for stmt in body
-                .split(|c| c == ';' || c == '\n' || c == '{' || c == '}')
+                .split([';', '\n', '{', '}'])
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {

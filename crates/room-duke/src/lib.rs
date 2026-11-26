@@ -7,6 +7,12 @@
 //! ADR: `docs/decisions/0004-native-build-runtime.md`.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+// The game logic is a line-by-line port of the Duke3D sources, kept in the original's
+// shape (control flow, casts, long argument lists) so it can be diffed against the
+// reference during parity work. Clippy's style and complexity rewrites would obscure
+// that mapping, so those two groups are off for this crate; correctness, suspicious
+// and perf lints still apply.
+#![allow(clippy::style, clippy::complexity)]
 
 /// DEMO1 trace fix-ups for code outside [`session::DukeSession`] (free
 /// functions with `// TEMP` hacks keyed on DEMO1 tic or sprite numbers).
@@ -96,8 +102,8 @@ pub use fta::{findplayer_dist, movefta};
 pub use moveplayers::moveplayers;
 pub use player::{
     DUKE_FRICTION, DUKE_GC, DukeInput, INPUT_AUTO_AIM, INPUT_INVENTORY_LEFT, INPUT_INVENTORY_RIGHT,
-    INPUT_INVENTORY_USE, INPUT_OPEN, INPUT_TURNAROUND, PHEIGHT, Player, TICS_PER_FRAME, apply_player_fall_z,
-    processinput_move, sync_player_sprite,
+    INPUT_INVENTORY_USE, INPUT_OPEN, INPUT_TURNAROUND, PHEIGHT, Player, TICS_PER_FRAME,
+    apply_player_fall_z, processinput_move, sync_player_sprite,
 };
 pub use prelevel::{CYCLER, GPSPEED, prelevel_sprites};
 pub use session::ENTERLEVEL_RANDOMSEED;

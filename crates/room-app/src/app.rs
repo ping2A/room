@@ -403,7 +403,9 @@ fn build_app(
     };
     let (duke_session, duke_renderer, duke_sound_bank, duke_campaign_content, duke_start_state) =
         if args.native_duke {
-            let path = args.iwad.as_ref().expect("native Duke input path");
+            let Some(path) = args.iwad.as_ref() else {
+                fail!(2, "native Duke needs an input GRP path");
+            };
             let bytes = match std::fs::read(path) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -5106,7 +5108,7 @@ impl ViewerApp {
     /// for the look to feel as quick as horizontal turning.
     fn duke_pitch_scale(&self) -> f64 {
         match self.console.cvars.get("m_pitch") {
-            Some(room_console::CvarValue::Float(f)) => f64::from(*f).clamp(0.1, 10.0),
+            Some(room_console::CvarValue::Float(f)) => (*f).clamp(0.1, 10.0),
             _ => 1.25,
         }
     }
@@ -5896,8 +5898,7 @@ impl ViewerApp {
             .as_ref()
             .and_then(|g| g.world())
             .map_or(0, |w| w.level.maptime);
-        self.tex_anim
-            .apply(&mut scene, u32::try_from(tic).unwrap_or(0));
+        self.tex_anim.apply(&mut scene, tic);
         scene.dyn_lights = self.collect_dyn_lights();
         // Dyn lights shade on the GPU (`LightUniforms`); keep CPU boost off to
         // avoid double-lighting once the forward path is active.
@@ -5973,7 +5974,7 @@ impl ViewerApp {
                 .play
                 .as_ref()
                 .and_then(|g| g.world())
-                .map_or(0, |w| u32::try_from(w.level.maptime).unwrap_or(0));
+                .map_or(0, |w| w.level.maptime);
             append_particles_animated(
                 &mut scene,
                 &self.particles,
@@ -6253,7 +6254,6 @@ impl ViewerApp {
                 let sky_du = self.play.as_ref().and_then(|g| g.world()).map_or(0.0, |w| {
                     (w.sky_speed1 * f64::from(w.level.maptime) / 360.0) as f32
                 });
-                let tic = u32::try_from(tic).unwrap_or(0);
                 let sky = (!self.sky_texture.is_empty()).then_some(self.sky_texture.as_str());
                 // What the main view adds after the map (decals, particles,
                 // models, voxels) belongs in portal views too; their
@@ -7987,7 +7987,7 @@ impl ViewerApp {
                         scene_encoded: false,
                     },
                 );
-                &post_ldr
+                post_ldr
             } else {
                 frame_color
             };
@@ -8612,7 +8612,7 @@ impl ViewerApp {
                                             wz as f32,
                                             line,
                                             [color.r, color.g, color.b],
-                                            seed ^ 0xB100_D,
+                                            seed ^ 0xB_100D,
                                         ));
                                     }
                                 }
@@ -9511,7 +9511,7 @@ impl ViewerApp {
                     .and_then(|weapon| u32::try_from(weapon).ok())
                     .filter(|weapon| (1..=9).contains(weapon))
                     .map(|weapon| weapon.saturating_add(1))
-                    .or_else(|| match weapon_cycle {
+                    .or(match weapon_cycle {
                         -1 => Some(11),
                         1 => Some(12),
                         _ => None,
@@ -9642,7 +9642,7 @@ impl ViewerApp {
                         && let Err(error) = recorder.record_tic_with_weapon_actions(
                             duke_input,
                             requested_weapon,
-                            weapon_cycle as i8,
+                            weapon_cycle,
                         )
                     {
                         self.messages.push(format!("record DMO: {error}"), 70);
@@ -10258,7 +10258,7 @@ impl ViewerApp {
             .and_then(|p| p.mo);
         let tic = world.level.maptime as f32;
         let eye = self.camera.eye;
-        let actors: Vec<_> = world.thinkers.default.iter().copied().collect();
+        let actors: Vec<_> = world.thinkers.default.to_vec();
         let mut cands = Vec::new();
         for id in actors {
             let Some(a) = world.actors.get(id) else {

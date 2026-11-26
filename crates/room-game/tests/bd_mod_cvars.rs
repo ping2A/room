@@ -10,52 +10,10 @@ use room_core::{Angle, DVec3};
 use room_decorate::{DecorateError, expand_includes_mapped, parse_decorate, split_actors};
 use room_map::load_map;
 use room_nodebuild::ensure_nodes;
-use room_sim::{Buttons, ClassRegistry, StateTable, TicCmd, World};
+use room_sim::{ClassRegistry, StateTable, TicCmd, World};
 use room_vfs::{Namespace, Vfs, VfsBuilder};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-fn collect_zscript(vfs: &Vfs) -> Vec<(String, String)> {
-    let mut sources = Vec::new();
-    for (id, info) in vfs.iter() {
-        let path = if !info.full_path.is_empty() {
-            info.full_path.clone()
-        } else {
-            info.short_name.as_str().to_owned()
-        };
-        let lower = path.to_ascii_lowercase();
-        let is_zs = lower.ends_with(".zs")
-            || lower.ends_with(".zc")
-            || lower.ends_with(".zsc")
-            || lower == "zscript"
-            || lower.ends_with("/zscript");
-        if !is_zs {
-            continue;
-        }
-        let Ok(bytes) = vfs.read(id) else {
-            continue;
-        };
-        let Ok(text) = String::from_utf8(bytes.to_vec()) else {
-            continue;
-        };
-        if text.trim().is_empty() {
-            continue;
-        }
-        sources.push((path, text));
-    }
-    sources.sort_by(|a, b| {
-        let score = |n: &str| {
-            let base = n.rsplit(['/', '\\']).next().unwrap_or(n);
-            if base.eq_ignore_ascii_case("zscript.zc") || base.eq_ignore_ascii_case("zscript") {
-                0
-            } else {
-                1
-            }
-        };
-        score(&a.0).cmp(&score(&b.0)).then_with(|| a.0.cmp(&b.0))
-    });
-    sources
-}
 
 fn resolve_include(vfs: &Vfs, path: &str) -> Result<String, DecorateError> {
     let norm = path.replace('\\', "/");
@@ -132,7 +90,8 @@ fn flares_with(decorations_off: bool) -> usize {
         "bd_disabledecorations",
         if decorations_off { "1" } else { "0" },
     );
-    for lump in ["BD_Main"] {
+    {
+        let lump = "BD_Main";
         let id = vfs
             .find(lump, Namespace::Global)
             .or_else(|| vfs.find_full(&format!("acs/{lump}.o")));

@@ -5417,7 +5417,7 @@ fn teleport_in_sector(world: &mut World, args: &[i32; 5]) -> i32 {
     if tagged.is_empty() {
         return 0;
     }
-    let ids: Vec<_> = world.thinkers.default.iter().copied().collect();
+    let ids: Vec<_> = world.thinkers.default.to_vec();
     let mut n = 0;
     for id in ids {
         let Some(a) = world.actors.get(id) else {
@@ -7355,13 +7355,7 @@ fn sector_set_damage(world: &mut World, args: &[i32; 5], line: Option<LineId>) -
     let amount = args[1];
     let mut interval = args[3];
     if interval <= 0 {
-        interval = if amount < 20 {
-            32
-        } else if amount < 50 {
-            32
-        } else {
-            1
-        };
+        interval = if amount < 50 { 32 } else { 1 };
     }
     let dtype = if args[2] == 0 {
         String::new()

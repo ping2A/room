@@ -1,5 +1,9 @@
 //! MODELDEF mesh load bootstrap (OBJ / MD2 / MD3 / IQM).
 
+// Binary headers are read as fixed-width slices of a length-checked buffer, so the
+// `try_into()` on each slice cannot fail.
+#![allow(clippy::unwrap_used)]
+
 use crate::mesh::WallVertex;
 use crate::scene::{MaterialRange, SceneLists};
 use bytemuck::{Pod, Zeroable};
@@ -524,7 +528,7 @@ pub fn parse_md3(data: &[u8]) -> Result<Md3Model, ModelError> {
     for fi in 0..nframes {
         let mut vertices = Vec::with_capacity(num_verts);
         let base = xyz_abs + fi * frame_vert_bytes;
-        for vi in 0..num_verts {
+        for (vi, &uv) in sts.iter().enumerate().take(num_verts) {
             let o = base + vi * vert_stride;
             let x = i16::from_le_bytes(data[o..o + 2].try_into().unwrap()) as f32 * MD3_XYZ_SCALE;
             let y =
@@ -536,7 +540,7 @@ pub fn parse_md3(data: &[u8]) -> Result<Md3Model, ModelError> {
             let normal = [lat.cos() * lng.sin(), lng.cos(), lat.sin() * lng.sin()];
             vertices.push(ModelVertex {
                 pos: [x, y, z],
-                uv: sts[vi],
+                uv,
                 normal,
             });
         }

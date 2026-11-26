@@ -267,7 +267,7 @@ fn serve(world: &mut World, f: GameFn, a: &[Val], mem: &mut dyn GuestMemory) -> 
                 player_prop::DAMAGECOUNT => p.damage_count,
                 player_prop::BONUSCOUNT => p.bonus_count,
                 player_prop::EXTRALIGHT => p.extralight,
-                player_prop::READY_WEAPON => p.ready_weapon.map(|c| class_ref(c)).unwrap_or(0),
+                player_prop::READY_WEAPON => p.ready_weapon.map(class_ref).unwrap_or(0),
                 player_prop::DAMAGE_DEALT => p.damage_dealt,
                 player_prop::ARMOR_TYPE => i32::from(p.armor_class),
                 _ => 0,
@@ -1291,9 +1291,7 @@ pub fn dispatch_state_action(
     }
     // SAFETY: `bind_active_runtime` keeps `rt` alive for the tic.
     let rt = unsafe { &mut *rt };
-    let Some(m) = rt.mods.get_mut(module_index) else {
-        return None;
-    };
+    let m = rt.mods.get_mut(module_index)?;
     if m.failed || m.busy {
         return None;
     }

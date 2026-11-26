@@ -1,0 +1,20 @@
+splash BdCheckWater
+{
+	smallclass None
+	baseclass None
+	chunkclass None
+	chunkxvelshift -1
+	chunkyvelshift -1
+	chunkzvelshift -1
+	chunkbasezvel 0
+	sound ""
+}
+
+terrain BdCheckFloor
+{
+	splash BdCheckWater
+	footclip 10
+	liquid
+}
+
+floor WATER BdCheckFloor

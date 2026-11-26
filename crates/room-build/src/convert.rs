@@ -577,7 +577,7 @@ fn tile_luma(tiles: &TileSet<'_>, palette: Option<&crate::palette::Palette>, pic
         }
         i += step;
     }
-    if n == 0 { 0 } else { sum / n }
+    sum.checked_div(n).unwrap_or(0)
 }
 
 /// Convert one map's geometry, starts and specials (no other sprites).

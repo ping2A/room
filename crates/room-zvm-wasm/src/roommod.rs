@@ -192,8 +192,10 @@ pub fn read_room_mod(bytes: &[u8]) -> Result<RoomMod, CodegenError> {
     })
 }
 
-fn registry() -> &'static Mutex<HashMap<(u64, u64), Arc<RoomMod>>> {
-    static REG: OnceLock<Mutex<HashMap<(u64, u64), Arc<RoomMod>>>> = OnceLock::new();
+type Registry = Mutex<HashMap<(u64, u64), Arc<RoomMod>>>;
+
+fn registry() -> &'static Registry {
+    static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

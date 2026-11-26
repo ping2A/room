@@ -1,4 +1,7 @@
 //! Run a map idle and report when the level ends or the player dies.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, GameState, Headless, Skill};
 use room_vfs::VfsBuilder;
 use std::sync::Arc;
@@ -65,7 +68,7 @@ fn main() {
         let pm = w.players[0].as_ref().and_then(|p| p.mo).unwrap();
         println!("t=-1 angle {:?}", w.actors.get(pm).unwrap().angle);
     }
-    let walk = a.get(5).map_or(false, |s| s == "walk");
+    let walk = a.get(5).is_some_and(|s| s == "walk");
     let mut seen = std::collections::HashSet::new();
     for t in 0..tics {
         if walk {

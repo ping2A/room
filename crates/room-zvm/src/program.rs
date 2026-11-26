@@ -133,10 +133,8 @@ pub fn block_costs(code: &[u32]) -> Vec<u32> {
                     leader[next] = true;
                 }
             }
-            Some(Op::Ret | Op::Return | Op::Trap) => {
-                if next < n {
-                    leader[next] = true;
-                }
+            Some(Op::Ret | Op::Return | Op::Trap) if next < n => {
+                leader[next] = true;
             }
             _ => {}
         }

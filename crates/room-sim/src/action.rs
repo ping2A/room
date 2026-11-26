@@ -3065,7 +3065,7 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
                 missile,
                 flags,
             } => {
-                let result = chase_with_labels(world, self_id, &melee, &missile, flags as i32);
+                let result = chase_with_labels(world, self_id, &melee, &missile, flags);
                 if let ActionResult::Jump(state) = result {
                     world.set_state(self_id, Some(state), false);
                 }
@@ -6907,7 +6907,7 @@ pub(crate) fn a_look(world: &mut World, self_id: ActorId) -> ActionResult {
     // UZDoom normally uses per-actor LastHeard; compatflags or NOSECTOR retain
     // the legacy sector SoundTarget lookup.
     if !friendly {
-        if let Some(tid) = heard_target(&world, &self_actor) {
+        if let Some(tid) = heard_target(world, &self_actor) {
             if let Some(t) = world.actors.get(tid) {
                 let shootable = (t.flags
                     | world.classes.get(t.class).map(|c| c.flags).unwrap_or(0))
@@ -7290,12 +7290,8 @@ fn try_raise_corpse_id_with(
         return None;
     }
     if world.zscript.is_active() {
-        let Some(raiser_info) = world.zscript_actor_event_info(self_id) else {
-            return None;
-        };
-        let Some(corpse_info) = world.zscript_actor_event_info(corpse_id) else {
-            return None;
-        };
+        let raiser_info = world.zscript_actor_event_info(self_id)?;
+        let corpse_info = world.zscript_actor_event_info(corpse_id)?;
         world.zscript.sync_host(world.skill, 0, 0);
         if !world.zscript.can_resurrect(
             self_id.index(),
@@ -7914,11 +7910,12 @@ fn a_chase_tail(
         .get(class)
         .map(|c| c.active_sound.clone())
         .filter(|s| !s.is_empty());
-    if play_active && let Some(sound) = sound {
-        if i32::from(world.p_random("pr_chase")) < 3 {
-            if let Some(a) = world.actors.get(self_id) {
-                world.play_sound(&sound, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
-            }
+    if play_active
+        && let Some(sound) = sound
+        && i32::from(world.p_random("pr_chase")) < 3
+    {
+        if let Some(a) = world.actors.get(self_id) {
+            world.play_sound(&sound, a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
         }
     }
     ActionResult::Continue
@@ -8837,10 +8834,10 @@ fn a_damage_self(world: &mut World, self_id: ActorId, args: &[String]) -> Action
         .map(|s| s.trim_matches('"').to_owned())
         .filter(|s| !s.is_empty());
     let prev = if let Some(ref m) = mod_name {
-        world.actors.get_mut(self_id).map(|a| {
-            let old = std::mem::replace(&mut a.damage_type, m.clone());
-            old
-        })
+        world
+            .actors
+            .get_mut(self_id)
+            .map(|a| std::mem::replace(&mut a.damage_type, m.clone()))
     } else {
         None
     };
@@ -9597,7 +9594,6 @@ fn record_missile_shot(
 }
 
 /// Count live Lost Souls (vanilla soft cap before Pain Elemental spits).
-
 fn count_live_class(world: &World, class: room_core::ClassId) -> usize {
     world
         .thinkers
@@ -10870,7 +10866,9 @@ fn a_saw(world: &mut World, self_id: ActorId) -> ActionResult {
     if let Some(a) = world.actors.get(self_id) {
         world.play_sound("weapons/sawhit", a.pos.x(), a.pos.y(), a.pos.z(), 1.0);
     }
-    let tid = hit.actor.expect("checked");
+    let Some(tid) = hit.actor else {
+        return ActionResult::Continue;
+    };
     let face = match (world.actors.get(self_id), world.actors.get(tid)) {
         (Some(src), Some(tgt)) => {
             let dx = tgt.pos.x() - src.pos.x();
@@ -19936,7 +19934,7 @@ actor Barrel : Actor 9002
         for _ in 0..10 {
             w.tick();
         }
-        assert!(w.actors.get(z).map_or(true, |a| a.health <= 0));
+        assert!(w.actors.get(z).is_none_or(|a| a.health <= 0));
     }
 
     #[test]

@@ -392,7 +392,7 @@ impl CanvasRaster {
                     let sg = color[1].clamp(0.0, 1.0);
                     let sb = color[2].clamp(0.0, 1.0);
                     let sa = color[3].clamp(0.0, 1.0);
-                    if x0 >= x1 || y0 >= y1 || (sa < 0.999 && sa <= 0.001) {
+                    if x0 >= x1 || y0 >= y1 || sa <= 0.001 {
                         continue;
                     }
                     self.mark(y0, y1);
@@ -779,7 +779,7 @@ mod tests {
                         let c = rgba8(*color);
                         #[allow(clippy::cast_possible_truncation)]
                         let mut dest = TextDraw {
-                            rgba: rgba,
+                            rgba,
                             buf_w: width,
                             buf_h: height,
                             x: *x as i32,
@@ -841,12 +841,12 @@ mod tests {
             let (x, y) = (r.f(-40.0, w as f32 + 10.0), r.f(-40.0, h as f32 + 10.0));
             match r.pick(10) {
                 0 => c.clear(random_color(r)),
-                1 | 2 | 3 => {
+                1..=3 => {
                     let (fw, fh) = (r.f(-5.0, w as f32), r.f(-5.0, h as f32));
                     c.fill_rect(x, y, fw, fh, random_color(r));
                 }
                 4 => c.fill_rect(0.0, 0.0, w as f32, h as f32, random_color(r)),
-                5 | 6 | 7 => {
+                5..=7 => {
                     let (bw, bh) = (1 + r.pick(40) as u32, 1 + r.pick(30) as u32);
                     let mut px = vec![0u8; (bw * bh * 4) as usize];
                     for p in px.chunks_exact_mut(4) {

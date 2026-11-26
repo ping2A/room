@@ -4,6 +4,9 @@
 //! Cases may embed geometry or set `"map": "E1L1.MAP"` to load from
 //! `testdata/duke/duke3d.grp` (map cases skipped if GRP missing).
 
+// Fixture helpers run only under `cargo test`; a malformed fixture should panic.
+#![allow(clippy::unwrap_used)]
+
 use room_build::grp::Grp;
 use room_build_engine::{
     BuildWorld, SectorWalls, SectorZ, WallXY, clipmove_xy, getzsofslope, inside,

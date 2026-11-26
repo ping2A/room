@@ -1,5 +1,8 @@
 //! Render a native Duke view headless to a binary PPM.
 //! `cargo run --release -p room-duke --example duke_shot -- E1L1 out.ppm [tics] [w h]`
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::path::PathBuf;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -69,9 +72,8 @@ fn main() {
             if d < r {
                 let t = s.actor_temps.get(i).map(|t| t.g_t).unwrap_or_default();
                 eprintln!(
-                    "spr {i} pic={} stat={st}{} g_t={t:?} sect={} d={d} xy=({},{}) z={} lotag={} hitag={} cstat={} xr={} extra={} owner={}",
+                    "spr {i} pic={} stat={st} g_t={t:?} sect={} d={d} xy=({},{}) z={} lotag={} hitag={} cstat={} xr={} extra={} owner={}",
                     sp.picnum,
-                    "",
                     sp.sectnum,
                     sp.x,
                     sp.y,

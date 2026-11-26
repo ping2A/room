@@ -155,7 +155,7 @@ game_fns! {
     /// over; shells show the final standings.
     GameEndMatch = "game_end_match"(I32);
     /// `game_end_match_ex(winner, standings_ptr, n)` (play; BE11): like
-    /// [`GameEndMatch`], plus `n` little-endian [`MatchStandingV1`] rows.
+    /// `GameEndMatch`, plus `n` little-endian `MatchStandingV1` rows.
     GameEndMatchEx = "game_end_match_ex"(I32, I32, I32);
     /// `level_things(editor number, out [x, y, angle°] f64 triples, cap) -> total`
     /// — map things of that type as placed in the map (e.g. deathmatch starts).
@@ -170,7 +170,7 @@ game_fns! {
     HudClear = "hud_clear"(I32) -> I32;
     /// `player_capture_input(PlayerRef, mask)` (play; mask 0 releases).
     PlayerCaptureInput = "player_capture_input"(I32, I32);
-    /// `player_cmd(PlayerRef, out_ptr) -> i32` (play; writes [`PlayerCmdV1`]).
+    /// `player_cmd(PlayerRef, out_ptr) -> i32` (play; writes `PlayerCmdV1`).
     PlayerCmd = "player_cmd"(I32, I32) -> I32;
     /// `player_sound(PlayerRef, name_ptr, len, volume)` (play; that seat only).
     PlayerSound = "player_sound"(I32, I32, I32, F64);
@@ -364,12 +364,10 @@ mod tests {
         );
         assert_eq!(GameFn::ActorSpawn.result(), Some(ValKind::I64));
         assert_eq!(GameFn::ActorDestroy.result(), None);
-        assert_eq!(GameFn::ALL.len(), 76);
+        assert_eq!(GameFn::ALL.len(), 77);
         assert_eq!(GameFn::ALL[68], GameFn::ActorHitInfo);
-        assert_eq!(
-            GameFn::ALL[GameFn::ALL.len() - 1],
-            GameFn::ActorSetSoundClass
-        );
+        assert_eq!(GameFn::ALL[75], GameFn::ActorSetSoundClass);
+        assert_eq!(GameFn::ALL[GameFn::ALL.len() - 1], GameFn::PointReachable);
         assert_eq!(
             GameFn::HudWidgetSet.params(),
             &[ValKind::I32, ValKind::I32, ValKind::I32, ValKind::I32]

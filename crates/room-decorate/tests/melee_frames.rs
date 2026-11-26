@@ -1,3 +1,8 @@
+//! DECORATE frame-name parsing for melee states (backslash and bracket frames).
+
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use room_decorate::parse_decorate;
 #[test]
 fn backslash_and_bracket_frames() {

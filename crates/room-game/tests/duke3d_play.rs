@@ -999,7 +999,7 @@ fn duke_vfs(bytes: &[u8]) -> room_vfs::Vfs {
 /// Sound names heard over `tics` tics of `cmd`.
 fn run(game: &mut Headless, tics: usize, cmd: TicCmd, heard: &mut Vec<String>) {
     for _ in 0..tics {
-        game.tick(&[cmd.clone()]);
+        game.tick(&[cmd]);
         let w = game.world().unwrap();
         heard.extend(w.sound_events.iter().map(|e| e.name.clone()));
     }
@@ -1476,11 +1476,7 @@ fn pipebomb_throw_strength_and_pitch() {
         let before: Vec<_> = w.thinkers.default.clone();
         let mut vel = None;
         for t in 0..hold + 20 {
-            let cmd = if t < hold {
-                fire.clone()
-            } else {
-                TicCmd::default()
-            };
+            let cmd = if t < hold { fire } else { TicCmd::default() };
             game.tick(&[cmd]);
             let w = game.world().unwrap();
             if vel.is_none() {
@@ -1497,11 +1493,7 @@ fn pipebomb_throw_strength_and_pitch() {
         }
         // The remote sets it off before the next throw.
         for t in 0..34 {
-            let cmd = if t < 3 {
-                fire.clone()
-            } else {
-                TicCmd::default()
-            };
+            let cmd = if t < 3 { fire } else { TicCmd::default() };
             game.tick(&[cmd]);
         }
         vel.expect("no pipebomb thrown")
@@ -2312,7 +2304,7 @@ fn opening_a_door_brightens_se8_lights() {
         let w = game.world().unwrap();
         let after: Vec<i16> = rooms.iter().map(|&i| w.sectors[i].light).collect();
         assert!(
-            after.iter().any(|&l| l == bright) || after.iter().zip(&before).any(|(&a, &b)| a > b),
+            after.contains(&bright) || after.iter().zip(&before).any(|(&a, &b)| a > b),
             "{map_name} door {door} lights {before:?} → {after:?} want {bright}"
         );
         return;

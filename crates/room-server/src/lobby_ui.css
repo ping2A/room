@@ -1091,3 +1091,17 @@ body {
 .time-limit-picks { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .time-limit-picks .btn[aria-pressed="true"] { border-color: currentColor; color: var(--text, #fff); }
 .time-limit-note { margin: 0; font-weight: 400; font-size: 0.78rem; line-height: 1.4; }
+
+/* Link to the project's source (header pill and footer). */
+a.pill.source-link,
+.foot a.foot-link {
+  color: inherit;
+  text-decoration: none;
+}
+a.pill.source-link:hover,
+a.pill.source-link:focus-visible,
+.foot a.foot-link:hover,
+.foot a.foot-link:focus-visible {
+  color: var(--r-amber, #d4a04a);
+  text-decoration: underline;
+}

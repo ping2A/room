@@ -1,5 +1,8 @@
 //! Static check: every sprite frame used by any state resolves to a picture
 //! Room can actually decode (PatchCache), split by "no lump" / "lump but decode failed".
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_ui::PatchCache;
 use room_vfs::{Namespace, VfsBuilder};
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,0 +1,13 @@
+actor BdCheckFlag : Actor 9904
+{
+  // Deliberately unknown — BD0 report must still surface this.
+  +BDCHECK_NOT_A_REAL_FLAG
+  +THRUACTORS
+  States
+  {
+  Spawn:
+    POSS A 5 A_JumpIf(1, "Spawn")
+    POSS B 5 A_WEAPONREADY
+    Loop
+  }
+}

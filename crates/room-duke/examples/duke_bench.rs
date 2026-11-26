@@ -553,7 +553,7 @@ fn main() {
             ammo_before - b.s.player.ammo[1]
         );
         let mut rows: Vec<_> = spawned.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         for (tile, count) in rows.iter().take(12) {
             println!("scenario spawned {} ({tile}): {count}", label(*tile));
         }
@@ -647,7 +647,7 @@ fn main() {
             }
         }
         let mut rows: Vec<_> = census.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         for ((picnum, stat), count) in rows.iter().take(15) {
             println!("census picnum {picnum:>5} stat {stat:>3}: {count}");
         }

@@ -183,7 +183,7 @@ fn compute(world: &World) -> Vec<bool> {
         let (tid, tag) = (l.args[0], l.args[1]);
         for &(thing_tid, s) in &dest_sectors {
             let by_tag = tag != 0 && map.sectors[s].tags.contains(&tag);
-            let by_tid = tag == 0 && tid != 0 && thing_tid as i32 == tid;
+            let by_tid = tag == 0 && tid != 0 && thing_tid == tid;
             if (by_tag || by_tid) && from < n {
                 link(from, s);
             }

@@ -2,6 +2,9 @@
 //!
 //! Run: `cargo bench -p room-zvm --bench tick_override`
 
+// `criterion_main!` expands to an undocumented `fn main`.
+#![allow(missing_docs)]
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use room_zvm::{CompiledFunction, CompiledProgram, Op, Zvm, optimize_program};
 

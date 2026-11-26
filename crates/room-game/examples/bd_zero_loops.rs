@@ -1,5 +1,8 @@
 //! Find 0-tic state cycles (next-chain only): each one trips the
 //! the endless-loop guard whenever an actor enters it without a jump out.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_vfs::VfsBuilder;
 use std::collections::BTreeSet;
 fn main() {

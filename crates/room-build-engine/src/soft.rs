@@ -671,7 +671,7 @@ impl SoftTiles {
             .blend_tables
             .get(&blend_table)
             .map(Vec::as_slice)
-            .or_else(|| self.translucency.as_deref());
+            .or(self.translucency.as_deref());
         let Some(table) = table else {
             return foreground;
         };
@@ -753,7 +753,7 @@ impl SoftTiles {
         let u = look_q16.rem_euclid(256_i64 << 16) * i64::try_from(tile.w).ok()? / (256_i64 << 16);
         let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
         let half = i64::from(height / 2);
-        let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
+        let sky_horizon = half + (((i64::from(horizon) - half) * yscale) >> 16);
         Some((tile, u, sky_horizon))
     }
 
@@ -842,8 +842,8 @@ impl SoftTiles {
         if face.width == 0 || face.height == 0 {
             return None;
         }
-        let u = (u64::from(texture_coordinate(u_axis)) * u64::from(face.width) >> 16) as usize;
-        let v = (u64::from(texture_coordinate(v_axis)) * u64::from(face.height) >> 16) as usize;
+        let u = ((u64::from(texture_coordinate(u_axis)) * u64::from(face.width)) >> 16) as usize;
+        let v = ((u64::from(texture_coordinate(v_axis)) * u64::from(face.height)) >> 16) as usize;
         let offset = u.min(usize::from(face.width) - 1) * usize::from(face.height)
             + v.min(usize::from(face.height) - 1);
         let pixel = face
@@ -892,7 +892,7 @@ impl SoftTiles {
             (look_q16.rem_euclid(256_i64 << 16) * i64::from(tile_width) / (256_i64 << 16)) as u32;
         let yscale = i64::from(self.sky_yscale.get(&base).copied().unwrap_or(65536));
         let half = i64::from(height / 2);
-        let sky_horizon = half + ((i64::from(horizon) - half) * yscale >> 16);
+        let sky_horizon = half + (((i64::from(horizon) - half) * yscale) >> 16);
         let th = i64::from(tile_height.max(1));
         let v = th / 2
             + (i64::from(row) - sky_horizon) * 200 / i64::from(height)
@@ -1629,8 +1629,8 @@ fn project_mirror_quad(
         let fy = cy.max(1);
         let horizon = -horiz_pixel_offset_q16(view.horiz_q16, fy);
         Some((
-            i32::try_from(cx + fx * i64::from(rx) / i64::from(rz)).ok()?,
-            i32::try_from(cy - fy * i64::from(ry) / i64::from(rz) - i64::from(horizon)).ok()?,
+            i32::try_from(cx + fx * rx / rz).ok()?,
+            i32::try_from(cy - fy * ry / rz - i64::from(horizon)).ok()?,
             i32::try_from(rz).ok()?,
         ))
     };
@@ -1934,7 +1934,7 @@ fn project_plane_pixel(
             return flat;
         }
         let t = (z0 - f64::from(view.posz)) * fy / 16.0 / denom;
-        if !(t > 0.0) || !t.is_finite() {
+        if t <= 0.0 || !t.is_finite() {
             return flat;
         }
         depth = t.min(1.0e9) as i64;
@@ -4867,10 +4867,7 @@ mod tests {
         let v = w.build_view(50, 50, 0, 0, 100, 0);
         let mut f = SoftFrame::new(64, 64);
         render_topdown(&w, &v, &mut f, 4);
-        assert!(
-            f.pixels.iter().any(|&p| p == 255),
-            "expected solid wall ink"
-        );
+        assert!(f.pixels.contains(&255), "expected solid wall ink");
         assert_eq!(f.pixels[(32 * 64 + 32) as usize], 128); // camera
     }
 

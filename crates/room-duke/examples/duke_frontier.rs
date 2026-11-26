@@ -1,4 +1,7 @@
 //! DEMO1/2/3 sync frontier: `cargo run -p room-duke --example duke_frontier [real|legacy] [DEMO1] [limit]`.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::path::PathBuf;
 
 fn main() {

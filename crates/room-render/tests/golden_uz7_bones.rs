@@ -55,7 +55,7 @@ fn iqm_bytes() -> Vec<u8> {
     let (off, scale) = (-4.0f32, 8.0f32 / 65535.0);
 
     let mut out = vec![0u8; 124];
-    let mut put = |buf: &mut Vec<u8>, bytes: &[u8]| -> u32 {
+    let put = |buf: &mut Vec<u8>, bytes: &[u8]| -> u32 {
         let at = buf.len() as u32;
         buf.extend_from_slice(bytes);
         at

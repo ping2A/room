@@ -247,7 +247,7 @@ pub struct Headless {
     compat_db: Option<Arc<room_map::CompatDatabase>>,
     /// Per-map `levelfixes.ron` geometry edits (`sv_nomapfixes` skips).
     level_fixes: Option<Arc<room_map::LevelFixesDatabase>>,
-    /// When true, skip applying [`Self::compat_db`] / [`Self::level_fixes`] (`sv_nomapfixes`).
+    /// When true, skip applying `Self::compat_db` / `Self::level_fixes` (`sv_nomapfixes`).
     pub sv_nomapfixes: bool,
     /// In-memory hub map snapshots (keyed by uppercase map lump name).
     hub_snapshots: BTreeMap<String, HubSnapshot>,
@@ -321,7 +321,7 @@ fn apply_keyconf(slots: &mut room_sim::WeaponSlots, conf: &room_defs::KeyConf) {
     }
 }
 
-/// Console `alias` lines from KEYCONF (shell applies via [`room_console::Console::exec`]).
+/// Console `alias` lines from KEYCONF (shell applies via `room_console::Console::exec`).
 #[must_use]
 pub fn keyconf_alias_lines(conf: &room_defs::KeyConf) -> Vec<String> {
     conf.commands
@@ -2062,7 +2062,7 @@ impl Headless {
     }
 
     /// Every seat has voted ready since the intermission began, or the vote
-    /// timed out ([`INTERMISSION_VOTE_TIMEOUT_TICS`]) (consumed).
+    /// timed out (`INTERMISSION_VOTE_TIMEOUT_TICS`) (consumed).
     pub fn take_intermission_advance(&mut self) -> bool {
         std::mem::take(&mut self.intermission_advance)
     }
@@ -3338,7 +3338,7 @@ fn conevt_lotsofcolour_from(world: &mut World, mo: room_sim::ActorId, count: i32
         .get(mo)
         .map(|a| (a.pos, a.angle))
         .unwrap_or((room_core::DVec3::ZERO, room_core::Angle::ZERO));
-    for i in 0..count.max(0).min(16) {
+    for i in 0..count.clamp(0, 16) {
         let rx = i32::from(world.p_random("pr_dukeguts")) - 128;
         let ry = i32::from(world.p_random("pr_dukeguts")) - 128;
         let rz = i32::from(world.p_random("pr_dukeguts") & 127);

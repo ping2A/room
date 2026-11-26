@@ -510,9 +510,8 @@ impl<'a> DefinitionsBuilder<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
     use room_vfs::{VfsBuilder, WadWriter};
 

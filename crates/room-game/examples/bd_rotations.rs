@@ -1,6 +1,9 @@
 //! BD: for every sprite frame a monster can show, check each of the 8 view
 //! rotations resolves with the renderer's lookup (`sprite_lump_candidates_rot`).
 //! A miss means the enemy vanishes when seen from that side.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_ui::PatchCache;
 use room_vfs::VfsBuilder;
 use std::collections::{BTreeMap, BTreeSet};

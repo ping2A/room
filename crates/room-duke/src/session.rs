@@ -1814,7 +1814,7 @@ pub const DEMO1_PAD_PRE: &[u32] = &[
 ];
 
 /// Extra `krand`s before `moveexplosions` (stub for missing movefallers / …).
-/// APLAYER trailing water `ifrnd 4` is live in [`crate::moveplayers`].
+/// APLAYER trailing water `ifrnd 4` is live in `crate::moveplayers`.
 pub const DEMO1_PAD_PRE_EXPLODE: &[u32] = &[
     0, // tic0
     0, // tic1

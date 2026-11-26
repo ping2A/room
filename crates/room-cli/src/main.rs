@@ -666,11 +666,10 @@ fn run() -> Result<()> {
                                 | room_zvm::Op::StoreFieldF
                                 | room_zvm::Op::Trap
                         )
-                    ) {
-                        if i < f.code.len() {
-                            print!("  ext={}", f.code[i]);
-                            i += 1;
-                        }
+                    ) && i < f.code.len()
+                    {
+                        print!("  ext={}", f.code[i]);
+                        i += 1;
                     }
                     println!();
                 }

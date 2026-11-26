@@ -1,0 +1,16 @@
+// BD1 D8: `Fail:` is a state label (CustomInventory), not only a flow keyword.
+actor BdCheckFailLabel : CustomInventory 9906
+{
+  States
+  {
+  Pickup:
+    TNT1 A 0
+    Stop
+  Fail:
+    TNT1 A 0
+    Stop
+  Use:
+    TNT1 A 0
+    Fail
+  }
+}

@@ -2306,23 +2306,6 @@ impl Parser<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn evaluates_flag_expressions() {
-        assert_eq!(eval_int("SXF_NOCHECKPOSITION"), Some(32));
-        assert_eq!(eval_int("\"CHAN_BODY\""), Some(4));
-        assert_eq!(eval_int("BF_USEAMMO | 4"), Some(5));
-        assert_eq!(eval_int("(1 << 3) + 2"), Some(10));
-        assert_eq!(eval_int("-5"), Some(-5));
-        assert_eq!(eval_int("true"), Some(1));
-        assert_eq!(eval_int("NotAConstant"), None);
-        assert_eq!(eval_int("1.5"), None);
-    }
-}
-
 /// `arg` rewritten as a number when it is an unquoted flag expression whose
 /// names all contain `_` (`SXF_NOCHECKPOSITION|SXF_SETMASTER`). Plain words
 /// (`Gray`, state labels, class names) are left alone.
@@ -2349,4 +2332,21 @@ pub(crate) fn resolve_flag_arg(arg: &str) -> Option<String> {
         return None;
     }
     eval_int(t).map(|v| v.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evaluates_flag_expressions() {
+        assert_eq!(eval_int("SXF_NOCHECKPOSITION"), Some(32));
+        assert_eq!(eval_int("\"CHAN_BODY\""), Some(4));
+        assert_eq!(eval_int("BF_USEAMMO | 4"), Some(5));
+        assert_eq!(eval_int("(1 << 3) + 2"), Some(10));
+        assert_eq!(eval_int("-5"), Some(-5));
+        assert_eq!(eval_int("true"), Some(1));
+        assert_eq!(eval_int("NotAConstant"), None);
+        assert_eq!(eval_int("1.5"), None);
+    }
 }

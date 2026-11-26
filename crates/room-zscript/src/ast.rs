@@ -232,7 +232,7 @@ pub struct Param {
 }
 
 /// Type reference (kept mostly textual for ZS0/ZS1).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum TypeRef {
     /// Named type / keyword.
     Named(String),
@@ -245,13 +245,8 @@ pub enum TypeRef {
     /// `readonly<T>`
     Readonly(Box<TypeRef>),
     /// `void`
+    #[default]
     Void,
-}
-
-impl Default for TypeRef {
-    fn default() -> Self {
-        Self::Void
-    }
 }
 
 /// Default block statements (properties / flags) as raw text lines for ZS0.

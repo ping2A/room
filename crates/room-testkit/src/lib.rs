@@ -596,7 +596,6 @@ impl MapBuilder {
     }
 
     /// Serialise this map as a PWAD (`map_name` + `TEXTMAP` + `ENDMAP`).
-    #[must_use]
     pub fn build_udmf_wad(&self, map_name: &str) -> Result<Vec<u8>, String> {
         let text = self.build_udmf_text();
         WadWriter::pwad()

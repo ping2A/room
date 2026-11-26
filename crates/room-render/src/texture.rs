@@ -339,83 +339,6 @@ impl TextureManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use super::*;
-    use room_formats::{Image, ImagePixels, PalettedImage};
-
-    #[test]
-    fn patch_index_zero_is_transparent_when_flagged() {
-        let image = Image {
-            left_offset: 0,
-            top_offset: 0,
-            has_translucency: true,
-            pixels: ImagePixels::Paletted(PalettedImage {
-                width: 2,
-                height: 1,
-                indices: vec![0, 1],
-                alpha: Vec::new(),
-            }),
-        };
-        let rgba = expand_image(&image, None);
-        assert_eq!(rgba[3], 0, "hole");
-        assert_eq!(rgba[7], 255, "opaque index");
-    }
-
-    #[test]
-    fn oversized_textures_shrink_to_the_device_limit() {
-        let px = vec![200u8; 8 * 4 * 4];
-        let (w, h, out) = fit_to_limit(8, 4, px, 4);
-        assert_eq!((w, h), (4, 2));
-        assert_eq!(out.len(), 4 * 2 * 4);
-        assert!(out.iter().all(|&b| b == 200));
-        let (w, h, _) = fit_to_limit(3, 3, vec![0; 36], 4);
-        assert_eq!((w, h), (3, 3));
-    }
-
-    #[test]
-    fn mip_chain_averages_colour_and_keeps_masks_binary() {
-        // 2×2 masked: two red opaque, two holes → 1×1 opaque red.
-        let base = vec![255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0];
-        let levels = mip_chain(2, 2, base);
-        assert_eq!(levels.len(), 2);
-        assert_eq!(levels[1].2, vec![255, 0, 0, 255]);
-        // One opaque texel in the 2×2 must survive, or the sprite pops out.
-        let lone = mip_chain(
-            2,
-            2,
-            vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        );
-        assert_eq!(lone[1].2[3], 255);
-        // 3×1 → 1×1 (odd sizes clamp), one hole of four samples stays opaque.
-        let levels = mip_chain(3, 1, vec![0, 0, 0, 255, 200, 200, 200, 255, 9, 9, 9, 0]);
-        assert_eq!((levels[1].0, levels[1].1), (1, 1));
-        assert_eq!(levels[1].2, vec![100, 100, 100, 255]);
-        // Soft alpha averages.
-        let levels = mip_chain(2, 1, vec![10, 10, 10, 100, 10, 10, 10, 50]);
-        assert_eq!(levels[1].2[3], 75);
-    }
-
-    #[test]
-    fn flat_index_zero_stays_opaque() {
-        let image = Image {
-            left_offset: 0,
-            top_offset: 0,
-            has_translucency: false,
-            pixels: ImagePixels::Paletted(PalettedImage {
-                width: 1,
-                height: 1,
-                indices: vec![0],
-                alpha: Vec::new(),
-            }),
-        };
-        let rgba = expand_image(&image, None);
-        assert_eq!(rgba[3], 255);
-    }
-}
-
 /// Box-filtered mip levels down to 1×1, level 0 first. Colour averages the
 /// visible texels. Masked textures (alpha only 0 / 255) stay binary and stay
 /// opaque when any source texel is, so a sprite does not vanish at distance.
@@ -542,4 +465,81 @@ fn expand_image(image: &Image, playpal: Option<&Playpal>) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use room_formats::{Image, ImagePixels, PalettedImage};
+
+    #[test]
+    fn patch_index_zero_is_transparent_when_flagged() {
+        let image = Image {
+            left_offset: 0,
+            top_offset: 0,
+            has_translucency: true,
+            pixels: ImagePixels::Paletted(PalettedImage {
+                width: 2,
+                height: 1,
+                indices: vec![0, 1],
+                alpha: Vec::new(),
+            }),
+        };
+        let rgba = expand_image(&image, None);
+        assert_eq!(rgba[3], 0, "hole");
+        assert_eq!(rgba[7], 255, "opaque index");
+    }
+
+    #[test]
+    fn oversized_textures_shrink_to_the_device_limit() {
+        let px = vec![200u8; 8 * 4 * 4];
+        let (w, h, out) = fit_to_limit(8, 4, px, 4);
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(out.len(), 4 * 2 * 4);
+        assert!(out.iter().all(|&b| b == 200));
+        let (w, h, _) = fit_to_limit(3, 3, vec![0; 36], 4);
+        assert_eq!((w, h), (3, 3));
+    }
+
+    #[test]
+    fn mip_chain_averages_colour_and_keeps_masks_binary() {
+        // 2×2 masked: two red opaque, two holes → 1×1 opaque red.
+        let base = vec![255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0];
+        let levels = mip_chain(2, 2, base);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[1].2, vec![255, 0, 0, 255]);
+        // One opaque texel in the 2×2 must survive, or the sprite pops out.
+        let lone = mip_chain(
+            2,
+            2,
+            vec![255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(lone[1].2[3], 255);
+        // 3×1 → 1×1 (odd sizes clamp), one hole of four samples stays opaque.
+        let levels = mip_chain(3, 1, vec![0, 0, 0, 255, 200, 200, 200, 255, 9, 9, 9, 0]);
+        assert_eq!((levels[1].0, levels[1].1), (1, 1));
+        assert_eq!(levels[1].2, vec![100, 100, 100, 255]);
+        // Soft alpha averages.
+        let levels = mip_chain(2, 1, vec![10, 10, 10, 100, 10, 10, 10, 50]);
+        assert_eq!(levels[1].2[3], 75);
+    }
+
+    #[test]
+    fn flat_index_zero_stays_opaque() {
+        let image = Image {
+            left_offset: 0,
+            top_offset: 0,
+            has_translucency: false,
+            pixels: ImagePixels::Paletted(PalettedImage {
+                width: 1,
+                height: 1,
+                indices: vec![0],
+                alpha: Vec::new(),
+            }),
+        };
+        let rgba = expand_image(&image, None);
+        assert_eq!(rgba[3], 255);
+    }
 }

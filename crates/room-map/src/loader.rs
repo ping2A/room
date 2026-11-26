@@ -283,7 +283,7 @@ pub fn list_maps(vfs: &Vfs) -> Vec<String> {
         }
         prev = Some((name, info.container));
     }
-    names.sort_by(|a, b| map_sort_key(a).cmp(&map_sort_key(b)));
+    names.sort_by_key(|a| map_sort_key(a));
     names
 }
 

@@ -1,5 +1,8 @@
 //! BD: live monsters (health > 0) that are not drawable (TNT1, DONTDRAW,
 //! RenderStyle None, alpha 0, no lump) — with the state chain that hid them.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_sim::TicCmd;
 use room_ui::PatchCache;
@@ -145,7 +148,7 @@ fn main() {
         println!("corpse #{i}: {c:?}");
     }
     let mut v: Vec<_> = why.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (k, n) in v.iter().take(40) {
         println!("{n:6} {k}");
     }

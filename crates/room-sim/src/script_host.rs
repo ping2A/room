@@ -51,6 +51,7 @@ pub struct ScriptHost {
     /// Class registry snapshot for `class_find`.
     classes: Arc<Mutex<Option<Arc<ClassRegistry>>>>,
     /// Queued `acs_execute` requests from WASM (drained each tic).
+    #[allow(clippy::type_complexity)] // (script, map, args)
     acs_starts: Arc<Mutex<Vec<(i32, i32, Vec<i32>)>>>,
     modules: Vec<LoadedScript>,
 }

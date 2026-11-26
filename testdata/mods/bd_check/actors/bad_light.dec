@@ -1,0 +1,9 @@
+actor BdCheckLight : Actor 9902
+{
+  States
+  {
+  Spawn:
+    TNT1 A 1 Light("FlashlightLight1")
+    Stop
+  }
+}

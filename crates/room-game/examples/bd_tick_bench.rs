@@ -6,6 +6,9 @@
 //! The player walks, turns and fires (god mode, all weapons), so monsters
 //! wake up, gibs and casings fly: the busy case. Prints ms per tic (mean,
 //! median, 95th percentile, worst) and the actor count at the end.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_sim::{Buttons, TicCmd};
 use room_vfs::{Namespace, VfsBuilder};
@@ -23,7 +26,10 @@ fn main() {
         .unwrap()
         .mount_path(pk3)
         .unwrap();
-    let port = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods/brutal-zscript-rs/brutal-zscript.wad");
+    let port = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../mods/brutal-zscript-rs/brutal-zscript.wad"
+    );
     if std::path::Path::new(port).is_file() {
         b = b.mount_path(port).unwrap();
     }
@@ -50,14 +56,20 @@ fn main() {
     game.set_keyconf(&defs.keyconf);
     let mut libs = Vec::new();
     for name in &defs.loadacs.libraries {
-        if let Some(id) = vfs.find(name, Namespace::Acs).or_else(|| vfs.find_any_ns(name)) {
+        if let Some(id) = vfs
+            .find(name, Namespace::Acs)
+            .or_else(|| vfs.find_any_ns(name))
+        {
             libs.push(vfs.read(id).unwrap().to_vec());
         }
     }
     if !libs.is_empty() {
         game.set_acs_libraries(libs);
     }
-    game.set_acs_library_pool(room_game::acs_library_pool(&vfs), defs.loadacs.libraries.clone());
+    game.set_acs_library_pool(
+        room_game::acs_library_pool(&vfs),
+        defs.loadacs.libraries.clone(),
+    );
     let zs = room_game::load_zscript_from_vfs(&vfs);
     game.set_zscript(zs.program, handlers);
     game.set_defs(data.classes, data.states);
@@ -94,7 +106,11 @@ fn main() {
         // `BENCH_CHECKSUMS=1`: the world checksum every 100 tics, to show a
         // speed-up left the simulation unchanged.
         if t % 100 == 99 && std::env::var_os("BENCH_CHECKSUMS").is_some() {
-            println!("tic {} checksum {:016x}", t + 1, game.world().map_or(0, |w| w.checksum()));
+            println!(
+                "tic {} checksum {:016x}",
+                t + 1,
+                game.world().map_or(0, |w| w.checksum())
+            );
         }
     }
     let actors = game.world().map_or(0, |w| w.actors.len());
@@ -133,9 +149,18 @@ fn sprite_bench(game: &Headless, vfs: &room_vfs::Vfs) {
             if a.destroyed || id == mo || ((a.flags | class_flags) & room_sim::FLAG_DONTDRAW) != 0 {
                 continue;
             }
-            let Some(view) = room_sim::sprite_view(w, a, eye, 0) else { continue };
+            let Some(view) = room_sim::sprite_view(w, a, eye, 0) else {
+                continue;
+            };
             let light = room_sim::actor_light_level(w, a);
-            list.push((a.sprite.clone(), a.frame, a.pos, a.angle.degrees(), view, light));
+            list.push((
+                a.sprite.clone(),
+                a.frame,
+                a.pos,
+                a.angle.degrees(),
+                view,
+                light,
+            ));
         }
         t_view += s.elapsed().as_secs_f64();
         kept += list.len();
@@ -144,8 +169,13 @@ fn sprite_bench(game: &Headless, vfs: &room_vfs::Vfs) {
             if sprite.is_empty() {
                 continue;
             }
-            let rot_angle = if view.fixed_rotation { view.rotation_angle_deg } else { angle + view.rotation_offset_deg };
-            let rel = ((eye.y() - pos.y()).atan2(eye.x() - pos.x()).to_degrees() - rot_angle).rem_euclid(360.0);
+            let rot_angle = if view.fixed_rotation {
+                view.rotation_angle_deg
+            } else {
+                angle + view.rotation_offset_deg
+            };
+            let rel = ((eye.y() - pos.y()).atan2(eye.x() - pos.x()).to_degrees() - rot_angle)
+                .rem_euclid(360.0);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let rot = ((((rel + 22.5) / 45.0).floor() as i32).rem_euclid(8) as u8) + 1;
             if sprite.eq_ignore_ascii_case("TNT1") {

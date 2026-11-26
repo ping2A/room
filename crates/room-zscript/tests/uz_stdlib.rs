@@ -1,5 +1,8 @@
 //! UZ3: vendored UZDoom `zscript.txt` loads as one translation unit.
 
+// Fixture helpers run only under `cargo test`; a missing vendored file should panic.
+#![allow(clippy::expect_used)]
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -48,7 +51,7 @@ fn uzdoom_zscript_txt_resolves_every_include() {
             buckets.push((key, 1));
         }
     }
-    buckets.sort_by(|a, b| b.1.cmp(&a.1));
+    buckets.sort_by_key(|b| std::cmp::Reverse(b.1));
     for (key, n) in buckets.iter().take(6) {
         eprintln!("uz3 {n:5} {key}");
     }
@@ -67,7 +70,7 @@ fn uzdoom_zscript_txt_resolves_every_include() {
     // The type checker is clean, so `check` reaches the lowerer.
     // Measured 2026-11-03: the vendored stdlib lowers with no errors.
     let lower = errors.len() - sema.len();
-    assert!(lower <= 0, "lowerer produced {lower} errors (ceiling 0)");
+    assert_eq!(lower, 0, "lowerer produced {lower} errors (ceiling 0)");
     let prog = result.program.expect("lowered program");
     let mut table = room_zvm::NativeTable::with_builtins();
     let imports = prog.native_imports.len();

@@ -514,7 +514,7 @@ fn link_i(prog: CompiledProgram) -> Zvm {
 /// Reset per-call VM state so a cached VM behaves like a fresh one.
 fn reset_vm(vm: &mut Zvm) {
     vm.heap = room_zvm::ZvmHeap::new();
-    vm.play = Default::default();
+    *vm.play = Default::default();
 }
 
 fn run_i(world: &mut World, self_id: ActorId, vm: &mut Zvm) -> Option<i64> {

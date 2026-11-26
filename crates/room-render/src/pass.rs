@@ -1716,7 +1716,7 @@ const MAX_VB_BYTES: u64 = 240 * 1024 * 1024;
 fn empty_vb(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: bytes.max(64).min(MAX_VB_BYTES),
+        size: bytes.clamp(64, MAX_VB_BYTES),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })

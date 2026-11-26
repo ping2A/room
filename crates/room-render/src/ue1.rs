@@ -1,5 +1,9 @@
 //! Unreal Engine 1 vertex mesh (`*_d.3d` + `*_a.3d`) bootstrap (M10).
 
+// Binary headers are read as fixed-width slices of a length-checked buffer, so the
+// `try_into()` on each slice cannot fail.
+#![allow(clippy::unwrap_used)]
+
 use crate::models::{ModelError, ModelMesh, ModelVertex};
 use glam::Vec3;
 

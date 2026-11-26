@@ -77,7 +77,8 @@ fn engine_and_module(bytes: &[u8]) -> Result<(Engine, Module), String> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static ENGINE: OnceLock<Engine> = OnceLock::new();
-    static CACHE: OnceLock<Mutex<HashMap<(u64, u64, usize), Module>>> = OnceLock::new();
+    type ModuleCache = Mutex<HashMap<(u64, u64, usize), Module>>;
+    static CACHE: OnceLock<ModuleCache> = OnceLock::new();
     let engine = ENGINE
         .get_or_init(|| {
             let mut config = Config::new();

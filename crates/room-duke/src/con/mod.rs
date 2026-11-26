@@ -24,9 +24,8 @@ pub use eduke_vm::{
 pub use keywords::{KEYWORDS, NUM_KEYWORDS, keyword_index};
 pub use lex::{Lexer, is_altok, is_special};
 pub use vm::{
-    direct_hit_payload,
     ActorConTemps, ConProjectile, ConSpriteEnv, ConStop, ConVm, PendingDebris, PendingGuts,
-    PendingHitRadius, actor_header_hitag, execute, execute_actor, execute_with_sprite,
-    execute_with_sprite_id, init_actor_temps_from_script,
+    PendingHitRadius, actor_header_hitag, direct_hit_payload, execute, execute_actor,
+    execute_with_sprite, execute_with_sprite_id, init_actor_temps_from_script,
 };
 pub(crate) use vm::{eduke_update_anim, tick_action_frames};

@@ -1,0 +1,9 @@
+# Plasma Rifle — docs/30 §1
+held 3
+full 23
+Fire:
+PLSG A 3 A_FirePlasma
+PLSG B 20 A_ReFire
+Flash:
+PLSF A 4 A_Light1
+PLSF B 4 A_Light1

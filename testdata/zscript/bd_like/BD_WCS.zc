@@ -1,0 +1,45 @@
+class ZC_IntStrMap
+{
+    Array<int> keys;
+    Array<string> values;
+
+    void Insert(int k, string v)
+    {
+        keys.Push(k);
+        values.Push(v);
+    }
+
+    int Size()
+    {
+        return keys.Size();
+    }
+}
+
+class ZC_TMapHack : EventHandler
+{
+    ZC_IntStrMap store;
+
+    override void OnRegister()
+    {
+        store = new("ZC_IntStrMap");
+    }
+}
+
+class ZandroCompat
+{
+    static play int LumpOpen(string path)
+    {
+        return Wads.CheckNumForFullName(path);
+    }
+
+    static play string LumpReadString(int lump, int offset, int len)
+    {
+        string data = Wads.ReadLump(lump);
+        return data.Mid(offset, len);
+    }
+
+    static play int ConsolePlayerNumber()
+    {
+        return consoleplayer;
+    }
+}

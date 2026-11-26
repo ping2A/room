@@ -1,0 +1,85 @@
+
+/*class Script_DamageMult : EventHandler
+{
+	override void WorldThingDamaged(WorldEvent e)
+	{
+		if (GameState != GS_LEVEL)
+			return;
+
+		if (Skill < 6)
+			return;
+
+		Actor victim = e.Thing;
+		Actor source = e.DamageSource;
+
+		if (!victim || !source)
+			return;
+
+		if ((victim.bISMONSTER || victim is "PlayerPawn") &&
+		    (source.bISMONSTER || source is "PlayerPawn"))
+		{
+			e.Damage *= 7;
+		}
+	}
+}*/
+
+class Script_DamageMult : EventHandler
+{
+	override void PlayerEntered(PlayerEvent e)
+	{
+		if (GameState != GS_LEVEL || Skill < 6)
+			return;
+
+		Actor plr = players[e.PlayerNumber].mo;
+		if (plr)
+		{
+			plr.GiveInventory("Damage_Control", 1);
+		}
+	}
+
+	override void WorldThingSpawned(WorldEvent e)
+	{
+		if (GameState != GS_LEVEL || Skill < 6)
+			return;
+
+		if (e.Thing && e.Thing.bISMONSTER)
+		{
+			e.Thing.GiveInventory("Damage_Control", 1);
+		}
+	}
+}
+
+class Damage_Control : Inventory
+{
+	Default
+	{
+		INVENTORY.MaxAmount 1;
+		+INVENTORY.IGNORESKILL
+		+INVENTORY.AUTOACTIVATE
+		+INVENTORY.UNDROPPABLE
+		+INVENTORY.UNTOSSABLE
+	}
+
+	override void ModifyDamage(
+		int damage,
+		Name damageType,
+		out int newDamage,
+		bool passive,
+		Actor inflictor,
+		Actor source,
+		int flags)
+	{
+		// Hard early-outs
+		if (!passive || !source || !inflictor)
+			return;
+
+		// Only scale player / monster damage
+		if (source.bISMONSTER || PlayerPawn(source))
+		{
+			if (damageType == "Burn") newDamage = damage * 3;
+			else newDamage = damage * 7;
+			
+			if (source.GetClassName() == "TehLostSoul") newDamage = damage * 2;
+		}
+	}
+}

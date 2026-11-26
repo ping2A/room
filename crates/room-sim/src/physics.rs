@@ -269,7 +269,7 @@ fn line_blocks(
     if (flags & crate::world::ML_RAILING) != 0 || ext & room_map::udmf::ext::LINE_JUMPOVER != 0 {
         let floor = |s: Option<room_core::SectorId>| {
             s.and_then(|s| world.map.sectors.get(s.raw() as usize))
-                .map(|s| f64::from(s.floor_height))
+                .map(|s| s.floor_height)
                 .unwrap_or(f64::MIN)
         };
         let top = floor(line.front_sector).max(floor(line.back_sector)) + 32.0;
@@ -814,7 +814,7 @@ fn midtex_slab_span(
     mid_h: f64,
 ) -> (f64, f64) {
     for attach in &world.map.setup.midtex_attach {
-        if !attach.lines.iter().any(|&i| i == line_idx) {
+        if !attach.lines.contains(&line_idx) {
             continue;
         }
         let si = attach.sector.raw() as usize;
@@ -2232,9 +2232,7 @@ fn reflect_missile_off_actor(
     let blocker_target = blocker.target;
     let aim_reflect = blocker.extra_flags.get_name("AIMREFLECT");
     let mirror_reflect = blocker.extra_flags.get_name("MIRRORREFLECT");
-    let Some(missile) = world.actors.get(missile_id) else {
-        return None;
-    };
+    let missile = world.actors.get(missile_id)?;
     let old_target = missile.target;
     let velocity = missile.vel;
     let missile_pos = missile.pos;

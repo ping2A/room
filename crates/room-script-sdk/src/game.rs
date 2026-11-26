@@ -345,7 +345,7 @@ pub fn skill() -> i32 {
     unsafe { sys::game_skill() }
 }
 
-/// Level counter ([`level_stat`]).
+/// Level counter (`level_stat`).
 #[must_use]
 pub fn level_stat(stat: i32) -> i32 {
     // SAFETY: scalar import.
@@ -575,7 +575,7 @@ pub fn player_capture_input(slot: i32, mask: u32) {
     unsafe { sys::player_capture_input(slot + 1, mask as i32) }
 }
 
-/// Write this tic's raw [`PlayerCmdV1`] for `slot` (0-based) into `out` (≥24 bytes).
+/// Write this tic's raw `PlayerCmdV1` for `slot` (0-based) into `out` (≥24 bytes).
 pub fn player_cmd(slot: i32, out: &mut [u8; 24]) -> i32 {
     // SAFETY: `out` is 24 writable bytes for the call.
     unsafe { sys::player_cmd(slot + 1, out.as_mut_ptr() as i32) }
@@ -625,7 +625,7 @@ pub fn player_team(slot: i32) -> i32 {
     unsafe { sys::player_team(slot + 1) }
 }
 
-/// View hitscan trace from the player's aim (BE7). Writes [`PlayerTraceV1`] to `out`.
+/// View hitscan trace from the player's aim (BE7). Writes `PlayerTraceV1` to `out`.
 pub fn player_trace(slot: i32, max_dist: f64, out: &mut [u8; 56]) -> i32 {
     // SAFETY: `out` is 56 writable bytes for the call.
     unsafe { sys::player_trace(slot + 1, max_dist, out.as_mut_ptr() as i32) }

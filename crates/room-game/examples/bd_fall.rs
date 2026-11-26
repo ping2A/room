@@ -1,5 +1,8 @@
 //! Random-walk the player through a map (god mode) and report any tic where
 //! the player ends up below the floor or outside every sector.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_game::{GameOptions, Headless, Skill};
 use room_vfs::VfsBuilder;
 use std::sync::Arc;

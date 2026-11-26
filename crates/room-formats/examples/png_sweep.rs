@@ -1,4 +1,6 @@
 //! Decode every PNG in a zip-like dir tree list (paths on argv) and report failures.
+
+#![allow(clippy::unwrap_used)] // A dev tool: an unreadable path should stop it.
 fn main() {
     let mut fail = std::collections::BTreeMap::<String, u32>::new();
     let mut n = 0;

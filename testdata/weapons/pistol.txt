@@ -1,0 +1,10 @@
+# Pistol — docs/30 §1
+held 14
+full 19
+Fire:
+PISG A 4
+PISG B 6 A_FirePistol
+PISG C 4
+PISG B 5 A_ReFire
+Flash:
+PISF A 7 A_Light1

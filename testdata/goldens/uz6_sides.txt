@@ -1,0 +1,6 @@
+line 1.0 side -      translucent_alpha=[] opaque_mid=true
+line 0.5 side -      translucent_alpha=["0.50"] opaque_mid=false
+line 1.0 side 0.25   translucent_alpha=["0.25"] opaque_mid=false
+line 0.5 side 0.75   translucent_alpha=["0.75"] opaque_mid=false
+blockrendering=false visible_subsectors=5
+blockrendering=true  visible_subsectors=1

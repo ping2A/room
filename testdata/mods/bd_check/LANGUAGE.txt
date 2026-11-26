@@ -1,0 +1,3 @@
+[enu default]
+BDCHECK_TITLE = "Bd Check";
+BDCHECK_KICK = "Kick";

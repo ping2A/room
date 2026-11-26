@@ -79,11 +79,7 @@ fn start(mods: Vec<ModSource>) -> Headless {
     game
 }
 
-fn widget<'a>(
-    game: &'a Headless,
-    module: u16,
-    id: u16,
-) -> Option<&'a room_sim::mod_hud::HudWidget> {
+fn widget(game: &Headless, module: u16, id: u16) -> Option<&room_sim::mod_hud::HudWidget> {
     let key = WidgetKey {
         module,
         seat1: 1,

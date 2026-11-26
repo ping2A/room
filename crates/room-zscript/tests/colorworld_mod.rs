@@ -1,6 +1,9 @@
 //! The Color World mod's ZScript (`mods/colorworld/pk3/ZSCRIPT`) type-checks
 //! against Room's stdlib: `CVar.FindCVar`, `PPShader.*`, `EventHandler.WorldTick`.
 
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[test]
 fn colorworld_zscript_compiles() {
     let path = concat!(

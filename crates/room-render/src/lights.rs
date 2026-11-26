@@ -540,7 +540,7 @@ mod tests {
         }];
         let atlas = bake_1d_shadowmaps(&lights, &occ);
         // Sample index for angle ≈ 0 (+X).
-        let s0 = (SHADOWMAP_RES / 2) as usize;
+        let s0 = SHADOWMAP_RES / 2;
         assert!(atlas[s0] < 60.0, "hit wall ~50, got {}", atlas[s0]);
         // Opposite direction (−X) should be free to radius.
         let s_opp = 0usize;

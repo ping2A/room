@@ -299,7 +299,7 @@ pub struct HitScan {
 
 /// Sprite stand-in for hitscan.
 ///
-/// - **Cylinder** (`face_span == 0`): XY radius [`clipdist`] (bootstrap / clipmove).
+/// - **Cylinder** (`face_span == 0`): XY radius `clipdist` (bootstrap / clipmove).
 /// - **Face** (`face_span != 0`): Chocolate `hitscan` `cstat&48==0` — vertical
 ///   billboard; reject if perp-dist² > `(face_span)²>>7`; hit at closest point
 ///   on the ray; Z in `[z - face_height, z]` (bit 128 centers).
@@ -309,7 +309,7 @@ pub struct SpriteHit {
     pub y: i32,
     pub z: i32,
     pub sectnum: i16,
-    /// Cylinder radius in XY (from `clipdist<<2`). Ignored when [`face_span`] ≠ 0.
+    /// Cylinder radius in XY (from `clipdist<<2`). Ignored when `face_span` ≠ 0.
     pub clipdist: i32,
     /// `cstat` bit 8 (256) = hitscan-sensitive; bootstrap requires it set to hit.
     pub cstat: u16,
@@ -614,7 +614,7 @@ fn ray_sector_planes(
     let mut best: Option<(i64, i32, i32, i32)> = None;
 
     let mut consider = |hx: i32, hy: i32, hz: i32| {
-        if inside(hx, hy, s, wall_secs, walls) == false {
+        if !inside(hx, hy, s, wall_secs, walls) {
             return;
         }
         let manh = klabs(hx.wrapping_sub(xs)) + klabs(hy.wrapping_sub(ys));
@@ -1571,9 +1571,9 @@ pub fn clipmove_xy_at_z_cliptype(
         }
     }
 
-    for j in 0..clipsectnum {
-        if inside(*x, *y, clipsectorlist[j], sectors, walls) {
-            *sect = clipsectorlist[j];
+    for &cs in clipsectorlist.iter().take(clipsectnum) {
+        if inside(*x, *y, cs, sectors, walls) {
+            *sect = cs;
             return retval;
         }
     }

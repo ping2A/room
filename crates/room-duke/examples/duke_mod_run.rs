@@ -126,7 +126,7 @@ fn main() {
         .iter()
         .map(|(n, b)| (n.as_str(), b.as_slice()))
         .collect();
-    let layers = vec![grp.clone()];
+    let layers = [grp.clone()];
     let layer_slices: Vec<&[u8]> = layers.iter().map(Vec::as_slice).collect();
     let t1 = std::time::Instant::now();
     let renderer = match room_duke::DukeSoftRenderer::from_grp_layers_with_mod_assets_and_mhks(

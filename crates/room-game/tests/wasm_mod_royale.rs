@@ -199,7 +199,7 @@ fn owns(w: &World, slot: usize, class: &str) -> bool {
     w.inventory.count(body(w, slot), cls) > 0
 }
 
-fn royale_widget<'a>(w: &'a World, seat: u8, id: u16) -> Option<&'a room_sim::mod_hud::HudWidget> {
+fn royale_widget(w: &World, seat: u8, id: u16) -> Option<&room_sim::mod_hud::HudWidget> {
     let key = WidgetKey {
         module: 0,
         seat1: seat + 1,
@@ -779,7 +779,8 @@ fn royale_wad_packs_track_b_lumps() {
         .unwrap()
         .build()
         .unwrap();
-    for lump in ["SNDINFO"] {
+    {
+        let lump = "SNDINFO";
         assert!(
             vfs.find_any_ns(lump).is_some(),
             "missing Track B lump {lump}"
@@ -990,14 +991,7 @@ fn render_overlay_preview() {
             allmap: false,
             ticfrac_milli: 1000,
         };
-        draw_mod_hud(
-            &w.mod_hud,
-            0,
-            w.level.time as u32,
-            0.0,
-            &mut list,
-            Some(&ctx),
-        );
+        draw_mod_hud(&w.mod_hud, 0, w.level.time, 0.0, &mut list, Some(&ctx));
         for c in &list.cmds {
             if let DrawCmd::Patch { name, .. } = c {
                 let _ = patches.ensure(&vfs, name);

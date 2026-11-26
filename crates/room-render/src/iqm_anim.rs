@@ -65,11 +65,7 @@ impl IqmAnimData {
     /// Number of frames.
     #[must_use]
     pub fn frame_count(&self, joints: usize) -> usize {
-        if joints == 0 {
-            0
-        } else {
-            self.frames.len() / joints
-        }
+        self.frames.len().checked_div(joints).unwrap_or(0)
     }
 
     /// Animation by name (case-insensitive).

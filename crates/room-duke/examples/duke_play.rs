@@ -5,6 +5,9 @@
 //! Scenarios drive `DukeSession` with real `DukeInput`s (walking, aiming,
 //! firing) and only steer the heading/pitch directly, like a player with a
 //! mouse. Each prints a per-tic event log and writes PPM frames.
+
+// Dev tool: failing loudly on bad input is the right behaviour.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use room_build_engine::world::MAXSTATUS;
 use room_duke::{ConDialect, DukeInput, DukeSession, DukeSoftRenderer, IncludeResolver};
 use std::collections::BTreeMap;
@@ -143,7 +146,7 @@ impl Run {
         };
         // Aim selection reads the player body's angle; the diagnostic controls
         // the player struct directly rather than updating it through input.
-        if let Some(body) = usize::try_from(body).ok() {
+        if let Ok(body) = usize::try_from(body) {
             if let Some(sprite) = self
                 .s
                 .world
@@ -172,7 +175,7 @@ impl Run {
             &self.s.player,
             w,
             h,
-            self.tic as u32,
+            self.tic,
         );
         let mut f = format!("P6\n{w} {h}\n255\n").into_bytes();
         for c in px.chunks(4) {

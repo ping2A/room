@@ -244,7 +244,9 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
 
     // Stuck tracking: distance moved since last tic while trying to walk.
     let (moved, was_walking) = {
-        let p = world.players[seat].as_ref().unwrap();
+        let Some(p) = world.players[seat].as_ref() else {
+            return cmd;
+        };
         let dx = px - p.bot_last_xy.0;
         let dy = py - p.bot_last_xy.1;
         (dmath::sqrt(dx * dx + dy * dy), p.bot_walking)
@@ -265,7 +267,9 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
     );
     // Reaction delay: how long the current target has been in sight.
     let seen_for = {
-        let p = world.players[seat].as_mut().unwrap();
+        let Some(p) = world.players[seat].as_mut() else {
+            return cmd;
+        };
         p.bot_seen = if enemy_seen.is_some() {
             p.bot_seen.saturating_add(1)
         } else {
@@ -287,7 +291,9 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
         if !on_target {
             let want = dmath::atan2(dy, dx).to_degrees();
             let coop = !pvp(world);
-            let p = world.players[seat].as_mut().unwrap();
+            let Some(p) = world.players[seat].as_mut() else {
+                return cmd;
+            };
             if was_walking && moved < STUCK_SPEED {
                 p.bot_stuck = p.bot_stuck.saturating_add(1);
             } else {
@@ -310,12 +316,16 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
                 let side = if r & 1 == 0 { 1.0 } else { -1.0 };
                 let turn = 90.0 + f64::from(r % 4) * 22.5;
                 let dir = want + side * turn;
-                let p = world.players[seat].as_mut().unwrap();
+                let Some(p) = world.players[seat].as_mut() else {
+                    return cmd;
+                };
                 p.bot_detour = DETOUR_TICS;
                 p.bot_detour_dir = dir;
                 dir
             } else if detouring {
-                let p = world.players[seat].as_mut().unwrap();
+                let Some(p) = world.players[seat].as_mut() else {
+                    return cmd;
+                };
                 p.bot_detour -= 1;
                 detour_dir
             } else {
@@ -348,7 +358,9 @@ fn build_cmd(world: &mut World, seat: usize) -> TicCmd {
     let pitch_deg = a.pitch.degrees();
     let mut want_pitch = 0.0;
     if let Some(target) = enemy_seen {
-        let ta = world.actors.get(target).unwrap();
+        let Some(ta) = world.actors.get(target) else {
+            return cmd;
+        };
         let (tx, ty) = (ta.pos.x() - px, ta.pos.y() - py);
         let dist = dmath::sqrt(tx * tx + ty * ty);
         let eye = world.players[seat]
@@ -593,8 +605,10 @@ fn nearest_human(world: &World, seat: usize, a: &Actor) -> Option<(f64, f64, f64
 }
 
 fn dist2(world: &World, a: ActorId, b: ActorId) -> f64 {
-    let pa = world.actors.get(a).unwrap().pos;
-    let pb = world.actors.get(b).unwrap().pos;
+    let (Some(pa), Some(pb)) = (world.actors.get(a), world.actors.get(b)) else {
+        return f64::INFINITY;
+    };
+    let (pa, pb) = (pa.pos, pb.pos);
     let dx = pa.x() - pb.x();
     let dy = pa.y() - pb.y();
     dx * dx + dy * dy

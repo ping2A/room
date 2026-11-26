@@ -171,7 +171,12 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Strin
 ///
 /// # Errors
 /// When the map does not load, has no nodes, or encoding fails.
-pub fn map_thumbnail(vfs: &Vfs, map_name: &str, width: u32, height: u32) -> Result<Vec<u8>, String> {
+pub fn map_thumbnail(
+    vfs: &Vfs,
+    map_name: &str,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
     let scale = (width.div_ceil(320)).max(height.div_ceil(240)).clamp(1, 4);
     let opts = ShotOptions {
         width: 320 * scale,

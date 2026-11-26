@@ -1226,13 +1226,19 @@ fn use_healing_radius(world: &mut World, owner: ActorId) -> bool {
                     }
                     true
                 }),
-            "mana" => ["Mana1", "Mana2"].iter().fold(false, |got, m| {
-                world
-                    .classes
-                    .find_name(m)
-                    .is_some_and(|c| give_inventory(world, mo, c, amount))
-                    || got
-            }),
+            // Give both manas (no short-circuit), succeed if either was taken.
+            "mana" => {
+                ["Mana1", "Mana2"]
+                    .iter()
+                    .filter(|m| {
+                        world
+                            .classes
+                            .find_name(m)
+                            .is_some_and(|c| give_inventory(world, mo, c, amount))
+                    })
+                    .count()
+                    > 0
+            }
             _ => world.actors.get_mut(mo).is_some_and(|a| {
                 if a.health >= 100 {
                     return false;
@@ -1339,7 +1345,7 @@ fn run_custom_state_at(
 
 /// Touch all overlapping inventory-ish actors near `toucher` (radius sum).
 ///
-/// `player` is the in-hand slot from [`crate::think_player::player_think`] (the
+/// `player` is the in-hand slot from `crate::think_player::player_think` (the
 /// corresponding `world.players[i]` entry is empty for that duration). Park it
 /// so pickup paths that match on `player.mo` still work.
 pub fn touch_specials(world: &mut World, player: &mut crate::player::Player, toucher: ActorId) {
@@ -1490,7 +1496,7 @@ actor Bonus2 : Health { Inventory.Amount 5 Inventory.MaxAmount 150 +INVENTORY.AL
         let kit = classes.find_name("Kit2").unwrap();
         let bonus = classes.find_name("Bonus2").unwrap();
         let at = DVec3::new(40.0, 32.0, 0.0);
-        let mut take = |w: &mut World, class| {
+        let take = |w: &mut World, class| {
             let item = w.spawn_at(class, at, Angle::ZERO).unwrap();
             let taken = try_pickup(w, player, item);
             (taken, w.actors.get(player).unwrap().health)
@@ -1498,10 +1504,18 @@ actor Bonus2 : Health { Inventory.Amount 5 Inventory.MaxAmount 150 +INVENTORY.AL
         w.actors.get_mut(player).unwrap().health = 50;
         assert_eq!(take(&mut w, kit), (true, 75));
         assert_eq!(take(&mut w, kit), (true, 100), "capped at max health");
-        assert_eq!(take(&mut w, kit), (false, 100), "left on the floor when full");
+        assert_eq!(
+            take(&mut w, kit),
+            (false, 100),
+            "left on the floor when full"
+        );
         assert_eq!(take(&mut w, bonus), (true, 105), "its own MaxAmount");
         w.actors.get_mut(player).unwrap().health = 150;
-        assert_eq!(take(&mut w, bonus), (true, 150), "ALWAYSPICKUP: taken at the cap");
+        assert_eq!(
+            take(&mut w, bonus),
+            (true, 150),
+            "ALWAYSPICKUP: taken at the cap"
+        );
     }
 
     #[test]

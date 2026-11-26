@@ -1,0 +1,8 @@
+clearplayerclasses
+addplayerclass DoomPlayer
+weaponsection "BdCheck"
+setslot 1 Pistol Fist
+alias +bdcheckkick "puke 9001"
+defaultbind q "+bdcheckkick"
+addkeysection "BdCheck Keys" BdCheck
+addmenukey "Kick" "+bdcheckkick"

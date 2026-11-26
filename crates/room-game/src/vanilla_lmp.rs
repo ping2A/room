@@ -77,7 +77,7 @@ impl VanillaLmp {
             if o + need > bytes.len() {
                 return Err(DemoError::Message("vanilla .lmp truncated body".into()));
             }
-            let mut slot_cmds = vec![TicCmd::default(); 4];
+            let mut slot_cmds = [TicCmd::default(); 4];
             for &pi in &active {
                 let fwd = bytes[o] as i8;
                 let side = bytes[o + 1] as i8;

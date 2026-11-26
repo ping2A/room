@@ -161,7 +161,7 @@ fn widget_rect(w: &HudWidget, vw: f32, vh: f32) -> Rect {
     if matches!(w.anchor, 1 | 4 | 7) {
         x -= ww * 0.5;
     }
-    if matches!(w.anchor, 3 | 4 | 5) {
+    if matches!(w.anchor, 3..=5) {
         y -= hh * 0.5;
     }
     Rect::new(x, y, ww, hh)

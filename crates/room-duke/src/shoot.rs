@@ -1176,7 +1176,6 @@ fn tracers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Fire one EDuke32 user-defined hitscan projectile from its temporary sprite.
 /// The returned sprite remains available to `e` variants for the rest of the
 /// current CON event and is removed by `moveweapons` on the next tic.

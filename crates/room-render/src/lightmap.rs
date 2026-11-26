@@ -1,5 +1,9 @@
 //! ZDRay / GZDoom `LIGHTMAP` lump header + atlas sample bootstrap (M10).
 
+// Binary headers are read as fixed-width slices of a length-checked buffer, so the
+// `try_into()` on each slice cannot fail.
+#![allow(clippy::unwrap_used)]
+
 use crate::device::GpuContext;
 use bytemuck::{Pod, Zeroable, bytes_of};
 use std::collections::BTreeMap;

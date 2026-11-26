@@ -369,11 +369,9 @@ pub fn parse_mapinfo(text: &str) -> Result<MapInfo, DefsError> {
                                 let _ = sc.check_punct(Punct::Eq)?;
                                 def.factor = read_number(&mut sc)?;
                             }
-                            Tok::Ident(_) => {
-                                // `Obituary = "…"` and other keys: skip the value.
-                                if sc.check_punct(Punct::Eq)? {
-                                    let _ = sc.next_token()?;
-                                }
+                            // `Obituary = "…"` and other keys: skip the value.
+                            Tok::Ident(_) if sc.check_punct(Punct::Eq)? => {
+                                let _ = sc.next_token()?;
                             }
                             _ => {}
                         }

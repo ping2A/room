@@ -1,0 +1,24 @@
+// BD1 D8: DualFlameCannon-style float DoomEd + bob floats.
+actor DualFlameCannon : Weapon 25010.0
+{
+  Weapon.AmmoType1 "Clip"
+  Weapon.AmmoUse1 1
+  Weapon.BobSpeed 1.0
+  Weapon.BobRangeX 0.5
+  Weapon.BobRangeY 0.5
+  Weapon.BobStyle Alpha
+  Radius 20.000000
+  Height 16.0
+  Scale 0.75
+  Decal "Scorch"
+  States
+  {
+  Ready:
+    PISG A 1 A_WeaponReady
+    Loop
+  Fire:
+    PISG B 0 A_SprayDecal
+    PISG B 4 A_FireBullets(5.6, 0, 1, 5, "BulletPuff")
+    Goto Ready
+  }
+}

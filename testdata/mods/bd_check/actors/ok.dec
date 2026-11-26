@@ -1,0 +1,11 @@
+actor BdCheckOk : Actor 9901
+{
+  Health 10
+  +SOLID
+  States
+  {
+  Spawn:
+    POSS A -1
+    Stop
+  }
+}

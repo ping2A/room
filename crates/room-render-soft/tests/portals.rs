@@ -321,7 +321,7 @@ fn a_horizon_runs_the_planes_to_the_horizon() {
         "floor just below the horizon"
     );
     assert_eq!(t.pixels[98 * 320 + 160], CEILA, "ceiling just above it");
-    assert_eq!(count(&t, AWALL) * 10 < 64000, true);
+    assert!(count(&t, AWALL) * 10 < 64000);
 }
 
 #[test]

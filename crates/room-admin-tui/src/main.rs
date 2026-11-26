@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
     authenticate(&mut client, &args)?;
 
     // Probe once before taking over the terminal so auth errors are readable.
-    client.summary().map_err(|e| auth_probe_error(&args.url, &e))?;
+    client
+        .summary()
+        .map_err(|e| auth_probe_error(&args.url, &e))?;
 
     let mut app = App::new(client, args.url.clone(), args.refresh_ms);
     app.refresh();

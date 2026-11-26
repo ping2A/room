@@ -123,7 +123,7 @@ const KEYWORDS: &[&str] = &[
 
 fn is_keyword(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    KEYWORDS.iter().any(|k| *k == lower.as_str())
+    KEYWORDS.contains(&lower.as_str())
 }
 
 /// Lex a source buffer.
@@ -276,11 +276,8 @@ pub fn lex(source: SourceId, path: &str, text: &str) -> (Vec<Token>, Vec<Diagnos
                 let lit = &text[i..j];
                 let n = j - i;
                 bump(&mut i, &mut line, &mut col, n, bytes);
-                let val = i64::from_str_radix(
-                    lit.trim_start_matches(|c| matches!(c, '0' | 'x' | 'X')),
-                    16,
-                )
-                .unwrap_or(0);
+                let val =
+                    i64::from_str_radix(lit.trim_start_matches(['0', 'x', 'X']), 16).unwrap_or(0);
                 tokens.push(Token {
                     kind: TokenKind::Int(val),
                     span: Span {

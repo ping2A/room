@@ -4703,7 +4703,7 @@ mod tests {
         let inst = wide_billboard(300.0, 64.0, 48.0);
         let raw = emit_sprite_quad(inst.clone(), cam.forward);
         let mut lists = SceneLists::default();
-        append_sprites_in_map(&mut lists, &[inst.clone()], &cam, Some(&map));
+        append_sprites_in_map(&mut lists, std::slice::from_ref(&inst), &cam, Some(&map));
         let mut plain = SceneLists::default();
         append_sprites(&mut plain, &[inst], &cam);
         assert_eq!(lists.sprites.len(), 6);

@@ -1,0 +1,10 @@
+PlainThing    rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=false iso=false
+Roller        rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=20.0 center=false flip=false x=false y=false pixel_scale=(1.0954,0.9129) no_dynlight=false iso=false
+CenterRoller  rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=20.0 center=true flip=false x=false y=false pixel_scale=(1.0954,0.9129) no_dynlight=false iso=false
+StretchRoller rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=20.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=false iso=false
+Square        rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0954,0.9129) no_dynlight=false iso=false
+Angled        rot_angle=-180.00 fixed=true rot_offset=0.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=false iso=false
+Rotated       rot_angle=30.00 fixed=false rot_offset=45.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=false iso=false
+Flipper       rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=0.0 center=false flip=true x=true y=true pixel_scale=(1.0000,1.0000) no_dynlight=false iso=false
+Unlit         rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=true iso=false
+Iso           rot_angle=30.00 fixed=false rot_offset=0.0 roll_deg=0.0 center=false flip=false x=false y=false pixel_scale=(1.0000,1.0000) no_dynlight=false iso=true

@@ -188,6 +188,7 @@ pub fn analyze(unit: &TranslationUnit) -> Result<Analysis, Vec<Diagnostic>> {
     }
 }
 
+#[allow(clippy::only_used_in_recursion)] // `diags` is threaded for member-level diagnostics
 fn ingest_type_members(
     owner: &str,
     members: &[Member],

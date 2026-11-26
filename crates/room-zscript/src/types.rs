@@ -370,12 +370,8 @@ impl ClassTable {
         let want = name.to_ascii_lowercase();
         let mut cur = Some(class.to_owned());
         for _ in 0..64 {
-            let Some(name) = cur else {
-                return None;
-            };
-            let Some(info) = self.get(&name) else {
-                return None;
-            };
+            let name = cur?;
+            let info = self.get(&name)?;
             if let Some(m) = info.methods.get(&want) {
                 return Some(m);
             }
@@ -418,12 +414,8 @@ impl ClassTable {
         let want = name.to_ascii_lowercase();
         let mut cur = Some(class.to_owned());
         for _ in 0..64 {
-            let Some(name) = cur else {
-                return None;
-            };
-            let Some(info) = self.get(&name) else {
-                return None;
-            };
+            let name = cur?;
+            let info = self.get(&name)?;
             if let Some(f) = info
                 .fields
                 .iter()
@@ -442,12 +434,8 @@ impl ClassTable {
         let want = name.to_ascii_lowercase();
         let mut cur = Some(class.to_owned());
         for _ in 0..64 {
-            let Some(name) = cur else {
-                return None;
-            };
-            let Some(info) = self.get(&name) else {
-                return None;
-            };
+            let name = cur?;
+            let info = self.get(&name)?;
             if let Some(ty) = info.consts.get(&want) {
                 return Some(ty.clone());
             }
@@ -1105,10 +1093,8 @@ impl Resolver<'_> {
                 let resolved = ty
                     .as_ref()
                     .map(|t| self.refine(type_from_ref(t, &BTreeMap::new()), *span));
-                for extra in extra_inits {
-                    if let Some(e) = extra {
-                        let _ = self.expr_ty(e);
-                    }
+                for e in extra_inits.iter().flatten() {
+                    let _ = self.expr_ty(e);
                 }
                 let init_ty = init.as_ref().map(|e| self.expr_ty(e));
                 let fallback = resolved.or(init_ty).unwrap_or(ZType::int());

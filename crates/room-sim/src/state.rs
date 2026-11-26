@@ -187,9 +187,7 @@ impl StateTable {
         }
         let mut cur = classes.get(class).and_then(|c| c.parent);
         for _ in 0..64 {
-            let Some(pid) = cur else {
-                return None;
-            };
+            let pid = cur?;
             if let Some(&sid) = self.labels.get(&(pid.raw(), short.to_owned())) {
                 return Some(sid.raw() as usize);
             }

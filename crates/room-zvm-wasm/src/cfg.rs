@@ -121,6 +121,7 @@ pub(crate) fn build(f: &CompiledFunction) -> Result<Cfg, Unsupported> {
         }
         Ok(start_of[t])
     };
+    #[allow(clippy::needless_range_loop)] // `bi` is also a block id for fall-through edges
     for bi in 0..exit {
         let last = *blocks[bi].insns.last().ok_or(Unsupported::BadJumpTarget)?;
         let next_pc = last.pc as usize + 1 + usize::from(has_ext(last.op));

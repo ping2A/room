@@ -1,0 +1,7 @@
+OptionMenu "BdCheckOptions"
+{
+	Title "Bd Check"
+	StaticText "Synthetic BD7 fixture"
+	StaticText " "
+	Option "Server probe", "bd_check_server", "YesNo"
+}

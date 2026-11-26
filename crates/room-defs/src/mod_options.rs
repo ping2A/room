@@ -410,6 +410,7 @@ pub fn mod_options_json(groups: &[ModOptionGroup]) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::cvarinfo::parse_cvarinfo;

@@ -38,15 +38,12 @@ pub fn strip_color_codes(text: &str) -> String {
             out.push(c);
             continue;
         }
-        match it.next() {
-            Some('[') => {
-                for d in it.by_ref() {
-                    if d == ']' {
-                        break;
-                    }
+        if let Some('[') = it.next() {
+            for d in it.by_ref() {
+                if d == ']' {
+                    break;
                 }
             }
-            _ => {}
         }
     }
     out

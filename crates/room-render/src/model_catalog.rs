@@ -101,9 +101,11 @@ impl ModelCatalog {
                 let data = read_model_bytes(vfs, &key)?;
                 parse_model_bytes(&data, &key)?
             };
-            self.meshes.insert(key.clone(), mesh);
+            return Ok(self.meshes.entry(key).or_insert(mesh));
         }
-        Ok(self.meshes.get(&key).expect("inserted above"))
+        self.meshes
+            .get(&key)
+            .ok_or_else(|| ModelError::Message(format!("model {key} vanished from cache")))
     }
 
     /// Load (or return cached) skinned IQM for `path`.
@@ -144,9 +146,7 @@ impl ModelCatalog {
 pub fn join_model_path(base: &str, file: &str) -> String {
     let base = base.replace('\\', "/").trim_end_matches('/').to_string();
     let file = file.replace('\\', "/");
-    if base.is_empty() {
-        file
-    } else if file.starts_with('/') {
+    if base.is_empty() || file.starts_with('/') {
         file
     } else {
         format!("{base}/{file}")

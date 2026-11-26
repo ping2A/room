@@ -144,7 +144,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Space-delimited token preserving case (sound / map / music names).
-    /// Stops at newline; callers that allow wrapped names should [`skip_ws`] first.
+    /// Stops at newline; callers that allow wrapped names should `skip_ws` first.
     pub fn raw_token(&mut self) -> String {
         self.skip_spaces();
         let start = self.pos;

@@ -1,6 +1,9 @@
 //! The Red Noir mod's ZScript (`mods/rednoir/pk3/ZSCRIPT`) type-checks
 //! against Room's stdlib: `CVar.FindCVar`, `PPShader.*`, `EventHandler.WorldTick`.
 
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[test]
 fn rednoir_zscript_compiles() {
     let path = concat!(
@@ -12,10 +15,7 @@ fn rednoir_zscript_compiles() {
     assert!(result.ok(), "{:#?}", result.diagnostics);
     let program = result.program.expect("program");
     assert!(
-        program
-            .classes
-            .iter()
-            .any(|c| c.name == "RedNoirHandler"),
+        program.classes.iter().any(|c| c.name == "RedNoirHandler"),
         "handler class compiled"
     );
 }

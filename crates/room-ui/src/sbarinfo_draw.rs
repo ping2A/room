@@ -241,6 +241,7 @@ fn flag_words(tokens: &[String]) -> Vec<String> {
 }
 
 /// `(x, y)` plus what follows them: the first two coordinates in `tokens`.
+#[allow(clippy::type_complexity)] // ((x, centered), (y, centered), next token)
 fn coords(tokens: &[String]) -> Option<((i32, bool), (i32, bool), usize)> {
     let mut found = Vec::new();
     for (i, t) in tokens.iter().enumerate() {
@@ -979,7 +980,7 @@ impl Ctx<'_, '_> {
     fn number_value(&self, value: &str) -> Option<i32> {
         let v = value.trim();
         let lower = v.to_ascii_lowercase();
-        let (head, arg) = match lower.split_once(|c: char| c == ' ' || c == '(') {
+        let (head, arg) = match lower.split_once([' ', '(']) {
             Some((h, _)) => (
                 h.to_owned(),
                 Some(
@@ -1131,7 +1132,7 @@ impl Ctx<'_, '_> {
     /// Bar `(value, max)` (`CommandDrawBar::Tick`).
     fn bar_value(&self, spec: &str) -> (i32, i32) {
         let lower = spec.to_ascii_lowercase();
-        let (head, arg) = match lower.split_once(|c: char| c == ' ' || c == '(') {
+        let (head, arg) = match lower.split_once([' ', '(']) {
             Some((h, _)) => (
                 h.to_owned(),
                 Some(

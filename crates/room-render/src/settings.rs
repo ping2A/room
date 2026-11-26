@@ -1,7 +1,7 @@
 //! Render quality / post CVars (`docs/29-shaders.md`).
 //!
 //! Every catalogue effect has an enable path here. Unimplemented effects are
-//! stored and reported so shells/console can toggle them; [`Self::needs_post`]
+//! stored and reported so shells/console can toggle them; `RenderSettings::needs_post`
 //! only considers effects the frame graph actually runs today.
 
 use crate::post::TonemapMode;

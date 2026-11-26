@@ -116,10 +116,15 @@ pub fn run(vfs: &Vfs, args: &SoftViewArgs<'_>) -> Result<usize> {
     let target = view.render(&frame);
     let (w, h, rgba) = match args.display {
         Some((w, h)) => (w, h, target.to_rgba_fit(&view.data.palette, w, h)),
-        None => (target.width, target.height, target.to_rgba(&view.data.palette)),
+        None => (
+            target.width,
+            target.height,
+            target.to_rgba(&view.data.palette),
+        ),
     };
     let png = room_render_soft::shot::encode_png(w, h, &rgba).map_err(anyhow::Error::msg)?;
-    std::fs::write(args.output, png).with_context(|| format!("create {}", args.output.display()))?;
+    std::fs::write(args.output, png)
+        .with_context(|| format!("create {}", args.output.display()))?;
     if !target.rgb.is_empty() {
         // True colour: distinct RGB values.
         let distinct: std::collections::HashSet<u32> = target.rgb.iter().copied().collect();

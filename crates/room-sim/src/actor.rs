@@ -52,6 +52,7 @@ pub struct ActorModelState {
     /// Animation playing before the last `A_SetAnimation`, its start tic and
     /// the tic of the switch: the renderer blends from it over the new
     /// animation's interpolation tics.
+    #[allow(clippy::type_complexity)] // (animation tuple, start tic, switch tic)
     pub prev_animation: Option<((String, f64, i32, i32, i32, i32, i32), u32, u32)>,
     /// `A_ChangeModel` animation source: (animation index, path, file); the
     /// IQM whose animations drive the model (`None` = the model's own).

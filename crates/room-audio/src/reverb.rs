@@ -1348,6 +1348,7 @@ pub fn mb_to_gain(mb: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

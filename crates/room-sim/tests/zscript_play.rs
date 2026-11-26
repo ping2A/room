@@ -1,5 +1,7 @@
 //! ZS3 / ZS4 play-integration smoke (`docs/34`).
 
+// Test helpers: a failed setup step should panic the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use room_decorate::parse_decorate;
@@ -93,7 +95,7 @@ class BdHashProbe
     rt.sync_host(0, 0, 0);
     let lump = rt
         .script_call_with("Wads.CheckNumForFullName", &[], &["maps/map01.wad"])
-        .unwrap_or_else(|_| {
+        .unwrap_or({
             // Fallback: lump index 0 when CheckNum is a native returning i via host.
             0
         });

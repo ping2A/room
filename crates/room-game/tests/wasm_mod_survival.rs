@@ -225,8 +225,8 @@ fn survival_stuck_closet_recycles_and_clears_wave() {
             break;
         }
     }
-    let wave_at = wave_at.expect(&format!("expected wave spawn: {msgs:?}"));
-    let cleared_at = cleared_at.expect(&format!("recycle should end the round: {msgs:?}"));
+    let wave_at = wave_at.unwrap_or_else(|| panic!("expected wave spawn: {msgs:?}"));
+    let cleared_at = cleared_at.unwrap_or_else(|| panic!("recycle should end the round: {msgs:?}"));
     // Stuck window is 10s; allow one check period of slack (≤15s acceptance).
     assert!(
         cleared_at - wave_at <= 15 * 35,
@@ -531,7 +531,7 @@ fn survival_warden_phases_and_boss_bar() {
             break;
         }
     }
-    let id = boss_id.expect(&format!("expected live Warden by wave 5: msgs={msgs:?}"));
+    let id = boss_id.unwrap_or_else(|| panic!("expected live Warden by wave 5: msgs={msgs:?}"));
     assert!(
         msgs.iter()
             .any(|m| m.contains("Warden arrives") || m.contains("Warden approaches")),

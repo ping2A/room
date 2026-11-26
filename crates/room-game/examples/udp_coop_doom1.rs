@@ -103,7 +103,7 @@ fn main() {
         std::process::exit(0);
     };
     let (classes, states) = defs();
-    let fingerprint = 0xD001_E11u64;
+    let fingerprint = 0x0D00_1E11u64;
     let rng_seed = 0xDEAD_1993u32;
 
     let mut host_tr =

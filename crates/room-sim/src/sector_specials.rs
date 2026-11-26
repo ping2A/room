@@ -344,16 +344,18 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
         .iter()
         .flatten()
         .any(|p| p.mo == Some(mo) && p.radsuit);
-    if dmg > 0 && sector_damage_applies(world, mo, invul) && world.level.time % 32 == 0 {
-        if sector_damage_leaks(world, sid, radsuit) {
-            damage_mobj(world, mo, None, None, dmg);
-            if (special & 0x1f) == ST_DAMAGE_END {
-                if let Some(a) = world.actors.get(mo) {
-                    if a.health <= 10 {
-                        world.level.exiting = true;
-                        if !cfg!(test) {
-                            eprintln!("room: level exit: exit sector (tic {})", world.level.time);
-                        }
+    if dmg > 0
+        && sector_damage_applies(world, mo, invul)
+        && world.level.time % 32 == 0
+        && sector_damage_leaks(world, sid, radsuit)
+    {
+        damage_mobj(world, mo, None, None, dmg);
+        if (special & 0x1f) == ST_DAMAGE_END {
+            if let Some(a) = world.actors.get(mo) {
+                if a.health <= 10 {
+                    world.level.exiting = true;
+                    if !cfg!(test) {
+                        eprintln!("room: level exit: exit sector (tic {})", world.level.time);
                     }
                 }
             }
@@ -384,10 +386,9 @@ pub fn player_in_special_sector(world: &mut World, mo: ActorId) {
             && grounded
             && sector_damage_applies(world, mo, invul)
             && world.level.time % iv == 0
+            && sector_damage_leaks(world, sid, radsuit)
         {
-            if sector_damage_leaks(world, sid, radsuit) {
-                damage_mobj(world, mo, None, None, amt);
-            }
+            damage_mobj(world, mo, None, None, amt);
         }
     }
     tick_hazard(world, mo);

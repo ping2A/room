@@ -91,8 +91,8 @@ impl BoneUniforms {
 pub fn skin_matrices(iqm: &IqmModel, frame_abs: &[Mat4]) -> Vec<Mat4> {
     let n = iqm.base_mats.len().min(frame_abs.len()).min(MAX_BONES);
     let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        out.push(frame_abs[i] * iqm.inv_base_mats[i]);
+    for (abs, inv) in frame_abs.iter().zip(&iqm.inv_base_mats).take(n) {
+        out.push(*abs * *inv);
     }
     out
 }

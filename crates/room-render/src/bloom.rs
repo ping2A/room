@@ -389,11 +389,14 @@ impl BloomPass {
                 },
             ],
         });
+        let Some(composite) = self.composite.as_ref() else {
+            return;
+        };
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bloom-up-rp"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.composite.as_ref().expect("composite").view,
+                    view: &composite.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
