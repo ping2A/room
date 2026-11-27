@@ -17,6 +17,15 @@ pub(crate) type HeapResult<T> = Result<T, HeapErr>;
 
 /// `NewObj class_id`: object with the class layout, arrays pre-allocated.
 pub(crate) fn new_obj(heap: &mut ZvmHeap, program: &CompiledProgram, class: u32) -> ObjHandle {
+    new_obj_depth(heap, program, class, 0)
+}
+
+fn new_obj_depth(
+    heap: &mut ZvmHeap,
+    program: &CompiledProgram,
+    class: u32,
+    depth: u32,
+) -> ObjHandle {
     let layout = program
         .classes
         .get(class as usize)
@@ -38,8 +47,23 @@ pub(crate) fn new_obj(heap: &mut ZvmHeap, program: &CompiledProgram, class: u32)
         .iter()
         .map(|&idx| (idx, heap.new_array_a()))
         .collect();
+    // Struct members are values: each object gets its own (bounded nesting).
+    let made_st: Vec<_> = if depth < 8 {
+        layout
+            .structs
+            .iter()
+            .map(|&(idx, cls)| (idx, new_obj_depth(heap, program, cls, depth + 1)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Some(ObjKind::Object { fields_a, .. }) = heap.get_mut(h) {
-        for (idx, arr) in made_i.into_iter().chain(made_s).chain(made_a) {
+        for (idx, arr) in made_i
+            .into_iter()
+            .chain(made_s)
+            .chain(made_a)
+            .chain(made_st)
+        {
             if let Some(slot) = fields_a.get_mut(idx as usize) {
                 *slot = arr;
             }

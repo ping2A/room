@@ -117,11 +117,155 @@ pub fn load_embedded_engine_data_with(vfs: &Vfs) -> Result<EngineData, GameError
     if replaced > 0 {
         eprintln!("room: DECORATE: {replaced} duplicate class name(s) — later definition wins");
     }
+    stub_zscript_parents(&mut ir, || zscript_class_tree(vfs));
     let classes =
         Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
     base.states = Arc::new(StateTable::from_decorate(&ir, &classes));
     base.classes = classes;
     Ok(base)
+}
+
+/// The mod's ZScript classes, then UZDoom's (`PowerLightAmp`, …) for the
+/// ancestors Room's own DECORATE does not define.
+fn zscript_class_tree(vfs: &Vfs) -> room_zscript::TranslationUnit {
+    let mut sources = crate::zscript_sources_from_vfs(vfs).0;
+    sources.extend(crate::uzdoom_stdlib_sources());
+    room_zscript::parse_sources(&sources).unit
+}
+
+/// GZDoom lets DECORATE actors inherit ZScript classes (`actor PB_Fists :
+/// PB_Weapon`). The DECORATE registry is built before ZScript loads, so add an
+/// empty actor for each such ancestor (parents first, ahead of the first
+/// child); the ZScript program later fills in its defaults and states.
+fn stub_zscript_parents(
+    ir: &mut room_decorate::ClassDefIr,
+    zscript: impl FnOnce() -> room_zscript::TranslationUnit,
+) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut known: BTreeSet<String> = ir
+        .actors
+        .iter()
+        .map(|a| a.name.to_ascii_lowercase())
+        .collect();
+    known.insert("actor".into());
+    let missing = |a: &room_decorate::ActorDef, known: &BTreeSet<String>| {
+        a.parent
+            .as_deref()
+            .is_some_and(|p| !known.contains(&p.to_ascii_lowercase()))
+    };
+    let Some(first) = ir.actors.iter().position(|a| missing(a, &known)) else {
+        return;
+    };
+    let unit = zscript();
+    let mut zs: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    // `Default { … }` lines per class (and `extend class` additions).
+    let mut defaults: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for d in &unit.decls {
+        if let room_zscript::Decl::Class(c) | room_zscript::Decl::ExtendClass(c) = d {
+            if matches!(d, room_zscript::Decl::Class(_)) {
+                zs.insert(
+                    c.name.to_ascii_lowercase(),
+                    (c.name.clone(), c.parent.clone()),
+                );
+            }
+            for m in &c.members {
+                if let room_zscript::Member::Default(block) = m {
+                    defaults
+                        .entry(c.name.to_ascii_lowercase())
+                        .or_default()
+                        .extend(block.lines.iter().cloned());
+                }
+            }
+        }
+    }
+    let mut stubs: Vec<room_decorate::ActorDef> = Vec::new();
+    let wanted: Vec<String> = ir
+        .actors
+        .iter()
+        .filter(|a| missing(a, &known))
+        .filter_map(|a| a.parent.clone())
+        .collect();
+    for parent in wanted {
+        // Walk up to a class DECORATE knows, then add the chain top-down.
+        let mut chain = Vec::new();
+        let mut cur = parent.to_ascii_lowercase();
+        while !known.contains(&cur) && chain.len() < 64 {
+            let Some((name, up)) = zs.get(&cur) else {
+                break;
+            };
+            chain.push((name.clone(), up.clone()));
+            match up {
+                Some(u) => cur = u.to_ascii_lowercase(),
+                None => break,
+            }
+        }
+        for (name, up) in chain.into_iter().rev() {
+            if !known.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
+            // Its `Default` block, read as a DECORATE actor body, so DECORATE
+            // children (`PB_Pistol : PB_Weapon`) inherit its properties.
+            let (flags, properties) = defaults
+                .get(&name.to_ascii_lowercase())
+                .and_then(|lines| {
+                    let body = lines.join("\n");
+                    let body = body.trim();
+                    let text = if body.starts_with('{') {
+                        format!("actor {name}\n{body}\n")
+                    } else {
+                        format!("actor {name}\n{{\n{body}\n}}\n")
+                    };
+                    room_decorate::parse_decorate(&text).ok()
+                })
+                .and_then(|ir| ir.actors.into_iter().next())
+                .map(|a| (a.flags, a.properties))
+                .unwrap_or_default();
+            stubs.push(room_decorate::ActorDef {
+                name,
+                parent: up,
+                replaces: None,
+                doomednum: None,
+                flags,
+                properties,
+                states: None,
+            });
+        }
+    }
+    if !stubs.is_empty() {
+        eprintln!(
+            "room: DECORATE: {} ZScript parent class(es) stubbed for DECORATE actors",
+            stubs.len()
+        );
+        ir.actors.splice(first..first, stubs);
+    }
+}
+
+#[cfg(test)]
+mod zscript_parent_tests {
+    #![allow(clippy::unwrap_used)]
+
+    #[test]
+    fn decorate_actor_may_inherit_a_zscript_class() {
+        let mut ir = room_decorate::parse_decorate(
+            "actor Weapon {}\nactor PB_Fists : PB_Weapon { States { Spawn: TNT1 A 1 Stop } }\n",
+        )
+        .unwrap();
+        let zs = "class PB_WeaponBase : Weapon { Default { Weapon.SlotNumber 2; +WEAPON.NOAUTOFIRE } }\nclass PB_Weapon : PB_WeaponBase {}\n";
+        super::stub_zscript_parents(&mut ir, || room_zscript::parse_file("z.zs", zs).unit);
+        let names: Vec<&str> = ir.actors.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Weapon", "PB_WeaponBase", "PB_Weapon", "PB_Fists"]);
+        assert_eq!(ir.actors[1].parent.as_deref(), Some("Weapon"));
+        assert!(
+            ir.actors[1]
+                .properties
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case("Weapon.SlotNumber")),
+            "{:?}",
+            ir.actors[1]
+        );
+        assert!(!ir.actors[1].flags.is_empty());
+        room_sim::ClassRegistry::from_decorate(&ir).unwrap();
+    }
 }
 
 /// Built-in defs loaded from an engine-data archive (directory or PK3).
@@ -153,6 +297,7 @@ fn load_engine_data_from(vfs: &Vfs, decorate: &str) -> Result<EngineData, GameEr
     if replaced > 0 {
         eprintln!("room: DECORATE: {replaced} duplicate class name(s) — later definition wins");
     }
+    stub_zscript_parents(&mut ir, || zscript_class_tree(vfs));
     let classes =
         Arc::new(ClassRegistry::from_decorate(&ir).map_err(|e| GameError::Message(e.to_string()))?);
     let states = Arc::new(StateTable::from_decorate(&ir, &classes));

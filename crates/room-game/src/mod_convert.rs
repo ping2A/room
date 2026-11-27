@@ -434,6 +434,7 @@ pub fn session_trace(
     if !zs.ok {
         return Err(format!("ZScript: {}", zs.notes.join("; ")));
     }
+    game.set_zscript_lumps(crate::zscript_wad_lumps(vfs, zs.program.as_ref()));
     game.set_zscript(zs.program, handlers);
     let data = crate::load_embedded_engine_data_with(vfs).map_err(|e| e.to_string())?;
     game.set_defs(data.classes, data.states);

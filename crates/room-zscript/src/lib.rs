@@ -12,14 +12,15 @@ mod preprocess;
 mod sema;
 mod span;
 mod specials;
+mod static_arrays;
 mod types;
 
 pub use ast::*;
 pub use diag::{Diagnostic, Severity};
 pub use lex::{Token, TokenKind, lex};
-pub use lower::lower;
-pub use parse::{ParseResult, parse_file, parse_sources};
-pub use preprocess::{PreprocessResult, preprocess};
+pub use lower::{lower, lower_lenient};
+pub use parse::{ParseResult, RootOrigins, parse_file, parse_sources};
+pub use preprocess::{PreprocessResult, include_targets, preprocess, resolve_include};
 pub use sema::{Analysis, analyze};
 pub use span::{SourceFile, SourceId, Span};
 pub use specials::special_number;
@@ -31,6 +32,15 @@ const ROOM_STDLIB: &str = include_str!("../../../wadsrc/room/zscript/base.zs");
 const ROOM_GLOBALS: &str = include_str!("../../../wadsrc/room/zscript/globals.zs");
 /// `String` methods used by Brutal Doom and the conformance probe.
 const ROOM_BUILTINS: &str = include_str!("../../../wadsrc/room/zscript/builtins.zs");
+
+/// True when `text` is one of Room's own stub library files (`wadsrc/room/zscript`),
+/// e.g. mounted from `room.pk3`. They clash with the UZDoom library.
+#[must_use]
+pub fn is_room_stdlib_source(text: &str) -> bool {
+    [ROOM_STDLIB, ROOM_GLOBALS, ROOM_BUILTINS]
+        .iter()
+        .any(|lib| lib.trim() == text.trim())
+}
 
 /// Append Room stdlib unless the unit already provides `base.zs` / `EventHandler`.
 ///
@@ -76,9 +86,19 @@ pub fn with_room_stdlib(sources: &[(String, String)]) -> Vec<(String, String)> {
 /// Always type-checks against Room's BD-subset stdlib stubs (ZS1) unless the
 /// caller already included an equivalent `base.zs`.
 pub fn check(sources: &[(String, String)]) -> CheckResult {
+    check_with(sources, false)
+}
+
+/// [`check`], but functions that do not lower run as empty bodies, each
+/// reported as a warning ([`lower_lenient`]). Parse and type errors still fail.
+pub fn check_lenient(sources: &[(String, String)]) -> CheckResult {
+    check_with(sources, true)
+}
+
+fn check_with(sources: &[(String, String)], lenient: bool) -> CheckResult {
     let sources = with_room_stdlib(sources);
-    let parsed = parse_sources(&sources);
-    let mut diags = parsed.diagnostics;
+    let mut parsed = parse_sources(&sources);
+    let mut diags = std::mem::take(&mut parsed.diagnostics);
     if diags.iter().any(|d| d.severity == Severity::Error) {
         return CheckResult {
             diagnostics: diags,
@@ -86,13 +106,19 @@ pub fn check(sources: &[(String, String)]) -> CheckResult {
             program: None,
         };
     }
+    let located = |mut v: Vec<Diagnostic>| {
+        for d in &mut v {
+            parsed.locate(d);
+        }
+        v
+    };
     let analysis = match analyze(&parsed.unit) {
         Ok(a) => {
-            diags.extend(a.warnings.clone());
+            diags.extend(located(a.warnings.clone()));
             a
         }
         Err(more) => {
-            diags.extend(more);
+            diags.extend(located(more));
             return CheckResult {
                 diagnostics: diags,
                 analysis: None,
@@ -100,10 +126,18 @@ pub fn check(sources: &[(String, String)]) -> CheckResult {
             };
         }
     };
-    let program = match lower(&parsed.unit, &analysis) {
-        Ok(p) => Some(p),
+    let lowered = if lenient {
+        lower_lenient(&parsed.unit, &analysis)
+    } else {
+        lower(&parsed.unit, &analysis).map(|p| (p, Vec::new()))
+    };
+    let program = match lowered {
+        Ok((p, stubbed)) => {
+            diags.extend(located(stubbed));
+            Some(p)
+        }
         Err(more) => {
-            diags.extend(more);
+            diags.extend(located(more));
             None
         }
     };

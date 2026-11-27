@@ -160,6 +160,7 @@ pub use world::{
     DamageTypeInfo, HudClipRect, HudMessage, HudPspLayer, KillEvent, LastDamageInfo,
     MAX_KILL_EVENTS, MatchOver, MatchStanding, MessageKind, MessageTo, PlayerHud, Quake, ScoreRow,
     ScreenFade, SectorDynamic, ShotKind, ShotTrace, SimDecalEvent, SimError, SimParticleEvent,
-    SimSoundAdjust, SimSoundEvent, Standing, StatusBarItems, World, psprite_scalelight,
+    SimSoundAdjust, SimSoundEvent, Standing, StatusBarItems, World, merge_zscript_defs,
+    psprite_scalelight,
 };
 pub use zscript::{ZscriptRuntime, ZscriptSaveBlob};

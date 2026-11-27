@@ -44,7 +44,8 @@ pub use sound::{ListenerFilter, SoundSystem};
 pub use vanilla_lmp::VanillaLmp;
 pub use zscript_load::acs_library_pool;
 pub use zscript_load::{
-    CONVERTED_MODULE, CONVERTED_RECORD, CONVERTED_UI_MODULE, ZscriptLoadReport,
-    load_status_bar_program, load_zscript_from_vfs, log_zscript_report, status_bar_mod_sources,
-    uzdoom_stdlib_sources, zscript_sources_from_vfs,
+    CONVERTED_MODULE, CONVERTED_RECORD, CONVERTED_UI_MODULE, CVAR_GLOBALS_SOURCE,
+    ZscriptLoadReport, cvar_globals_source, load_status_bar_program, load_zscript_from_vfs,
+    log_zscript_report, status_bar_mod_sources, uzdoom_stdlib_sources, zscript_sources_from_vfs,
+    zscript_wad_lumps,
 };

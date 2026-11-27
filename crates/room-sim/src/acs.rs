@@ -4201,7 +4201,15 @@ pub fn push_acs_library_tree(world: &mut World, name: &str, pool: &[(String, Vec
     {
         return true;
     }
-    let Some((_, bytes)) = pool.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) else {
+    // Lump names are 8 characters: `LOADACS` naming `BerserkPrompt` finds the
+    // `ACS/BerserkPrompt.o` lump `BERSERKP`, as GZDoom's `CheckNumForName`.
+    let short = |s: &str| -> String { s.chars().take(8).collect::<String>().to_ascii_uppercase() };
+    let want = short(name);
+    let Some((_, bytes)) = pool
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .or_else(|| pool.iter().find(|(n, _)| short(n) == want))
+    else {
         world.push_message_kind(
             crate::world::MessageKind::System,
             format!("Could not find ACS library {name}."),
@@ -4532,6 +4540,22 @@ mod tests {
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out
+    }
+
+    #[test]
+    fn loadacs_long_name_finds_eight_char_lump() {
+        let map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(128.0, 128.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        let mut w = World::from_map(map).unwrap();
+        let before = w.acs.modules.len();
+        // `ACS/BerserkPrompt.o` is lump `BERSERKP`.
+        let pool = vec![("BERSERKP".to_owned(), behavior_delay_open())];
+        assert!(push_acs_library_tree(&mut w, "BerserkPrompt", &pool));
+        assert_eq!(w.acs.modules.len(), before + 1);
+        assert!(!push_acs_library_tree(&mut w, "Missing", &pool));
     }
 
     #[test]

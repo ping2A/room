@@ -749,7 +749,20 @@ impl Zvm {
                 Op::CallNat => {
                     let ext = self.take_ext(stack, func_i)?;
                     let pushed = std::mem::take(&mut self.args);
-                    self.native_call(ext, pushed, b)?;
+                    if let Err(e) = self.native_call(ext, pushed, b) {
+                        // Name the script function the native failed in.
+                        return Err(match e {
+                            Trap::Native(msg) if !msg.starts_with("in ") => {
+                                let name = self
+                                    .program
+                                    .functions
+                                    .get(func_i)
+                                    .map_or("?", |f| f.name.as_str());
+                                Trap::Native(format!("in {name}: {msg}"))
+                            }
+                            other => other,
+                        });
+                    }
                 }
                 Op::SetRet => {
                     // Extra results of `return a, b;` before the final `Ret`.

@@ -1440,6 +1440,28 @@ pub mod block_mode {
     pub const PLAYERS: i32 = 4;
 }
 
+/// Register a compiled ZScript program's classes, `Default` blocks and
+/// `States` in a class registry and state table (what loading the program into
+/// a world does), so actors defined only in ZScript can spawn with the map.
+pub fn merge_zscript_defs(
+    classes: &mut ClassRegistry,
+    states: &mut StateTable,
+    program: &room_zvm::CompiledProgram,
+) {
+    let layouts: Vec<(String, String)> = program
+        .classes
+        .iter()
+        .map(|c| (c.name.clone(), c.parent.clone()))
+        .collect();
+    classes.register_zscript_actors(&layouts, &program.class_defaults);
+    if !program.class_defaults.is_empty() {
+        classes.merge_zscript_defaults(&program.class_defaults);
+    }
+    if !program.class_states.is_empty() {
+        states.merge_zscript_states(classes, &program.class_states);
+    }
+}
+
 impl World {
     /// Cap for [`Self::recent_shots`].
     const MAX_RECENT_SHOTS: usize = 48;
@@ -1454,6 +1476,23 @@ impl World {
     /// the builtin table does not implement. Used for the UZDoom stdlib.
     pub fn load_zscript_program_stubbed(&mut self, program: room_zvm::CompiledProgram) {
         self.load_zscript_program_inner(program, true);
+    }
+
+    /// Like [`load_zscript_program_stubbed`](Self::load_zscript_program_stubbed)
+    /// when the world's class registry and state table already hold the
+    /// program's classes ([`merge_zscript_defs`]), as for a ZScript player
+    /// class that must exist before the players spawn.
+    pub fn load_zscript_program_premerged(
+        &mut self,
+        program: room_zvm::CompiledProgram,
+        stub_missing: bool,
+    ) {
+        if stub_missing {
+            self.zscript.load_program_stubbed(program);
+        } else {
+            self.zscript.load_program(program);
+        }
+        self.sync_zscript_class_tables();
     }
 
     fn load_zscript_program_inner(

@@ -186,8 +186,28 @@ pub struct ClassLayout {
     /// Object-array field indices in the object bank (`Array<Actor>`,
     /// `Array<@Line>`).
     pub array_a: Vec<u16>,
+    /// Struct-typed fields (`FLineTraceData data;`): object-bank index and the
+    /// struct's class id. `new` allocates them, as GZDoom stores structs inline.
+    pub structs: Vec<(u16, u32)>,
     /// Field name → (bank, index). bank: 0=i 1=a 2=s 3=f (vectors: first component)
     pub fields: BTreeMap<String, (u8, u16)>,
+}
+
+/// Where a program's `PlayerInfo` keeps `mo`, for natives that build one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerInfoLayout {
+    /// Class id of `PlayerInfo`.
+    pub class_id: u32,
+    /// Int fields.
+    pub n_i: u16,
+    /// Object fields.
+    pub n_a: u16,
+    /// String fields.
+    pub n_s: u16,
+    /// Float fields.
+    pub n_f: u16,
+    /// Object-bank slot of `mo`.
+    pub mo_slot: u16,
 }
 
 /// A fully linked program.

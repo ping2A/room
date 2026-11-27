@@ -504,6 +504,8 @@ impl PlaySession {
         ) {
             crate::zvm_web::prepare(program, all);
         }
+        game.set_zscript_uzdoom(zs.uzdoom_library);
+        game.set_zscript_lumps(room_game::zscript_wad_lumps(&vfs, zs.program.as_ref()));
         game.set_zscript(zs.program, zscript_handlers);
 
         game.set_defs(data.classes, data.states);

@@ -55,22 +55,14 @@ fn uzdoom_zscript_txt_resolves_every_include() {
     for (key, n) in buckets.iter().take(6) {
         eprintln!("uz3 {n:5} {key}");
     }
-    let sema: Vec<_> = errors.iter().filter(|d| d.path != "lower.zs").collect();
-    eprintln!(
-        "uz3 sema {} lower {}",
-        sema.len(),
-        errors.len() - sema.len()
-    );
+    // Measured 2026-11-03: the vendored stdlib type-checks and lowers with
+    // no errors (diagnostics name the stdlib file and line of each).
     assert!(
-        sema.is_empty(),
-        "type checker produced {} errors, first: {}",
-        sema.len(),
-        sema.first().map(|d| d.message.as_str()).unwrap_or("")
+        errors.is_empty(),
+        "{} errors, first: {}",
+        errors.len(),
+        errors.first().map(|d| d.format_line()).unwrap_or_default()
     );
-    // The type checker is clean, so `check` reaches the lowerer.
-    // Measured 2026-11-03: the vendored stdlib lowers with no errors.
-    let lower = errors.len() - sema.len();
-    assert_eq!(lower, 0, "lowerer produced {lower} errors (ceiling 0)");
     let prog = result.program.expect("lowered program");
     let mut table = room_zvm::NativeTable::with_builtins();
     let imports = prog.native_imports.len();

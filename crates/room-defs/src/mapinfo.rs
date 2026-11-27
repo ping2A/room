@@ -104,6 +104,8 @@ pub struct MapInfo {
     pub event_handlers: Vec<String>,
     /// `gameinfo { StatusBarClass = "…" }` — ZScript `BaseStatusBar` subclass.
     pub statusbar_class: Option<String>,
+    /// `gameinfo { PlayerClasses = "A", "B" }` — replaces the game's classes.
+    pub player_classes: Vec<String>,
 }
 
 impl MapInfo {
@@ -760,6 +762,8 @@ fn skip_block(sc: &mut Scanner<'_>) -> Result<(), DefsError> {
 
 /// `gameinfo { AddEventHandlers = "A", "B"; … }` (docs/34 ZS4 / docs/33 BD6).
 fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), DefsError> {
+    // ZMAPINFO GameInfo has no `;`: a value is the rest of its line, plus the
+    // next lines while the previous one ended with `,`.
     let mut depth = 1i32;
     while depth > 0 {
         match sc.next_token()? {
@@ -768,11 +772,12 @@ fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), 
             Tok::Punct(Punct::RBrace) => depth -= 1,
             Tok::Ident(key) if depth == 1 => {
                 let key_l = key.to_ascii_lowercase();
+                let line = sc.span().line;
                 let _ = sc.check_punct(Punct::Eq)?;
+                let values = read_value_list(sc, line)?;
                 match key_l.as_str() {
                     "addeventhandlers" | "eventhandlers" => {
-                        let names = read_string_list(sc)?;
-                        for n in names {
+                        for n in values {
                             if !info
                                 .event_handlers
                                 .iter()
@@ -782,24 +787,13 @@ fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), 
                             }
                         }
                     }
-                    "statusbarclass" => match sc.next_token()? {
-                        Tok::String(v) => info.statusbar_class = Some(v.into_owned()),
-                        Tok::Ident(v) => info.statusbar_class = Some(v.to_owned()),
-                        _ => {}
-                    },
-                    _ => {
-                        // Skip value until `;` or end of block.
-                        loop {
-                            match sc.next_token()? {
-                                Tok::Punct(Punct::Semi) | Tok::Eof => break,
-                                Tok::Punct(Punct::RBrace) => {
-                                    sc.unget(Tok::Punct(Punct::RBrace));
-                                    break;
-                                }
-                                _ => {}
-                            }
+                    "statusbarclass" => {
+                        if let Some(v) = values.into_iter().next() {
+                            info.statusbar_class = Some(v);
                         }
                     }
+                    "playerclasses" => info.player_classes = values,
+                    _ => {}
                 }
                 let _ = sc.check_punct(Punct::Semi)?;
             }
@@ -809,34 +803,34 @@ fn parse_gameinfo_block(sc: &mut Scanner<'_>, info: &mut MapInfo) -> Result<(), 
     Ok(())
 }
 
-fn read_string_list(sc: &mut Scanner<'_>) -> Result<Vec<String>, DefsError> {
+/// Values after `Key =`: strings, words and numbers up to `;`, `}` or the end
+/// of the line (continued past a trailing `,`).
+fn read_value_list(sc: &mut Scanner<'_>, key_line: u32) -> Result<Vec<String>, DefsError> {
     let mut out = Vec::new();
+    let mut line = key_line;
+    let mut after_comma = false;
     loop {
-        match sc.next_token()? {
+        let tok = sc.next_token()?;
+        let here = sc.span().line;
+        if !matches!(tok, Tok::Eof) && here != line && !after_comma {
+            sc.unget(tok);
+            break;
+        }
+        line = here;
+        after_comma = false;
+        match tok {
             Tok::String(s) => out.push(s.into_owned()),
             Tok::Ident(s) => out.push(s.to_owned()),
-            Tok::Punct(Punct::Comma) => continue,
-            Tok::Punct(Punct::Semi) => {
-                sc.unget(Tok::Punct(Punct::Semi));
-                break;
-            }
-            Tok::Punct(Punct::RBrace) => {
-                sc.unget(Tok::Punct(Punct::RBrace));
+            Tok::Int(n) => out.push(n.to_string()),
+            Tok::Float(f) => out.push(f.to_string()),
+            Tok::Punct(Punct::Comma) => after_comma = true,
+            Tok::Punct(Punct::Semi) | Tok::Punct(Punct::RBrace) => {
+                sc.unget(tok);
                 break;
             }
             Tok::Eof => break,
-            other => {
-                return Err(DefsError::Message(format!(
-                    "MAPINFO gameinfo: expected handler name, got {other:?}"
-                )));
-            }
+            _ => {}
         }
-        // Optional comma before next name.
-        if sc.check_punct(Punct::Comma)? {
-            continue;
-        }
-        // End of list if `;` / `}` ahead — leave for caller.
-        break;
     }
     Ok(out)
 }
@@ -894,6 +888,18 @@ damagetype Poison { NoArmor }
         assert_eq!(fire.factor, Some(0.5));
         assert!(fire.replace_factor && !fire.no_armor);
         assert!(info.damage_types["poison"].no_armor);
+    }
+
+    #[test]
+    fn zmapinfo_gameinfo_without_semicolons() {
+        let m = parse_mapinfo(
+            "GameInfo\n{\n\tPlayerClasses = \"PB_PlayerPrawn\"\n\tStatusBarClass = \"PB_Hud_ZS\"\n\tDimAmount = 0.70\n\tAddEventHandlers = \"A\",\n\t\"B\",\n\t//\"Off\"\n\t\"C\"\n\n\tNormForwardMove = 0x32, 0x32\n}\nmap MAP01 \"Hangar\" { }\n",
+        )
+        .unwrap();
+        assert_eq!(m.player_classes, ["PB_PlayerPrawn"]);
+        assert_eq!(m.statusbar_class.as_deref(), Some("PB_Hud_ZS"));
+        assert_eq!(m.event_handlers, ["A", "B", "C"]);
+        assert!(m.maps.contains_key("MAP01"));
     }
 
     #[test]

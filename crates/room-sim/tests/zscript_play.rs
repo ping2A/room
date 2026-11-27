@@ -2932,3 +2932,548 @@ class T {
     // [1,2,3] → Find(2) = 1; Insert 10 at 0, Delete(2), [0] = 100 → [100,1,3].
     assert_eq!(rt.script_call_with("T.Run", &[], &[]).unwrap(), 104_111);
 }
+
+/// Project Brutality idioms: brace-initialized local arrays, class-wide
+/// `static const` tables (own, inherited, mixin, qualified) and multi-assign
+/// into non-local targets.
+#[test]
+fn pb_array_initializers_and_static_tables_run() {
+    let src = r#"
+mixin class PBNames
+{
+    static const String First[] =
+    {
+        "John",
+        "Jeff",
+        "Chris",
+    };
+    int NameLen(int i) { return First[i].Length(); }
+}
+class PBBase
+{
+    mixin PBNames;
+    static const int Weights[] = { 5, 7, 11 };
+}
+class PBProbe : PBBase
+{
+    static int Sum()
+    {
+        int s[4] = { 1, 2, 3, 4 };
+        int total = 0;
+        for (int i = 0; i < s.Size(); i++) total += s[i];
+        return total;
+    }
+    static int Tables()
+    {
+        int t = 0;
+        for (int i = 0; i < Weights.Size(); i++) t += Weights[i];
+        return t * 100 + PBBase.Weights.Size();
+    }
+    static int Inner()
+    {
+        static const int Local[] = { 10, 20, 30 };
+        return Local[2] + Local.Size();
+    }
+    static int, int Pair(int a) { return a + 1, a * 2; }
+    static int Multi()
+    {
+        Array<int> arr;
+        arr.Push(0);
+        arr.Push(0);
+        [arr[0], arr[1]] = Pair(4);
+        return arr[0] * 10 + arr[1];
+    }
+    static int SelfParam(PBProbe self) { return self ? 8 : 7; }
+    static int CallSelf() { return SelfParam(null) * 10 + SelfParam(new("PBProbe")); }
+    static int, PBProbe Two() { return 3, new("PBProbe"); }
+    static int ObjMulti()
+    {
+        int n;
+        PBProbe p;
+        [n, p] = Two();
+        return p ? n : -1;
+    }
+    static int Picks()
+    {
+        int r = randompick(4, 5, 6);
+        double f = frandompick(1.5, 2.5) + cfrandom(-1, 1);
+        return (r >= 4 && r <= 6 && f >= 0.5 && f <= 3.5) ? 1 : 0;
+    }
+    static int Names()
+    {
+        let p = new("PBProbe");
+        return p.NameLen(0) * 10 + p.NameLen(2);
+    }
+}
+"#;
+    let result = room_zscript::check(&[("pb_probe.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    assert_eq!(rt.script_call("PBProbe.Sum").expect("Sum"), 10);
+    assert_eq!(rt.script_call("PBProbe.Tables").expect("Tables"), 2303);
+    assert_eq!(rt.script_call("PBProbe.Inner").expect("Inner"), 33);
+    assert_eq!(rt.script_call("PBProbe.Multi").expect("Multi"), 58);
+    assert_eq!(rt.script_call("PBProbe.Names").expect("Names"), 45);
+    assert_eq!(rt.script_call("PBProbe.Picks").expect("Picks"), 1);
+    assert_eq!(rt.script_call("PBProbe.CallSelf").expect("CallSelf"), 78);
+    assert_eq!(rt.script_call("PBProbe.ObjMulti").expect("ObjMulti"), 3);
+}
+
+/// Handler objects get their `Array<…>` fields, as `new` makes them
+/// (Project Brutality's `PB_Materialsys.OnRegister` pushed into a null array).
+#[test]
+fn handler_array_fields_are_allocated() {
+    let src = r#"
+class ArrHandler : StaticEventHandler
+{
+    Map<int, Object> keys;
+    Array<int> ranges;
+    Array<String> names;
+    int got;
+    override void OnRegister()
+    {
+        ranges.Push(names.Size());
+        names.Push("a");
+        got = ranges.Size() * 10 + names.Size();
+    }
+    static int Probe()
+    {
+        let h = ArrHandler(StaticEventHandler.Find("ArrHandler"));
+        return h ? h.got : -1;
+    }
+}
+"#;
+    let result = room_zscript::check(&[("arr_handler.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    rt.set_event_handlers(["ArrHandler".to_owned()]);
+    rt.activate_map_handlers().expect("OnRegister");
+}
+
+/// `[RealFloorZ, RealFloor] = F();` with fields of `self` as targets.
+#[test]
+fn multi_assign_into_self_fields() {
+    let src = r#"
+class FieldMulti
+{
+    int n;
+    double d;
+    FieldMulti other;
+    static int, FieldMulti Two() { return 7, new("FieldMulti"); }
+    static double, int Three() { return 2.5, 4; }
+    int Fill()
+    {
+        [n, other] = Two();
+        [d, n] = Three();
+        return (other ? 100 : 0) + n * 10 + int(d * 2);
+    }
+    static int Run() { let f = new("FieldMulti"); return f.Fill(); }
+}
+"#;
+    let result = room_zscript::check(&[("field_multi.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    assert_eq!(rt.script_call("FieldMulti.Run").expect("Run"), 145);
+}
+
+/// `holder.flashlightChargeMax`: a class constant read through an object, in a
+/// float expression (Project Brutality's HUD).
+#[test]
+fn class_constant_through_an_object_in_float_math() {
+    let src = r#"
+class ConstHolder
+{
+    const ChargeMax = 100.0;
+    double charge;
+}
+class ConstReader
+{
+    ConstHolder holder;
+    static int Run()
+    {
+        let r = new("ConstReader");
+        r.holder = new("ConstHolder");
+        r.holder.charge = 25.0;
+        return int(r.Ratio() * 100);
+    }
+    double Ratio() { return holder.charge / holder.ChargeMax; }
+}
+"#;
+    let result = room_zscript::check(&[("const_holder.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    assert_eq!(rt.script_call("ConstReader.Run").expect("Run"), 25);
+}
+
+/// Script functions returning vectors (`vector2 SafeUnit2(…)`, PB's jump
+/// code), alone, in `dot` and under unary minus, and before another result.
+#[test]
+fn script_functions_return_vectors() {
+    let src = r#"
+class VecRet
+{
+    vector2 SafeUnit2(vector2 v)
+    {
+        double l = v.Length();
+        if (l == 0) return (0, 0);
+        return v / l;
+    }
+    static vector3 Up(double z) { return (1, 2, z); }
+    static vector2, int Pair() { return (3, 4), 7; }
+    int Run()
+    {
+        vector2 a = SafeUnit2((3, 4));
+        vector3 b = Up(5);
+        double d = (1, 0) dot SafeUnit2((10, 0));
+        double neg = - (0, 1) dot SafeUnit2((0, 2)) > 0 ? 1.0 : 2.0;
+        vector2 p; int q;
+        [p, q] = Pair();
+        return int(p.y + q) * 1000000 + int(a.x * 100) * 10000 + int(b.z) * 100 + int(d) * 10 + int(neg);
+    }
+    static int Go() { let o = new("VecRet"); return o.Run(); }
+}
+"#;
+    let result = room_zscript::check(&[("vec_ret.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    // p.y + q = 11, a.x = 0.6, b.z = 5, d = 1, neg branch = 2.
+    assert_eq!(rt.script_call("VecRet.Go").expect("Go"), 11_600_512);
+}
+
+/// `a cross b` on vector3 (NashGore's `RotateVector`).
+#[test]
+fn vector_cross_product() {
+    let src = r#"
+class CrossT
+{
+    static int Go()
+    {
+        vector3 a = (1, 0, 0);
+        vector3 b = (0, 1, 0);
+        vector3 c = a cross b;
+        vector3 u = (a cross b).Unit();
+        vector3 m = (a * 2 + (b cross a) * 3);
+        return int(c.z) * 100 + int(u.z) * 10 + int(-m.z);
+    }
+}
+"#;
+    let result = room_zscript::check(&[("cross.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    assert_eq!(rt.script_call("CrossT.Go").expect("Go"), 113);
+}
+
+/// `"" .. d` for a double field, and a `string speed` local shadowing a
+/// double field of the same name (PB's footsteps).
+#[test]
+fn double_field_to_string_and_shadowing_local() {
+    let src = r#"
+class StrT
+{
+    double d;
+    double speed;
+    string Cat() { return ""..d; }
+    int Shadow()
+    {
+        string speed;
+        speed = "creep";
+        return speed.Length();
+    }
+    static int Go()
+    {
+        let o = new("StrT");
+        o.d = 2.5;
+        o.speed = 9;
+        return o.Cat().Length() * 100 + o.Shadow() * 10 + int(o.speed) % 10;
+    }
+}
+"#;
+    let result = room_zscript::check(&[("str_t.zs".into(), src.into())]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    // "2.500000" (8 chars), "creep" (5), speed 9.
+    assert_eq!(rt.script_call("StrT.Go").expect("Go"), 859);
+}
+
+/// Run `Class.Fn` of `src` compiled with the UZDoom library.
+fn uz_call(src: &str, func: &str) -> i64 {
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program_stubbed(load_uzdoom_stdlib_with(src));
+    rt.script_call(func).expect(func)
+}
+
+/// `Map<K, V>` and `MapIterator<K, V>` as UZDoom's native map structs: insert,
+/// get, keys, removal, iteration, `foreach`, and a map field of an object
+/// (Project Brutality's JSON objects).
+#[test]
+fn maps_iterators_and_foreach() {
+    let src = r#"
+class MapHolder { Map<String, Object> data; }
+class MapT
+{
+    static int Ints()
+    {
+        Map<int, int> m;
+        m.Insert(4, 40);
+        m.Insert(5, 50);
+        m.Insert(4, 41);
+        int sum = 0;
+        MapIterator<int, int> it;
+        it.Init(m);
+        while (it.Next()) sum += it.GetKey() * 1000 + it.GetValue();
+        int missing = m.GetIfExists(9);
+        bool has = m.CheckKey(5);
+        m.Remove(5);
+        // 9091 = 4041 + 5050.
+        return sum * 100 + m.CountUsed() * 10 + has + missing;
+    }
+    static int Strings()
+    {
+        let h = new("MapHolder");
+        h.data.Insert("a", h);
+        h.data.Insert("bb", null);
+        int n = 0;
+        foreach (k, v : h.data) { n += k.Length() * (v ? 10 : 1); }
+        Map<String, double> f;
+        f.Insert("x", 2.5);
+        return n * 100 + int(f.Get("x") * 10);
+    }
+    static int Each()
+    {
+        Map<int, int> m;
+        m.Insert(1, 7);
+        m.Insert(2, 8);
+        int s = 0;
+        foreach (v : m) s += v;
+        Array<int> a;
+        a.Push(3);
+        a.Push(4);
+        foreach (x : a) s += x * 100;
+        return s;
+    }
+}
+"#;
+    assert_eq!(uz_call(src, "MapT.Ints"), 909_111);
+    // "a" → 1 * 10, "bb" → 2 * 1; 2.5 * 10.
+    assert_eq!(uz_call(src, "MapT.Strings"), 1225);
+    assert_eq!(uz_call(src, "MapT.Each"), 715);
+}
+
+/// `out` parameters come back from functions that also return a value,
+/// through nested calls and `return F(i)` (PB's JSON parser index).
+#[test]
+fn out_parameters_come_back_from_value_functions() {
+    let src = r#"
+class OutT
+{
+    static int Set7(out uint i) { i = 7; return 1; }
+    static int Pass(out uint i) { return Set7(i); }
+    static Object Obj(out int i, out string s, out double d) { i = 9; s = "abc"; d = 1.5; return null; }
+    static void Bump(out int i) { i += 3; }
+    static void Mid(out int i) { Bump(i); Bump(i); }
+    static int Go()
+    {
+        uint a = 1;
+        int r = Pass(a);
+        int b = 0; string s; double d = 0;
+        Object o = Obj(b, s, d);
+        int c = 1;
+        Mid(c);
+        return a * 100000 + r * 10000 + b * 1000 + s.Length() * 100 + int(d * 10) + c * 0;
+    }
+    static int Go2() { int c = 1; Mid(c); return c; }
+}
+"#;
+    assert_eq!(uz_call(src, "OutT.Go"), 719_315);
+    assert_eq!(uz_call(src, "OutT.Go2"), 7);
+}
+
+/// UZDoom's mutating string methods change the variable or field they are
+/// called on; `AppendFormat` formats mixed arguments.
+#[test]
+fn string_methods_mutate_their_receiver() {
+    let src = r#"
+class StrHolder { string s; }
+class StrMutT
+{
+    string mine;
+    static int Go()
+    {
+        string t = "ab";
+        t.AppendFormat("%s%d", "cd", 12);
+        string u;
+        u.AppendCharacter(65);
+        u.AppendCharacter(66);
+        let h = new("StrHolder");
+        string src = "hello";
+        h.s.AppendFormat("%s", src.Mid(1, 3));
+        h.s.Truncate(2);
+        string v = " x ";
+        v.StripRight();
+        v.Replace("x", "yz");
+        let o = new("StrMutT");
+        o.mine = "q";
+        o.Add();
+        // "abcd12", "AB", "el", " yz", "q!".
+        return t.Length() * 10000 + u.Length() * 1000 + h.s.Length() * 100 + v.Length() * 10 + o.mine.Length();
+    }
+    void Add() { mine.AppendFormat("!"); }
+}
+"#;
+    assert_eq!(uz_call(src, "StrMutT.Go"), 62_232);
+}
+
+/// A one-character string next to an int is its character code: in
+/// comparisons, `case` labels and `return` (PB's JSON parser).
+#[test]
+fn char_literals_compare_with_ints() {
+    let src = r#"
+class CharT
+{
+    static int Code() { return "\n"; }
+    static int Go()
+    {
+        int c = 123;
+        int d = 50;
+        int r = 0;
+        if (c == "{") r += 1;
+        if (c != "}") r += 10;
+        if (d >= "0" && d <= "9") r += 100;
+        switch (c) { case "{": r += 1000; break; default: break; }
+        uint e, n;
+        string s = "{x";
+        [e, n] = s.GetNextCodePoint(0);
+        if (e == "{") r += 10000;
+        return r * 100 + Code();
+    }
+}
+"#;
+    assert_eq!(uz_call(src, "CharT.Go"), 1_111_110);
+}
+
+/// Named arguments go to their parameters, also on a call through another
+/// object; script struct locals and fields are values, passed as `out`.
+#[test]
+fn named_arguments_and_struct_values() {
+    let src = r#"
+struct TraceData { int Hit; double Dist; }
+class NamedT
+{
+    TraceData field;
+    int Fill(out TraceData d) { d.Hit = 3; d.Dist = 2.0; return 1; }
+    int Mix(int a, int b = 5, int c = 7) { return a * 100 + b * 10 + c; }
+    static int Go()
+    {
+        let o = new("NamedT");
+        TraceData t;
+        o.Fill(t);
+        o.Fill(o.field);
+        let other = new("NamedT");
+        return (t.Hit * 10 + o.field.Hit) * 1000 + other.Mix(1, c: 2);
+    }
+}
+"#;
+    assert_eq!(uz_call(src, "NamedT.Go"), 33_152);
+}
+
+/// Locals of a nested block go out of scope with it, so a long function
+/// with many such blocks stays under the 255-register limit.
+#[test]
+fn nested_block_locals_free_their_registers() {
+    let mut body = String::new();
+    for k in 0..120 {
+        body.push_str(&format!(
+            "if (n >= 0) {{ double a{k} = n + {k}; double b{k} = a{k} * 2; s += b{k} - a{k}; }}\n"
+        ));
+    }
+    let src = format!(
+        "class RegT {{ static int Go() {{ double s = 0; int n = 1; {body} return int(s); }} }}"
+    );
+    let result = room_zscript::check(&[("reg_t.zs".into(), src)]);
+    assert!(result.ok(), "{:?}", result.diagnostics);
+    let mut rt = ZscriptRuntime::default();
+    rt.load_program(result.program.unwrap());
+    // Sum of (1 + k) for k in 0..120.
+    assert_eq!(rt.script_call("RegT.Go").expect("Go"), 7260);
+}
+
+/// In a lenient compile, a store to an engine field Room does not model is
+/// dropped with a warning instead of emptying the whole function (PB's
+/// `psp.sprite = …`).
+#[test]
+fn lenient_unknown_field_store_keeps_the_function() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).expect("zscript.txt");
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        let Some(rest) = line.trim().strip_prefix("#include") else {
+            continue;
+        };
+        let path = rest.trim().trim_matches('"');
+        let text = std::fs::read_to_string(root.join(path)).expect(path);
+        sources.push((path.replace('\\', "/"), text));
+    }
+    sources.push((
+        "soft_t.zs".to_owned(),
+        r#"
+class SoftT : Weapon
+{
+    action void Swap(name imp, int layer = PSP_WEAPON)
+    {
+        let psp = player.findpsprite(layer);
+        if (!psp) return;
+        psp.sprite = getspriteindex(imp);
+    }
+}
+"#
+        .to_owned(),
+    ));
+    let result = room_zscript::check_lenient(&sources);
+    let mine = |d: &&room_zscript::Diagnostic| d.message.contains("SoftT.");
+    let warns: Vec<_> = result.diagnostics.iter().filter(mine).collect();
+    assert!(
+        warns.iter().any(|d| d
+            .message
+            .contains("store to an unsupported field is ignored")),
+        "{warns:?}"
+    );
+    assert!(
+        !warns
+            .iter()
+            .any(|d| d.message.contains("runs as an empty function")),
+        "{warns:?}"
+    );
+}
+
+/// With the UZDoom library, `players[n]` is a real `PlayerInfo` whose `mo`
+/// is the pawn proxy, and `playeringame` is an array of the seats (PB's
+/// `WorldLoaded` reads both).
+#[test]
+fn players_mo_and_playeringame_with_the_uzdoom_library() {
+    let src = r#"
+class SeatT
+{
+    static int Go()
+    {
+        int r = 0;
+        for (int i = 0; i < MAXPLAYERS; i++)
+        {
+            if (playeringame[i])
+            {
+                PlayerPawn p = players[i].mo;
+                if (p) r += 10 + i;
+            }
+        }
+        return r;
+    }
+}
+"#;
+    assert_eq!(uz_call(src, "SeatT.Go"), 10);
+}

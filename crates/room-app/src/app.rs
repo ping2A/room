@@ -3551,6 +3551,8 @@ fn start_play_session(
                 Err(e) => eprintln!("room: status bar {class}: {e} (native bar kept)"),
             }
         }
+        game.set_zscript_uzdoom(zs.uzdoom_library);
+        game.set_zscript_lumps(room_game::zscript_wad_lumps(vfs, zs.program.as_ref()));
         game.set_zscript(zs.program, zscript_handlers);
         if let Some(path) = decorate {
             let src = match std::fs::read_to_string(path) {

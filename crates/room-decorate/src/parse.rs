@@ -1,7 +1,7 @@
 //! DECORATE parser (M5 bootstrap subset).
 
 use crate::error::DecorateError;
-use crate::include::expand_includes;
+use crate::include::expand_includes_mapped;
 use crate::ir::{
     ActorDef, ClassDefIr, FlagOp, PropertyStmt, StateFlow, StateItem, StateLine, StatesBlock,
 };
@@ -12,8 +12,9 @@ pub fn parse_decorate_with_includes(
     src: &str,
     resolve: impl FnMut(&str) -> Result<String, DecorateError>,
 ) -> Result<ClassDefIr, DecorateError> {
-    let expanded = expand_includes(src, resolve)?;
-    parse_decorate(&expanded)
+    // Keep the line map so errors name the included file, not `<expanded>`.
+    let expanded = expand_includes_mapped(src, resolve)?;
+    parse_decorate_with_map(&expanded.text, Some(&expanded.map))
 }
 
 /// Result of a lenient whole-file parse (BD1).
@@ -306,6 +307,7 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
     let mut flags = Vec::new();
     let mut properties = Vec::new();
     let mut states = None;
+    let mut consts: Vec<(String, String)> = Vec::new();
     loop {
         if sc.check_punct(Punct::RBrace)? {
             break;
@@ -325,6 +327,23 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
                     set: false,
                     name: "*".into(),
                 });
+            }
+            Tok::Ident(kw) if Scanner::compare(kw, "const") => {
+                // `const int NAME = 20;`: substituted into this actor's actions.
+                let _ty = sc.next_token()?;
+                let cname = match sc.next_token()? {
+                    Tok::Ident(n) => n.to_owned(),
+                    other => {
+                        return Err(DecorateError::Message(format!(
+                            "expected constant name, got {other:?}"
+                        )));
+                    }
+                };
+                if !sc.check_punct(Punct::Eq)? {
+                    return Err(DecorateError::Message("expected '=' in const".into()));
+                }
+                let value = read_anon_value(sc)?;
+                consts.push((cname, value));
             }
             Tok::Ident(name) => {
                 // Property or keyword shortcut.
@@ -357,6 +376,11 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
             }
         }
     }
+    if !consts.is_empty() {
+        if let Some(block) = states.as_mut() {
+            substitute_consts(block, &consts);
+        }
+    }
     Ok(ActorDef {
         name,
         parent,
@@ -366,6 +390,54 @@ fn parse_actor(sc: &mut Scanner<'_>) -> Result<ActorDef, DecorateError> {
         properties,
         states,
     })
+}
+
+/// Replace whole-word uses of actor constants in state action arguments.
+fn substitute_consts(block: &mut StatesBlock, consts: &[(String, String)]) {
+    for item in &mut block.items {
+        let StateItem::Line(line) = item else {
+            continue;
+        };
+        for arg in &mut line.action_args {
+            for (name, value) in consts {
+                if let Some(new) = replace_word(arg, name, value) {
+                    *arg = new;
+                }
+            }
+        }
+    }
+}
+
+/// `text` with every case-insensitive whole-word `word` replaced (outside
+/// strings), or `None` when there is none.
+fn replace_word(text: &str, word: &str, value: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let w = word.to_ascii_lowercase();
+    let b = text.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut hit = false;
+    let mut in_str = false;
+    while i < b.len() {
+        if b[i] == b'"' {
+            in_str = !in_str;
+        }
+        if !in_str
+            && lower[i..].starts_with(&w)
+            && (i == 0 || !is_word(b[i - 1]))
+            && b.get(i + w.len()).is_none_or(|&c| !is_word(c))
+        {
+            out.push_str(value);
+            i += w.len();
+            hit = true;
+            continue;
+        }
+        let ch = text[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    hit.then_some(out)
 }
 
 fn parse_states(sc: &mut Scanner<'_>) -> Result<StatesBlock, DecorateError> {
@@ -800,6 +872,9 @@ fn parse_state_line_body(
         }
     };
     let (duration, random_range) = read_duration(sc)?;
+    // GZDoom: a word after the duration on the frame's own line is its action
+    // (`EXPL AAAAA 0 SpawnPuffSmoke`); on a later line it starts a new frame.
+    let frame_line = sc.span().line;
     let mut modifiers = Vec::new();
     if let Some((lo, hi)) = random_range {
         modifiers.push(format!("random({lo},{hi})"));
@@ -866,10 +941,22 @@ fn parse_state_line_body(
                 // BD3: `A_*` / underscore specials always; camelCase specials
                 // (`ThrustThingZ`) only when followed by `(` so labels like
                 // `NoRandom:` are not eaten as actions.
-                let needs_paren = !(a.starts_with("A_") || a.starts_with("a_") || a.contains('_'));
+                let same_line = action.is_none() && sc.span().line == frame_line;
+                let needs_paren =
+                    !(a.starts_with("A_") || a.starts_with("a_") || a.contains('_') || same_line);
                 if needs_paren && !sc.check_punct(Punct::LParen)? {
                     sc.unget(Tok::Ident(a));
                     break;
+                }
+                if !needs_paren {
+                    // `DMR_Reticle:` is the next label, not an action.
+                    let next = sc.next_token()?;
+                    let label = matches!(next, Tok::Punct(Punct::Colon));
+                    sc.unget(next);
+                    if label {
+                        sc.unget(Tok::Ident(a));
+                        break;
+                    }
                 }
                 action = Some(a.to_owned());
                 if !needs_paren {
@@ -877,6 +964,24 @@ fn parse_state_line_body(
                         action_args = read_action_args(sc)?;
                     }
                 } else {
+                    action_args = read_action_args(sc)?;
+                }
+            }
+            Tok::Ident(a)
+                if action.is_none()
+                    && sc.span().line == frame_line
+                    && a.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) =>
+            {
+                // Bare action on the frame's line: `TNT1 A 0 SpawnPuffSmoke`.
+                let next = sc.next_token()?;
+                let label = matches!(next, Tok::Punct(Punct::Colon));
+                sc.unget(next);
+                if label {
+                    sc.unget(Tok::Ident(a));
+                    break;
+                }
+                action = Some(a.to_owned());
+                if sc.check_punct(Punct::LParen)? {
                     action_args = read_action_args(sc)?;
                 }
             }
@@ -1009,6 +1114,27 @@ fn read_anon_actions(sc: &mut Scanner<'_>) -> Result<Vec<(String, Vec<String>)>,
         if sc.check_punct(Punct::RBrace)? {
             break;
         }
+        read_anon_stmt(sc, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// A body after `if (…)` / `else`: `{ … }` or one statement.
+fn read_anon_body(sc: &mut Scanner<'_>) -> Result<Vec<(String, Vec<String>)>, DecorateError> {
+    if sc.check_punct(Punct::LBrace)? {
+        return read_anon_actions(sc);
+    }
+    let mut out = Vec::new();
+    read_anon_stmt(sc, &mut out)?;
+    Ok(out)
+}
+
+/// One statement of an anonymous function.
+fn read_anon_stmt(
+    sc: &mut Scanner<'_>,
+    out: &mut Vec<(String, Vec<String>)>,
+) -> Result<(), DecorateError> {
+    {
         let tok = sc.next_token()?;
         match tok {
             Tok::Ident(name) if Scanner::compare(name, "return") => {
@@ -1019,26 +1145,171 @@ fn read_anon_actions(sc: &mut Scanner<'_>) -> Result<Vec<(String, Vec<String>)>,
             Tok::Ident(name) if Scanner::compare(name, "if") => {
                 out.extend(read_if_stmt(sc)?);
             }
+            Tok::Ident(name)
+                if ["for", "while", "do", "switch", "else", "let"]
+                    .iter()
+                    .any(|k| Scanner::compare(name, k)) =>
+            {
+                // Control flow Room's DECORATE blocks do not model: skip it.
+                skip_anon_stmt(sc)?;
+            }
             Tok::Ident(name) => {
-                let mut args = Vec::new();
-                if sc.check_punct(Punct::LParen)? {
-                    args = read_action_args(sc)?;
+                let next = sc.next_token()?;
+                match next {
+                    Tok::Punct(Punct::Eq) => {
+                        // `bNOBLOCKMONST = true;` / `user_x = 3;`
+                        let value = read_anon_value(sc)?;
+                        if let Some(stmt) = anon_assignment(name, &value) {
+                            out.push(stmt);
+                        }
+                    }
+                    Tok::Punct(Punct::LParen) => {
+                        let args = read_action_args(sc)?;
+                        let next = sc.next_token()?;
+                        match next {
+                            Tok::Punct(Punct::Semi) => out.push((name.to_owned(), args)),
+                            // `{ A_Foo(1) }` / a missing `;` before the next call.
+                            Tok::Punct(Punct::RBrace) | Tok::Ident(_) => {
+                                sc.unget(next);
+                                out.push((name.to_owned(), args));
+                            }
+                            other => {
+                                // `Foo(1).bar = 2;` and other expressions.
+                                sc.unget(other);
+                                skip_anon_stmt(sc)?;
+                            }
+                        }
+                    }
+                    Tok::Punct(Punct::Semi) => out.push((name.to_owned(), Vec::new())),
+                    Tok::Punct(Punct::RBrace) => {
+                        sc.unget(Tok::Punct(Punct::RBrace));
+                        out.push((name.to_owned(), Vec::new()));
+                    }
+                    other => {
+                        // `angle += 5;`, `vel.z = 4;`, `int i = 0;`: not modelled.
+                        sc.unget(other);
+                        skip_anon_stmt(sc)?;
+                    }
                 }
-                let _ = sc.check_punct(Punct::Semi)?;
-                out.push((name.to_owned(), args));
             }
             Tok::Punct(Punct::Semi) => {}
             Tok::Eof => {
                 return Err(DecorateError::Message("unclosed anonymous function".into()));
             }
             other => {
-                return Err(DecorateError::Message(format!(
-                    "unexpected in anonymous function: {other:?}"
-                )));
+                // `++counter;`, `(expr);`, nested `{ … }`: skip the statement.
+                sc.unget(other);
+                skip_anon_stmt(sc)?;
             }
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+/// Skip one statement of an anonymous function: up to its `;` or the end of a
+/// `{ … }` body, leaving an enclosing `}` unread.
+fn skip_anon_stmt(sc: &mut Scanner<'_>) -> Result<(), DecorateError> {
+    let mut depth = 0i32;
+    loop {
+        match sc.next_token()? {
+            Tok::Eof => {
+                return Err(DecorateError::Message("unclosed anonymous function".into()));
+            }
+            Tok::Punct(Punct::LParen | Punct::LBracket) => depth += 1,
+            Tok::Punct(Punct::RParen | Punct::RBracket) => depth -= 1,
+            Tok::Punct(Punct::LBrace) => depth += 1,
+            Tok::Punct(Punct::RBrace) => {
+                if depth <= 0 {
+                    sc.unget(Tok::Punct(Punct::RBrace));
+                    return Ok(());
+                }
+                depth -= 1;
+                if depth == 0 {
+                    // `while (c) { … }` — but `… } else { … }` continues.
+                    let next = sc.next_token()?;
+                    let more = matches!(next, Tok::Ident(k) if Scanner::compare(k, "else"));
+                    if !more {
+                        sc.unget(next);
+                        return Ok(());
+                    }
+                }
+            }
+            Tok::Punct(Punct::Semi) if depth == 0 => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+/// Right-hand side of an anonymous-function assignment, up to `;` / `}`.
+fn read_anon_value(sc: &mut Scanner<'_>) -> Result<String, DecorateError> {
+    let mut text = String::new();
+    let mut depth = 0i32;
+    loop {
+        let tok = sc.next_token()?;
+        match tok {
+            Tok::Eof => {
+                return Err(DecorateError::Message("unclosed anonymous function".into()));
+            }
+            Tok::Punct(Punct::Semi) if depth == 0 => break,
+            Tok::Punct(Punct::RBrace) if depth == 0 => {
+                sc.unget(Tok::Punct(Punct::RBrace));
+                break;
+            }
+            Tok::Punct(Punct::LParen) => {
+                depth += 1;
+                text.push('(');
+            }
+            Tok::Punct(Punct::RParen) => {
+                depth -= 1;
+                text.push(')');
+            }
+            Tok::Ident(s) => text.push_str(s),
+            Tok::Int(n) => text.push_str(&n.to_string()),
+            Tok::Float(f) => text.push_str(&f.to_string()),
+            Tok::String(s) => {
+                text.push('"');
+                text.push_str(&s);
+                text.push('"');
+            }
+            Tok::Punct(Punct::Minus) => text.push('-'),
+            Tok::Punct(Punct::Plus) => text.push('+'),
+            Tok::Punct(Punct::Star) => text.push('*'),
+            Tok::Punct(Punct::Slash) => text.push('/'),
+            Tok::Punct(Punct::Dot) => text.push('.'),
+            Tok::Punct(Punct::Comma) => text.push(','),
+            Tok::Punct(Punct::Bang) => text.push('!'),
+            _ => text.push(' '),
+        }
+    }
+    Ok(text.trim().to_owned())
+}
+
+/// `bFLAG = true` → `A_ChangeFlag("FLAG", true)`; `user_x = v` →
+/// `A_SetUserVar("user_x", v)`. Other assignments are not modelled.
+fn anon_assignment(name: &str, value: &str) -> Option<(String, Vec<String>)> {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("user_") {
+        return Some((
+            "A_SetUserVar".into(),
+            vec![format!("\"{name}\""), value.to_owned()],
+        ));
+    }
+    let flag = name.strip_prefix('b').or_else(|| name.strip_prefix('B'))?;
+    let on = match value.to_ascii_lowercase().as_str() {
+        "true" | "1" => "true",
+        "false" | "0" => "false",
+        _ => return None,
+    };
+    let is_flag = !flag.is_empty()
+        && flag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    is_flag.then(|| {
+        (
+            "A_ChangeFlag".into(),
+            vec![format!("\"{flag}\""), on.to_owned()],
+        )
+    })
 }
 
 /// `return;` → none; `return state("L")` / `return "L"` → `A_Jump(256, L)`.
@@ -1066,7 +1337,11 @@ fn read_state_return_label(sc: &mut Scanner<'_>) -> Result<String, DecorateError
             }
             let label = match sc.next_token()? {
                 Tok::String(s) => s.into_owned(),
+                // `state(null)`: stay in sequence.
+                Tok::Ident(id) if Scanner::compare(id, "null") => String::new(),
                 Tok::Ident(id) => id.to_owned(),
+                // `state(2)`: an offset, as `A_Jump(256, 2)`.
+                Tok::Int(n) => n.to_string(),
                 other => {
                     return Err(DecorateError::Message(format!(
                         "expected state label, got {other:?}"
@@ -1093,19 +1368,11 @@ fn read_if_stmt(sc: &mut Scanner<'_>) -> Result<Vec<(String, Vec<String>)>, Deco
         return Err(DecorateError::Message("expected '(' after if".into()));
     }
     let cond_tokens = read_balanced_paren_inner(sc)?;
-    if !sc.check_punct(Punct::LBrace)? {
-        return Err(DecorateError::Message("expected '{' after if (...)".into()));
-    }
-    let then_body = read_anon_actions(sc)?;
+    let then_body = read_anon_body(sc)?;
     let else_body = {
         let t = sc.next_token()?;
         match t {
-            Tok::Ident(name) if Scanner::compare(name, "else") => {
-                if !sc.check_punct(Punct::LBrace)? {
-                    return Err(DecorateError::Message("expected '{' after else".into()));
-                }
-                read_anon_actions(sc)?
-            }
+            Tok::Ident(name) if Scanner::compare(name, "else") => read_anon_body(sc)?,
             other => {
                 sc.unget(other);
                 Vec::new()
@@ -2413,6 +2680,92 @@ actor FlashGuy
             "actor A { States { Spawn: \"####\" \"\\\" 1 Stop } }\nactor B { States { Spawn: TNT1 A -1 Stop } }\n",
         );
         assert_eq!(split.len(), 2, "split must not swallow on backslash frames");
+    }
+
+    fn state_lines(ir: &ClassDefIr) -> Vec<StateLine> {
+        ir.actors[0]
+            .states
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Project Brutality idioms GZDoom accepts in DECORATE.
+    #[test]
+    fn project_brutality_decorate_idioms() {
+        let src = r#"
+actor PBGuy
+{
+  const int JITC = 20;
+  States
+  {
+  Spawn:
+    POSL G 0 {
+      bNOBLOCKMONST = true;
+      angle += 5;
+      if (CountInv("A") == 1) A_SetInventory("A", 0);
+      else if (CountInv("B") == 1) { A_SetInventory("B", 0); }
+      for (int i = 0; i < 3; i++) { A_Log("x"); }
+      return state(2);
+    }
+    EXPL AAAAA 0 SpawnPuffSmoke
+    TNT1 A 0 A_JumpIfTracerCloser(JITC, "Near")
+    TNT1 A 0 A_AttachLightDef('Fire', 'BarrelFire')
+    TNT1 A 0 A_JumpIfInventory("Up", 1, "Up_Reticle")
+  DMR_Reticle:
+    097G A -1
+    Stop
+  Up_Reticle:
+    TNT1 A 0
+    Stop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let lines = state_lines(&ir);
+        let actions: Vec<(String, Vec<String>)> = lines
+            .iter()
+            .map(|l| (l.action.clone().unwrap_or_default(), l.action_args.clone()))
+            .collect();
+        assert_eq!(actions[0].0, "A_ChangeFlag");
+        assert_eq!(actions[0].1, ["\"NOBLOCKMONST\"", "true"]);
+        assert!(actions.iter().any(|(a, _)| a == "A_Jump"));
+        assert!(
+            actions
+                .iter()
+                .any(|(a, args)| a == "A_Jump" && args[1] == "2")
+        );
+        let puff = lines.iter().find(|l| l.sprite == "EXPL").unwrap();
+        assert_eq!(puff.action.as_deref(), Some("SpawnPuffSmoke"));
+        let near = lines
+            .iter()
+            .find(|l| l.action.as_deref() == Some("A_JumpIfTracerCloser"))
+            .unwrap();
+        assert_eq!(near.action_args[0], "20");
+        let light = lines
+            .iter()
+            .find(|l| l.action.as_deref() == Some("A_AttachLightDef"))
+            .unwrap();
+        assert_eq!(light.action_args, ["\"Fire\"", "\"BarrelFire\""]);
+        let labels: Vec<&str> = ir.actors[0]
+            .states
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Label(l) => Some(l.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, ["Spawn", "DMR_Reticle", "Up_Reticle"]);
+        assert!(lines.iter().any(|l| l.sprite == "097G"));
     }
 
     #[test]

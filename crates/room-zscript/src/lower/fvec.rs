@@ -93,7 +93,7 @@ pub(super) fn declaring_float_field(lx: &Lx, field: &str) -> Option<(u16, u8)> {
     found.map(|(_, slot)| slot)
 }
 
-fn self_float_field(lx: &Lx, name: &str) -> Option<(u16, u8)> {
+pub(super) fn self_float_field(lx: &Lx, name: &str) -> Option<(u16, u8)> {
     lx.self_reg?;
     if int_local(lx, name).is_some()
         || object_local(lx, name).is_some()
@@ -219,7 +219,7 @@ fn member_float_field_static(obj: &Expr, field: &str, lx: &Lx) -> Option<(u16, u
         return None;
     }
     if let Expr::Ident(n, _) = obj {
-        if n.eq_ignore_ascii_case("self") || n.eq_ignore_ascii_case("invoker") {
+        if (n.eq_ignore_ascii_case("self") || n.eq_ignore_ascii_case("invoker")) && lx.instance {
             return lookup_float_field(lx, &lx.class_name, field);
         }
         if int_local(lx, n).is_some() || float_local(lx, n).is_some() {
@@ -285,8 +285,15 @@ pub(super) fn vector_place(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr) -
 fn float_place_static(expr: &Expr, lx: &Lx) -> bool {
     match expr {
         Expr::Ident(name, _) => {
+            // A local of another type shadows a float field (`string speed;`
+            // inside an actor, whose `speed` is a double).
+            let shadowed = int_local(lx, name).is_some()
+                || object_local(lx, name).is_some()
+                || lx.locals_s.keys().any(|k| k.eq_ignore_ascii_case(name))
+                || lx.locals_a.keys().any(|k| k.eq_ignore_ascii_case(name))
+                || vector_local(lx, name).is_some();
             float_local(lx, name).is_some()
-                || self_float_field(lx, name).is_some_and(|(_, dim)| dim == 1)
+                || (!shadowed && self_float_field(lx, name).is_some_and(|(_, dim)| dim == 1))
         }
         Expr::Member { obj, field, .. } => {
             if axis_index(field).is_some() && place_dim_static(obj, lx).is_some() {
@@ -404,6 +411,7 @@ pub(super) fn expr_vector_dim(expr: &Expr, lx: &Lx) -> Option<u8> {
                     (a, b) => a.or(b),
                 },
                 "/" => l,
+                _ if op.eq_ignore_ascii_case("cross") => Some(3),
                 _ => None,
             }
         }
@@ -413,6 +421,9 @@ pub(super) fn expr_vector_dim(expr: &Expr, lx: &Lx) -> Option<u8> {
         }
         Expr::Call { callee, .. } => {
             if let Some(dim) = native_vector_call(callee, lx) {
+                return Some(dim);
+            }
+            if let Some(dim) = script_vector_ret(callee, lx) {
                 return Some(dim);
             }
             match callee.as_ref() {
@@ -520,6 +531,14 @@ fn load_place(f: &mut CompiledFunction, lx: &mut Lx, place: VecPlace, dim: u8) -
 
 /// Evaluate a vector expression into `dim` consecutive float registers.
 pub(super) fn emit_expr_v(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr, dim: u8) -> u8 {
+    if let Some(call) = named_call(expr, lx) {
+        return emit_expr_v(f, lx, &call, dim);
+    }
+    if let Expr::Binary { op, rhs, .. } = expr {
+        if op == NAMED_ARG {
+            return emit_expr_v(f, lx, rhs, dim);
+        }
+    }
     match expr {
         Expr::Ident(..) => {
             if let Some(place) = vector_place(f, lx, expr) {
@@ -578,6 +597,24 @@ pub(super) fn emit_expr_v(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr, di
         }
         Expr::Binary { op, lhs, rhs, .. } => {
             let (ld, rd) = (expr_vector_dim(lhs, lx), expr_vector_dim(rhs, lx));
+            if op.eq_ignore_ascii_case("cross") {
+                // a × b = (ay bz − az by, az bx − ax bz, ax by − ay bx)
+                let a = emit_expr_v(f, lx, lhs, 3);
+                let b = emit_expr_v(f, lx, rhs, 3);
+                let base = alloc_fv(lx, dim.max(3));
+                for (k, (i, j)) in [(1u8, 2u8), (2, 0), (0, 1)].into_iter().enumerate() {
+                    let p = lx.alloc_f();
+                    let q = lx.alloc_f();
+                    f.emit(Op::MulF, p, a + i, b + j);
+                    f.emit(Op::MulF, q, a + j, b + i);
+                    f.emit(Op::SubF, base + k as u8, p, q);
+                }
+                for k in 3..dim {
+                    let z = load_f(f, lx, 0.0);
+                    f.emit(Op::MoveF, base + k, z, 0);
+                }
+                return base;
+            }
             match (op.as_str(), ld, rd) {
                 ("+" | "-", _, _) => {
                     let l = emit_expr_v(f, lx, lhs, dim);
@@ -690,6 +727,21 @@ pub(super) fn emit_expr_v(f: &mut CompiledFunction, lx: &mut Lx, expr: &Expr, di
                 if let Some(base) = emit_native_vector_call(f, lx, callee, args, n, dim) {
                     return base;
                 }
+            }
+            if let Some((v, n)) = emit_vector_script_call(f, lx, callee, args) {
+                if n == dim {
+                    return v;
+                }
+                let base = alloc_fv(lx, dim);
+                for k in 0..dim {
+                    if k < n {
+                        f.emit(Op::MoveF, base + k, v + k, 0);
+                    } else {
+                        let z = load_f(f, lx, 0.0);
+                        f.emit(Op::MoveF, base + k, z, 0);
+                    }
+                }
+                return base;
             }
         }
         _ => {}
@@ -930,6 +982,11 @@ pub(super) fn try_emit_float_assign(
         "-=" => Op::SubF,
         "*=" => Op::MulF,
         "/=" => Op::DivF,
+        "%=" => {
+            let v = emit_fmod(f, lx, lhs, rhs);
+            place.store(f, v);
+            return true;
+        }
         _ => {
             lx.err(lhs.span(), format!("float assign {op}"));
             return true;

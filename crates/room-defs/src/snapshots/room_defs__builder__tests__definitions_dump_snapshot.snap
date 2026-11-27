@@ -1,6 +1,5 @@
 ---
 source: crates/room-defs/src/builder.rs
-assertion_line: 632
 expression: "crate::dump_debug(&defs)"
 ---
 Definitions {
@@ -35,6 +34,7 @@ Definitions {
         damage_types: {},
         event_handlers: [],
         statusbar_class: None,
+        player_classes: [],
     },
     sounds: SoundRegistry {
         sounds: {

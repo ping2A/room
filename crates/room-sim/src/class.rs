@@ -2096,6 +2096,18 @@ impl ClassRegistry {
     /// so `Inventory` subclasses become givable and summonable. Editor numbers
     /// are not copied from the parent.
     pub fn register_zscript_classes(&mut self, layouts: &[(String, String)]) {
+        self.register_zscript_actors(layouts, &BTreeMap::new());
+    }
+
+    /// [`register_zscript_classes`](Self::register_zscript_classes), building a
+    /// class whose `Default` block is in `class_defaults` the way DECORATE
+    /// builds an actor, so every property it sets applies (`Player.StartItem`,
+    /// `Weapon.SlotNumber`, …), not only the few `merge_zscript_defaults` knows.
+    pub fn register_zscript_actors(
+        &mut self,
+        layouts: &[(String, String)],
+        class_defaults: &BTreeMap<String, String>,
+    ) {
         const SKIP: &[&str] = &[
             "object",
             "thinker",
@@ -2133,6 +2145,27 @@ impl ClassRegistry {
                     pending.push((name, parent));
                     continue;
                 };
+                if let Some(body) = class_defaults
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&name))
+                    .map(|(_, b)| b)
+                {
+                    // The stored body is usually `{ Health 60 ; +SOLID ; }`.
+                    let body = body.trim();
+                    let synthetic = if body.starts_with('{') {
+                        format!("actor {name} : {parent}\n{body}\n")
+                    } else {
+                        format!("actor {name} : {parent}\n{{\n{body}\n}}\n")
+                    };
+                    if let Some(def) = room_decorate::parse_decorate(&synthetic)
+                        .ok()
+                        .and_then(|ir| ir.actors.into_iter().next())
+                    {
+                        if self.add_actor(&def).is_ok() {
+                            continue;
+                        }
+                    }
+                }
                 let Some(base) = self.get(pid).cloned() else {
                     continue;
                 };

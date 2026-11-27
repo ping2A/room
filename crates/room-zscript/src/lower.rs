@@ -11,6 +11,7 @@ use room_zvm::{ClassLayout, CompiledFunction, CompiledProgram, FuncParam, Op};
 use std::collections::BTreeMap;
 
 mod fvec;
+mod maps;
 use fvec::*;
 
 #[derive(Clone)]
@@ -22,16 +23,25 @@ struct FnSig {
     ret: u8,
     /// User-argument indexes that are `out` or `ref`.
     outs: Vec<usize>,
+    /// Result slot of the first `out` value of a script function; the j-th
+    /// `out` parameter comes back in slot `out_base + j` (see `out_rets`).
+    out_base: u8,
     /// Declared `native` with no body. Calls lower to `CallNat`.
     native: bool,
     /// Vector size of each user parameter (0 = not a vector).
     vec_params: Vec<u8>,
+    /// Lowercased name of each user parameter, for named arguments.
+    param_names: Vec<String>,
     /// User parameters typed `class<T>`; natives take these as names.
     class_params: Vec<bool>,
     /// Lowercased class of an object result (`Actor GetPointer(…)`).
     ret_class: String,
     /// Banks of every result (`int, int GetAmount(…)` → `[0, 0]`).
     ret_banks: Vec<u8>,
+    /// Size of a vector result of a script function (`vector2 SafeUnit2(…)`),
+    /// 0 when the first result is not a vector. The components come back as
+    /// results `0..n` in the float bank.
+    ret_vec: u8,
     /// Default value of each user parameter, filled in at the call when the
     /// argument is left out.
     defaults: Vec<Option<Expr>>,
@@ -54,10 +64,16 @@ struct Lx {
     locals_a: BTreeMap<String, (u8, bool)>,
     /// Lowercased array locals holding objects → lowercased element class.
     obj_arrays: BTreeMap<String, String>,
+    /// Lowercased array locals of ints, bools or floats (`Array<int>`).
+    prim_arrays: std::collections::BTreeSet<String>,
     /// Lowercased class → object-array field → lowercased element class.
     obj_array_fields: BTreeMap<String, BTreeMap<String, String>>,
     /// Lowercased class and struct names (object element types).
     type_names: std::collections::BTreeSet<String>,
+    /// Lowercased CVARINFO names (`class _CVars` fields): read from the host.
+    cvars: std::collections::BTreeSet<String>,
+    /// Lowercased script (non-native) struct names: values, allocated.
+    value_structs: std::collections::BTreeSet<String>,
     /// Object local → (register, lowercased class).
     locals_o: BTreeMap<String, (u8, String)>,
     locals_f: BTreeMap<String, u8>,
@@ -101,15 +117,28 @@ struct Lx {
     self_reg: Option<u8>,
     instance: bool,
     ret_bank: u8,
+    /// Vector size of the current function's result (0 = not a vector).
+    ret_vec: u8,
     /// Banks of the current function's extra results.
     extra_ret_banks: Vec<u8>,
     out_reg: Option<u8>,
+    /// `out` parameters of the current function → (bank, register, result
+    /// slot), set as results before every return.
+    out_rets: Vec<(u8, u8, u8)>,
     /// Native import name → compile-time id (`CallNat` ext, remapped at link).
     natives: BTreeMap<String, u32>,
     native_list: Vec<String>,
     class_name: String,
     jumps: Vec<Jump>,
     diags: Vec<Diagnostic>,
+    /// Counter for the hidden locals of lowered `foreach` loops.
+    foreach_n: u32,
+    /// Source line of the statement being lowered (line table).
+    cur_line: u32,
+    /// Lenient compile: a few unsupported statements become warnings
+    /// (in `soft`) instead of emptying the whole function.
+    lenient: bool,
+    soft: Vec<Diagnostic>,
 }
 
 impl Lx {
@@ -156,8 +185,7 @@ impl Lx {
     }
 
     fn err(&mut self, span: crate::span::Span, message: impl Into<String>) {
-        self.diags
-            .push(Diagnostic::error("lower.zs", span, message));
+        self.diags.push(Diagnostic::error("", span, message));
     }
 }
 
@@ -180,6 +208,15 @@ fn const_int(
             const_int(expr, consts, parents).map(i64::wrapping_neg)
         }
         Expr::Unary { op, expr, .. } if op == "~" => const_int(expr, consts, parents).map(|v| !v),
+        Expr::Unary { op, expr, .. } if op == "+" => const_int(expr, consts, parents),
+        // `int(4.5)` / `uint(x)` around a constant.
+        Expr::Call { callee, args, .. }
+            if args.len() == 1
+                && matches!(callee.as_ref(), Expr::Ident(n, _)
+                    if n.eq_ignore_ascii_case("int") || n.eq_ignore_ascii_case("uint")) =>
+        {
+            const_int(&args[0], consts, parents)
+        }
         Expr::Binary { op, lhs, rhs, .. } => {
             let a = const_int(lhs, consts, parents)?;
             let b = const_int(rhs, consts, parents)?;
@@ -187,6 +224,8 @@ fn const_int(
                 "+" => a.wrapping_add(b),
                 "-" => a.wrapping_sub(b),
                 "*" => a.wrapping_mul(b),
+                "**" => a.checked_pow(u32::try_from(b).ok()?)?,
+                "%" if b != 0 => a % b,
                 "/" if b != 0 => a / b,
                 "|" => a | b,
                 "&" => a & b,
@@ -272,6 +311,18 @@ fn const_float(
             None
         }
         Expr::Unary { op, expr, .. } if op == "+" => const_float(expr, ints, floats, parents),
+        // `float(100.f / 255.f)`, `double(N)`.
+        Expr::Call { callee, args, .. }
+            if args.len() == 1
+                && matches!(callee.as_ref(), Expr::Ident(n, _)
+                    if ["float", "double", "int", "uint"].iter().any(|t| n.eq_ignore_ascii_case(t))) =>
+        {
+            let v = const_float(&args[0], ints, floats, parents)?;
+            let int_cast = matches!(callee.as_ref(), Expr::Ident(n, _)
+                if n.eq_ignore_ascii_case("int") || n.eq_ignore_ascii_case("uint"));
+            Some(if int_cast { v.trunc() } else { v })
+        }
+        Expr::Cast { expr, .. } => const_float(expr, ints, floats, parents),
         Expr::Unary { op, expr, .. } if op == "-" => {
             const_float(expr, ints, floats, parents).map(|v| -v)
         }
@@ -283,6 +334,7 @@ fn const_float(
                 "-" => a - b,
                 "*" => a * b,
                 "/" if b != 0.0 => a / b,
+                "**" => room_core::dmath::pow(a, b),
                 _ => return None,
             })
         }
@@ -366,8 +418,35 @@ fn nested_structs<'a>(members: &'a [Member], out: &mut Vec<&'a StructDecl>) {
 /// produce an error diagnostic.
 pub fn lower(
     unit: &TranslationUnit,
-    _analysis: &Analysis,
+    analysis: &Analysis,
 ) -> Result<CompiledProgram, Vec<Diagnostic>> {
+    lower_with(unit, analysis, false).map(|(p, _)| p)
+}
+
+/// Like [`lower`], but a function that does not lower becomes an empty body
+/// (returns 0 / null) instead of failing the program. The second value holds
+/// one warning per such function. Room uses this to run large mods written
+/// against the whole UZDoom library while parts of it are still missing.
+pub fn lower_lenient(
+    unit: &TranslationUnit,
+    analysis: &Analysis,
+) -> Result<(CompiledProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
+    lower_with(unit, analysis, true)
+}
+
+fn lower_with(
+    unit: &TranslationUnit,
+    _analysis: &Analysis,
+    lenient: bool,
+) -> Result<(CompiledProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let with_maps;
+    let unit = if maps::wanted(unit) {
+        with_maps = maps::rewritten(unit);
+        &with_maps
+    } else {
+        unit
+    };
+    let mut stubbed: Vec<Diagnostic> = Vec::new();
     let mut methods: Vec<(String, MethodDecl)> = Vec::new();
     let mut natives: Vec<(String, MethodDecl)> = Vec::new();
     let mut prog = CompiledProgram::default();
@@ -392,6 +471,14 @@ pub fn lower(
     let equal_epsilon = 1.0 / 65536.0;
     float_consts.insert("double.equal_epsilon".to_owned(), equal_epsilon);
     float_consts.insert("float.equal_epsilon".to_owned(), equal_epsilon);
+    for ty in ["double", "float"] {
+        float_consts.insert(format!("{ty}.nan"), f64::NAN);
+        float_consts.insert(format!("{ty}.infinity"), f64::INFINITY);
+    }
+    float_consts.insert("double.max".to_owned(), f64::MAX);
+    float_consts.insert("double.min".to_owned(), f64::MIN_POSITIVE);
+    float_consts.insert("float.max".to_owned(), f64::from(f32::MAX));
+    float_consts.insert("float.min".to_owned(), f64::from(f32::MIN_POSITIVE));
     for decl in &unit.decls {
         match decl {
             Decl::Class(c) | Decl::ExtendClass(c) | Decl::Mixin(c) => {
@@ -423,6 +510,21 @@ pub fn lower(
     }
     for s in &nested {
         type_names.insert(s.name.to_ascii_lowercase());
+    }
+    // Script structs are values (`FLineTraceData data;`): a local or a field of
+    // one is allocated, not left null. Native structs (`Sector`) are references.
+    let mut value_structs: std::collections::BTreeSet<String> = nested
+        .iter()
+        .filter(|s| !s.native)
+        .map(|s| s.name.to_ascii_lowercase())
+        .collect();
+    for decl in &unit.decls {
+        if let Decl::Struct(st) = decl {
+            // UZDoom's map structs are native but values all the same.
+            if !st.native || maps::is_map_struct(&st.name) {
+                value_structs.insert(st.name.to_ascii_lowercase());
+            }
+        }
     }
     let mut layouts: Vec<(String, String, &[Member], bool)> = Vec::new();
     for decl in &unit.decls {
@@ -611,36 +713,136 @@ pub fn lower(
             }
         }
     }
-    // A second pass folds constants that name a parent class's constant,
-    // such as `Thinker.TICRATE` after `Object.TICRATE` is recorded.
-    for decl in &unit.decls {
-        let (name, members) = match decl {
-            Decl::Class(c) | Decl::ExtendClass(c) | Decl::Mixin(c) => {
-                (c.name.as_str(), c.members.as_slice())
-            }
-            Decl::Struct(s) => (s.name.as_str(), s.members.as_slice()),
-            _ => continue,
+    // Struct-typed fields of each class (own ones; ancestors' are added below).
+    for c in &mut prog.classes {
+        let Some(members) = merged_fields.get(&c.name.to_ascii_lowercase()) else {
+            continue;
         };
-        for member in members {
-            let Member::NestedConst(c) = member else {
+        for m in members {
+            let Member::Field(fd) = m else {
                 continue;
             };
-            record_const(
-                &c.name,
-                &c.value,
-                &mut consts,
-                &mut float_consts,
-                &mut string_consts,
-                &parents,
-            );
-            record_const(
-                &format!("{}.{}", name, c.name),
-                &c.value,
-                &mut consts,
-                &mut float_consts,
-                &mut string_consts,
-                &parents,
-            );
+            let TypeRef::Named(t) = &fd.ty else {
+                continue;
+            };
+            let t = t.to_ascii_lowercase();
+            if !value_structs.contains(&t) {
+                continue;
+            }
+            let Some(&id) = class_ids.get(&t) else {
+                continue;
+            };
+            for n in &fd.names {
+                if let Some(&(1, slot)) = c.fields.get(&n.to_ascii_lowercase()) {
+                    if !c.structs.iter().any(|(s, _)| *s == slot) {
+                        c.structs.push((slot, id));
+                    }
+                }
+            }
+        }
+    }
+    // `new` makes the `Array<…>` members a layout lists: give each class its
+    // ancestors' arrays too (a `BaseStatusBar` subclass's inherited arrays
+    // were left null).
+    {
+        let by_name: BTreeMap<String, usize> = prog
+            .classes
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, c)| (c.name.to_ascii_lowercase(), i))
+            .collect();
+        let mut inherited: Vec<(usize, Vec<u16>, Vec<u16>, Vec<u16>)> = Vec::new();
+        let mut inherited_structs: Vec<(usize, Vec<(u16, u32)>)> = Vec::new();
+        for (i, c) in prog.classes.iter().enumerate() {
+            let (mut ai, mut as_, mut aa) = (Vec::new(), Vec::new(), Vec::new());
+            let mut st: Vec<(u16, u32)> = Vec::new();
+            let mut cur = c.parent.to_ascii_lowercase();
+            let mut seen = std::collections::BTreeSet::new();
+            while !cur.is_empty() && seen.insert(cur.clone()) {
+                let Some(&pi) = by_name.get(&cur) else {
+                    break;
+                };
+                let p = &prog.classes[pi];
+                ai.extend(p.array_i.iter().copied());
+                as_.extend(p.array_s.iter().copied());
+                aa.extend(p.array_a.iter().copied());
+                st.extend(p.structs.iter().copied());
+                cur = p.parent.to_ascii_lowercase();
+            }
+            if !(ai.is_empty() && as_.is_empty() && aa.is_empty()) {
+                inherited.push((i, ai, as_, aa));
+            }
+            if !st.is_empty() {
+                inherited_structs.push((i, st));
+            }
+        }
+        for (i, st) in inherited_structs {
+            let c = &mut prog.classes[i];
+            for e in st {
+                if !c.structs.iter().any(|(s, _)| *s == e.0) {
+                    c.structs.push(e);
+                }
+            }
+        }
+        for (i, ai, as_, aa) in inherited {
+            let c = &mut prog.classes[i];
+            for (list, extra) in [
+                (&mut c.array_i, ai),
+                (&mut c.array_s, as_),
+                (&mut c.array_a, aa),
+            ] {
+                for slot in extra {
+                    if !list.contains(&slot) {
+                        list.push(slot);
+                    }
+                }
+            }
+        }
+    }
+    // Later passes fold constants that name a class constant recorded after
+    // them (`Thinker.TICRATE`, `const STAT_X = Thinker.STAT_USER + 1;`).
+    for _pass in 0..3 {
+        for decl in &unit.decls {
+            if let Decl::Const(c) = decl {
+                record_const(
+                    &c.name,
+                    &c.value,
+                    &mut consts,
+                    &mut float_consts,
+                    &mut string_consts,
+                    &parents,
+                );
+                continue;
+            }
+            let (name, members) = match decl {
+                Decl::Class(c) | Decl::ExtendClass(c) | Decl::Mixin(c) => {
+                    (c.name.as_str(), c.members.as_slice())
+                }
+                Decl::Struct(s) => (s.name.as_str(), s.members.as_slice()),
+                _ => continue,
+            };
+            for member in members {
+                let Member::NestedConst(c) = member else {
+                    continue;
+                };
+                record_const(
+                    &c.name,
+                    &c.value,
+                    &mut consts,
+                    &mut float_consts,
+                    &mut string_consts,
+                    &parents,
+                );
+                record_const(
+                    &format!("{}.{}", name, c.name),
+                    &c.value,
+                    &mut consts,
+                    &mut float_consts,
+                    &mut string_consts,
+                    &parents,
+                );
+            }
         }
     }
     // Pointers the engine provides on Actor without a ZScript field declaration.
@@ -679,11 +881,24 @@ pub fn lower(
             }
         }
     }
+    let cvars: std::collections::BTreeSet<String> = merged_fields
+        .get("_cvars")
+        .into_iter()
+        .flatten()
+        .filter_map(|m| match m {
+            Member::Field(fd) => Some(fd.names.iter().map(|n| n.to_ascii_lowercase())),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     let mut lx = Lx {
+        cvars,
+        value_structs: value_structs.clone(),
         locals: BTreeMap::new(),
         locals_s: BTreeMap::new(),
         locals_a: BTreeMap::new(),
         obj_arrays: BTreeMap::new(),
+        prim_arrays: std::collections::BTreeSet::new(),
         obj_array_fields,
         type_names: type_names.clone(),
         locals_o: BTreeMap::new(),
@@ -711,13 +926,19 @@ pub fn lower(
         self_reg: None,
         instance: false,
         ret_bank: 0,
+        ret_vec: 0,
         extra_ret_banks: Vec::new(),
         out_reg: None,
+        out_rets: Vec::new(),
         natives: BTreeMap::new(),
         native_list: Vec::new(),
         class_name: String::new(),
         jumps: Vec::new(),
         diags: Vec::new(),
+        lenient,
+        soft: Vec::new(),
+        foreach_n: 0,
+        cur_line: 0,
     };
     for (i, (class, meth)) in methods.iter().enumerate() {
         let instance = !meth.quals.static_;
@@ -755,6 +976,11 @@ pub fn lower(
                 native: false,
                 vec_params,
                 class_params,
+                param_names: meth
+                    .params
+                    .iter()
+                    .map(|p| p.name.to_ascii_lowercase())
+                    .collect(),
                 defaults: meth.params.iter().map(|p| p.default.clone()).collect(),
                 varargs: false,
                 ret_class: p_type_name(&meth.ret).to_ascii_lowercase(),
@@ -762,6 +988,8 @@ pub fn lower(
                     .chain(meth.extra_rets.iter())
                     .map(|t| value_bank(t, &lx.class_ids))
                     .collect(),
+                ret_vec: fvec::type_vector_dim(&meth.ret).unwrap_or(0),
+                out_base: out_base_of(meth),
             },
         );
     }
@@ -801,6 +1029,11 @@ pub fn lower(
                 native: true,
                 vec_params,
                 class_params,
+                param_names: meth
+                    .params
+                    .iter()
+                    .map(|p| p.name.to_ascii_lowercase())
+                    .collect(),
                 defaults: meth.params.iter().map(|p| p.default.clone()).collect(),
                 varargs: meth.quals.vararg,
                 ret_class: p_type_name(&meth.ret).to_ascii_lowercase(),
@@ -808,6 +1041,9 @@ pub fn lower(
                     .chain(meth.extra_rets.iter())
                     .map(|t| value_bank(t, &lx.class_ids))
                     .collect(),
+                // Natives return vectors their own way (`emit_native_vector_call`).
+                ret_vec: 0,
+                out_base: 0,
             });
     }
     for (class, meth) in &methods {
@@ -815,6 +1051,7 @@ pub fn lower(
         lx.locals_s.clear();
         lx.locals_a.clear();
         lx.obj_arrays.clear();
+        lx.prim_arrays.clear();
         lx.locals_o.clear();
         lx.locals_f.clear();
         lx.locals_v.clear();
@@ -829,12 +1066,14 @@ pub fn lower(
         lx.class_name = class.clone();
         lx.instance = !meth.quals.static_;
         lx.ret_bank = value_bank(&meth.ret, &lx.class_ids);
+        lx.ret_vec = fvec::type_vector_dim(&meth.ret).unwrap_or(0);
         lx.extra_ret_banks = meth
             .extra_rets
             .iter()
             .map(|t| value_bank(t, &lx.class_ids))
             .collect();
         lx.out_reg = None;
+        let diag_mark = lx.diags.len();
         let mut f = CompiledFunction {
             name: format!("{class}.{}", meth.name),
             ..Default::default()
@@ -1027,15 +1266,19 @@ pub fn lower(
                 None
             }
         });
+        lx.out_rets = out_param_regs(meth, &lx);
+        lx.cur_line = meth.span.line;
         if let Some(body) = &meth.body {
             emit_block(&mut f, body, &mut lx);
         }
+        emit_out_rets(&mut f, &lx);
         let out_reg = lx.out_reg;
         if let Some(reg) = out_reg {
             f.emit(Op::Ret, 0, reg, 0);
         } else {
             f.emit(Op::Ret, 0, 0, 0);
         }
+        fill_lines(&mut f, meth.span.line);
         let most = lx.peak.iter().copied().max().unwrap_or(0);
         if most > 255 {
             let span = meth.span;
@@ -1043,6 +1286,19 @@ pub fn lower(
                 span,
                 format!("{}: needs {most} registers in one bank (limit 255)", f.name),
             );
+        }
+        if lenient && lx.diags.len() > diag_mark {
+            // Keep the signature, drop the body: callers still link.
+            let first = lx.diags[diag_mark].clone();
+            lx.diags.truncate(diag_mark);
+            f.code.clear();
+            f.lines.clear();
+            f.emit(Op::Ret, 0, 0, 0);
+            stubbed.push(Diagnostic::warn(
+                first.path,
+                first.span,
+                format!("{} runs as an empty function: {}", f.name, first.message),
+            ));
         }
         f.n_i = lx.peak[0].clamp(1, 255) as u8;
         f.n_f = lx.peak[1].clamp(1, 255) as u8;
@@ -1053,9 +1309,10 @@ pub fn lower(
     for name in &lx.native_list {
         prog.intern_native(name);
     }
+    stubbed.append(&mut lx.soft);
     if lx.diags.is_empty() {
         prog.finalize();
-        Ok(prog)
+        Ok((prog, stubbed))
     } else {
         Err(lx.diags)
     }
@@ -1088,6 +1345,10 @@ fn expr_yields_string(expr: &Expr, lx: &Lx) -> bool {
         Expr::Ident(name, _) => {
             lx.string_consts.contains_key(&name.to_ascii_lowercase())
                 || lx.locals_s.keys().any(|k| k.eq_ignore_ascii_case(name))
+                || (int_local(lx, name).is_none()
+                    && object_local(lx, name).is_none()
+                    && !lx.locals_f.keys().any(|k| k.eq_ignore_ascii_case(name))
+                    && lookup_string_field(lx, &lx.class_name, name).is_some())
         }
         Expr::Binary { op, lhs, rhs, .. } if op == ".." || op == "+" => {
             expr_yields_string(lhs, lx) || expr_yields_string(rhs, lx)
@@ -1168,24 +1429,242 @@ fn emit_block(f: &mut CompiledFunction, block: &Block, lx: &mut Lx) {
     }
 }
 
-/// [`emit_stmt`], then free the statement's temporaries: when it declared no
-/// local (here or in a nested block), its registers are free again.
+/// [`emit_stmt`], then free the statement's temporaries and any locals its
+/// nested blocks declared.
 fn emit_stmt_scoped(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
-    let mark = (lx.next, lx.next_f, lx.next_s, lx.next_a);
-    let declared = local_count(lx);
-    emit_stmt(f, stmt, lx);
-    if !matches!(stmt, Stmt::Local { .. }) && local_count(lx) == declared {
-        (lx.next, lx.next_f, lx.next_s, lx.next_a) = mark;
+    // Line table: code before this statement belongs to the enclosing one.
+    let outer = lx.cur_line;
+    fill_lines(f, outer);
+    lx.cur_line = stmt_line(stmt).unwrap_or(outer);
+    emit_stmt_scoped_inner(f, stmt, lx);
+    fill_lines(f, lx.cur_line);
+    lx.cur_line = outer;
+}
+
+fn fill_lines(f: &mut CompiledFunction, line: u32) {
+    let n = f.code.len();
+    if f.lines.len() < n {
+        f.lines.resize(n, line);
     }
 }
 
-fn local_count(lx: &Lx) -> usize {
-    lx.locals.len()
-        + lx.locals_s.len()
-        + lx.locals_a.len()
-        + lx.locals_o.len()
-        + lx.locals_f.len()
-        + lx.locals_v.len()
+fn stmt_line(stmt: &Stmt) -> Option<u32> {
+    let span = match stmt {
+        Stmt::Local { span, .. }
+        | Stmt::Expr { span, .. }
+        | Stmt::Return { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::DoWhile { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Switch { span, .. }
+        | Stmt::Case { span, .. }
+        | Stmt::Break(span)
+        | Stmt::Continue(span) => span,
+        Stmt::Block(b) => &b.span,
+    };
+    (span.line > 0).then_some(span.line)
+}
+
+fn emit_stmt_scoped_inner(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
+    let mark = (lx.next, lx.next_f, lx.next_s, lx.next_a);
+    if matches!(stmt, Stmt::Local { .. }) {
+        emit_stmt(f, stmt, lx);
+        return;
+    }
+    // Locals declared inside a nested block (`if (…) { double d = …; }`)
+    // go out of scope with it, so their registers are free again too.
+    let scope = (
+        lx.locals.clone(),
+        lx.locals_s.clone(),
+        lx.locals_a.clone(),
+        lx.locals_o.clone(),
+        lx.locals_f.clone(),
+        lx.locals_v.clone(),
+        lx.obj_arrays.clone(),
+        lx.local_types.clone(),
+    );
+    emit_stmt(f, stmt, lx);
+    (
+        lx.locals,
+        lx.locals_s,
+        lx.locals_a,
+        lx.locals_o,
+        lx.locals_f,
+        lx.locals_v,
+        lx.obj_arrays,
+        lx.local_types,
+    ) = scope;
+    (lx.next, lx.next_f, lx.next_s, lx.next_a) = mark;
+}
+
+/// The parser keeps `foreach (k, v : iter) body` as `while (iter) { k; v =
+/// iter[0]; body }` for the type checker, every part with the loop's span.
+/// Lowered here into a real loop: over a map through its iterator struct,
+/// otherwise over an array by index.
+fn foreach_loop(stmt: &Stmt, lx: &Lx) -> Option<Stmt> {
+    let Stmt::While { cond, body, span } = stmt else {
+        return None;
+    };
+    let mut names = Vec::new();
+    let mut rest = 0usize;
+    for s in body.stmts.iter().take(2) {
+        match s {
+            Stmt::Local {
+                ty: None,
+                names: n,
+                init,
+                span: ls,
+                ..
+            } if ls == span && n.len() == 1 => {
+                names.push(n[0].clone());
+                rest += 1;
+                if let Some(Expr::Index {
+                    arr,
+                    index,
+                    span: is,
+                }) = init
+                {
+                    if is == span
+                        && matches!(index.as_ref(), Expr::Int(0, _))
+                        && same_expr(arr, cond)
+                    {
+                        break;
+                    }
+                    return None;
+                }
+            }
+            _ => break,
+        }
+    }
+    // The value binding (last) must be there.
+    let last_has_init = body.stmts.get(rest.checked_sub(1)?).is_some_and(|s| {
+        matches!(
+            s,
+            Stmt::Local {
+                init: Some(Expr::Index { .. }),
+                ..
+            }
+        )
+    });
+    if !last_has_init {
+        return None;
+    }
+    let sp = *span;
+    let n = lx.foreach_n;
+    let tail: Vec<Stmt> = body.stmts[rest..].to_vec();
+    let id = |s: &str| Expr::Ident(s.to_owned(), sp);
+    let call = |obj: Expr, m: &str, args: Vec<Expr>| Expr::Call {
+        callee: Box::new(Expr::Member {
+            obj: Box::new(obj),
+            field: m.to_owned(),
+            span: sp,
+        }),
+        args,
+        span: sp,
+    };
+    let bind = |name: &str, init: Expr| Stmt::Local {
+        ty: None,
+        names: vec![name.to_owned()],
+        init: Some(init),
+        extra_inits: Vec::new(),
+        span: sp,
+    };
+    let class = init_object_class(cond, lx).unwrap_or_default();
+    if maps::is_map_struct(&class) && class.starts_with("map_") {
+        let it_ty = format!("mapiterator_{}", &class["map_".len()..]);
+        let it = format!("__foreach_it{n}");
+        let mut inner = Vec::new();
+        if names.len() == 2 && !names[0].is_empty() {
+            inner.push(bind(&names[0], call(id(&it), "GetKey", Vec::new())));
+        }
+        if let Some(v) = names.last() {
+            inner.push(bind(v, call(id(&it), "GetValue", Vec::new())));
+        }
+        inner.extend(tail);
+        return Some(Stmt::Block(Block {
+            stmts: vec![
+                Stmt::Local {
+                    ty: Some(TypeRef::Named(it_ty)),
+                    names: vec![it.clone()],
+                    init: None,
+                    extra_inits: Vec::new(),
+                    span: sp,
+                },
+                Stmt::Expr {
+                    expr: call(id(&it), "Init", vec![cond.clone()]),
+                    span: sp,
+                },
+                Stmt::While {
+                    cond: call(id(&it), "Next", Vec::new()),
+                    body: Block {
+                        stmts: inner,
+                        span: body.span,
+                    },
+                    span: sp,
+                },
+            ],
+            span: sp,
+        }));
+    }
+    // An array: `for (int i = 0; i < iter.Size(); i++) { let v = iter[i]; … }`.
+    let i = format!("__foreach_i{n}");
+    let mut inner = Vec::new();
+    if names.len() == 2 && !names[0].is_empty() {
+        inner.push(bind(&names[0], id(&i)));
+    }
+    if let Some(v) = names.last() {
+        inner.push(bind(
+            v,
+            Expr::Index {
+                arr: Box::new(cond.clone()),
+                index: Box::new(id(&i)),
+                span: sp,
+            },
+        ));
+    }
+    inner.extend(tail);
+    Some(Stmt::For {
+        init: Some(Box::new(Stmt::Local {
+            ty: Some(TypeRef::Named("int".to_owned())),
+            names: vec![i.clone()],
+            init: Some(Expr::Int(0, sp)),
+            extra_inits: Vec::new(),
+            span: sp,
+        })),
+        cond: Some(Expr::Binary {
+            op: "<".to_owned(),
+            lhs: Box::new(id(&i)),
+            rhs: Box::new(call(cond.clone(), "Size", Vec::new())),
+            span: sp,
+        }),
+        step: Some(Expr::Unary {
+            op: "++".to_owned(),
+            expr: Box::new(id(&i)),
+            span: sp,
+        }),
+        body: Block {
+            stmts: inner,
+            span: body.span,
+        },
+        span: sp,
+    })
+}
+
+/// Same shape for the plain names and members a `foreach` iterates.
+fn same_expr(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Ident(x, _), Expr::Ident(y, _)) => x.eq_ignore_ascii_case(y),
+        (
+            Expr::Member {
+                obj: o1, field: f1, ..
+            },
+            Expr::Member {
+                obj: o2, field: f2, ..
+            },
+        ) => f1.eq_ignore_ascii_case(f2) && same_expr(o1, o2),
+        _ => false,
+    }
 }
 
 fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
@@ -1257,6 +1736,11 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                 } else if let Some(string_elem) = array_elems {
                     let r = lx.alloc_a();
                     lx.locals_a.insert(name.clone(), (r, string_elem));
+                    if ty.as_ref().is_some_and(is_prim_array) {
+                        lx.prim_arrays.insert(name.to_ascii_lowercase());
+                    } else {
+                        lx.prim_arrays.remove(&name.to_ascii_lowercase());
+                    }
                     let fixed = name_init.and_then(|e| const_int(e, &lx.consts, &lx.parents));
                     if let Some(elem) = obj_elem.clone() {
                         lx.obj_arrays.insert(name.to_ascii_lowercase(), elem);
@@ -1334,12 +1818,16 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                     }
                 } else if let Some(class) = class_local.clone() {
                     let r = lx.alloc_a();
-                    lx.locals_o.insert(name.clone(), (r, class));
+                    lx.locals_o.insert(name.clone(), (r, class.clone()));
                     if let Some(init) = name_init {
                         let v = emit_expr_a(f, init, lx);
                         if v != r {
                             f.emit(Op::MoveA, r, v, 0);
                         }
+                    } else if lx.value_structs.contains(&class) {
+                        // `FLineTraceData t;` is a value: give it storage.
+                        let v = emit_new(f, lx, &class);
+                        f.emit(Op::MoveA, r, v, 0);
                     } else {
                         f.emit(Op::LoadNull, r, 0, 0);
                     }
@@ -1377,7 +1865,51 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
             }
         }
         Stmt::Expr { expr, .. } => {
-            let _ = emit_expr(f, expr, lx);
+            if let Some(store) = string_mutation(expr, lx) {
+                let _ = emit_expr(f, &store, lx);
+            } else {
+                let _ = emit_expr(f, expr, lx);
+            }
+        }
+        Stmt::Return { values, .. } if lx.ret_vec > 0 => {
+            // `return (x, y);` from `vector2 F()`: component 0 through `Ret`,
+            // the others as results 1..n; further results follow them.
+            let n = lx.ret_vec;
+            let v = match values.first() {
+                Some(e) => fvec::emit_expr_v(f, lx, e, n),
+                None => {
+                    let base = fvec::alloc_fv(lx, n);
+                    for k in 0..n {
+                        let z = load_f(f, lx, 0.0);
+                        f.emit(Op::MoveF, base + k, z, 0);
+                    }
+                    base
+                }
+            };
+            let extras: Vec<(u8, u8)> = values
+                .iter()
+                .skip(1)
+                .enumerate()
+                .map(|(k, e)| {
+                    let bank = lx.extra_ret_banks.get(k).copied().unwrap_or(0);
+                    let reg = match bank {
+                        1 => emit_expr_f(f, e, lx),
+                        2 => emit_expr_s(f, e, lx),
+                        3 => emit_expr_a(f, e, lx),
+                        _ => emit_expr(f, e, lx),
+                    };
+                    (bank, reg)
+                })
+                .collect();
+            for k in 1..n {
+                f.emit(Op::SetRet, 1, v + k, k);
+            }
+            for (k, (b, reg)) in extras.into_iter().enumerate() {
+                let slot = usize::from(n) + k;
+                f.emit(Op::SetRet, b, reg, u8::try_from(slot).unwrap_or(7));
+            }
+            emit_out_rets(f, lx);
+            f.emit(Op::Ret, 1, v, 0);
         }
         Stmt::Return { values, .. } => {
             let (bank, r) = if lx.ret_bank == 3 {
@@ -1421,6 +1953,7 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
             for (k, (b, reg)) in extras.into_iter().enumerate() {
                 f.emit(Op::SetRet, b, reg, u8::try_from(k + 1).unwrap_or(7));
             }
+            emit_out_rets(f, lx);
             f.emit(Op::Ret, bank, r, 0);
         }
         Stmt::If {
@@ -1439,6 +1972,12 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
                 patch(f, jend);
             } else {
                 patch(f, jelse);
+            }
+        }
+        Stmt::While { .. } if foreach_loop(stmt, lx).is_some() => {
+            if let Some(lowered) = foreach_loop(stmt, lx) {
+                lx.foreach_n += 1;
+                emit_stmt(f, &lowered, lx);
             }
         }
         Stmt::While { cond, body, .. } => {
@@ -1537,6 +2076,14 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
 }
 
 fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
+    if let Some(call) = named_call(expr, lx) {
+        return emit_expr(f, &call, lx);
+    }
+    if let Expr::Binary { op, rhs, .. } = expr {
+        if op == NAMED_ARG {
+            return emit_expr(f, rhs, lx);
+        }
+    }
     if matches!(
         expr,
         Expr::Ident(..) | Expr::Member { .. } | Expr::Call { .. }
@@ -1632,7 +2179,7 @@ fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             if let Some(dest) = emit_bflag(f, lx, name, None) {
                 return dest;
             }
-            if is_cvar_name(name) {
+            if is_cvar_name(name) || lx.cvars.contains(&name.to_ascii_lowercase()) {
                 return emit_host_int(f, lx, &name.to_ascii_lowercase());
             }
             if let Some(n) = crate::special_number(name) {
@@ -1747,9 +2294,23 @@ fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
                 let value = emit_math_call(f, lx, &name, args);
                 return f2i(f, lx, value);
             }
+            // `randompick(4, 5, 6)` in an int context.
+            if let Expr::Ident(name, _) = callee.as_ref() {
+                let lower = name.to_ascii_lowercase();
+                if matches!(lower.as_str(), "randompick" | "crandompick" | "crandom") {
+                    let value = emit_math_call(f, lx, &lower, args);
+                    return f2i(f, lx, value);
+                }
+            }
             emit_unresolved_call(f, lx, callee, args, 0)
         }
         Expr::Float(v, _) => load_i(f, lx, *v as i64),
+        // `case "{":` / `return "\n";` in an int function: the character code.
+        Expr::String(s, _) if s.chars().count() == 1 => load_i(
+            f,
+            lx,
+            s.chars().next().map_or(0, |c| i64::from(u32::from(c))),
+        ),
         Expr::String(s, _) | Expr::Name(s, _) => load_i(f, lx, i64::from(!s.is_empty())),
         Expr::Cast { expr, .. } => emit_expr(f, expr, lx),
         Expr::New { class, .. } => {
@@ -1794,6 +2355,14 @@ fn format_float(f: &mut CompiledFunction, lx: &mut Lx, reg: u8) -> u8 {
 }
 
 fn emit_expr_s(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
+    if let Some(call) = named_call(expr, lx) {
+        return emit_expr_s(f, &call, lx);
+    }
+    if let Expr::Binary { op, rhs, .. } = expr {
+        if op == NAMED_ARG {
+            return emit_expr_s(f, rhs, lx);
+        }
+    }
     match expr {
         Expr::String(s, _) | Expr::Name(s, _) => load_s(f, lx, s),
         Expr::Binary { op, lhs, rhs, .. } if op == ".." || op == "+" => {
@@ -1891,6 +2460,10 @@ fn emit_expr_s(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
                 // An untyped `let` guessed as an object (a call result whose
                 // type the lowerer does not know): no string value.
                 load_s(f, lx, "")
+            } else if fvec::expr_is_float(expr, lx) {
+                // `"" .. d` with `double d` a field.
+                let v = emit_expr_f(f, expr, lx);
+                format_float(f, lx, v)
             } else {
                 lx.err(*span, format!("unknown string {name}"));
                 load_s(f, lx, "")
@@ -1964,6 +2537,71 @@ fn definitely_not_string(expr: &Expr, lx: &Lx) -> bool {
     }
 }
 
+/// UZDoom string methods that change their receiver in place.
+const MUTATING_STRING_METHODS: [&str; 12] = [
+    "appendformat",
+    "appendcharacter",
+    "truncate",
+    "remove",
+    "toupper",
+    "tolower",
+    "stripleft",
+    "stripright",
+    "strip",
+    "deletelastcharacter",
+    "replace",
+    "substitute",
+];
+
+/// `s.AppendFormat(…)` as a statement on a string variable or field:
+/// `s = s.AppendFormat(…)`, since the native returns the new text.
+fn string_mutation(expr: &Expr, lx: &Lx) -> Option<Expr> {
+    let Expr::Call { callee, span, .. } = expr else {
+        return None;
+    };
+    let Expr::Member { obj, field, .. } = callee.as_ref() else {
+        return None;
+    };
+    let field = field.to_ascii_lowercase();
+    if !MUTATING_STRING_METHODS.contains(&field.as_str()) {
+        return None;
+    }
+    if !matches!(
+        obj.as_ref(),
+        Expr::Ident(..) | Expr::Member { .. } | Expr::Index { .. }
+    ) {
+        return None;
+    }
+    if !expr_yields_string(obj, lx) {
+        return None;
+    }
+    // `s.AppendFormat(fmt, …)` is `s = s .. String.Format(fmt, …)`, which
+    // lays out mixed-type arguments.
+    let rhs = match (field.as_str(), expr) {
+        ("appendformat", Expr::Call { args, .. }) => Expr::Binary {
+            op: "..".to_owned(),
+            lhs: obj.clone(),
+            rhs: Box::new(Expr::Call {
+                callee: Box::new(Expr::Member {
+                    obj: Box::new(Expr::Ident("String".to_owned(), *span)),
+                    field: "Format".to_owned(),
+                    span: *span,
+                }),
+                args: args.clone(),
+                span: *span,
+            }),
+            span: *span,
+        },
+        _ => expr.clone(),
+    };
+    Some(Expr::Binary {
+        op: "=".to_owned(),
+        lhs: obj.clone(),
+        rhs: Box::new(rhs),
+        span: *span,
+    })
+}
+
 /// `String.*` method. `(name, instance, return bank)` — bank 2 is a string.
 fn string_native(callee: &Expr, lx: &Lx) -> Option<(String, bool, u8)> {
     let Expr::Member { obj, field, .. } = callee else {
@@ -1974,6 +2612,14 @@ fn string_native(callee: &Expr, lx: &Lx) -> Option<(String, bool, u8)> {
         "format" | "mid" | "left" | "right" | "filter" | "replace" | "tolower" | "toupper"
         | "makelower" | "makeupper" => (2u8, field_l != "format"),
         "charcodeat" | "length" | "toint" | "indexof" | "split" => (0, true),
+        // Mutating methods: the native returns the new text and the
+        // statement stores it back (`string_mutation`).
+        m if MUTATING_STRING_METHODS.contains(&m) => {
+            if !expr_yields_string(obj, lx) {
+                return None;
+            }
+            (2, true)
+        }
         _ => return None,
     };
     let static_class =
@@ -2010,7 +2656,7 @@ fn emit_native(
         // and the layout (see `prepare_sig_args`).
         let mut layout = Vec::new();
         for (k, arg) in args.iter().enumerate() {
-            if k == 0 || expr_is_string(arg, lx) {
+            if k == 0 || expr_is_string(arg, lx) || expr_yields_string(arg, lx) {
                 prepared.push((2, emit_expr_s(f, arg, lx)));
                 if k > 0 {
                     layout.push(2);
@@ -2308,6 +2954,35 @@ fn is_bflag(name: &str) -> bool {
     bytes.len() >= 2 && bytes[0].eq_ignore_ascii_case(&b'b') && bytes[1].is_ascii_uppercase()
 }
 
+/// [`is_bflag`], plus the all-lowercase spellings GZDoom also accepts
+/// (`bismonster`, `bxflip`) on actor classes. A struct's `boxsize` is not a flag.
+fn is_bflag_on(lx: &Lx, class: &str, name: &str) -> bool {
+    if is_bflag(name) {
+        return true;
+    }
+    let bytes = name.as_bytes();
+    let lower_flag = bytes.len() >= 4
+        && bytes[0] == b'b'
+        && bytes[1..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    lower_flag && is_actor_class(lx, class)
+}
+
+fn is_actor_class(lx: &Lx, class: &str) -> bool {
+    let mut cur = Some(class.to_ascii_lowercase());
+    for _ in 0..64 {
+        let Some(name) = cur else {
+            return false;
+        };
+        if name == "actor" {
+            return true;
+        }
+        cur = parent_of(lx, &name);
+    }
+    false
+}
+
 /// Read `bNoGravity`, or write it when `value` is set.
 fn emit_bflag(
     f: &mut CompiledFunction,
@@ -2315,10 +2990,12 @@ fn emit_bflag(
     name: &str,
     value: Option<&Expr>,
 ) -> Option<u8> {
-    if !is_bflag(name) {
+    if !is_bflag_on(lx, &lx.class_name.clone(), name) {
         return None;
     }
     let self_reg = lx.self_reg?;
+    // The value first: it may call natives of its own.
+    let on = value.map(|v| emit_expr(f, v, lx));
     let flag = load_s(f, lx, &name[1..]);
     let id = if value.is_some() {
         lx.native_id("Actor.ChangeFlag")
@@ -2327,8 +3004,7 @@ fn emit_bflag(
     };
     f.emit(Op::Arg, 3, self_reg, 0);
     f.emit(Op::Arg, 2, flag, 0);
-    if let Some(value) = value {
-        let on = emit_expr(f, value, lx);
+    if let Some(on) = on {
         f.emit(Op::Arg, 0, on, 0);
         f.emit_ext(Op::CallNat, 1, 0, 0, id);
         return Some(0);
@@ -2433,61 +3109,54 @@ fn emit_array_call(
         lx.err(obj.span(), "array receiver");
         return 0;
     };
-    f.emit(Op::Arg, 3, reg, 0);
+    // Evaluate every argument before staging any: an argument that calls a
+    // native itself (`cols.Push(Font.FindFontColor(…))`) would take the
+    // receiver already staged for this call.
+    let mut staged: Vec<(u8, u8)> = vec![(3, reg)];
+    let int_of = |f: &mut CompiledFunction, lx: &mut Lx, e: &Expr| (0u8, emit_expr(f, e, lx));
     match native {
-        "Array.PushS" => {
+        "Array.PushS" | "Array.FindS" => {
             if let Some(arg) = args.first() {
-                let r = emit_expr_s(f, arg, lx);
-                f.emit(Op::Arg, 2, r, 0);
+                staged.push((2, emit_expr_s(f, arg, lx)));
             }
         }
         "Array.InsertS" => {
             if let Some(idx) = args.first() {
-                let r = emit_expr(f, idx, lx);
-                f.emit(Op::Arg, 0, r, 0);
+                staged.push(int_of(f, lx, idx));
             }
             if let Some(val) = args.get(1) {
-                let r = emit_expr_s(f, val, lx);
-                f.emit(Op::Arg, 2, r, 0);
+                staged.push((2, emit_expr_s(f, val, lx)));
             }
         }
         "Array.Size" | "Array.Clear" => {}
         "Array.PushA" | "Array.FindA" => {
             if let Some(arg) = args.first() {
-                let r = emit_expr_a(f, arg, lx);
-                f.emit(Op::Arg, 3, r, 0);
+                staged.push((3, emit_expr_a(f, arg, lx)));
             }
         }
         "Array.InsertA" => {
             if let Some(idx) = args.first() {
-                let r = emit_expr(f, idx, lx);
-                f.emit(Op::Arg, 0, r, 0);
+                staged.push(int_of(f, lx, idx));
             }
             if let Some(val) = args.get(1) {
-                let r = emit_expr_a(f, val, lx);
-                f.emit(Op::Arg, 3, r, 0);
-            }
-        }
-        "Array.FindS" => {
-            if let Some(arg) = args.first() {
-                let r = emit_expr_s(f, arg, lx);
-                f.emit(Op::Arg, 2, r, 0);
+                staged.push((3, emit_expr_a(f, val, lx)));
             }
         }
         "Array.Push" => {
-            let zero = load_i(f, lx, 0);
-            f.emit(Op::Arg, 0, zero, 0);
-            if let Some(arg) = args.first() {
-                let r = emit_expr(f, arg, lx);
-                f.emit(Op::Arg, 0, r, 0);
+            let value = args.first().map(|arg| emit_expr(f, arg, lx));
+            staged.push((0, load_i(f, lx, 0)));
+            if let Some(r) = value {
+                staged.push((0, r));
             }
         }
         _ => {
             for arg in args {
-                let r = emit_expr(f, arg, lx);
-                f.emit(Op::Arg, 0, r, 0);
+                staged.push(int_of(f, lx, arg));
             }
         }
+    }
+    for (bank, r) in staged {
+        f.emit(Op::Arg, bank, r, 0);
     }
     let id = lx.native_id(native);
     f.emit_ext(Op::CallNat, 1, 0, 0, id);
@@ -2571,7 +3240,8 @@ fn init_object_class(expr: &Expr, lx: &Lx) -> Option<String> {
                 .or_else(|| declaring_object_slot(lx, field))
                 .map(|(_, ty)| ty)
         }
-        Expr::Index { arr, .. } => object_elem_array(arr, lx).then(|| "object".to_owned()),
+        Expr::Index { arr, .. } => obj_array_elem(arr, lx)
+            .or_else(|| object_elem_array(arr, lx).then(|| "object".to_owned())),
         Expr::Ternary { then_e, else_e, .. } => {
             init_object_class(then_e, lx).or_else(|| init_object_class(else_e, lx))
         }
@@ -2579,9 +3249,38 @@ fn init_object_class(expr: &Expr, lx: &Lx) -> Option<String> {
     }
 }
 
+/// `Array<int>` / `Array<double>` / `bool[4]`: elements are plain values.
+fn is_prim_array(ty: &TypeRef) -> bool {
+    let TypeRef::Array(inner) = ty else {
+        return false;
+    };
+    named_type(inner).is_some_and(|t| {
+        matches!(
+            t.to_ascii_lowercase().as_str(),
+            "int"
+                | "uint"
+                | "int8"
+                | "uint8"
+                | "int16"
+                | "uint16"
+                | "bool"
+                | "double"
+                | "float"
+                | "byte"
+                | "sbyte"
+                | "short"
+                | "ushort"
+        )
+    })
+}
+
 fn object_elem_array(expr: &Expr, lx: &Lx) -> bool {
     match expr {
-        Expr::Ident(name, _) => array_local(lx, name).is_some_and(|(_, string_elem)| !string_elem),
+        // `Array<int>` is not; object array locals are in `obj_arrays`.
+        Expr::Ident(name, _) => {
+            array_local(lx, name).is_some_and(|(_, string_elem)| !string_elem)
+                && !lx.prim_arrays.contains(&name.to_ascii_lowercase())
+        }
         Expr::Member { obj, field, .. } => {
             let class = init_object_class(obj, lx).unwrap_or_else(|| lx.class_name.clone());
             lookup_array_field(lx, &class, field)
@@ -2993,7 +3692,7 @@ fn emit_member_i(
     if let Some(dest) = load_vector_component(f, lx, obj, field) {
         return dest;
     }
-    if is_bflag(field) {
+    if is_bflag_on(lx, &class, field) {
         return check_flag(f, lx, reg, &field[1..]);
     }
     if let Some(slot) =
@@ -3219,7 +3918,14 @@ fn rng_call_name(callee: &Expr) -> Option<String> {
     let name = name.to_ascii_lowercase();
     matches!(
         name.as_str(),
-        "random" | "random2" | "frandom" | "randompick"
+        "random"
+            | "random2"
+            | "frandom"
+            | "randompick"
+            | "frandompick"
+            | "crandompick"
+            | "cfrandom"
+            | "crandom"
     )
     .then_some(name)
 }
@@ -3484,7 +4190,7 @@ fn emit_field_update(
     };
     let Some(slot) = lookup_int_field(lx, &class, field).or_else(|| declaring_int_slot(lx, field))
     else {
-        if is_bflag(field) {
+        if is_bflag_on(lx, &class, field) {
             let cur = check_flag(f, lx, reg, &field[1..]);
             let rv = emit_expr(f, rhs, lx);
             let dest = lx.alloc();
@@ -3557,7 +4263,7 @@ fn emit_field_store(
         f.emit_ext(Op::StoreFieldI, reg, v, 0, u32::from(slot));
         return true;
     }
-    if is_bflag(field) {
+    if is_bflag_on(lx, &class, field) {
         let flag = load_s(f, lx, &field[1..]);
         let on = emit_expr(f, rhs, lx);
         let id = lx.native_id("Actor.ChangeFlag");
@@ -3583,6 +4289,13 @@ fn string_cmp(
     if !expr_is_string(lhs, lx) && !expr_is_string(rhs, lx) {
         return None;
     }
+    // `c == "{"` with an int `c`: a one-character string is its character
+    // code, so this is an int comparison.
+    if (is_char_literal(rhs) && int_operand(lhs, lx))
+        || (is_char_literal(lhs) && int_operand(rhs, lx))
+    {
+        return None;
+    }
     let l = emit_expr_s(f, lhs, lx);
     let r = emit_expr_s(f, rhs, lx);
     let id = lx.native_id("String.Eq");
@@ -3598,6 +4311,24 @@ fn string_cmp(
         return Some(inv);
     }
     Some(dest)
+}
+
+/// A one-character `"x"` literal (an int character code where an int is due).
+fn is_char_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::String(s, _) if s.chars().count() == 1)
+}
+
+/// An int local or int field of `self`.
+fn int_operand(expr: &Expr, lx: &Lx) -> bool {
+    match expr {
+        Expr::Ident(name, _) => {
+            int_local(lx, name).is_some()
+                || (object_local(lx, name).is_none()
+                    && !lx.locals_s.keys().any(|k| k.eq_ignore_ascii_case(name))
+                    && self_int_slot(lx, name).is_some())
+        }
+        _ => false,
+    }
 }
 
 fn expr_is_string(expr: &Expr, lx: &Lx) -> bool {
@@ -4018,7 +4749,7 @@ fn emit_script_call(
     } else {
         f.emit_ext(Op::Call, 1, 0, 0, sig.idx);
     }
-    if want == 1 {
+    let result = if want == 1 {
         let dest = lx.alloc_f();
         f.emit(Op::GetRet, 1, dest, 0);
         Some(dest)
@@ -4033,15 +4764,216 @@ fn emit_script_call(
     } else {
         let dest = lx.alloc();
         f.emit(Op::GetRet, 0, dest, 0);
-        for &idx in &sig.outs {
-            if let Some(Expr::Ident(name, _)) = args.get(idx) {
-                if let Some(local) = int_local(lx, name) {
-                    f.emit(Op::MoveI, local, dest, 0);
-                }
-            }
-        }
         Some(dest)
+    };
+    if !sig.native {
+        read_out_args(f, lx, &sig, args);
     }
+    result
+}
+
+/// Result slot of the first `out` value: after every declared result
+/// (slot 0 even for a void function, whose `Ret` writes it).
+fn out_base_of(meth: &MethodDecl) -> u8 {
+    let n = match fvec::type_vector_dim(&meth.ret) {
+        Some(dim) => usize::from(dim) + meth.extra_rets.len(),
+        None => 1 + meth.extra_rets.len(),
+    };
+    u8::try_from(n).unwrap_or(8)
+}
+
+/// The current function's `out` value parameters (int, float, string) with
+/// the slot each comes back in. Objects, arrays and structs are references
+/// and need no copy back.
+fn out_param_regs(meth: &MethodDecl, lx: &Lx) -> Vec<(u8, u8, u8)> {
+    let base = out_base_of(meth);
+    let mut out = Vec::new();
+    let mut j = 0u8;
+    for p in &meth.params {
+        let is_out = p.mode.as_deref().is_some_and(|m| {
+            m.to_ascii_lowercase().contains("out") || m.eq_ignore_ascii_case("ref")
+        });
+        if !is_out {
+            continue;
+        }
+        let slot = base.saturating_add(j);
+        j = j.saturating_add(1);
+        if slot >= 8 || fvec::type_vector_dim(&p.ty).is_some() {
+            continue;
+        }
+        let found = match value_bank(&p.ty, &lx.class_ids) {
+            0 => lx.locals.get(&p.name).map(|r| (0, *r)),
+            1 => fvec::float_local(lx, &p.name).map(|r| (1, r)),
+            2 => lx.locals_s.get(&p.name).map(|r| (2, *r)),
+            _ => None,
+        };
+        if let Some((bank, reg)) = found {
+            out.push((bank, reg, slot));
+        }
+    }
+    out
+}
+
+fn emit_out_rets(f: &mut CompiledFunction, lx: &Lx) {
+    for &(bank, reg, slot) in &lx.out_rets {
+        f.emit(Op::SetRet, bank, reg, slot);
+    }
+}
+
+/// After a script call: copy each `out` value back into the variable passed.
+fn read_out_args(f: &mut CompiledFunction, lx: &mut Lx, sig: &FnSig, args: &[Expr]) {
+    let user_banks = if sig.instance {
+        &sig.params[1..]
+    } else {
+        &sig.params[..]
+    };
+    for (j, &idx) in sig.outs.iter().enumerate() {
+        let Some(slot) = u8::try_from(j)
+            .ok()
+            .map(|j| sig.out_base.saturating_add(j))
+            .filter(|s| *s < 8)
+        else {
+            continue;
+        };
+        let bank = user_banks.get(idx).copied().unwrap_or(3);
+        if bank == 3 || sig.vec_params.get(idx).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        let Some(Expr::Ident(name, _)) = args.get(idx) else {
+            continue;
+        };
+        let known = int_local(lx, name).is_some()
+            || fvec::float_local(lx, name).is_some()
+            || lx.locals_s.keys().any(|k| k.eq_ignore_ascii_case(name))
+            || self_int_slot(lx, name).is_some()
+            || fvec::self_float_field(lx, name).is_some()
+            || lookup_string_field(lx, &lx.class_name, name).is_some();
+        if !known || fvec::vector_local(lx, name).is_some() {
+            continue;
+        }
+        let reg = match bank {
+            1 => lx.alloc_f(),
+            2 => lx.alloc_s(),
+            _ => lx.alloc(),
+        };
+        f.emit(Op::GetRet, bank, reg, slot);
+        destructure_into(f, lx, std::slice::from_ref(name), vec![(bank, reg)]);
+    }
+}
+
+fn is_named_arg(e: &Expr) -> bool {
+    matches!(e, Expr::Binary { op, .. } if op == NAMED_ARG)
+}
+
+/// A call with `name: value` arguments rewritten to plain positional ones:
+/// each named value goes to the parameter of that name, and the parameters
+/// skipped before it take their declared defaults. When the callee does not
+/// resolve, the names are dropped and the values stay in order.
+fn named_call(expr: &Expr, lx: &Lx) -> Option<Expr> {
+    let Expr::Call { callee, args, span } = expr else {
+        return None;
+    };
+    if !args.iter().any(is_named_arg) {
+        return None;
+    }
+    let value = |e: &Expr| -> Expr {
+        match e {
+            Expr::Binary { op, rhs, .. } if op == NAMED_ARG => (**rhs).clone(),
+            other => other.clone(),
+        }
+    };
+    let sig = resolve_call(callee, lx)
+        .and_then(|t| lx.funcs.get(&t.key).cloned())
+        .or_else(|| {
+            // `Owner.LineTrace(…, data: d)`: the receiver's static class
+            // names the method even when the call itself is not resolved.
+            let Expr::Member { obj, field, .. } = callee.as_ref() else {
+                return None;
+            };
+            let class = init_object_class(obj, lx)?;
+            let t = lookup_method(lx, &class, field, None)?;
+            lx.funcs.get(&t.key).cloned()
+        });
+    let fixed = match sig {
+        Some(sig) if !sig.param_names.is_empty() => {
+            let mut slots: Vec<Option<Expr>> = Vec::new();
+            let mut next = 0usize;
+            for a in args {
+                let at = match a {
+                    Expr::Binary { op, lhs, .. } if op == NAMED_ARG => match lhs.as_ref() {
+                        Expr::Ident(n, _) => sig
+                            .param_names
+                            .iter()
+                            .position(|p| p.eq_ignore_ascii_case(n))
+                            .unwrap_or(next),
+                        _ => next,
+                    },
+                    _ => next,
+                };
+                if slots.len() <= at {
+                    slots.resize(at + 1, None);
+                }
+                slots[at] = Some(value(a));
+                next = at + 1;
+            }
+            slots
+                .into_iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    v.or_else(|| sig.defaults.get(k).cloned().flatten())
+                        .unwrap_or(Expr::Int(0, *span))
+                })
+                .collect()
+        }
+        _ => args.iter().map(value).collect(),
+    };
+    Some(Expr::Call {
+        callee: callee.clone(),
+        args: fixed,
+        span: *span,
+    })
+}
+
+/// Size of the vector a call to a script function returns, if it does.
+fn script_vector_ret(callee: &Expr, lx: &Lx) -> Option<u8> {
+    let target = resolve_call(callee, lx)?;
+    let sig = lx.funcs.get(&target.key)?;
+    (!sig.native && sig.ret_vec > 0).then_some(sig.ret_vec)
+}
+
+/// Call a script function returning a vector: its `n` components land in
+/// consecutive float registers (results `0..n`, see `Stmt::Return`).
+fn emit_vector_script_call(
+    f: &mut CompiledFunction,
+    lx: &mut Lx,
+    callee: &Expr,
+    args: &[Expr],
+) -> Option<(u8, u8)> {
+    let target = resolve_call(callee, lx)?;
+    let sig = lx.funcs.get(&target.key)?.clone();
+    if sig.native || sig.ret_vec == 0 {
+        return None;
+    }
+    let user = if sig.instance {
+        sig.params[1..].to_vec()
+    } else {
+        sig.params.clone()
+    };
+    let mut prepared = Vec::new();
+    if let Some(self_r) = target.self_reg {
+        prepared.push((3u8, self_r));
+    }
+    prepared.extend(prepare_sig_args(f, lx, &sig, &user, args));
+    for (bank, reg) in prepared {
+        f.emit(Op::Arg, bank, reg, 0);
+    }
+    f.emit_ext(Op::Call, 1, 0, 0, sig.idx);
+    let n = sig.ret_vec;
+    let base = fvec::alloc_fv(lx, n);
+    for k in 0..n {
+        f.emit(Op::GetRet, 1, base + k, k);
+    }
+    Some((base, n))
 }
 
 /// Arguments for a call to `sig`, by declared parameter: vectors as their
@@ -4310,6 +5242,14 @@ fn emit_new(f: &mut CompiledFunction, lx: &mut Lx, class: &str) -> u8 {
 }
 
 fn emit_expr_a(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
+    if let Some(call) = named_call(expr, lx) {
+        return emit_expr_a(f, &call, lx);
+    }
+    if let Expr::Binary { op, rhs, .. } = expr {
+        if op == NAMED_ARG {
+            return emit_expr_a(f, rhs, lx);
+        }
+    }
     // `Sum(h.items)`: an array field passed or assigned as a whole.
     if let Expr::Member { obj, field, .. } = expr {
         let is_array = init_object_class(obj, lx)
@@ -4488,6 +5428,14 @@ fn null_cmp(f: &mut CompiledFunction, lx: &mut Lx, op: &str, lhs: &Expr, rhs: &E
 }
 
 fn emit_expr_f(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
+    if let Some(call) = named_call(expr, lx) {
+        return emit_expr_f(f, &call, lx);
+    }
+    if let Expr::Binary { op, rhs, .. } = expr {
+        if op == NAMED_ARG {
+            return emit_expr_f(f, rhs, lx);
+        }
+    }
     match expr {
         Expr::Float(v, _) => load_f(f, lx, *v),
         Expr::Int(v, _) => load_f(f, lx, *v as f64),
@@ -4523,7 +5471,7 @@ fn emit_expr_f(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             } else if let Some((reg, _)) = object_local(lx, name) {
                 let bit = truthy(f, lx, reg);
                 i2f(f, lx, bit)
-            } else if is_cvar_name(name) {
+            } else if is_cvar_name(name) || lx.cvars.contains(&name.to_ascii_lowercase()) {
                 let v = emit_host_int(f, lx, &name.to_ascii_lowercase());
                 i2f(f, lx, v)
             } else {
@@ -4567,6 +5515,15 @@ fn emit_expr_f(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             }
             if let Some(reg) = load_vector_component(f, lx, obj, field) {
                 return i2f(f, lx, reg);
+            }
+            // `holder.flashlightChargeMax`: a class constant read through an object.
+            if let Some(class) = fvec::static_class(obj, lx) {
+                if let Some(v) = lookup_float_const(&lx.float_consts, &lx.parents, &class, field) {
+                    return load_f(f, lx, v);
+                }
+                if let Some(v) = lookup_int_const(&lx.consts, &lx.parents, &class, field) {
+                    return load_f(f, lx, v as f64);
+                }
             }
             if let Some((reg, class)) = object_base(f, obj, lx) {
                 if let Some(slot) =
@@ -4715,6 +5672,11 @@ fn emit_expr_f(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             }
             out
         }
+        // `random("A", "Z")`: a one-character string is its character code.
+        Expr::String(text, _) if text.chars().count() == 1 => {
+            let code = text.chars().next().map_or(0, u32::from);
+            load_f(f, lx, f64::from(code))
+        }
         other => {
             lx.err(other.span(), "float expression");
             load_f(f, lx, 0.0)
@@ -4772,6 +5734,37 @@ fn call_ret_banks(callee: &Expr, lx: &Lx) -> Option<Vec<u8>> {
     lx.funcs.get(&t.key).map(|sig| sig.ret_banks.clone())
 }
 
+/// Store `reg` (in `bank`) into the field `name` of `self`, converting
+/// between int and float. False when `self` has no such field.
+fn store_self_field(f: &mut CompiledFunction, lx: &mut Lx, name: &str, bank: u8, reg: u8) -> bool {
+    let Some(self_reg) = lx.self_reg else {
+        return false;
+    };
+    if let Some(slot) = self_int_slot(lx, name) {
+        let v = if bank == 1 { f2i(f, lx, reg) } else { reg };
+        f.emit_ext(Op::StoreFieldI, self_reg, v, 0, u32::from(slot));
+        return true;
+    }
+    if let Some((slot, 1)) = fvec::self_float_field(lx, name) {
+        let v = if bank == 1 { reg } else { i2f(f, lx, reg) };
+        f.emit_ext(Op::StoreFieldF, self_reg, v, 0, u32::from(slot));
+        return true;
+    }
+    if bank == 3 {
+        if let Some((slot, _)) = lookup_object_field(lx, &lx.class_name.clone(), name) {
+            f.emit_ext(Op::StoreFieldA, self_reg, reg, 0, u32::from(slot));
+            return true;
+        }
+    }
+    if bank == 2 {
+        if let Some(slot) = lookup_string_field(lx, &lx.class_name.clone(), name) {
+            f.emit_ext(Op::StoreFieldS, self_reg, reg, 0, u32::from(slot));
+            return true;
+        }
+    }
+    false
+}
+
 /// `[a, b] = F();`: each name takes one result. Existing locals are assigned;
 /// new names become locals of the result's bank.
 fn emit_destructure(
@@ -4783,6 +5776,39 @@ fn emit_destructure(
 ) {
     let banks = call_ret_banks(callee, lx).unwrap_or_default();
     let bank_of = |k: usize| banks.get(k).copied().unwrap_or(0);
+    // `vector2, int F()`: the vector is results 0..n, the rest follow it.
+    if let Some(n) = script_vector_ret(callee, lx) {
+        let Some((v, _)) = (match init {
+            Expr::Call { args, .. } => emit_vector_script_call(f, lx, callee, args),
+            _ => None,
+        }) else {
+            return;
+        };
+        let mut values = Vec::new();
+        for k in 1..names.len() {
+            let bank = bank_of(k);
+            let reg = match bank {
+                1 => lx.alloc_f(),
+                2 => lx.alloc_s(),
+                3 => lx.alloc_a(),
+                _ => lx.alloc(),
+            };
+            let slot = usize::from(n) + k - 1;
+            f.emit(Op::GetRet, bank, reg, u8::try_from(slot).unwrap_or(7));
+            values.push((bank, reg));
+        }
+        if let Some(first) = names.first().filter(|n| *n != "_" && !n.is_empty()) {
+            if let Some((base, dim)) = fvec::vector_local(lx, first) {
+                for c in 0..dim.min(n) {
+                    f.emit(Op::MoveF, base + c, v + c, 0);
+                }
+            } else {
+                lx.locals_v.insert(first.clone(), (v, n));
+            }
+        }
+        destructure_into(f, lx, &names[1.min(names.len())..], values);
+        return;
+    }
     // The first result comes back through the call itself.
     let first = match bank_of(0) {
         1 => emit_expr_f(f, init, lx),
@@ -4803,6 +5829,17 @@ fn emit_destructure(
         f.emit(Op::GetRet, bank, reg, u8::try_from(k).unwrap_or(7));
         values.push((bank, reg));
     }
+    destructure_into(f, lx, names, values);
+}
+
+/// Assign destructured results to `names` (locals, fields of `self`, or new
+/// locals), in order.
+fn destructure_into(
+    f: &mut CompiledFunction,
+    lx: &mut Lx,
+    names: &[String],
+    values: Vec<(u8, u8)>,
+) {
     for (name, (bank, reg)) in names.iter().zip(values) {
         if name == "_" || name.is_empty() || fvec::vector_local(lx, name).is_some() {
             // Vector results are not carried through multi-returns yet.
@@ -4823,6 +5860,8 @@ fn emit_destructure(
             f.emit(Op::MoveS, r, reg, 0);
         } else if let Some((r, _)) = object_local(lx, name) {
             f.emit(Op::MoveA, r, reg, 0);
+        } else if store_self_field(f, lx, name, bank, reg) {
+            // `[RealFloorZ, RealFloor] = …`: the names are fields of self.
         } else {
             match bank {
                 1 => {
@@ -5139,6 +6178,18 @@ fn emit_binary(
             }
         }
         let Expr::Ident(name, span) = lhs else {
+            if lx.lenient && matches!(lhs, Expr::Member { .. }) {
+                // An engine field Room does not model (`psp.sprite = …`):
+                // run the value for its side effects, drop the store.
+                let _ = emit_expr(f, rhs, lx);
+                let w = Diagnostic::warn(
+                    "",
+                    lhs.span(),
+                    format!("{}: store to an unsupported field is ignored", f.name),
+                );
+                lx.soft.push(w);
+                return 0;
+            }
             lx.err(lhs.span(), "assignment target");
             return 0;
         };
@@ -5159,6 +6210,12 @@ fn emit_binary(
                     "-=" => Op::SubF,
                     "*=" => Op::MulF,
                     "/=" => Op::DivF,
+                    "%=" => {
+                        // `angle %= 180`: fmod, like `%` on floats.
+                        let v = fvec::emit_fmod(f, lx, lhs, rhs);
+                        f.emit(Op::MoveF, dest, v, 0);
+                        return dest;
+                    }
                     _ => {
                         lx.err(*span, format!("float assign {op}"));
                         return dest;

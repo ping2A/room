@@ -25,6 +25,7 @@ mod program;
 mod program_codec;
 mod provider;
 mod tier1;
+mod tmap_natives;
 mod trap;
 mod uz3_natives;
 mod world_natives;
@@ -42,7 +43,8 @@ pub use opcode::{Op, has_ext, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};
 pub use portal_natives::{SectorLookup, ZsLineInfo, ZsLinePortal, ZsPlanePortal, ZsPortalInfo};
 pub use program::{
-    ClassLayout, CompiledFunction, CompiledProgram, FuncParam, block_costs, jump_target, next_insn,
+    ClassLayout, CompiledFunction, CompiledProgram, FuncParam, PlayerInfoLayout, block_costs,
+    jump_target, next_insn,
 };
 pub use tier1::{ExecTier, conformance_call, jit_enabled};
 pub use trap::{Trap, TrapPolicy};

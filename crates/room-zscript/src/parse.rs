@@ -26,6 +26,59 @@ pub struct ParseResult {
     pub unit: TranslationUnit,
     /// Diagnostics.
     pub diagnostics: Vec<Diagnostic>,
+    /// Where each parsed root's lines came from, indexed by `Span::source`.
+    pub origins: Vec<RootOrigins>,
+}
+
+/// Line origins of one preprocessed root (its `#include`s inlined).
+#[derive(Debug, Default, Clone)]
+pub struct RootOrigins {
+    /// Root file name.
+    pub root: String,
+    /// Files the root pulled in (`line_map` indexes these).
+    pub files: Vec<String>,
+    /// Per flattened line: (index into `files`, 1-based line). Empty = the
+    /// root's own lines, unchanged.
+    pub line_map: Vec<(u32, u32)>,
+}
+
+impl ParseResult {
+    /// Point `d` at the file and line it came from (`#include`d files are
+    /// flattened before parsing, so raw spans count lines of the whole root).
+    pub fn locate(&self, d: &mut Diagnostic) {
+        let Some(o) = self.origins.get(d.span.source.0 as usize) else {
+            return;
+        };
+        if !(d.path.is_empty() || d.path == "<input>" || d.path == o.root) {
+            return;
+        }
+        if o.line_map.is_empty() {
+            if d.path.is_empty() {
+                d.path = o.root.clone();
+            }
+            return;
+        }
+        let Some(&(f, line)) = d
+            .span
+            .line
+            .checked_sub(1)
+            .and_then(|i| o.line_map.get(i as usize))
+        else {
+            return;
+        };
+        if let Some(name) = o.files.get(f as usize) {
+            d.path = name.clone();
+            d.span.line = line;
+        }
+    }
+}
+
+fn origins_of(root: &str, pp: &crate::preprocess::PreprocessResult) -> RootOrigins {
+    RootOrigins {
+        root: root.to_owned(),
+        files: pp.files.iter().map(|f| f.name.clone()).collect(),
+        line_map: pp.line_map.clone(),
+    }
 }
 
 /// Parse multiple named sources (concatenated after preprocess of each).
@@ -47,11 +100,13 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
     let pp = preprocess(entry_name, entry_text, |path| {
         lookup.get(&path.to_ascii_lowercase()).cloned()
     });
-    let mut result = parse_file_with_version(entry_name, &pp.text, pp.version.clone());
+    let mut result = parse_file_with_version(SourceId(0), entry_name, &pp.text, pp.version.clone());
+    result.origins = vec![origins_of(entry_name, &pp)];
     result.diagnostics.extend(pp.diagnostics);
     if result.unit.version.is_none() {
-        result.unit.version = pp.version;
+        result.unit.version = pp.version.clone();
     }
+    let mut root_versions = vec![pp.version.clone()];
     // Parse additional sources that weren't pulled in via #include. Each one
     // is its own root (GZDoom: every archive's `zscript` lump), so its own
     // `#include`s are expanded too — e.g. Brutal Doom's `zscript.zc` loaded
@@ -81,20 +136,38 @@ pub fn parse_sources(sources: &[(String, String)]) -> ParseResult {
         if included.contains_key(&key) || included.contains_key(&base) {
             continue;
         }
+        let id = SourceId(u32::try_from(result.origins.len()).unwrap_or(u32::MAX));
         let extra = if text.contains("#include") {
             let pp = preprocess(name, text, |path| {
                 lookup.get(&path.to_ascii_lowercase()).cloned()
             });
             mark(&pp.files, &mut included);
-            let mut r = parse_file_with_version(name, &pp.text, pp.version);
+            let mut r = parse_file_with_version(id, name, &pp.text, pp.version.clone());
+            r.origins = vec![origins_of(name, &pp)];
+            root_versions.push(pp.version.clone());
             r.diagnostics.extend(pp.diagnostics);
             r
         } else {
-            parse_file(name, text)
+            let mut r = parse_file_with_version(id, name, text, None);
+            root_versions.push(r.unit.version.clone());
+            r.origins = vec![RootOrigins {
+                root: name.clone(),
+                ..RootOrigins::default()
+            }];
+            r
         };
+        result.origins.extend(extra.origins);
         result.unit.decls.extend(extra.unit.decls);
+        result.unit.static_arrays.extend(extra.unit.static_arrays);
         result.diagnostics.extend(extra.diagnostics);
     }
+    crate::static_arrays::post_parse(&mut result.unit);
+    result.unit.root_versions = std::mem::take(&mut root_versions);
+    let mut diags = std::mem::take(&mut result.diagnostics);
+    for d in &mut diags {
+        result.locate(d);
+    }
+    result.diagnostics = diags;
     result
 }
 
@@ -136,11 +209,18 @@ fn foreach_while(names: Vec<String>, iter: Expr, body: Block, span: Span) -> Stm
 
 /// Parse a single file's text.
 pub fn parse_file(path: &str, text: &str) -> ParseResult {
-    parse_file_with_version(path, text, None)
+    let mut r = parse_file_with_version(SourceId(0), path, text, None);
+    crate::static_arrays::post_parse(&mut r.unit);
+    r
 }
 
-fn parse_file_with_version(path: &str, text: &str, version: Option<String>) -> ParseResult {
-    let (tokens, mut diags) = lex(SourceId(0), path, text);
+fn parse_file_with_version(
+    source: SourceId,
+    path: &str,
+    text: &str,
+    version: Option<String>,
+) -> ParseResult {
+    let (tokens, mut diags) = lex(source, path, text);
     let mut p = Parser {
         tokens,
         pos: 0,
@@ -148,12 +228,18 @@ fn parse_file_with_version(path: &str, text: &str, version: Option<String>) -> P
         version,
         diags: Vec::new(),
         extra_rets: Vec::new(),
+        pending: Vec::new(),
+        temps: 0,
+        owner: String::new(),
+        static_arrays: Vec::new(),
     };
-    let unit = p.parse_unit();
+    let mut unit = p.parse_unit();
+    unit.static_arrays = std::mem::take(&mut p.static_arrays);
     diags.append(&mut p.diags);
     ParseResult {
         unit,
         diagnostics: diags,
+        origins: Vec::new(),
     }
 }
 
@@ -165,6 +251,15 @@ struct Parser {
     diags: Vec<Diagnostic>,
     /// Return types after the first (`int, int GetAmount(…)`) for the next method.
     extra_rets: Vec<TypeRef>,
+    /// Statements to splice into the enclosing block right after the one just
+    /// parsed (array initializer pushes, multi-assign stores).
+    pending: Vec<Stmt>,
+    /// Counter for parser-made temporaries.
+    temps: u32,
+    /// Class / struct whose body is being parsed.
+    owner: String,
+    /// Class-level `static const T name[] = { … };` tables seen so far.
+    static_arrays: Vec<crate::ast::StaticArray>,
 }
 
 impl Parser {
@@ -409,6 +504,7 @@ impl Parser {
         }
         let mut members = Vec::new();
         let mut mixins = Vec::new();
+        let outer_owner = std::mem::replace(&mut self.owner, name.clone());
         while !matches!(&self.peek().kind, TokenKind::Punct(p) if p == "}")
             && !matches!(self.peek().kind, TokenKind::Eof)
         {
@@ -423,13 +519,15 @@ impl Parser {
                 self.eat_punct(";");
                 continue;
             }
+            let before = self.pos;
             if let Some(m) = self.parse_member() {
                 members.push(m);
-            } else {
+            } else if self.pos == before {
                 self.bump();
             }
         }
         self.expect_punct("}");
+        self.owner = outer_owner;
         // GZDoom often writes `class Foo { … };` / `struct Bar { … };`
         self.eat_punct(";");
         Some(ClassDecl {
@@ -448,9 +546,13 @@ impl Parser {
         let name = self.parse_ident_name()?;
         // GZDoom: `struct Foo native play version("4.12") { … }`
         // also `struct _ native unsafe(internal) { … }`
+        let mut native = false;
         loop {
-            if self.eat_kw("native")
-                || self.eat_kw("ui")
+            if self.eat_kw("native") {
+                native = true;
+                continue;
+            }
+            if self.eat_kw("ui")
                 || self.eat_kw("play")
                 || self.eat_kw("clearscope")
                 || self.eat_kw("virtualscope")
@@ -476,20 +578,24 @@ impl Parser {
             return None;
         }
         let mut members = Vec::new();
+        let outer_owner = std::mem::replace(&mut self.owner, name.clone());
         while !matches!(&self.peek().kind, TokenKind::Punct(p) if p == "}")
             && !matches!(self.peek().kind, TokenKind::Eof)
         {
+            let before = self.pos;
             if let Some(m) = self.parse_member() {
                 members.push(m);
-            } else {
+            } else if self.pos == before {
                 self.bump();
             }
         }
         self.expect_punct("}");
+        self.owner = outer_owner;
         self.eat_punct(";");
         Some(StructDecl {
             name,
             members,
+            native,
             span,
         })
     }
@@ -787,8 +893,28 @@ impl Parser {
         let mut ty = ty;
         if self.eat_punct("[") {
             sized = true;
-            let _ = self.parse_expr(0);
-            self.expect_punct("]");
+            if !self.eat_punct("]") {
+                let _ = self.parse_expr(0);
+                self.expect_punct("]");
+            }
+            // `static const String Names[] = { "a", "b" };`: a class-wide table.
+            if self.eat_punct("=") {
+                let span = self.peek().span;
+                let values = if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "{") {
+                    self.parse_brace_init()
+                } else {
+                    vec![self.parse_expr(0)]
+                };
+                self.eat_punct(";");
+                self.static_arrays.push(crate::ast::StaticArray {
+                    owner: self.owner.clone(),
+                    name: names[0].clone(),
+                    elem: ty,
+                    values,
+                    span,
+                });
+                return None;
+            }
             ty = TypeRef::Array(Box::new(ty));
         }
         while !sized && self.eat_punct(",") {
@@ -975,6 +1101,16 @@ impl Parser {
             TokenKind::Kw(k) | TokenKind::Ident(k) => {
                 let name = k.clone();
                 self.bump();
+                if name.eq_ignore_ascii_case("mapiterator")
+                    && matches!(&self.peek().kind, TokenKind::Punct(p) if p == "<")
+                {
+                    self.expect_punct("<");
+                    let k = self.parse_type();
+                    self.expect_punct(",");
+                    let v = self.parse_type();
+                    self.expect_punct(">");
+                    return TypeRef::MapIterator(Box::new(k), Box::new(v));
+                }
                 // `MapIterator<Name, Service>` and other generic classes.
                 if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "<") {
                     self.skip_angle_group();
@@ -997,10 +1133,64 @@ impl Parser {
         while !matches!(&self.peek().kind, TokenKind::Punct(p) if p == "}")
             && !matches!(self.peek().kind, TokenKind::Eof)
         {
-            stmts.push(self.parse_stmt());
+            self.parse_stmt_into(&mut stmts);
         }
         self.expect_punct("}");
         Block { stmts, span }
+    }
+
+    /// One statement plus anything it queued in `pending`.
+    fn parse_stmt_into(&mut self, out: &mut Vec<Stmt>) {
+        let stmt = self.parse_stmt();
+        out.push(stmt);
+        out.append(&mut self.pending);
+    }
+
+    /// A statement used where only one is allowed (`if (c) stmt`): wrapped in
+    /// a block when it queued follow-up statements.
+    fn parse_single_stmt(&mut self) -> Vec<Stmt> {
+        let mut out = Vec::new();
+        self.parse_stmt_into(&mut out);
+        out
+    }
+
+    /// `{ a, b, c }` array initializer (trailing comma allowed); nested braces
+    /// are flattened.
+    fn parse_brace_init(&mut self) -> Vec<Expr> {
+        let mut elems = Vec::new();
+        self.expect_punct("{");
+        while !self.eat_punct("}") && !matches!(self.peek().kind, TokenKind::Eof) {
+            if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "{") {
+                elems.extend(self.parse_brace_init());
+            } else {
+                let before = self.pos;
+                elems.push(self.parse_expr(0));
+                if self.pos == before {
+                    self.bump();
+                }
+            }
+            self.eat_punct(",");
+        }
+        elems
+    }
+
+    /// Queue `name.Push(elem)` for each initializer element.
+    fn queue_array_pushes(&mut self, name: &str, elems: Vec<Expr>, span: Span) {
+        for e in elems {
+            let espan = e.span();
+            self.pending.push(Stmt::Expr {
+                expr: Expr::Call {
+                    callee: Box::new(Expr::Member {
+                        obj: Box::new(Expr::Ident(name.to_owned(), span)),
+                        field: "Push".into(),
+                        span: espan,
+                    }),
+                    args: vec![e],
+                    span: espan,
+                },
+                span: espan,
+            });
+        }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -1017,19 +1207,43 @@ impl Parser {
             let save = self.pos;
             self.bump();
             let mut names = Vec::new();
+            let mut stores = Vec::new();
             let mut ok = true;
             while !self.eat_punct("]") && !matches!(self.peek().kind, TokenKind::Eof) {
-                if let Some(n) = self.parse_ident_name() {
-                    names.push(n);
+                // A plain name (a local, a field such as `RealFloor`, `_`) is
+                // assigned in place; `v.x` lands in a temporary, then is stored.
+                let simple = matches!(&self.peek().kind, TokenKind::Ident(_) | TokenKind::Kw(_))
+                    && matches!(&self.peek_n(1).kind, TokenKind::Punct(p) if p == "," || p == "]");
+                if simple {
+                    names.push(self.parse_ident_name().unwrap_or_default());
                 } else {
-                    ok = false;
-                    break;
+                    // `[v.x, v.y] = f();`: land in a temporary, then store it.
+                    let before = self.pos;
+                    let target = self.parse_expr(0);
+                    if self.pos == before {
+                        ok = false;
+                        break;
+                    }
+                    let tmp = format!("__room_mt{}", self.temps);
+                    self.temps += 1;
+                    let tspan = target.span();
+                    stores.push(Stmt::Expr {
+                        expr: Expr::Binary {
+                            op: "=".into(),
+                            lhs: Box::new(target),
+                            rhs: Box::new(Expr::Ident(tmp.clone(), tspan)),
+                            span: tspan,
+                        },
+                        span: tspan,
+                    });
+                    names.push(tmp);
                 }
                 self.eat_punct(",");
             }
             if ok && self.eat_punct("=") {
                 let init = self.parse_expr(0);
                 self.eat_punct(";");
+                self.pending.extend(stores);
                 return Stmt::Local {
                     ty: None,
                     names,
@@ -1067,7 +1281,7 @@ impl Parser {
                 self.parse_block()
             } else {
                 Block {
-                    stmts: vec![self.parse_stmt()],
+                    stmts: self.parse_single_stmt(),
                     span,
                 }
             };
@@ -1077,7 +1291,7 @@ impl Parser {
                         self.parse_block()
                     } else {
                         Block {
-                            stmts: vec![self.parse_stmt()],
+                            stmts: self.parse_single_stmt(),
                             span,
                         }
                     },
@@ -1237,18 +1451,20 @@ impl Parser {
                     }
                     ty = TypeRef::Array(Box::new(ty));
                 }
+                let mut init = None;
                 if self.eat_punct("=") {
                     if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "{") {
-                        self.skip_balanced('{', '}');
+                        let elems = self.parse_brace_init();
+                        self.queue_array_pushes(&name, elems, span);
                     } else {
-                        let _ = self.parse_expr(0);
+                        init = Some(self.parse_expr(0));
                     }
                 }
                 self.eat_punct(";");
                 return Stmt::Local {
                     ty: Some(ty),
                     names: vec![name],
-                    init: None,
+                    init,
                     extra_inits: Vec::new(),
                     span,
                 };
@@ -1385,8 +1601,14 @@ impl Parser {
         }
         let mut names = vec![name];
         let mut init = None;
+        let mut brace = None;
         if self.eat_punct("=") {
-            init = Some(self.parse_expr(0));
+            if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "{") {
+                // `int a[4] = { 1, 2, 3, 4 };`: start empty, push each value.
+                brace = Some(self.parse_brace_init());
+            } else {
+                init = Some(self.parse_expr(0));
+            }
         } else if fixed_size.is_some() {
             // `bool locks[6];`: a fixed array keeps its size as the initializer.
             init = fixed_size;
@@ -1408,6 +1630,10 @@ impl Parser {
             self.pos = save;
             return None;
         }
+        if let Some(elems) = brace {
+            let first = names[0].clone();
+            self.queue_array_pushes(&first, elems, span);
+        }
         Some(Stmt::Local {
             ty: Some(maybe_ty),
             names,
@@ -1421,9 +1647,10 @@ impl Parser {
         if matches!(&self.peek().kind, TokenKind::Punct(p) if p == "{") {
             self.parse_block()
         } else {
+            let span = self.peek().span;
             Block {
-                stmts: vec![self.parse_stmt()],
-                span: self.peek().span,
+                stmts: self.parse_single_stmt(),
+                span,
             }
         }
     }
@@ -1596,12 +1823,27 @@ impl Parser {
             if self.eat_punct("(") {
                 let mut args = Vec::new();
                 while !self.eat_punct(")") && !matches!(self.peek().kind, TokenKind::Eof) {
-                    // Named args: `name: expr` (GZDoom).
+                    // Named args: `name: expr` (GZDoom), kept as a `named:` pair so
+                    // the lowerer can place it at the parameter of that name.
                     if matches!(&self.peek().kind, TokenKind::Ident(_) | TokenKind::Kw(_))
                         && matches!(&self.peek_n(1).kind, TokenKind::Punct(p) if p == ":")
                     {
+                        let name_tok = self.bump();
                         self.bump();
-                        self.bump();
+                        let name = match name_tok.kind {
+                            TokenKind::Ident(n) | TokenKind::Kw(n) => n,
+                            _ => String::new(),
+                        };
+                        let value = self.parse_expr(0);
+                        let span = value.span();
+                        args.push(Expr::Binary {
+                            op: NAMED_ARG.into(),
+                            lhs: Box::new(Expr::Ident(name, name_tok.span)),
+                            rhs: Box::new(value),
+                            span,
+                        });
+                        self.eat_punct(",");
+                        continue;
                     }
                     args.push(self.parse_expr(0));
                     self.eat_punct(",");
@@ -1738,6 +1980,9 @@ fn type_ref_name(ty: &TypeRef) -> String {
         TypeRef::Named(n) | TypeRef::ClassOf(n) => n.clone(),
         TypeRef::Array(inner) => format!("Array<{}>", type_ref_name(inner)),
         TypeRef::Map(k, v) => format!("Map<{},{}>", type_ref_name(k), type_ref_name(v)),
+        TypeRef::MapIterator(k, v) => {
+            format!("MapIterator<{},{}>", type_ref_name(k), type_ref_name(v))
+        }
         TypeRef::Readonly(inner) => format!("readonly<{}>", type_ref_name(inner)),
         TypeRef::Void => "void".into(),
     }

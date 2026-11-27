@@ -10,6 +10,26 @@ pub struct TranslationUnit {
     pub version: Option<String>,
     /// Top-level declarations in order.
     pub decls: Vec<Decl>,
+    /// Class-level constant tables (`static const T Name[] = { … };`).
+    pub static_arrays: Vec<StaticArray>,
+    /// `version` of each parsed root, indexed by `Span::source` (GZDoom checks
+    /// each lump against its own version).
+    pub root_versions: Vec<Option<String>>,
+}
+
+/// `static const T Name[] = { … };` declared in a class / struct body.
+#[derive(Clone, Debug)]
+pub struct StaticArray {
+    /// Declaring class / struct / mixin.
+    pub owner: String,
+    /// Table name.
+    pub name: String,
+    /// Element type.
+    pub elem: TypeRef,
+    /// Values in order.
+    pub values: Vec<Expr>,
+    /// Span.
+    pub span: Span,
 }
 
 /// Top-level declaration.
@@ -68,6 +88,9 @@ pub struct StructDecl {
     pub name: String,
     /// Members (fields / methods).
     pub members: Vec<Member>,
+    /// `struct Foo native`: an engine object reached by reference (`Sector`),
+    /// not a value a script allocates.
+    pub native: bool,
     /// Span.
     pub span: Span,
 }
@@ -242,6 +265,8 @@ pub enum TypeRef {
     Array(Box<TypeRef>),
     /// `Map<K,V>`
     Map(Box<TypeRef>, Box<TypeRef>),
+    /// `MapIterator<K,V>`
+    MapIterator(Box<TypeRef>, Box<TypeRef>),
     /// `readonly<T>`
     Readonly(Box<TypeRef>),
     /// `void`
@@ -373,6 +398,10 @@ pub enum Stmt {
     /// `continue`
     Continue(Span),
 }
+
+/// Operator of a named call argument `name: value` (`Expr::Binary` with the
+/// name as an `Ident` on the left).
+pub const NAMED_ARG: &str = "named:";
 
 /// Expression.
 #[derive(Clone, Debug)]

@@ -417,6 +417,7 @@ impl NativeTable {
         crate::uz3_natives::register(&mut t);
         crate::portal_natives::register(&mut t);
         crate::map_natives::register(&mut t);
+        crate::tmap_natives::register(&mut t);
         t
     }
 }
@@ -751,6 +752,10 @@ mod play_natives {
     /// lumps, or inventory grants.
     #[derive(Clone, Debug)]
     pub struct ZvmPlayHost {
+        /// State of the script random generator (`random`, `frandom`,
+        /// `randompick`, …). Deterministic: every peer of a lockstep game runs
+        /// the same calls from the same seed.
+        pub rng: u64,
         /// `skill` global. Default 3 (Hurt Me Plenty).
         pub skill: i32,
         /// `consoleplayer`.
@@ -795,6 +800,9 @@ mod play_natives {
         pub player_tids: BTreeMap<i32, i32>,
         /// Player-mo cookie → player number.
         pub mo_player: BTreeMap<i64, i32>,
+        /// Layout of the program's `PlayerInfo` struct, when it declares one
+        /// (the UZDoom library): `players.at` builds that object.
+        pub playerinfo_layout: Option<crate::PlayerInfoLayout>,
         /// `SoundClass` written for a player number.
         pub sound_class: BTreeMap<i32, String>,
         /// `gametic`. The host sets this before a script runs.
@@ -860,6 +868,7 @@ mod play_natives {
     impl Default for ZvmPlayHost {
         fn default() -> Self {
             Self {
+                rng: 0x9E37_79B9_7F4A_7C15,
                 skill: 3,
                 consoleplayer: 0,
                 level_checksum: String::new(),
@@ -882,6 +891,7 @@ mod play_natives {
                 players_in_game: BTreeMap::new(),
                 player_tids: BTreeMap::new(),
                 mo_player: BTreeMap::new(),
+                playerinfo_layout: None,
                 sound_class: BTreeMap::new(),
                 actor_ops: Vec::new(),
                 level_ops: Vec::new(),
@@ -1188,6 +1198,16 @@ mod play_natives {
         add("String.MakeLower", string_make_lower);
         add("String.MakeUpper", string_make_upper);
         add("String.Replace", string_replace);
+        add("String.Substitute", string_replace);
+        add("String.AppendCharacter", string_append_char);
+        add("String.Truncate", string_truncate);
+        add("String.Remove", string_remove);
+        add("String.ToUpper", string_make_upper);
+        add("String.ToLower", string_make_lower);
+        add("String.StripLeft", string_strip_left);
+        add("String.StripRight", string_strip_right);
+        add("String.Strip", string_strip);
+        add("String.DeleteLastCharacter", string_delete_last);
         add("String.CharLower", string_char_lower);
         add("String.Filter", string_filter);
         add("String.IndexOf", string_index_of);
@@ -2023,7 +2043,6 @@ mod play_natives {
             "int",
             "float",
             "double",
-            "frandom",
             "vectorangle",
             "sqrt",
             "floor",
@@ -2035,6 +2054,16 @@ mod play_natives {
             "absangle",
         ] {
             add(&format!("math.{name}"), math_op);
+        }
+        for name in [
+            "frandom",
+            "randompick",
+            "frandompick",
+            "crandompick",
+            "cfrandom",
+            "crandom",
+        ] {
+            add(&format!("math.{name}"), math_rng_op);
         }
         add("global.Ceil", math_op);
         add("global.Clamp", math_op);
@@ -2701,18 +2730,84 @@ mod play_natives {
         Ok(())
     }
 
-    fn math_random(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
-        // Deterministic stand-in: the upper bound, so `random(1, 3)` is 3.
-        let hi = regs.f.get(1).copied().filter(|v| *v != 0.0).unwrap_or(1.0);
+    /// Next value of the script generator (splitmix64).
+    fn next_rng(ctx: &mut ZvmCtx<'_>) -> u64 {
+        ctx.play.rng = ctx.play.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = ctx.play.rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform integer in `lo..=hi` (bounds in either order).
+    fn rng_int(ctx: &mut ZvmCtx<'_>, a: i64, b: i64) -> i64 {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let span = (hi - lo) as u64 + 1;
+        lo + (next_rng(ctx) % span.max(1)) as i64
+    }
+
+    /// Uniform float in `[0, 1)`.
+    fn rng_unit(ctx: &mut ZvmCtx<'_>) -> f64 {
+        (next_rng(ctx) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn math_random(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        // `random()` is 0..255, `random(lo, hi)` is lo..=hi.
+        let n = ctx.play.native_arg_counts[1];
+        let (lo, hi) = match n {
+            0 => (0, 255),
+            1 => (0, regs.f[0] as i64),
+            _ => (regs.f[0] as i64, regs.f[1] as i64),
+        };
+        let v = rng_int(ctx, lo, hi);
         if let Some(slot) = regs.f.first_mut() {
-            *slot = hi;
+            *slot = v as f64;
         }
         Ok(())
     }
 
-    fn math_random2(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    fn math_random2(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        // `random2(mask)`: difference of two `random() & mask` draws.
+        let mask = regs.f.first().copied().map_or(255, |m| m as i64);
+        let a = rng_int(ctx, 0, 255) & mask;
+        let b = rng_int(ctx, 0, 255) & mask;
         if let Some(slot) = regs.f.first_mut() {
-            *slot = 0.0;
+            *slot = (a - b) as f64;
+        }
+        Ok(())
+    }
+
+    fn math_rng_op(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let name = ctx
+            .play
+            .native_name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let n = ctx.play.native_arg_counts[1].min(regs.f.len());
+        let args: Vec<f64> = regs.f[..n].to_vec();
+        let a = args.first().copied().unwrap_or(0.0);
+        let b = args.get(1).copied().unwrap_or(0.0);
+        let v = match name.as_str() {
+            "frandom" => a + (b - a) * rng_unit(ctx),
+            "cfrandom" => {
+                let r = if args.len() >= 2 {
+                    (b - a).abs() / 2.0
+                } else {
+                    a.abs().max(1.0)
+                };
+                (rng_unit(ctx) * 2.0 - 1.0) * r
+            }
+            "crandom" => (rng_int(ctx, 0, 255) - rng_int(ctx, 0, 255)) as f64,
+            "randompick" | "frandompick" | "crandompick" if !args.is_empty() => {
+                let k = rng_int(ctx, 0, args.len() as i64 - 1) as usize;
+                args[k]
+            }
+            _ => a,
+        };
+        if let Some(slot) = regs.f.first_mut() {
+            *slot = v;
         }
         Ok(())
     }
@@ -2759,13 +2854,6 @@ mod play_natives {
             "round" => round_half_away(a),
             "ceil" => ceil_f(a),
             "int" => trunc_f(a),
-            "frandom" => {
-                if b != 0.0 {
-                    b
-                } else {
-                    a
-                }
-            }
             _ => a,
         };
         if let Some(slot) = regs.f.first_mut() {
@@ -4724,6 +4812,18 @@ mod play_natives {
         Ok(())
     }
 
+    fn heap_kind_name(k: Option<&ObjKind>) -> &'static str {
+        match k {
+            None => "null",
+            Some(ObjKind::Object { .. }) => "an object",
+            Some(ObjKind::ArrayI(_)) => "Array<int>",
+            Some(ObjKind::ArrayS(_)) => "Array<String>",
+            Some(ObjKind::ArrayA(_)) => "Array<Object>",
+            #[allow(unreachable_patterns)]
+            Some(_) => "another value",
+        }
+    }
+
     fn array_push_i(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
         let v = regs
@@ -4737,7 +4837,10 @@ mod play_natives {
                 items.push(v);
                 Ok(())
             }
-            _ => Err(Trap::Native("Array.Push: not Array<int>".into())),
+            other => Err(Trap::Native(format!(
+                "Array.Push: not Array<int> (got {})",
+                heap_kind_name(other.map(|k| &*k))
+            ))),
         }
     }
 
@@ -5037,6 +5140,85 @@ mod play_natives {
         } else if let Some(slot) = regs.s.first_mut() {
             *slot = h;
         }
+    }
+
+    // UZDoom's mutating string methods return the new text here; the
+    // compiler stores it back into the receiver.
+
+    fn string_truncate(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx.heap.str(regs.s.first().copied().unwrap_or_default());
+        let len = usize::try_from(regs.i.first().copied().unwrap_or(0).max(0)).unwrap_or(0);
+        // Byte length, as UZDoom counts it, kept on a character boundary.
+        let mut cut = len.min(s.len());
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let out = s[..cut].to_owned();
+        store_string(ctx, regs, &out);
+        Ok(())
+    }
+
+    fn string_remove(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let at = usize::try_from(regs.i.first().copied().unwrap_or(0).max(0)).unwrap_or(0);
+        let n = usize::try_from(regs.i.get(1).copied().unwrap_or(0).max(0)).unwrap_or(0);
+        let bytes = s.as_bytes();
+        let at = at.min(bytes.len());
+        let end = at.saturating_add(n).min(bytes.len());
+        let mut out = bytes[..at].to_vec();
+        out.extend_from_slice(&bytes[end..]);
+        let out = String::from_utf8_lossy(&out).into_owned();
+        store_string(ctx, regs, &out);
+        Ok(())
+    }
+
+    fn strip_set(ctx: &ZvmCtx<'_>, regs: &NativeRegs<'_>) -> Option<String> {
+        regs.s
+            .get(1)
+            .map(|h| ctx.heap.str(*h).to_owned())
+            .filter(|t| !t.is_empty())
+    }
+
+    fn string_strip_left(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let out = match strip_set(ctx, regs) {
+            Some(set) => s.trim_start_matches(|c| set.contains(c)).to_owned(),
+            None => s.trim_start().to_owned(),
+        };
+        store_string(ctx, regs, &out);
+        Ok(())
+    }
+
+    fn string_strip_right(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let out = match strip_set(ctx, regs) {
+            Some(set) => s.trim_end_matches(|c| set.contains(c)).to_owned(),
+            None => s.trim_end().to_owned(),
+        };
+        store_string(ctx, regs, &out);
+        Ok(())
+    }
+
+    fn string_strip(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let s = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let out = match strip_set(ctx, regs) {
+            Some(set) => s.trim_matches(|c| set.contains(c)).to_owned(),
+            None => s.trim().to_owned(),
+        };
+        store_string(ctx, regs, &out);
+        Ok(())
     }
 
     fn string_left(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
@@ -5391,9 +5573,21 @@ mod play_natives {
                     *slot = ctx.play.map_objects.level;
                 }
             }
+            // `playeringame[n]`: an `Array<bool>` of the seats (functions
+            // read the global arrays they mention once, on entry).
             "playeringame" => {
+                let h = ctx.heap.new_array_i();
+                let seats: Vec<i64> = (0..8)
+                    .map(|n| i64::from(ctx.play.player_in_game(n) != 0))
+                    .collect();
+                if let Some(ObjKind::ArrayI(v)) = ctx.heap.get_mut(h) {
+                    *v = seats;
+                }
                 let idx = regs.i.first().copied().unwrap_or(0);
                 write_num(regs, if idx == 0 { 1.0 } else { 0.0 });
+                if let Some(slot) = regs.a.first_mut() {
+                    *slot = h;
+                }
             }
             "allclasses" | "allactorclasses" | "allepisodes" | "allskills" | "playerclasses"
             | "playerskins" | "teams" | "terrains" | "allservices" => {
@@ -5750,10 +5944,17 @@ mod play_natives {
                 fields_i[2] = i64::from(tid);
             }
         }
-        let info = ctx.heap.new_object(0, 1, 1, 0);
+        let (info, slot) = match ctx.play.playerinfo_layout {
+            Some(l) => (
+                ctx.heap
+                    .new_object_f(l.class_id, l.n_i, l.n_a, l.n_s, l.n_f),
+                usize::from(l.mo_slot),
+            ),
+            None => (ctx.heap.new_object(0, 1, 1, 0), 0),
+        };
         if let Some(ObjKind::Object { fields_a, .. }) = ctx.heap.get_mut(info) {
-            if !fields_a.is_empty() {
-                fields_a[0] = mo;
+            if let Some(field) = fields_a.get_mut(slot) {
+                *field = mo;
             }
         }
         if let Some(slot) = regs.a.first_mut() {
@@ -6431,6 +6632,7 @@ mod tests {
         let mut heap = ZvmHeap::new();
         let mut play = ZvmPlayHost::default();
         play.native_name = name.to_owned();
+        play.native_arg_counts = [0, args.len(), 0, 0];
         let mut ctx = ZvmCtx {
             heap: &mut heap,
             host: 0,
@@ -6463,7 +6665,16 @@ mod tests {
         assert_eq!(call_math("math.ceil", &[1.2]), 2.0);
         assert_eq!(call_math("math.round", &[1.5]), 2.0);
         assert_eq!(call_math("math.int", &[-1.7]), -1.0);
-        assert_eq!(call_math("math.frandom", &[1.0, 3.0]), 3.0);
+        let r = call_math("math.frandom", &[1.0, 3.0]);
+        assert!((1.0..3.0).contains(&r), "{r}");
+        // Same seed, same draw: lockstep peers agree.
+        assert_eq!(call_math("math.frandom", &[1.0, 3.0]), r);
+        for _ in 0..4 {
+            let v = call_math("math.random", &[4.0, 6.0]);
+            assert!((4.0..=6.0).contains(&v) && v.fract() == 0.0, "{v}");
+        }
+        let pick = call_math("math.randompick", &[7.0, 8.0, 9.0]);
+        assert!([7.0, 8.0, 9.0].contains(&pick), "{pick}");
         assert!((call_math("math.sin", &[90.0]) - 1.0).abs() < 1e-9);
         assert!((call_math("math.atan2", &[1.0, 0.0]) - 90.0).abs() < 1e-6);
         assert!((call_math("math.vectorangle", &[0.0, 1.0]) - 90.0).abs() < 1e-6);

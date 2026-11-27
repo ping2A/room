@@ -329,6 +329,19 @@ impl ClassTable {
         for (name, ty) in from_globals {
             table.globals.entry(name).or_insert(ty);
         }
+        // `class _CVars`: the mod's CVARINFO names, read as globals.
+        let from_cvars: Vec<(String, ZType)> = table
+            .get("_CVars")
+            .map(|g| {
+                g.fields
+                    .iter()
+                    .map(|f| (f.name.to_ascii_lowercase(), f.ty.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (name, ty) in from_cvars {
+            table.globals.entry(name).or_insert(ty);
+        }
         // `struct _` is the engine global object (`gameinfo`, `players`, …).
         let from_engine: Vec<(String, ZType)> = table
             .get("_")
@@ -469,9 +482,15 @@ impl ClassTable {
             ));
             return;
         }
+        // A class without `: Parent` derives from Object (GZDoom), so the
+        // `extend class Object` statics (`SetMusicVolume`, …) are in scope.
+        let parent = c
+            .parent
+            .clone()
+            .or_else(|| (!extend && key != "object").then(|| "Object".to_owned()));
         let entry = self.by_lower.entry(key).or_insert_with(|| ClassInfo {
             name: c.name.clone(),
-            parent: c.parent.clone(),
+            parent,
             is_struct: false,
             native: c.flags.native,
             fields: Vec::new(),
@@ -665,6 +684,16 @@ impl ClassTable {
             let Some(info) = self.get(name) else {
                 continue;
             };
+            let span = match decl {
+                Decl::Class(c) | Decl::ExtendClass(c) | Decl::Mixin(c) => c.span,
+                Decl::Struct(s) => s.span,
+                _ => continue,
+            };
+            let own = unit
+                .root_versions
+                .get(span.source.0 as usize)
+                .and_then(Clone::clone);
+            let version = own.unwrap_or_else(|| version.clone());
             check_members(self, info, members, &version, diags);
         }
     }
@@ -703,7 +732,14 @@ fn push_members(info: &mut ClassInfo, members: &[Member], diags: &mut Vec<Diagno
                 let rets = if matches!(ret, ZType::Void) {
                     Vec::new()
                 } else {
-                    vec![ret]
+                    // `bool, Actor F()`: every result, in order.
+                    std::iter::once(ret)
+                        .chain(
+                            meth.extra_rets
+                                .iter()
+                                .map(|t| type_from_ref(t, &BTreeMap::new())),
+                        )
+                        .collect()
                 };
                 let params = meth
                     .params
@@ -797,6 +833,8 @@ fn type_from_ref(ty: &TypeRef, _classes: &BTreeMap<String, ()>) -> ZType {
             Box::new(type_from_ref(v, _classes)),
         ),
         TypeRef::Readonly(inner) => type_from_ref(inner, _classes),
+        // Its methods type through the element types once lowered.
+        TypeRef::MapIterator(..) => named_type("MapIterator"),
     }
 }
 
@@ -894,6 +932,9 @@ fn string_method(name: &str) -> Option<ZType> {
         "split" => Some(ZType::int()),
         "todouble" | "tofloat" => Some(ZType::Double),
         "isempty" | "isnotempty" | "isdouble" => Some(ZType::Bool),
+        "truncate" | "remove" | "stripleft" | "stripright" | "stripleftright" | "substitute" => {
+            Some(ZType::Void)
+        }
         "compare" | "comparenocase" => Some(ZType::int()),
         _ => None,
     }
@@ -905,7 +946,7 @@ fn array_method(name: &str, elem: &ZType) -> Option<ZType> {
         "isempty" => Some(ZType::Bool),
         "pop" => Some(elem.clone()),
         "push" | "insert" | "delete" | "clear" | "resize" | "shrink" | "grow" | "reserve"
-        | "copy" | "move" => Some(ZType::Void),
+        | "copy" | "move" | "shrinktofit" | "append" => Some(ZType::Void),
         _ => None,
     }
 }
@@ -1098,8 +1139,20 @@ impl Resolver<'_> {
                 }
                 let init_ty = init.as_ref().map(|e| self.expr_ty(e));
                 let fallback = resolved.or(init_ty).unwrap_or(ZType::int());
-                for n in names {
-                    self.bind(n, fallback.clone());
+                // `[spn, bld] = F();` assigns names declared earlier: keep their
+                // types; new names (`let [z, sec, ff] = …`) take F's result types.
+                let multi = ty.is_none() && names.len() > 1;
+                let rets = if multi {
+                    init.as_ref().map(|e| self.call_rets(e)).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                for (k, n) in names.iter().enumerate() {
+                    if multi && self.local(n).is_some() {
+                        continue;
+                    }
+                    let t = rets.get(k).cloned().unwrap_or_else(|| fallback.clone());
+                    self.bind(n, t);
                 }
             }
             Stmt::Expr { expr, .. }
@@ -1187,13 +1240,15 @@ impl Resolver<'_> {
             Expr::String(_, _) => ZType::String,
             Expr::Name(_, _) => ZType::Name,
             Expr::Ident(name, span) => self.ident(name, *span),
+            // `name: value` call argument: the value's type.
+            Expr::Binary { op, rhs, .. } if op == crate::ast::NAMED_ARG => self.expr_ty(rhs),
             Expr::Binary { op, lhs, rhs, span } => {
                 if self.in_const && is_assign_op(op) {
                     self.check_const_write(lhs, *span);
                 }
-                let _ = self.expr_ty(lhs);
-                let _ = self.expr_ty(rhs);
-                ZType::int()
+                let lt = self.expr_ty(lhs);
+                let rt = self.expr_ty(rhs);
+                binary_ty(op, &lt, &rt)
             }
             Expr::Unary { op, expr, span } => {
                 if self.in_const && matches!(op.as_str(), "++" | "--" | "post++" | "post--") {
@@ -1207,8 +1262,12 @@ impl Resolver<'_> {
                 if let Expr::Ident(name, _) = arr.as_ref() {
                     // `random[name](lo, hi)` — the index is a randomizer, not a value.
                     match name.to_ascii_lowercase().as_str() {
-                        "random" | "random2" | "crandom" => return ZType::int(),
-                        "frandom" | "frandom2" => return ZType::Double,
+                        "random" | "random2" | "crandom" | "randompick" | "crandompick" => {
+                            return ZType::int();
+                        }
+                        "frandom" | "frandom2" | "frandompick" | "cfrandom" => {
+                            return ZType::Double;
+                        }
                         _ => {}
                     }
                 }
@@ -1253,10 +1312,14 @@ impl Resolver<'_> {
                 }
             }
             Expr::Tuple { elems, .. } => {
-                for e in elems {
-                    let _ = self.expr_ty(e);
+                let tys: Vec<ZType> = elems.iter().map(|e| self.expr_ty(e)).collect();
+                // `(x, y)` / `(x, y, z)` / `(v2, z)` vector literals.
+                match tys.as_slice() {
+                    [ZType::Vector2, _] => ZType::Vector3,
+                    [_, _] => ZType::Vector2,
+                    [_, _, _] => ZType::Vector3,
+                    _ => ZType::Void,
                 }
-                ZType::Void
             }
         }
     }
@@ -1270,6 +1333,10 @@ impl Resolver<'_> {
             "null" | "nullptr" => return ZType::Null,
             "stateinfo" => return ZType::Struct("StateInfo".into()),
             "self" | "invoker" => {
+                // `static double GetVelocity(Actor self)`: a parameter named `self`.
+                if let Some(ty) = self.local(name) {
+                    return ty;
+                }
                 if self.is_static {
                     self.error(span, format!("'{name}' in a static method"));
                     return ZType::Error;
@@ -1419,6 +1486,8 @@ impl Resolver<'_> {
             },
             ZType::Int { .. } | ZType::Double => match field.to_ascii_lowercase().as_str() {
                 "heightsec" => ZType::int(),
+                // `angle.ToVector()`.
+                "tovector" => ZType::Vector2,
                 "x" | "y" | "z" | "length" | "equal_epsilon" | "epsilon" | "nan" | "infinity"
                 | "min" | "max" => {
                     if matches!(ty, ZType::Double) {
@@ -1433,8 +1502,10 @@ impl Resolver<'_> {
                 }
             },
             ZType::Map(_, _) => match field.to_ascii_lowercase().as_str() {
-                "countused" | "size" | "count" | "get" | "getifexists" | "insert" => ZType::int(),
+                "countused" | "size" | "count" | "get" | "getifexists" | "insert"
+                | "checkvalue" => ZType::int(),
                 "checkkey" => ZType::Bool,
+                "remove" | "clear" | "move" | "copy" => ZType::Void,
                 _ => {
                     self.error(span, format!("unknown member '{field}' on map"));
                     ZType::Error
@@ -1526,6 +1597,23 @@ impl Resolver<'_> {
                         ZType::Object(c.clone())
                     };
                 }
+                // A bare `Object` (`MapIterator<Name, Elem>.GetValue()` loses its
+                // element class): accept a member some script class declares.
+                if c.eq_ignore_ascii_case("object") {
+                    let want = field.to_ascii_lowercase();
+                    for info in self.ct.by_lower.values() {
+                        if let Some(m) = info.methods.get(&want) {
+                            return m.sig.rets.first().cloned().unwrap_or(ZType::Void);
+                        }
+                        if let Some(f) = info
+                            .fields
+                            .iter()
+                            .find(|f| f.name.eq_ignore_ascii_case(field))
+                        {
+                            return f.ty.clone();
+                        }
+                    }
+                }
                 self.error(span, format!("unknown member '{c}.{field}'"));
                 ZType::Error
             }
@@ -1567,6 +1655,8 @@ impl Resolver<'_> {
                             self.error(*span, format!("unknown class '{c}'"));
                             ZType::Error
                         }
+                        // `new(info.wheelClass)`: a class value read from a field.
+                        None if !args.is_empty() => ZType::Object("Object".into()),
                         None => {
                             self.error(*span, "new() needs a class name".into());
                             ZType::Error
@@ -1619,6 +1709,37 @@ impl Resolver<'_> {
             }
             other => self.expr_ty(other),
         }
+    }
+
+    /// All result types of a call (`int, Actor F()`), when the callee resolves.
+    fn call_rets(&mut self, e: &Expr) -> Vec<ZType> {
+        let Expr::Call { callee, .. } = e else {
+            return Vec::new();
+        };
+        let class = match callee.as_ref() {
+            Expr::Ident(name, _) => {
+                return self
+                    .ct
+                    .lookup_method(&self.class.name, name)
+                    .map(|m| m.sig.rets.clone())
+                    .unwrap_or_default();
+            }
+            Expr::Member { obj, field, .. } => {
+                // Already checked once by the caller: type the receiver quietly.
+                let mark = self.diags.len();
+                let ty = self.expr_ty(obj);
+                self.diags.truncate(mark);
+                match ty {
+                    ZType::Object(c) | ZType::Struct(c) | ZType::Class(c) => (c, field),
+                    _ => return Vec::new(),
+                }
+            }
+            _ => return Vec::new(),
+        };
+        self.ct
+            .lookup_method(&class.0, class.1)
+            .map(|m| m.sig.rets.clone())
+            .unwrap_or_default()
     }
 
     fn check_arity(&mut self, class: &str, m: &MethodInfo, args: &[Expr], span: Span) {
@@ -1683,7 +1804,7 @@ impl ClassTable {
             TypeRef::Array(inner) | TypeRef::Readonly(inner) => {
                 self.require_type(inner, span, diags)
             }
-            TypeRef::Map(k, v) => {
+            TypeRef::Map(k, v) | TypeRef::MapIterator(k, v) => {
                 self.require_type(k, span, diags);
                 self.require_type(v, span, diags);
             }
@@ -1729,11 +1850,13 @@ fn builtin_value(name: &str) -> Option<ZType> {
 
 fn builtin_call(name: &str) -> Option<ZType> {
     match name.to_ascii_lowercase().as_str() {
-        "random" | "random2" | "crandom" | "abs" | "min" | "max" | "clamp" => Some(ZType::int()),
+        "random" | "random2" | "crandom" | "randompick" | "crandompick" | "abs" | "min" | "max"
+        | "clamp" => Some(ZType::int()),
         "getclassname" => Some(ZType::String),
         "dot" => Some(ZType::Double),
-        "frandom" | "frandom2" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
-        | "sqrt" | "floor" | "ceil" | "round" | "vectorangle" => Some(ZType::Double),
+        "frandom" | "frandom2" | "frandompick" | "cfrandom" | "exp" | "log" | "log10" | "sin"
+        | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sqrt" | "floor" | "ceil"
+        | "round" | "vectorangle" => Some(ZType::Double),
         "getdefaultbytype" => Some(ZType::Object("Actor".into())),
         "getclass" => Some(ZType::Class("Actor".into())),
         _ => None,
@@ -1744,7 +1867,14 @@ fn builtin_call(name: &str) -> Option<ZType> {
 fn is_cvar_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "paletteflash" | "idmypos" | "wipetype" | "dmflags3" | "compatflags2"
+        "paletteflash"
+            | "idmypos"
+            | "wipetype"
+            | "dmflags3"
+            | "compatflags2"
+            | "screenblocks"
+            | "msgmidcolor"
+            | "msgmidcolor2"
     ) || (name.contains('_') && name.chars().next().is_some_and(|c| c.is_ascii_lowercase()))
 }
 
@@ -1755,17 +1885,49 @@ fn is_action_special(name: &str) -> bool {
     ) {
         return true;
     }
+    // `SetPlayerProperty`, `ThrustThingZ`: any name in the special table.
+    if crate::specials::special_number(name).is_some() {
+        return true;
+    }
     name.contains('_') && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
 fn is_actor_flag_name(name: &str) -> bool {
+    // `bNoGravity`, and the all-lowercase `bismonster` / `bxflip` GZDoom also
+    // accepts. Only reached after fields, methods and locals are ruled out.
     let bytes = name.as_bytes();
-    bytes.len() >= 2 && bytes[0].eq_ignore_ascii_case(&b'b') && bytes[1].is_ascii_uppercase()
+    bytes.len() >= 3
+        && bytes[0].eq_ignore_ascii_case(&b'b')
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[1..]
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
+
+/// Result type of a binary operator.
+fn binary_ty(op: &str, lt: &ZType, rt: &ZType) -> ZType {
+    let vec = |t: &ZType| match t {
+        ZType::Vector3 => 3,
+        ZType::Vector2 => 2,
+        _ => 0,
+    };
+    match op.to_ascii_lowercase().as_str() {
+        "dot" => ZType::Double,
+        "cross" => ZType::Vector3,
+        "=" | "+=" | "-=" | "*=" | "/=" => lt.clone(),
+        "+" | "-" | "*" | "/" | "%" | "**" => match vec(lt).max(vec(rt)) {
+            3 => ZType::Vector3,
+            2 => ZType::Vector2,
+            _ if matches!(lt, ZType::Double) || matches!(rt, ZType::Double) => ZType::Double,
+            _ => ZType::int(),
+        },
+        _ => ZType::int(),
+    }
 }
 
 fn vector_swizzle(field: &str, has_z: bool) -> Option<ZType> {
     match field.to_ascii_lowercase().as_str() {
-        "x" | "y" | "length" | "angle" => Some(ZType::Double),
+        "x" | "y" | "length" | "lengthsquared" | "angle" | "sum" => Some(ZType::Double),
         "z" | "w" if has_z => Some(ZType::Double),
         "fromangles" | "xy" | "plusx" | "plusy" | "plusz" => Some(if has_z {
             ZType::Vector3
@@ -1821,6 +1983,7 @@ fn is_builtin_name(n: &str) -> bool {
             | "translationid"
             | "function"
             | "object"
+            | "mapiterator"
     )
 }
 

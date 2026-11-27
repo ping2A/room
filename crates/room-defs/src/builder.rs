@@ -335,6 +335,20 @@ impl<'a> DefinitionsBuilder<'a> {
                 }
             }
         }
+        // GameInfo `PlayerClasses` replaces the class list before KEYCONF runs.
+        if !defs.mapinfo.player_classes.is_empty() {
+            defs.keyconf
+                .commands
+                .push(crate::keyconf::KeyConfCmd::ClearPlayerClasses);
+            for class in &defs.mapinfo.player_classes {
+                defs.keyconf
+                    .commands
+                    .push(crate::keyconf::KeyConfCmd::AddPlayerClass {
+                        class: class.clone(),
+                        nomenu: false,
+                    });
+            }
+        }
         // KEYCONF: additive command list (GZDoom executes each lump in order).
         if let Some(text) = self.read_all_text("KEYCONF") {
             match parse_keyconf(&text) {

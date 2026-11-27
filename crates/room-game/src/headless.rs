@@ -241,8 +241,14 @@ pub struct Headless {
     acs_loadacs: Vec<String>,
     /// Compiled ZScript program (loaded into each new [`World`]).
     zscript_program: Option<room_zvm::CompiledProgram>,
+    /// Text lumps the program reads through `Wads.*` ([`crate::zscript_wad_lumps`]).
+    zscript_lumps: BTreeMap<String, String>,
     /// MAPINFO / GAMEINFO `AddEventHandlers` class names.
     zscript_event_handlers: Vec<String>,
+    /// The program was compiled with the UZDoom library (`ZscriptLoadReport::uzdoom_library`).
+    zscript_uzdoom: bool,
+    /// `classes` / `states` already hold the queued program's classes.
+    zscript_defs_merged: bool,
     /// Per-map `compatibility.txt` database (`sv_nomapfixes` clears this).
     compat_db: Option<Arc<room_map::CompatDatabase>>,
     /// Per-map `levelfixes.ron` geometry edits (`sv_nomapfixes` skips).
@@ -595,7 +601,10 @@ impl Headless {
             acs_pool: Vec::new(),
             acs_loadacs: Vec::new(),
             zscript_program: None,
+            zscript_lumps: BTreeMap::new(),
             zscript_event_handlers: Vec::new(),
+            zscript_uzdoom: false,
+            zscript_defs_merged: false,
             compat_db: None,
             level_fixes: None,
             sv_nomapfixes: false,
@@ -625,6 +634,7 @@ impl Headless {
         self.base_states = Arc::clone(&states);
         self.classes = classes;
         self.states = states;
+        self.zscript_defs_merged = false;
         if !self.mod_sources.is_empty() {
             let sources = std::mem::take(&mut self.mod_sources);
             if let Err(e) = self.set_script_mods(sources) {
@@ -1047,6 +1057,18 @@ impl Headless {
     ) {
         self.zscript_program = program;
         self.zscript_event_handlers = handlers.into_iter().collect();
+        self.zscript_defs_merged = false;
+    }
+
+    /// Text lumps for the queued program's `Wads.*` calls.
+    pub fn set_zscript_lumps(&mut self, lumps: BTreeMap<String, String>) {
+        self.zscript_lumps = lumps;
+    }
+
+    /// Mark the queued program as compiled with the UZDoom library: map start
+    /// loads it with natives Room lacks stubbed, as for the status bar.
+    pub fn set_zscript_uzdoom(&mut self, on: bool) {
+        self.zscript_uzdoom = on;
     }
 
     /// True when a ZScript program is queued for map start.
@@ -1317,6 +1339,19 @@ impl Headless {
             }
         }
         self.pending_map = Some(map.clone());
+        // A mod compiled with the UZDoom library defines its player class,
+        // weapons and monsters in ZScript: register them before the map spawns
+        // its things and players (once per program).
+        if self.zscript_uzdoom && !self.zscript_defs_merged {
+            if let Some(prog) = self.zscript_program.as_ref() {
+                room_sim::merge_zscript_defs(
+                    Arc::make_mut(&mut self.classes),
+                    Arc::make_mut(&mut self.states),
+                    prog,
+                );
+                self.zscript_defs_merged = true;
+            }
+        }
         let math_mode =
             math_mode_for_vanilla_demo(matches!(self.options.complevel, Complevel::Vanilla));
         let mut world = World::from_map_with_slots(
@@ -1509,8 +1544,17 @@ impl Headless {
         // ZScript program + MAPINFO event handlers (docs/34 / BD6).
         if let Some(prog) = self.zscript_program.clone() {
             let handlers = self.zscript_event_handlers.clone();
-            world.load_zscript_program(prog);
+            if self.zscript_uzdoom && self.zscript_defs_merged {
+                world.load_zscript_program_premerged(prog, true);
+            } else if self.zscript_uzdoom {
+                world.load_zscript_program_stubbed(prog);
+            } else {
+                world.load_zscript_program(prog);
+            }
             world.sync_mod_cvars_to_zscript();
+            if !self.zscript_lumps.is_empty() {
+                world.zscript.set_wad_lumps(self.zscript_lumps.clone());
+            }
             world.zscript.set_event_handlers(handlers.iter().cloned());
             if world.zscript.event_handlers.is_empty() && !handlers.is_empty() {
                 eprintln!(

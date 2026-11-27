@@ -87,7 +87,23 @@ pub fn analyze(unit: &TranslationUnit) -> Result<Analysis, Vec<Diagnostic>> {
                         ));
                     }
                 }
-                analysis.classes.insert(c.name.clone(), c.parent.clone());
+                // `extend class Actor { … }` has no parent of its own: keep the
+                // declared one (it used to cut every chain through Actor).
+                let declared = analysis
+                    .classes
+                    .keys()
+                    .find(|k| k.eq_ignore_ascii_case(&c.name))
+                    .cloned();
+                match (declared, decl) {
+                    (Some(existing), Decl::ExtendClass(_)) => {
+                        if c.parent.is_some() {
+                            analysis.classes.insert(existing, c.parent.clone());
+                        }
+                    }
+                    _ => {
+                        analysis.classes.insert(c.name.clone(), c.parent.clone());
+                    }
+                }
                 ingest_type_members(&c.name, &c.members, &mut analysis, &mut diags);
             }
             Decl::Struct(s) => {
@@ -253,7 +269,16 @@ fn ingest_type_members(
 }
 
 fn ancestor_has_virtual(analysis: &Analysis, class: &str, method: &str) -> bool {
-    let mut cur = analysis.classes.get(class).and_then(|p| p.clone());
+    let parent_of = |c: &str| -> Option<String> {
+        analysis.classes.get(c).cloned().unwrap_or_else(|| {
+            analysis
+                .classes
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(c))
+                .and_then(|(_, p)| p.clone())
+        })
+    };
+    let mut cur = parent_of(class);
     let mut guard = 0u32;
     while let Some(parent) = cur {
         if guard > 64 {

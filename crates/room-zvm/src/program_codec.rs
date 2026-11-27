@@ -6,7 +6,8 @@ use crate::program::{ClassLayout, CompiledFunction, CompiledProgram, FuncParam};
 
 const MAGIC: &[u8; 4] = b"ZVMP";
 /// 2: classes carry `array_a` (object-array fields). 1 is still read.
-const VERSION: u32 = 2;
+/// 3: classes carry `structs` (struct-typed fields). 1 and 2 are still read.
+const VERSION: u32 = 3;
 
 struct W(Vec<u8>);
 
@@ -143,6 +144,11 @@ impl CompiledProgram {
             for x in &c.array_a {
                 w.u16(*x);
             }
+            w.len(c.structs.len());
+            for (slot, class) in &c.structs {
+                w.u16(*slot);
+                w.u32(*class);
+            }
             w.len(c.fields.len());
             for (k, (bank, idx)) in &c.fields {
                 w.str(k);
@@ -237,6 +243,12 @@ impl CompiledProgram {
             if version >= 2 {
                 for _ in 0..r.len()? {
                     c.array_a.push(r.u16()?);
+                }
+            }
+            if version >= 3 {
+                for _ in 0..r.len()? {
+                    let slot = r.u16()?;
+                    c.structs.push((slot, r.u32()?));
                 }
             }
             for _ in 0..r.len()? {

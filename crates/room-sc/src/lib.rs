@@ -387,6 +387,21 @@ impl<'a> Scanner<'a> {
         if b == b'"' {
             return self.lex_string();
         }
+        if b == b'\'' {
+            // GZDoom name constant `'Name'` (TK_NameConst): read as a string.
+            let rest = &self.bytes[self.pos + 1..];
+            let end = rest
+                .iter()
+                .position(|&c| c == b'\'' || c == b'\n')
+                .filter(|&i| rest[i] == b'\'');
+            if let Some(len) = end {
+                let start = self.pos + 1;
+                self.bump_bytes(len + 2);
+                return Ok(Tok::String(std::borrow::Cow::Borrowed(
+                    &self.src[start..start + len],
+                )));
+            }
+        }
         if b.is_ascii_digit()
             || (b == b'.' && self.bytes.get(self.pos + 1).is_some_and(u8::is_ascii_digit))
         {
@@ -643,6 +658,20 @@ impl<'a> Scanner<'a> {
             }
         }
         let s = &self.src[start..self.pos];
+        let word_tail = self
+            .peek()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_');
+        if !is_float && s.starts_with('0') && s.len() > 1 && word_tail {
+            // A zero-led word (DECORATE sprite `097G`): keep its text, since
+            // reading it as octal would lose the leading zero.
+            while self
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
+            {
+                self.bump();
+            }
+            return Ok(Tok::Ident(&self.src[start..self.pos]));
+        }
         if is_float {
             let cleaned = s.trim_end_matches(['f', 'F']);
             let f: f64 = cleaned
@@ -651,7 +680,9 @@ impl<'a> Scanner<'a> {
             Ok(Tok::Float(f))
         } else if s.starts_with('0') && s.len() > 1 && s.bytes().all(|c| c.is_ascii_digit()) {
             // octal, C strtol base 0
+            // `09`: not octal; C would stop at the 9, GZDoom mods mean decimal.
             let n = i64::from_str_radix(s.trim_start_matches('-'), 8)
+                .or_else(|_| s.trim_start_matches('-').parse::<i64>())
                 .map_err(|_| self.err_at(span, ScanErrorKind::InvalidNumber))?;
             let n = if s.starts_with('-') { -n } else { n };
             Ok(Tok::Int(n))
@@ -852,6 +883,42 @@ mod tests {
         assert_eq!(sc.must_get_number().unwrap(), 60);
         assert!(sc.check_punct(Punct::Semi).unwrap());
         assert!(sc.check_punct(Punct::RBrace).unwrap());
+    }
+
+    #[test]
+    fn c_mode_name_constants_read_as_strings() {
+        let mut sc = Scanner::from_str(
+            "A_AttachLightDef('FlamethrowerLight', 'BarrelFire')",
+            ScanOptions {
+                c_mode: true,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            sc.next_token().unwrap(),
+            Tok::Ident("A_AttachLightDef")
+        ));
+        assert!(sc.check_punct(Punct::LParen).unwrap());
+        assert!(matches!(sc.next_token().unwrap(), Tok::String(s) if s == "FlamethrowerLight"));
+        assert!(sc.check_punct(Punct::Comma).unwrap());
+        assert!(matches!(sc.next_token().unwrap(), Tok::String(s) if s == "BarrelFire"));
+        assert!(sc.check_punct(Punct::RParen).unwrap());
+    }
+
+    #[test]
+    fn zero_led_sprite_is_one_word() {
+        let mut sc = Scanner::from_str(
+            "097G A -1 09",
+            ScanOptions {
+                c_mode: true,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(sc.next_token().unwrap(), Tok::Ident("097G")));
+        assert!(matches!(sc.next_token().unwrap(), Tok::Ident("A")));
+        assert!(sc.check_punct(Punct::Minus).unwrap());
+        assert!(matches!(sc.next_token().unwrap(), Tok::Int(1)));
+        assert!(matches!(sc.next_token().unwrap(), Tok::Int(9)));
     }
 
     #[test]

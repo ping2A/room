@@ -379,6 +379,13 @@ pub fn lex(source: SourceId, path: &str, text: &str) -> (Vec<Token>, Vec<Diagnos
 
         // Multi-char punct
         let rest = &text[i..];
+        if c >= 0x80 {
+            if let Some(ch) = rest.chars().next().filter(|ch| ch.is_whitespace()) {
+                // Non-breaking spaces and friends pasted from the web.
+                bump(&mut i, &mut line, &mut col, ch.len_utf8(), bytes);
+                continue;
+            }
+        }
         let puncts = [
             "...", "<<=", ">>=", ">>>", "<=>", "~==", "<>=", "**=", "+=", "-=", "*=", "/=", "%=",
             "&=", "|=", "^=", "==", "!=", "<=", ">=", "<<", ">>", "&&", "||", "++", "--", "->",
@@ -392,8 +399,9 @@ pub fn lex(source: SourceId, path: &str, text: &str) -> (Vec<Token>, Vec<Diagnos
             }
         }
         let p = matched.unwrap_or_else(|| {
-            // single char
-            &text[i..i + 1]
+            // single char (a whole UTF-8 scalar: mods ship non-ASCII stray bytes)
+            let w = rest.chars().next().map_or(1, char::len_utf8);
+            &text[i..i + w]
         });
         let n = p.len();
         bump(&mut i, &mut line, &mut col, n, bytes);
@@ -481,5 +489,24 @@ mod tests {
         assert!(d.is_empty(), "{d:?}");
         assert!(matches!(&toks[0].kind, TokenKind::Int(v) if *v == 0x6800));
         assert!(matches!(&toks[1].kind, TokenKind::Float(v) if (*v - 65536.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn lex_stray_multibyte_char_does_not_panic() {
+        // Project Brutality ships a stray non-ASCII byte outside strings/comments.
+        let (toks, _) = lex(SourceId(0), "t", "int a; \u{a0}é int b;");
+        assert!(
+            toks.iter()
+                .any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "é"))
+        );
+        assert!(
+            toks.iter()
+                .any(|t| matches!(&t.kind, TokenKind::Ident(i) if i == "b"))
+        );
+        assert!(
+            !toks
+                .iter()
+                .any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "\u{a0}"))
+        );
     }
 }

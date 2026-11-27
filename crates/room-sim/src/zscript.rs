@@ -19,6 +19,9 @@ pub struct ZscriptSaveBlob {
     pub handlers: Vec<(String, u32, u32)>,
     /// Actor id → script-object handle `(index, generation)`.
     pub actor_handles: Vec<(u32, u32, u32)>,
+    /// State of the script `Random` generator, so a loaded game draws the
+    /// same numbers it would have drawn going on.
+    pub script_rng: u64,
 }
 
 /// One heap object in a save.
@@ -174,6 +177,24 @@ impl ZscriptRuntime {
             .iter()
             .map(|class| class.name.clone())
             .collect();
+        // `players[n]` is a `PlayerInfo` of this program's layout, so its
+        // `mo` field reads the pawn proxy (`players.at`).
+        vm.play.playerinfo_layout = program
+            .classes
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case("PlayerInfo"))
+            .and_then(|id| {
+                let c = &program.classes[id];
+                let &(bank, slot) = c.fields.get("mo")?;
+                (bank == 1).then_some(room_zvm::PlayerInfoLayout {
+                    class_id: id as u32,
+                    n_i: c.n_i,
+                    n_a: c.n_a,
+                    n_s: c.n_s,
+                    n_f: c.n_f,
+                    mo_slot: slot,
+                })
+            });
         self.vm = Some(vm);
         self.program = Some(Arc::clone(&program));
         self.map_objects_key = None;
@@ -733,10 +754,12 @@ impl ZscriptRuntime {
         for class in &handlers {
             let _ = self.handler_instance(class)?;
         }
-        self.dispatch_handlers("OnRegister")?;
-        self.dispatch_handlers("WorldLoaded")?;
+        // One failing handler must not keep the others (or `WorldLoaded`)
+        // from running: report the first trap after both passes.
+        let registered = self.dispatch_handlers("OnRegister");
+        let loaded = self.dispatch_handlers("WorldLoaded");
         self.map_handlers_active = true;
-        Ok(())
+        registered.and(loaded)
     }
 
     /// `PlayerEntered` for a joining player number (0-based).
@@ -1032,10 +1055,14 @@ impl ZscriptRuntime {
         // Synthetic `dispatch_handlers("WorldThingSpawned")` defaults to monster
         // so BD skill≥6 grant probes keep working without a live actor.
         let monster = method.eq_ignore_ascii_case("WorldThingSpawned");
+        let mut first = None;
         for class in handlers {
-            self.dispatch_one_handler(&class, method, None, monster, false)?;
+            if let Err(e) = self.dispatch_one_handler(&class, method, None, monster, false) {
+                // Name the handler; keep dispatching to the rest.
+                first.get_or_insert(room_zvm::Trap::Native(format!("{class}.{method}: {e}")));
+            }
         }
-        Ok(())
+        first.map_or(Ok(()), Err)
     }
 
     fn handler_instance(&mut self, class: &str) -> Result<ObjHandle, room_zvm::Trap> {
@@ -1057,13 +1084,8 @@ impl ZscriptRuntime {
                 "handler class '{class}' is not in the compiled program"
             )));
         };
-        let layout = vm
-            .program
-            .classes
-            .get(cid as usize)
-            .cloned()
-            .unwrap_or_default();
-        let h = vm.heap.new_object(cid, layout.n_i, layout.n_a, layout.n_s);
+        // As `new` does: float fields and `Array<…>` members allocated.
+        let h = vm.new_object_of(cid);
         self.handler_objs.insert(class.to_owned(), h);
         self.publish_handler_objs();
         Ok(h)
@@ -1528,6 +1550,7 @@ impl ZscriptRuntime {
                 .iter()
                 .map(|(&actor, h)| (actor, h.index, h.generation))
                 .collect(),
+            script_rng: vm.play.rng,
         };
         for (&actor, &h) in &self.actor_fields {
             if let Some(ObjKind::Object { fields_i, .. }) = vm.heap.get(h) {
@@ -1571,6 +1594,9 @@ impl ZscriptRuntime {
             ));
         }
         let vm = self.vm.as_mut().ok_or_else(|| "no ZScript VM".to_owned())?;
+        if blob.script_rng != 0 {
+            vm.play.rng = blob.script_rng;
+        }
         if let Some(image) = &blob.heap {
             vm.heap.restore(image);
             self.actor_fields.clear();
