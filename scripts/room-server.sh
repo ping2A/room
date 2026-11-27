@@ -126,7 +126,8 @@ build_room_web() {
     crates/room-web/netgraph.js crates/room-web/touch.js crates/room-web/settings.js crates/room-web/mixer-worklet.js \
     crates/room-web/editor.html crates/room-web/editor.js crates/room-web/editor-tools.js crates/room-web/editor-paint.js crates/room-web/editor-scripts.js crates/room-web/editor-extras.js crates/room-web/editor-geom.js crates/room-web/editor.css \
     crates/room-web/face-capture.js crates/room-web/face-gallery.js crates/room-web/face-share.js \
-    crates/room-web/face-worker.js crates/room-web/settings-faces.js crates/room-web/sound-record.js "$out/"
+    crates/room-web/face-worker.js crates/room-web/settings-faces.js crates/room-web/sound-record.js \
+    crates/room-web/favicon.png crates/room-web/apple-touch-icon.png "$out/"
   cp -R crates/room-web/as "$out/as"
   # Version every module URL so browsers never run a stale wasm / JS mix
   # (the server sends no cache headers).

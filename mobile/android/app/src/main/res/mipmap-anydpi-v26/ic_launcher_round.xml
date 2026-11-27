@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Made by scripts/make-android-icon.py (Freedoom's STFDEAD0). -->
+<!-- Made from docs/media/logo.png (Room isometric gaming-room mark). -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />

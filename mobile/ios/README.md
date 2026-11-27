@@ -33,5 +33,5 @@ keys App Store Connect checks, and packages `target/ios/Room.ipa`; upload it
 with Apple's Transporter app. The version comes from the workspace
 `Cargo.toml` (raise `ROOM_BUILD_NUMBER` for a second upload of one
 version). The app icon is the asset catalog `mobile/ios/Assets.xcassets`
-(Freedoom's dead face, from `scripts/make-android-icon.py`), compiled by
-`actool` during the build.
+(Room logo from `docs/media/logo.png`, via `scripts/make-android-icon.py`),
+compiled by `actool` during the build.

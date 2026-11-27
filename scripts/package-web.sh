@@ -140,6 +140,8 @@ echo "room: wasm-bindgen → $OUT"
 wasm-bindgen "$WASM" --out-dir "$OUT" --target web --no-typescript
 
 cp crates/room-web/index.html "$OUT/index.html"
+cp crates/room-web/favicon.png "$OUT/favicon.png"
+cp crates/room-web/apple-touch-icon.png "$OUT/apple-touch-icon.png"
 cp crates/room-web/voice.js "$OUT/voice.js"
 cp crates/room-web/rtc.js "$OUT/rtc.js"
 cp crates/room-web/netgraph.js "$OUT/netgraph.js"

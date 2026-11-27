@@ -1,5 +1,9 @@
 # Room
 
+<p align="center">
+  <img src="docs/media/logo.png" width="420" alt="Room logo: isometric pixel-art gaming room with a CRT blasting Doom gore, Doom and Duke posters, WAD/PK3 floppies">
+</p>
+
 Room is a pure-Rust engine for **Doom-family games** (Doom, Doom II, Freedoom
 and GZDoom/ZDoom mods: WAD, PK3, ZIP, DECORATE, ACS, ZScript) and
 **Duke Nukem 3D** (a native Build-engine runtime). It runs on the desktop and

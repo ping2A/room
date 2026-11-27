@@ -37,9 +37,9 @@ run before is `room-log-previous.txt`, and its last lines are repeated in
 logcat at the next start). After a crash started from the phone itself,
 `scripts/android-logs.sh --no-start` collects both files.
 
-The launcher icon is Freedoom's dead status-bar face (`STFDEAD0`, BSD-3-Clause
-like the rest of Freedoom), made by `python3 scripts/make-android-icon.py`
-(needs Pillow); the PNGs are committed, so a normal build does not need it.
+The launcher icon is the Room logo (`docs/media/logo.png`), made by
+`python3 scripts/make-android-icon.py` (needs Pillow); the PNGs are
+committed, so a normal build does not need it.
 
 `--release` builds optimised native code. Release builds are signed with
 your keystore when `ROOM_ANDROID_KEYSTORE`, `ROOM_ANDROID_KEYSTORE_PASSWORD`
