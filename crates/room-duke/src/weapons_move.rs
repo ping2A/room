@@ -1244,284 +1244,41 @@ pub fn moveweapons(
             continue;
         }
         if sprites[iu].picnum == SPIT {
-            let source = sprites[iu];
-            let xv = i32::from(source.xvel);
-            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
-            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
-            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
-            let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
-            let mut sprite_hits: Vec<SpriteHit> = sprites
-                .iter()
-                .enumerate()
-                .map(|(index, sprite)| {
-                    let mut hit = SpriteHit::cylinder(
-                        sprite.x,
-                        sprite.y,
-                        sprite.z,
-                        sprite.sectnum,
-                        i32::from(sprite.clipdist) << 2,
-                        sprite.cstat,
-                    );
-                    if index == iu {
-                        hit.cstat = 0;
-                    }
-                    hit
-                })
-                .collect();
-            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
-            let hit = hitscan_full(
-                source.x,
-                source.y,
-                source.z,
-                source.sectnum,
-                dx,
-                dy,
-                dz,
-                (256 << 16) + 64,
+            move_vanilla_firelaser(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                randomseed,
+                actor_temps,
+                picnum,
+                script,
+                tile_meta,
+                i,
                 &sec_w,
                 &wxy,
-                &sprite_hits,
-                Some(&sec_z),
+                &sec_z,
             );
-            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
-            let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
-                room_build_engine::geom::HitScan {
-                    hitsect: -1,
-                    hitwall: -1,
-                    hitsprite: -1,
-                    hitx: 0,
-                    hity: 0,
-                    hitz: 0,
-                }
-            } else {
-                hit
-            };
-            if hit.hitsect >= 0 {
-                sprites[iu].x = hit.hitx;
-                sprites[iu].y = hit.hity;
-                sprites[iu].z = hit.hitz;
-                sprites[iu].sectnum = hit.hitsect;
-                if hit.hitsprite >= 0 {
-                    let target = hit.hitsprite as usize;
-                    if target < sprites.len() && target != source.owner as usize {
-                        let object_handled = checkhitsprite_object(
-                            lists,
-                            sprites,
-                            sectors,
-                            walls,
-                            actor_temps,
-                            picnum,
-                            randomseed,
-                            script,
-                            tile_meta,
-                            players,
-                            target,
-                            i,
-                        );
-                        if !object_handled {
-                            if actor_temps.len() <= target {
-                                actor_temps.resize_with(target + 1, ActorConTemps::default);
-                            }
-                            let temp = &mut actor_temps[target];
-                            temp.hit_picnum = SPIT;
-                            temp.hit_extra = if temp.hit_extra < 0 {
-                                source.extra
-                            } else {
-                                temp.hit_extra.saturating_add(source.extra)
-                            };
-                            temp.hit_owner = source.owner;
-                            temp.hit_source = i;
-                            temp.hit_radius = crate::con::direct_hit_payload();
-                            temp.hit_ang = source.ang;
-                            if let Some(player) = players
-                                .iter_mut()
-                                .find(|player| player.sprite_i == hit.hitsprite)
-                            {
-                                apply_spit_player_effects(
-                                    player,
-                                    actor_temps,
-                                    hit.hitsprite,
-                                    &mut *randomseed,
-                                );
-                            }
-                        }
-                    }
-                }
-                if hit.hitsect != source.sectnum {
-                    let _ = lists.changespritesect(i, hit.hitsect);
-                }
-                let _ = lists.deletesprite(i);
-            } else {
-                sprites[iu].x = source.x.wrapping_add(dx);
-                sprites[iu].y = source.y.wrapping_add(dy);
-                sprites[iu].z = source.z.wrapping_add(dz);
-                let mut next_sector = source.sectnum;
-                room_build_engine::geom::updatesector(
-                    sprites[iu].x,
-                    sprites[iu].y,
-                    &mut next_sector,
-                    &sec_w,
-                    &wxy,
-                );
-                if next_sector >= 0 && next_sector != source.sectnum {
-                    let _ = lists.changespritesect(i, next_sector);
-                    sprites[iu].sectnum = next_sector;
-                }
-                if i32::from(sprites[iu].zvel) < 6144 {
-                    sprites[iu].zvel = sprites[iu].zvel.saturating_add(64);
-                }
-            }
             continue;
         }
         if sprites[iu].picnum == FIRELASER {
-            let source = sprites[iu];
-            // Chocolate emits five short-lived, translucent trail sprites
-            // before moving the beam each actor tic.
-            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
-            for k in -3_i32..2 {
-                let trail = egs(
-                    lists,
-                    sprites,
-                    picnum,
-                    actor_temps,
-                    script,
-                    source.sectnum,
-                    source.x + ((k * cos) >> 9),
-                    source.y + ((k * sin) >> 9),
-                    source.z
-                        + ((k * i32::from(source.zvel).signum())
-                            * (i32::from(source.zvel) / 24).abs()),
-                    FIRELASER,
-                    (-40 + (k << 2)) as i8,
-                    source.xrepeat,
-                    source.yrepeat,
-                    0,
-                    0,
-                    0,
-                    source.owner,
-                    crate::stat::STAT_MISC,
-                );
-                if trail >= 0 {
-                    let trail = trail as usize;
-                    sprites[trail].cstat = 128;
-                    sprites[trail].pal = source.pal;
-                }
-            }
-            let xv = i32::from(source.xvel);
-            let (sin, cos) = sincos_q14(i32::from(source.ang) & 2047);
-            let dx = (((xv * cos) >> 14) * TICSPERFRAME) >> 3;
-            let dy = (((xv * sin) >> 14) * TICSPERFRAME) >> 3;
-            let dz = (i32::from(source.zvel) * TICSPERFRAME) >> 3;
-            let mut sprite_hits: Vec<SpriteHit> = sprites
-                .iter()
-                .enumerate()
-                .map(|(index, sprite)| {
-                    let mut hit = SpriteHit::cylinder(
-                        sprite.x,
-                        sprite.y,
-                        sprite.z,
-                        sprite.sectnum,
-                        i32::from(sprite.clipdist) << 2,
-                        sprite.cstat,
-                    );
-                    if index == iu || index == source.owner as usize {
-                        hit.cstat = 0;
-                    }
-                    hit
-                })
-                .collect();
-            crate::shoot::drop_deleted_hits(&mut sprite_hits, &lists.sprite_stat);
-            let hit = hitscan_full(
-                source.x,
-                source.y,
-                source.z,
-                source.sectnum,
-                dx,
-                dy,
-                dz,
-                (256 << 16) + 64,
+            move_vanilla_firelaser(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                randomseed,
+                actor_temps,
+                picnum,
+                script,
+                tile_meta,
+                i,
                 &sec_w,
                 &wxy,
-                &sprite_hits,
-                Some(&sec_z),
+                &sec_z,
             );
-            // Chocolate `movesprite`: a hit beyond this tic's step is no hit.
-            let hit = if hit_beyond_step(&hit, source.x, source.y, source.z, dx, dy, dz) {
-                room_build_engine::geom::HitScan {
-                    hitsect: -1,
-                    hitwall: -1,
-                    hitsprite: -1,
-                    hitx: 0,
-                    hity: 0,
-                    hitz: 0,
-                }
-            } else {
-                hit
-            };
-            if hit.hitsect >= 0 {
-                sprites[iu].x = hit.hitx;
-                sprites[iu].y = hit.hity;
-                sprites[iu].z = hit.hitz;
-                if hit.hitsprite >= 0 {
-                    let target = hit.hitsprite as usize;
-                    if target < sprites.len() {
-                        let object_handled = checkhitsprite_object(
-                            lists,
-                            sprites,
-                            sectors,
-                            walls,
-                            actor_temps,
-                            picnum,
-                            randomseed,
-                            script,
-                            tile_meta,
-                            players,
-                            target,
-                            i,
-                        );
-                        if !object_handled {
-                            if actor_temps.len() <= target {
-                                actor_temps.resize_with(target + 1, ActorConTemps::default);
-                            }
-                            let temp = &mut actor_temps[target];
-                            temp.hit_picnum = FIRELASER;
-                            temp.hit_extra = if temp.hit_extra < 0 {
-                                source.extra
-                            } else {
-                                temp.hit_extra.saturating_add(source.extra)
-                            };
-                            temp.hit_owner = source.owner;
-                            temp.hit_source = i;
-                            temp.hit_radius = crate::con::direct_hit_payload();
-                            temp.hit_ang = source.ang;
-                            if sprites[target].picnum == APLAYER {
-                                temp.pending_actor_sounds
-                                    .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
-                            }
-                        }
-                    }
-                }
-                if hit.hitsect != source.sectnum {
-                    let _ = lists.changespritesect(i, hit.hitsect);
-                }
-                let _ = lists.deletesprite(i);
-            } else {
-                sprites[iu].x = source.x.wrapping_add(dx);
-                sprites[iu].y = source.y.wrapping_add(dy);
-                sprites[iu].z = source.z.wrapping_add(dz);
-                let mut next_sector = source.sectnum;
-                room_build_engine::geom::updatesector(
-                    sprites[iu].x,
-                    sprites[iu].y,
-                    &mut next_sector,
-                    &sec_w,
-                    &wxy,
-                );
-                if next_sector >= 0 && next_sector != source.sectnum {
-                    let _ = lists.changespritesect(i, next_sector);
-                    sprites[iu].sectnum = next_sector;
-                }
-            }
             continue;
         }
         // Atomic's Octabrain projectile flies until it hits a wall, plane, or
@@ -1636,11 +1393,9 @@ pub fn moveweapons(
                         }
                         let temp = &mut actor_temps[target];
                         temp.hit_picnum = COOLEXPLOSION1;
-                        temp.hit_extra = if temp.hit_extra < 0 {
-                            source.extra
-                        } else {
-                            temp.hit_extra.saturating_add(source.extra)
-                        };
+                        // Chocolate `checkhitsprite`: `hittype.extra += extra` onto the
+                        // idle -1, so a hit deals one less than the shot's `extra`.
+                        temp.hit_extra = temp.hit_extra.saturating_add(source.extra);
                         temp.hit_owner = source.owner;
                         temp.hit_source = i;
                         temp.hit_radius = crate::con::direct_hit_payload();
@@ -2559,6 +2314,7 @@ pub fn moveweapons(
             actor_temps.resize_with(iu + 1, ActorConTemps::default);
         }
         actor_temps[iu].pending_spawns.clear();
+        actor_temps[iu].pending_spawn_guts_before.clear();
         let (pidx, dist) = findplayer_dist(&sprites[iu], players);
         let mut env = ConSpriteEnv {
             player_dist: dist,
@@ -2598,15 +2354,33 @@ pub fn moveweapons(
             None,
             None,
         );
-        // CON `spawn WATERBUBBLE` (ifactioncount 3 + ifinwater on SHOTSPARK1).
+        // CON `spawn WATERBUBBLE` (`ifactioncount 3` + `ifinwater`) and
+        // `spawn WATERSPLASH2` (`ifcount 2 nullop else ifonwater`).
         let spawns: Vec<i16> = actor_temps[iu].pending_spawns.drain(..).collect();
+        actor_temps[iu].pending_spawn_guts_before.clear();
         for pn in spawns {
             if pn == WATERBUBBLE {
                 let _ = spawn_maker_bubble(lists, sprites, picnum, actor_temps, i, Some(script));
+            } else if pn == crate::shoot::script_tile_or(Some(script), "WATERSPLASH2", 1380) {
+                let _ = crate::transports::spawn_water_splash2(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum,
+                    actor_temps,
+                    randomseed,
+                    i,
+                    Some(script),
+                );
             }
         }
         if stop == ConStop::KillIt {
             let _ = lists.deletesprite(i);
+        } else if lists.sprite_stat.get(iu).copied() == Some(STAT_PROJECTILE) {
+            // Chocolate `execute` then `move()`, whose first step is
+            // `g_t[0]++`: the spark's `ifcount 2` splash gate counts tics.
+            actor_temps[iu].g_t[0] = actor_temps[iu].g_t[0].wrapping_add(1);
         }
     }
 }
@@ -2998,6 +2772,242 @@ fn projectile_movesprite(
         return 16384 + i32::from(nsect);
     }
     retval
+}
+
+/// Chocolate `moveweapons` for `FIRELASER` (RECON / trooper lasers) and
+/// `SPIT` (lizmen): `movesprite` (CLIPMASK1, walldist 8) against the cached
+/// `getglobalz` planes, then the laser's five-sprite trail at its *new*
+/// place or the spit's gravity, then on a hit `checkhitsprite` (spit also
+/// blinds the player) / laser mirror bounce / `checkhitwall` /
+/// `checkhitceiling`. Neither makes an explosion.
+#[allow(clippy::too_many_arguments)]
+fn move_vanilla_firelaser(
+    lists: &mut SpriteLists,
+    sprites: &mut [SpriteT],
+    sectors: &mut [SectorT],
+    walls: &mut [WallT],
+    players: &mut [Player],
+    randomseed: &mut i32,
+    actor_temps: &mut Vec<ActorConTemps>,
+    picnum: &mut Vec<i16>,
+    script: Option<&ScriptImage>,
+    tile_meta: &[TileZMeta],
+    i: i16,
+    sec_w: &[SectorWalls],
+    wxy: &[WallXY],
+    sec_z: &[SectorZ],
+) {
+    let iu = i as usize;
+    let s = sprites[iu];
+    let lotag = |sectors: &[SectorT], sect: i16| {
+        usize::try_from(sect)
+            .ok()
+            .and_then(|k| sectors.get(k))
+            .map_or(0, |sector| sector.lotag)
+    };
+    let (dax, day, daz) = (s.x, s.y, s.z);
+    let sprite_clips: Vec<_> =
+        crate::player::live_sprite_z_clips(sprites, &lists.sprite_stat, tile_meta);
+    let planes = projectile_globalz(&s, sectors, sec_z, wxy, &sprite_clips, sprites);
+    let k = i32::from(s.xvel);
+    let (sin, cos) = sincos_q14(i32::from(s.ang) & 2047);
+    let mut j = projectile_movesprite(
+        lists,
+        sprites,
+        i,
+        (k * cos) >> 14,
+        (k * sin) >> 14,
+        i32::from(s.zvel),
+        (256 << 16) | 64,
+        planes,
+        sec_w,
+        wxy,
+        sec_z,
+        tile_meta,
+    );
+    let s = sprites[iu];
+    if s.sectnum < 0 {
+        let _ = lists.deletesprite(i);
+        return;
+    }
+    if j & 49152 != 49152 {
+        let (ceilz, florz) = planes;
+        let on_water = lotag(sectors, s.sectnum) == 1;
+        if s.z < ceilz {
+            j = 16384 | i32::from(s.sectnum);
+            sprites[iu].zvel = -1;
+        } else if (s.z > florz && !on_water) || (s.z > florz + (16 << 8) && on_water) {
+            j = 16384 | i32::from(s.sectnum);
+            if !on_water {
+                sprites[iu].zvel = 1;
+            }
+        }
+    }
+    // The trail sits around the beam's new position, after the plane check
+    // may have set `zvel` to -1 / 1. Spit falls instead.
+    let beam = sprites[iu];
+    let is_spit = beam.picnum == SPIT;
+    if is_spit && sprites[iu].zvel < 6144 {
+        sprites[iu].zvel = sprites[iu].zvel.saturating_add(176 - 112); // `gc - 112`
+    }
+    let (sin, cos) = sincos_q14(i32::from(beam.ang) & 2047);
+    let zv = i32::from(beam.zvel);
+    for k in (-3_i32..2).filter(|_| !is_spit) {
+        let trail = egs(
+            lists,
+            sprites,
+            picnum,
+            actor_temps,
+            script,
+            beam.sectnum,
+            beam.x + ((k * cos) >> 9),
+            beam.y + ((k * sin) >> 9),
+            beam.z + ((k * zv.signum()) * (zv / 24).abs()),
+            FIRELASER,
+            (-40 + (k << 2)) as i8,
+            beam.xrepeat,
+            beam.yrepeat,
+            0,
+            0,
+            0,
+            beam.owner,
+            crate::stat::STAT_MISC,
+        );
+        if trail >= 0 {
+            let trail = trail as usize;
+            sprites[trail].cstat = 128;
+            sprites[trail].pal = beam.pal;
+        }
+    }
+    if j == 0 {
+        return;
+    }
+    if j & 49152 == 49152 {
+        let target = (j & 4095) as usize;
+        // `checkhitsprite(j, i)`: object cases, or the default branch (a
+        // badguy bleeds JIBS6, is knocked back and woken; the hit is queued).
+        if target < sprites.len() {
+            let actortype: Vec<u8> = script.map_or_else(Vec::new, |image| image.actortype.clone());
+            crate::shoot::checkhitsprite_shotgun(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                players,
+                picnum,
+                actor_temps,
+                tile_meta,
+                script,
+                &actortype,
+                randomseed,
+                target as i16,
+                i,
+                false,
+            );
+            if sprites[target].picnum == APLAYER {
+                if actor_temps.len() <= target {
+                    actor_temps.resize_with(target + 1, ActorConTemps::default);
+                }
+                actor_temps[target]
+                    .pending_actor_sounds
+                    .push(i16::try_from(PISTOL_BODYHIT).unwrap_or_default());
+                if is_spit
+                    && let Some(player) = players
+                        .iter_mut()
+                        .find(|player| player.sprite_i == target as i16)
+                {
+                    apply_spit_player_effects(player, actor_temps, target as i16, randomseed);
+                }
+            }
+        }
+    } else if j & 49152 == 32768 {
+        let wall = (j & 32767) as usize;
+        let mirror = script_tile(script, "MIRROR").unwrap_or(560);
+        if !is_spit
+            && walls
+                .get(wall)
+                .is_some_and(|w| w.overpicnum == mirror || w.picnum == mirror)
+        {
+            // Mirrors reflect the beam, which now owns itself.
+            let w = walls[wall];
+            let p2 = walls[w.point2.max(0) as usize];
+            let wall_ang = getangle(p2.x - w.x, p2.y - w.y);
+            sprites[iu].ang = (((wall_ang << 1) - i32::from(sprites[iu].ang)) & 2047) as i16;
+            sprites[iu].owner = i;
+            if let Some(image) = script {
+                let _ = crate::spawn_rt::spawn_from(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum,
+                    actor_temps,
+                    tile_meta,
+                    image,
+                    randomseed,
+                    i,
+                    TRANSPORTERSTAR,
+                    None,
+                );
+            }
+            return;
+        }
+        setsprite_xyz(lists, sprites, i, (dax, day, daz), sec_w, wxy);
+        let here = sprites[iu];
+        let sounds = apply_checkhitwall(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum,
+            actor_temps,
+            randomseed,
+            here,
+            i,
+            here.picnum,
+            wall,
+            here.x,
+            here.y,
+            here.z,
+            here.sectnum,
+            script,
+        );
+        if !sounds.is_empty() {
+            if actor_temps.len() <= iu {
+                actor_temps.resize_with(iu + 1, ActorConTemps::default);
+            }
+            actor_temps[iu].pending_actor_sounds.extend(sounds);
+        }
+    } else {
+        setsprite_xyz(lists, sprites, i, (dax, day, daz), sec_w, wxy);
+        if sprites[iu].zvel < 0 {
+            let sect = sprites[iu].sectnum;
+            if usize::try_from(sect)
+                .ok()
+                .and_then(|k| sectors.get(k))
+                .is_some_and(|sector| sector.ceilingstat & 1 != 0 && sector.ceilingpal == 0)
+            {
+                let _ = lists.deletesprite(i);
+                return;
+            }
+            let mut ceiling_sounds = Vec::new();
+            crate::shoot::check_hit_ceiling(
+                lists,
+                sprites,
+                sectors,
+                walls,
+                picnum,
+                actor_temps,
+                script,
+                randomseed,
+                sect,
+                i,
+                sprites[iu].owner,
+                &mut ceiling_sounds,
+            );
+        }
+    }
+    let _ = lists.deletesprite(i);
 }
 
 /// Build `setsprite(i, x, y, z)`: move the sprite and re-find its sector.

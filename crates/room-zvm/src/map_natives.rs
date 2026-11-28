@@ -232,6 +232,24 @@ fn sector_floor_at(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<()
     Ok(())
 }
 
+/// `Sector.NextLowestFloorAt(x, y, z, …)` → `(double, Sector, F3DFloor)`:
+/// the sector's own floor there and the sector itself (3D floors and
+/// portals aside), so `RealFloor.FloorPlane` is not null.
+fn sector_next_lowest_floor_at(
+    ctx: &mut ZvmCtx<'_>,
+    regs: &mut NativeRegs<'_>,
+) -> Result<(), Trap> {
+    let sector = arg_a(regs, 0);
+    sector_plane_at(ctx, regs, 0);
+    let z = regs.f.first().copied().unwrap_or(0.0);
+    ctx.play.multi_ret = vec![
+        crate::interp::Value::F(z),
+        crate::interp::Value::A(sector),
+        crate::interp::Value::A(ObjHandle::NULL),
+    ];
+    Ok(())
+}
+
 fn sector_ceiling_at(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     sector_plane_at(ctx, regs, 1);
     Ok(())
@@ -317,6 +335,7 @@ pub(crate) fn register(t: &mut NativeTable) {
     t.replace("sector.gettexture", sector_get_texture);
     t.replace("sector.settexture", sector_set_texture);
     t.replace("sector.lowestfloorat", sector_floor_at);
+    t.replace("sector.nextlowestfloorat", sector_next_lowest_floor_at);
     t.replace("sector.highestceilingat", sector_ceiling_at);
     t.replace("secplane.zatpoint", secplane_z_at);
     t.replace("line.islineportal", line_is_portal);

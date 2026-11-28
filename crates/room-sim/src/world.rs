@@ -396,6 +396,14 @@ pub struct World {
     /// `A_Overlay*` calls made from actor context while the player is thinking
     /// (ZScript weapon functions): applied once the psprite action returns.
     pub(crate) psp_action_queue: Vec<(ActorId, String, Vec<String>)>,
+    /// Gun actions (`A_WeaponReady`, `A_ReFire`, …) a ZScript weapon action
+    /// function called: the psprite code runs them after the function.
+    pub(crate) psp_script_actions: Vec<(String, Vec<String>)>,
+    /// Buttons of the player whose psprite action runs, this tic and last
+    /// (UZDoom `BT_*`), for ZScript `player.cmd.buttons`.
+    pub(crate) psprite_buttons: [i32; 2],
+    /// That player's eye Z and crouch factor (`player.viewz`, `CrouchFactor`).
+    pub(crate) psprite_view: [f64; 2],
     /// Active vertical door movers.
     pub doors: Vec<DoorMover>,
     /// Active floor movers.
@@ -1155,6 +1163,14 @@ pub struct StatusBarItems {
     /// Running powers as `(PowerupGiver class, tics left, full tics)` for
     /// every giver that hands one out (SBARINFO `PowerupTime`).
     pub power_tics: Vec<(String, i32, i32)>,
+    /// Parent chain (nearest first) of each class named above, so a status
+    /// bar script can type a DECORATE class as its nearest script ancestor.
+    pub ancestors: Vec<(String, Vec<String>)>,
+    /// The pawn's class (`PB_PlayerPawn`, `DoomPlayer`, …).
+    pub player_class: Option<String>,
+    /// The pawn's angle, pitch and roll (degrees), velocity, height and the
+    /// floor under it: HUD sway (Project Brutality's `CalculateSway`).
+    pub pose: [f64; 8],
 }
 
 /// Status-bar / HUD numbers for one player (shell-facing).
@@ -1886,6 +1902,9 @@ impl World {
             psprite_state: None,
             psprite_flash_request: None,
             psp_action_queue: Vec::new(),
+            psp_script_actions: Vec::new(),
+            psprite_buttons: [0; 2],
+            psprite_view: [0.0, 1.0],
             doors: Vec::new(),
             floors: Vec::new(),
             plats: Vec::new(),
@@ -4171,9 +4190,34 @@ impl World {
         self.zscript.sync_map_objects(&sync);
     }
 
+    /// Whether `mo`'s class has ZScript movement (`PlayerThink` /
+    /// `HandleMovement` overrides) that replaces Room's `P_MovePlayer`.
+    /// Off with `ROOM_NATIVE_PLAYER_MOVE=1`.
+    pub(crate) fn zscript_moves_player(&self, mo: ActorId) -> bool {
+        if !self.zscript.is_active() {
+            return false;
+        }
+        static NATIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *NATIVE.get_or_init(|| {
+            std::env::var("ROOM_NATIVE_PLAYER_MOVE").is_ok_and(|v| v != "0" && !v.is_empty())
+        }) {
+            return false;
+        }
+        self.actors
+            .get(mo)
+            .and_then(|a| self.classes.get(a.class))
+            .is_some_and(|c| self.zscript.overrides_player_movement(&c.name))
+    }
+
     /// Mirror `id`'s native fields, and those of the actors its pointers name
     /// (`target`, `tracer`, `master`, …), into their script objects.
     pub(crate) fn zscript_sync_in(&mut self, id: ActorId) -> ZscriptSynced {
+        self.zscript_sync_in_with(id, &[])
+    }
+
+    /// [`Self::zscript_sync_in`] with more actors mirrored (a
+    /// `SpecialMissileHit` victim).
+    pub(crate) fn zscript_sync_in_with(&mut self, id: ActorId, extra: &[ActorId]) -> ZscriptSynced {
         let mut out = Vec::new();
         let Some(snap) = self.zscript_actor_snap(id) else {
             return out;
@@ -4184,6 +4228,7 @@ impl World {
             .filter_map(|(_, p)| p.as_ref())
             .map(|(index, generation, _)| ActorId::from_raw(*index, *generation))
             .filter(|&other| other != id)
+            .chain(extra.iter().copied())
             .collect();
         let caller = self
             .actors
@@ -4214,7 +4259,11 @@ impl World {
         let mut target_obj = room_zvm::ObjHandle::NULL;
         let mut melee_ok = false;
         let mut inventory = Vec::new();
+        let mut flags = Vec::new();
         for (other, h, _) in &out {
+            if let Some(a) = self.actors.get(*other) {
+                flags.push((*h, crate::flags::actor_flag_words(a)));
+            }
             if *other != id {
                 let seen = crate::sight::check_sight(self, id, *other);
                 sight.push((*h, seen));
@@ -4235,13 +4284,44 @@ impl World {
         }
         self.zscript
             .set_call_world(sight, melee_ok, target_obj, inventory);
+        self.zscript.set_call_flags(flags);
         out
     }
 
     /// Apply the fields scripts changed during the call.
     pub(crate) fn zscript_sync_out(&mut self, _id: ActorId, synced: ZscriptSynced) {
+        // Actors the script spawned first, so `tracer = Spawn(…)` below
+        // names a real actor.
+        self.materialize_zscript_spawns();
         for (id, h, before) in synced {
             self.zscript_sync_out_one(id, h, &before);
+        }
+    }
+
+    /// Make the actors of the script's `Actor.Spawn` calls (UZDoom spawns
+    /// at once; the VM handed out their objects already): spawn each, bind
+    /// it to its object, apply what the script wrote to the object, then
+    /// mirror the new actor back into it.
+    pub(crate) fn materialize_zscript_spawns(&mut self) {
+        for (h, initial, class, pos, _replace) in self.zscript.take_spawn_ops() {
+            let made = self.classes.find_name(&class).and_then(|cid| {
+                self.spawn_at(cid, DVec3::new(pos[0], pos[1], pos[2]), Angle::ZERO)
+                    .ok()
+            });
+            let Some(id) = made else {
+                self.zscript.drop_spawned_object(h, initial);
+                continue;
+            };
+            self.zscript
+                .bind_actor_object(id.index(), id.generation(), h);
+            if let Some(actual) = self.zscript_actor_snap(id) {
+                let before = self.zscript.read_actor_fields(initial, &actual);
+                self.zscript_sync_out_one(id, h, &before);
+            }
+            self.zscript.finish_spawned_object(h, initial);
+            if let Some(actual) = self.zscript_actor_snap(id) {
+                let _ = self.zscript.write_actor_fields(&actual);
+            }
         }
     }
 
@@ -6540,6 +6620,53 @@ impl World {
                     .find_name(name)
                     .is_some_and(|cid| self.inventory.count(mo, cid) > 0)
             });
+        }
+        if let Some(a) = self.actors.get(mo) {
+            out.player_class = self.classes.get(a.class).map(|c| c.name.clone());
+            let floor =
+                crate::physics::floor_at_xy(self, a.pos.x(), a.pos.y()).unwrap_or(a.pos.z());
+            out.pose = [
+                a.angle.degrees(),
+                a.pitch.degrees(),
+                a.roll.degrees(),
+                a.vel.x(),
+                a.vel.y(),
+                a.vel.z(),
+                a.pos.z(),
+                floor,
+            ];
+        }
+        let mut named: Vec<String> = out.inventory.iter().map(|(c, _, _)| c.clone()).collect();
+        named.extend(out.player_class.iter().cloned());
+        named.extend(out.ready_weapon.iter().cloned());
+        named.extend(out.weapons.iter().map(|w| w.0.clone()));
+        for name in named {
+            if out
+                .ancestors
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(&name))
+            {
+                continue;
+            }
+            let mut chain = Vec::new();
+            let mut cur = self
+                .classes
+                .find_name(&name)
+                .and_then(|c| self.classes.get(c))
+                .and_then(|c| c.parent);
+            while let Some(pid) = cur {
+                let Some(pc) = self.classes.get(pid) else {
+                    break;
+                };
+                if chain.len() > 64 {
+                    break;
+                }
+                chain.push(pc.name.clone());
+                cur = pc.parent;
+            }
+            if !chain.is_empty() {
+                out.ancestors.push((name, chain));
+            }
         }
         Some(out)
     }

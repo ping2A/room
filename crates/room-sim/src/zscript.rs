@@ -112,6 +112,143 @@ impl Clone for ZscriptRuntime {
     }
 }
 
+/// Parts of UZDoom's `PlayerPawn.PlayerThink` the playsim does natively
+/// (crouching, weapons and psprites, use, environment, counters): left out
+/// when a mod's movement script runs that think.
+const PLAYER_THINK_HOST_PARTS: &[&str] = &[
+    "CheckFOV",
+    "CheckCheats",
+    "CheckCrouch",
+    "CheckMusicChange",
+    "MorphPlayerThink",
+    "MakeFootsteps",
+    "CheckEnvironment",
+    "CheckUse",
+    "CheckUndoMorph",
+    "TickPSprites",
+    "CheckPoison",
+    "CheckDegeneration",
+    "CheckAirSupply",
+];
+
+/// Classes whose [`HOST_ACTIONS`] bodies the playsim replaces.
+const HOST_ACTION_CLASSES: &[&str] = &["StateProvider", "Weapon"];
+
+/// Library weapon actions Room implements natively (`think_player`,
+/// `action.rs`): a script call to one queues the playsim action.
+const HOST_ACTIONS: &[&str] = &[
+    "A_WeaponReady",
+    "A_ReFire",
+    "A_ClearReFire",
+    "A_GunFlash",
+    "A_Lower",
+    "A_Raise",
+    "A_CheckReload",
+    "A_FireBullets",
+    "A_FireProjectile",
+    "A_FireCustomMissile",
+    "A_RailAttack",
+    "A_CustomPunch",
+    "A_Light",
+    "A_Light0",
+    "A_Light1",
+    "A_Light2",
+    "A_ZoomFactor",
+    "A_SetCrosshair",
+];
+
+/// `Actor` library actions whose script bodies need engine natives Room
+/// lacks (`GetPointer`): the playsim's DECORATE versions run instead.
+const HOST_ACTOR_ACTIONS: &[&str] = &["A_GiveInventory", "A_TakeInventory", "A_SetInventory"];
+
+/// Key range of weapon script objects in [`ZscriptRuntime::actor_fields`]
+/// (above any actor index).
+const WEAPON_OBJECT_KEY: u32 = 0xc000_0000;
+
+/// Key range of the `PlayerInfo` objects weapon calls read through `player`.
+const PLAYER_INFO_KEY: u32 = 0xa000_0000;
+
+/// The weapon whose action function runs ([`ZscriptRuntime::call_weapon_action`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WeaponCallInfo {
+    /// Weapon class name.
+    pub class: String,
+    /// `Weapon.AmmoType1` / `AmmoType2` (empty = none).
+    pub ammo_type1: String,
+    pub ammo_type2: String,
+    /// `Weapon.AmmoUse1` / `AmmoUse2`.
+    pub ammo_use1: i32,
+    pub ammo_use2: i32,
+    /// The owner's buttons this tic and last tic, as UZDoom `BT_*` bits.
+    pub buttons: i32,
+    pub old_buttons: i32,
+    /// The owner's eye Z and crouch factor (`player.viewz`, `CrouchFactor`).
+    pub view_z: f64,
+    pub crouch_factor: f64,
+}
+
+/// An integer argument from state argument text (`3`, `1.5`, `true`).
+fn arg_int(text: &str) -> i64 {
+    if let Ok(v) = text.parse::<i64>() {
+        return v;
+    }
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).unwrap_or(0);
+    }
+    match text.to_ascii_lowercase().as_str() {
+        "true" => 1,
+        "false" | "null" | "" => 0,
+        _ => text.parse::<f64>().map_or(0, |v| v as i64),
+    }
+}
+
+/// A float argument from state argument text.
+fn arg_float(text: &str) -> f64 {
+    text.parse::<f64>()
+        .ok()
+        .or_else(|| text.parse::<i64>().ok().map(|v| v as f64))
+        .unwrap_or(0.0)
+}
+
+/// A string, name, class or state-label argument: quotes removed, `null`
+/// and `""` empty.
+fn arg_string(text: &str) -> String {
+    let t = text.trim();
+    if t.eq_ignore_ascii_case("null") {
+        return String::new();
+    }
+    t.trim_matches('"').trim_matches('\'').to_owned()
+}
+
+/// Player state a movement script (`PlayerThink`) reads and writes
+/// ([`ZscriptRuntime::call_player_think`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PlayerMoveState {
+    pub buttons: u32,
+    pub old_buttons: u32,
+    pub forward_move: i16,
+    pub side_move: i16,
+    pub up_move: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub on_ground: bool,
+    pub jump_tics: i32,
+    pub turn_ticks: i32,
+    pub centering: bool,
+    pub cheats: i32,
+    pub health: i32,
+    pub water_level: i32,
+    pub view_z: f64,
+    pub view_height: f64,
+    pub delta_view_height: f64,
+    pub crouch_factor: f64,
+    pub crouch_view_delta: f64,
+    /// The pawn's `ViewHeight` property.
+    pub pawn_view_height: f64,
+    /// The pawn's `Player.ViewBob`.
+    pub view_bob: f64,
+}
+
 /// Native actor fields mirrored into a script object around a call.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ActorFieldSnap {
@@ -142,7 +279,14 @@ impl ZscriptRuntime {
         self.load_program_inner(program, true);
     }
 
-    fn load_program_inner(&mut self, program: CompiledProgram, stub_missing: bool) {
+    fn load_program_inner(&mut self, mut program: CompiledProgram, stub_missing: bool) {
+        // The UZDoom library's weapon and firing actions are script bodies
+        // over engine natives Room does not have; Room runs them natively.
+        program.route_to_host_actions(HOST_ACTION_CLASSES, HOST_ACTIONS);
+        program.route_to_host_actions(&["Actor"], HOST_ACTOR_ACTIONS);
+        // A mod's movement code (`PlayerThink` / `HandleMovement` overrides)
+        // runs in the VM; the rest of UZDoom's player think is Room's own.
+        program.route_to_noops(&["PlayerPawn"], PLAYER_THINK_HOST_PARTS);
         #[cfg(feature = "zvm-aot")]
         let shipped = room_zvm_wasm::shipped_for(&program);
         let program = Arc::new(program);
@@ -172,6 +316,7 @@ impl ZscriptRuntime {
         if !vm.has_aot() {
             room_zvm::provide_aot(&mut vm, &program);
         }
+        vm.play.flag_names = Arc::new(crate::flags::flag_names());
         vm.play.class_names = program
             .classes
             .iter()
@@ -305,6 +450,13 @@ impl ZscriptRuntime {
             vm.play.melee_ok = melee_ok;
             vm.play.self_target = self_target;
             vm.play.inventory = inventory;
+        }
+    }
+
+    /// Flag bits of the actors mirrored for this call (`victim.bSHOOTABLE`).
+    pub(crate) fn set_call_flags(&mut self, flags: Vec<(ObjHandle, Vec<u64>)>) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.play.actor_flags = flags;
         }
     }
 
@@ -608,10 +760,12 @@ impl ZscriptRuntime {
         let Some(sec) = sector.and_then(|s| vm.play.map_objects.sectors.get(s).copied()) else {
             return;
         };
-        if let Some((1, slot)) = walk_field(vm, h, "cursector") {
-            if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(h) {
-                if let Some(v) = fields_a.get_mut(slot) {
-                    *v = sec;
+        for field in ["cursector", "floorsector", "ceilingsector"] {
+            if let Some((1, slot)) = walk_field(vm, h, field) {
+                if let Some(ObjKind::Object { fields_a, .. }) = vm.heap.get_mut(h) {
+                    if let Some(v) = fields_a.get_mut(slot) {
+                        *v = sec;
+                    }
                 }
             }
         }
@@ -1216,6 +1370,433 @@ impl ZscriptRuntime {
         result
     }
 
+    /// Whether `class`'s script overrides UZDoom's player movement
+    /// (`PlayerThink` or `HandleMovement` defined below `PlayerPawn`, as
+    /// Project Brutality's `PlayerPawnBase` does).
+    pub(crate) fn overrides_player_movement(&self, class: &str) -> bool {
+        ["PlayerThink", "HandleMovement"].iter().any(|m| {
+            self.resolve_method(class, m).is_some_and(|r| {
+                r.rsplit_once('.')
+                    .is_some_and(|(owner, _)| !owner.eq_ignore_ascii_case("PlayerPawn"))
+            })
+        })
+    }
+
+    /// Run the pawn's script `PlayerThink` (movement, jumping, view height
+    /// and pitch; [`PLAYER_THINK_HOST_PARTS`] are Room's). `st` carries the
+    /// player's state in and the script's changes out; the pawn's own fields
+    /// go through [`World::zscript_sync_in`] / `sync_out` around this.
+    pub(crate) fn call_player_think(
+        &mut self,
+        mo_index: u32,
+        class: &str,
+        st: &mut PlayerMoveState,
+    ) -> Result<(), room_zvm::Trap> {
+        let no_vm = || room_zvm::Trap::Native("no ZScript program".into());
+        let resolved = self
+            .resolve_method(class, "PlayerThink")
+            .ok_or_else(|| room_zvm::Trap::Native(format!("{class} has no PlayerThink")))?;
+        let self_h = self
+            .ensure_actor_object(mo_index, class)
+            .ok_or_else(no_vm)?;
+        let info_h = self
+            .ensure_actor_object(PLAYER_INFO_KEY | (mo_index & 0xffff), "PlayerInfo")
+            .ok_or_else(no_vm)?;
+        let vm = self.vm.as_mut().ok_or_else(no_vm)?;
+        set_typed_object_field(vm, info_h, "mo", self_h);
+        set_typed_object_field(vm, info_h, "camera", self_h);
+        set_typed_object_field(vm, self_h, "player", info_h);
+        set_typed_int_field(vm, info_h, "oldbuttons", i64::from(st.old_buttons));
+        set_typed_int_field(vm, info_h, "onground", i64::from(st.on_ground));
+        set_typed_int_field(vm, info_h, "jumptics", i64::from(st.jump_tics));
+        set_typed_int_field(vm, info_h, "turnticks", i64::from(st.turn_ticks));
+        set_typed_int_field(vm, info_h, "centering", i64::from(st.centering));
+        set_typed_int_field(vm, info_h, "cheats", i64::from(st.cheats));
+        set_typed_int_field(vm, info_h, "playerstate", 0);
+        set_typed_int_field(vm, info_h, "health", i64::from(st.health));
+        set_walk_float_field(vm, info_h, "viewz", st.view_z);
+        set_walk_float_field(vm, info_h, "viewheight", st.view_height);
+        set_walk_float_field(vm, info_h, "deltaviewheight", st.delta_view_height);
+        set_walk_float_field(vm, info_h, "crouchfactor", st.crouch_factor);
+        set_walk_float_field(vm, info_h, "crouchviewdelta", st.crouch_view_delta);
+        set_walk_float_field(vm, info_h, "minpitch", -90.0);
+        set_walk_float_field(vm, info_h, "maxpitch", 90.0);
+        set_walk_float_field(vm, info_h, "desiredfov", 90.0);
+        set_walk_float_field(vm, info_h, "fov", 90.0);
+        set_typed_int_field(vm, self_h, "waterlevel", i64::from(st.water_level));
+        set_walk_float_field(vm, self_h, "viewheight", st.pawn_view_height);
+        set_walk_float_field(vm, self_h, "viewbob", st.view_bob);
+        if let Some((1, index)) = typed_field(vm, info_h, "cmd") {
+            let cmd = match vm.heap.get(info_h) {
+                Some(ObjKind::Object { fields_a, .. }) => {
+                    fields_a.get(index).copied().unwrap_or(ObjHandle::NULL)
+                }
+                _ => ObjHandle::NULL,
+            };
+            let cmd = if vm.heap.get(cmd).is_some() {
+                cmd
+            } else {
+                let layout = vm
+                    .program
+                    .classes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.name.eq_ignore_ascii_case("UserCmd"))
+                    .map(|(id, c)| (id as u32, c.n_i, c.n_a, c.n_s, c.n_f));
+                let (id, ni, na, ns, nf) = layout.unwrap_or((0, 8, 0, 0, 0));
+                let h = vm.heap.new_object_f(id, ni.max(8), na, ns, nf);
+                set_typed_object_field(vm, info_h, "cmd", h);
+                h
+            };
+            set_typed_int_field(vm, cmd, "buttons", i64::from(st.buttons));
+            set_typed_int_field(vm, cmd, "forwardmove", i64::from(st.forward_move));
+            set_typed_int_field(vm, cmd, "sidemove", i64::from(st.side_move));
+            set_typed_int_field(vm, cmd, "upmove", i64::from(st.up_move));
+            set_typed_int_field(vm, cmd, "yaw", i64::from(st.yaw));
+            set_typed_int_field(vm, cmd, "pitch", i64::from(st.pitch));
+        }
+        let result = vm.call_method_self(&resolved, self_h).map(|_| ());
+        let vm = self.vm.as_mut().ok_or_else(no_vm)?;
+        let int = |vm: &Zvm, h: ObjHandle, f: &str| -> Option<i64> {
+            let (0, k) = walk_field(vm, h, f)? else {
+                return None;
+            };
+            match vm.heap.get(h)? {
+                ObjKind::Object { fields_i, .. } => fields_i.get(k).copied(),
+                _ => None,
+            }
+        };
+        let float = |vm: &Zvm, h: ObjHandle, f: &str| -> Option<f64> {
+            let (3, k) = walk_field(vm, h, f)? else {
+                return None;
+            };
+            match vm.heap.get(h)? {
+                ObjKind::Object { fields_f, .. } => fields_f.get(k).copied(),
+                _ => None,
+            }
+        };
+        if let Some(v) = float(vm, info_h, "viewz") {
+            st.view_z = v;
+        }
+        if let Some(v) = float(vm, info_h, "viewheight") {
+            st.view_height = v;
+        }
+        if let Some(v) = float(vm, info_h, "deltaviewheight") {
+            st.delta_view_height = v;
+        }
+        if let Some(v) = int(vm, info_h, "onground") {
+            st.on_ground = v != 0;
+        }
+        if let Some(v) = int(vm, info_h, "jumptics") {
+            st.jump_tics = i32::try_from(v).unwrap_or(0);
+        }
+        if let Some(v) = int(vm, info_h, "turnticks") {
+            st.turn_ticks = i32::try_from(v).unwrap_or(0);
+        }
+        if let Some(v) = int(vm, info_h, "centering") {
+            st.centering = v != 0;
+        }
+        result
+    }
+
+    /// The script object of `weapon_class` owned by actor `owner_id` (one
+    /// per owner and weapon class, kept with the actor objects so it is
+    /// saved and its fields last between calls).
+    fn ensure_weapon_object(&mut self, owner_id: u32, weapon_class: &str) -> Option<ObjHandle> {
+        let vm = self.vm.as_ref()?;
+        let cid = vm
+            .program
+            .class_by_name
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(weapon_class))
+            .map(|(_, &id)| id)?;
+        let key = WEAPON_OBJECT_KEY | ((owner_id & 0xffff) << 14) | (cid & 0x3fff);
+        self.ensure_actor_object(key, weapon_class)
+    }
+
+    /// Run a weapon's `action` function from its psprite state (UZDoom
+    /// `CallAction`): `self` is the owner's script object, `invoker` the
+    /// weapon's. `args` are the state's argument text; missing ones take the
+    /// declared defaults. Returns its integer result and the label of the
+    /// state it returned, if any.
+    pub(crate) fn call_weapon_action(
+        &mut self,
+        owner_id: u32,
+        owner_class: &str,
+        weapon: &WeaponCallInfo,
+        method: &str,
+        args: &[String],
+    ) -> Result<(i64, Option<String>), room_zvm::Trap> {
+        let resolved = self.resolve_method(&weapon.class, method).ok_or_else(|| {
+            room_zvm::Trap::Native(format!("unknown function {}.{method}", weapon.class))
+        })?;
+        let no_vm = || room_zvm::Trap::Native("no ZScript program".into());
+        let self_h = self
+            .ensure_actor_object(owner_id, owner_class)
+            .ok_or_else(no_vm)?;
+        let inv_h = self
+            .ensure_weapon_object(owner_id, &weapon.class)
+            .ok_or_else(no_vm)?;
+        let info_h = self
+            .ensure_actor_object(PLAYER_INFO_KEY | (owner_id & 0xffff), "PlayerInfo")
+            .ok_or_else(no_vm)?;
+        let vm = self.vm.as_mut().ok_or_else(no_vm)?;
+        // `player` (`player.cmd.buttons`, `player.ReadyWeapon`) for the owner.
+        set_typed_object_field(vm, info_h, "mo", self_h);
+        set_typed_object_field(vm, info_h, "readyweapon", inv_h);
+        set_typed_int_field(vm, info_h, "oldbuttons", i64::from(weapon.old_buttons));
+        set_walk_float_field(vm, info_h, "viewz", weapon.view_z);
+        set_walk_float_field(vm, info_h, "crouchfactor", weapon.crouch_factor);
+        set_walk_float_field(vm, info_h, "desiredfov", 90.0);
+        set_walk_float_field(vm, info_h, "fov", 90.0);
+        if let Some((1, index)) = typed_field(vm, info_h, "cmd") {
+            let cmd = match vm.heap.get(info_h) {
+                Some(ObjKind::Object { fields_a, .. }) => {
+                    fields_a.get(index).copied().unwrap_or(ObjHandle::NULL)
+                }
+                _ => ObjHandle::NULL,
+            };
+            let cmd = if vm.heap.get(cmd).is_some() {
+                cmd
+            } else {
+                let layout = vm
+                    .program
+                    .classes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.name.eq_ignore_ascii_case("UserCmd"))
+                    .map(|(id, c)| (id as u32, c.n_i, c.n_a, c.n_s, c.n_f));
+                let (id, ni, na, ns, nf) = layout.unwrap_or((0, 8, 0, 0, 0));
+                let h = vm.heap.new_object_f(id, ni.max(8), na, ns, nf);
+                set_typed_object_field(vm, info_h, "cmd", h);
+                h
+            };
+            set_typed_int_field(vm, cmd, "buttons", i64::from(weapon.buttons));
+        }
+        set_typed_object_field(vm, self_h, "player", info_h);
+        set_typed_object_field(vm, inv_h, "owner", self_h);
+        set_typed_string_field(vm, inv_h, "ammotype1", &weapon.ammo_type1);
+        set_typed_string_field(vm, inv_h, "ammotype2", &weapon.ammo_type2);
+        set_typed_int_field(vm, inv_h, "ammouse1", i64::from(weapon.ammo_use1));
+        set_typed_int_field(vm, inv_h, "ammouse2", i64::from(weapon.ammo_use2));
+        let (params, defaults) = {
+            let program = &vm.program;
+            let params = program
+                .func(&resolved)
+                .map(|f| f.params.iter().skip(1).map(|p| p.bank).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let defaults = program
+                .action_defaults
+                .get(&resolved)
+                .cloned()
+                .unwrap_or_default();
+            (params, defaults)
+        };
+        // Defaults line up with the parameters unless one is a vector.
+        let defaults_fit = defaults.len() == params.len();
+        let (mut ints, mut floats, mut strings) = (Vec::new(), Vec::new(), Vec::new());
+        let mut objects = Vec::new();
+        for (k, bank) in params.iter().enumerate() {
+            let text = args
+                .get(k)
+                .map(String::as_str)
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| defaults_fit.then(|| defaults[k].as_str()))
+                .unwrap_or("")
+                .trim();
+            match bank {
+                1 => floats.push(arg_float(text)),
+                2 => strings.push(arg_string(text)),
+                3 => objects.push(ObjHandle::NULL),
+                _ => ints.push(arg_int(text)),
+            }
+        }
+        let string_refs: Vec<&str> = strings.iter().map(String::as_str).collect();
+        vm.play.invoker = inv_h;
+        let result =
+            vm.call_method_banks(&resolved, self_h, &ints, &floats, &string_refs, &objects);
+        vm.play.invoker = ObjHandle::NULL;
+        let value = result?;
+        let returned = vm.last_a;
+        Ok((value, room_zvm::state_token_label(&vm.heap, returned)))
+    }
+
+    /// Run `method` (already resolved) on actor `actor_id`'s script object
+    /// with another actor's object as its one argument (`SpecialMissileHit`).
+    pub(crate) fn call_with_actor(
+        &mut self,
+        actor_id: u32,
+        class: &str,
+        resolved: &str,
+        other_id: u32,
+        other_class: &str,
+    ) -> Result<i64, room_zvm::Trap> {
+        let no_vm = || room_zvm::Trap::Native("no ZScript program".into());
+        let h = self
+            .ensure_actor_object(actor_id, class)
+            .ok_or_else(no_vm)?;
+        let other = self
+            .ensure_actor_object(other_id, other_class)
+            .ok_or_else(no_vm)?;
+        let vm = self.vm.as_mut().ok_or_else(no_vm)?;
+        vm.call_method_banks(resolved, h, &[], &[], &[], &[other])
+    }
+
+    /// The `Actor.Spawn` calls the last script queued (`actor.spawn` ops),
+    /// taken out of the native op queue in order: `(object, untouched copy,
+    /// class, position, replace)`.
+    pub(crate) fn take_spawn_ops(&mut self) -> Vec<(ObjHandle, ObjHandle, String, [f64; 3], i64)> {
+        let Some(vm) = self.vm.as_mut() else {
+            return Vec::new();
+        };
+        if !vm.play.native_ops.iter().any(|op| op.name == "actor.spawn") {
+            return Vec::new();
+        }
+        let (spawns, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut vm.play.native_ops)
+            .into_iter()
+            .partition(|op| op.name == "actor.spawn");
+        vm.play.native_ops = rest;
+        spawns
+            .into_iter()
+            .map(|op| {
+                let f = |k: usize| op.f.get(k).copied().unwrap_or(0.0);
+                (
+                    op.recv,
+                    op.objs.first().copied().unwrap_or(ObjHandle::NULL),
+                    op.s.first().cloned().unwrap_or_default(),
+                    [f(0), f(1), f(2)],
+                    op.i.first().copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    /// Make `h` the script object of actor `index` (a `Spawn` result).
+    pub(crate) fn bind_actor_object(&mut self, index: u32, generation: u32, h: ObjHandle) {
+        // A stale object of a freed actor with this index is left to the
+        // collector: a script may still hold it.
+        self.actor_fields.insert(index, h);
+        self.actor_gen.insert(index, generation);
+    }
+
+    /// After a spawned actor took the script's writes: give `h` the class's
+    /// field defaults and arrays where the script left a slot as it was made
+    /// (`initial`, then freed), keeping what the script wrote.
+    pub(crate) fn finish_spawned_object(&mut self, h: ObjHandle, initial: ObjHandle) {
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        let before = vm.heap.get(initial).cloned();
+        let now = vm.heap.get(h).cloned();
+        vm.heap.destroy(initial);
+        let (
+            Some(ObjKind::Object {
+                fields_i: bi,
+                fields_a: ba,
+                fields_s: bs,
+                fields_f: bf,
+                ..
+            }),
+            Some(ObjKind::Object {
+                class_id,
+                fields_i: ni,
+                fields_a: na,
+                fields_s: ns,
+                fields_f: nf,
+            }),
+        ) = (before, now)
+        else {
+            return;
+        };
+        let class = vm
+            .program
+            .classes
+            .get(class_id as usize)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        apply_field_defaults(vm, h, &class);
+        // Arrays as `new` makes them.
+        let layout = vm.program.classes.get(class_id as usize).cloned();
+        let mut arrays = Vec::new();
+        if let Some(l) = layout {
+            for &k in &l.array_i {
+                arrays.push((k, vm.heap.new_array_i()));
+            }
+            for &k in &l.array_s {
+                arrays.push((k, vm.heap.new_array_s()));
+            }
+        }
+        if let Some(ObjKind::Object {
+            fields_i,
+            fields_a,
+            fields_s,
+            fields_f,
+            ..
+        }) = vm.heap.get_mut(h)
+        {
+            for (k, arr) in arrays {
+                let k = usize::from(k);
+                if na.get(k).is_none_or(|v| v.is_null()) {
+                    if fields_a.len() <= k {
+                        fields_a.resize(k + 1, ObjHandle::NULL);
+                    }
+                    fields_a[k] = arr;
+                }
+            }
+            // The script's own writes win over the defaults.
+            for (k, v) in ni.iter().enumerate() {
+                if bi.get(k) != Some(v) {
+                    if fields_i.len() <= k {
+                        fields_i.resize(k + 1, 0);
+                    }
+                    fields_i[k] = *v;
+                }
+            }
+            for (k, v) in na.iter().enumerate() {
+                if ba.get(k) != Some(v) {
+                    if fields_a.len() <= k {
+                        fields_a.resize(k + 1, ObjHandle::NULL);
+                    }
+                    fields_a[k] = *v;
+                }
+            }
+            for (k, v) in ns.iter().enumerate() {
+                if bs.get(k) != Some(v) {
+                    if let Some(slot) = fields_s.get_mut(k) {
+                        *slot = *v;
+                    }
+                }
+            }
+            for (k, v) in nf.iter().enumerate() {
+                if bf.get(k).map(|b| b.to_bits()) != Some(v.to_bits()) {
+                    if fields_f.len() <= k {
+                        fields_f.resize(k + 1, 0.0);
+                    }
+                    fields_f[k] = *v;
+                }
+            }
+        }
+    }
+
+    /// Free a `Spawn` object whose actor could not be made.
+    pub(crate) fn drop_spawned_object(&mut self, h: ObjHandle, initial: ObjHandle) {
+        if let Some(vm) = self.vm.as_mut() {
+            vm.heap.destroy(initial);
+            vm.heap.destroy(h);
+        }
+    }
+
+    /// Actor index of the script object `h`, if it is an actor's.
+    pub(crate) fn actor_index_of(&self, h: ObjHandle) -> Option<u32> {
+        if h.is_null() {
+            return None;
+        }
+        self.actor_fields
+            .iter()
+            .find(|(k, v)| **v == h && **k < PLAYER_INFO_KEY)
+            .map(|(k, _)| *k)
+    }
+
     /// Invoke the ZScript `Actor.CanResurrect(other, passive)` virtual for one
     /// side of UZDoom's two-way resurrection check. A missing script override
     /// accepts by default, matching `Actor.CanResurrect`.
@@ -1246,23 +1827,27 @@ impl ZscriptRuntime {
 
     fn ensure_actor_object(&mut self, actor_id: u32, class: &str) -> Option<ObjHandle> {
         let vm = self.vm.as_mut()?;
-        let h = *self.actor_fields.entry(actor_id).or_insert_with(|| {
-            let cid = vm
-                .program
-                .class_by_name
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(class))
-                .map(|(_, &id)| id)
-                .unwrap_or(0);
-            let layout = vm
-                .program
-                .classes
-                .get(cid as usize)
-                .cloned()
-                .unwrap_or_default();
-            vm.heap
-                .new_object_f(cid, layout.n_i, layout.n_a, layout.n_s, layout.n_f)
-        });
+        if let Some(&h) = self.actor_fields.get(&actor_id) {
+            return Some(h);
+        }
+        let cid = vm
+            .program
+            .class_by_name
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(class))
+            .map(|(_, &id)| id)
+            .unwrap_or(0);
+        let layout = vm
+            .program
+            .classes
+            .get(cid as usize)
+            .cloned()
+            .unwrap_or_default();
+        let h = vm
+            .heap
+            .new_object_f(cid, layout.n_i, layout.n_a, layout.n_s, layout.n_f);
+        apply_field_defaults(vm, h, &layout.name);
+        self.actor_fields.insert(actor_id, h);
         Some(h)
     }
 
@@ -1694,8 +2279,11 @@ fn typed_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
         _ => return None,
     };
     let layout = vm.program.classes.get(class_id as usize)?;
-    let (bank, index) = layout.fields.get(&name.to_ascii_lowercase()).copied()?;
-    Some((bank, usize::from(index)))
+    match layout.fields.get(&name.to_ascii_lowercase()).copied() {
+        Some((bank, index)) => Some((bank, usize::from(index))),
+        // Inherited (`Actor.player` on a player class).
+        None => walk_field(vm, object, name),
+    }
 }
 
 /// `(bank, slot)` of `name` on the object's class or an ancestor. A vector
@@ -1734,6 +2322,64 @@ fn walk_field(vm: &Zvm, object: ObjHandle, name: &str) -> Option<(u8, usize)> {
             .find(|c| c.name.eq_ignore_ascii_case(&parent))?;
     }
     None
+}
+
+/// The `Default` values of `class` and its ancestors (ancestors first) on a
+/// new object: custom properties and flagdefs ([`CompiledProgram::field_defaults`]).
+fn apply_field_defaults(vm: &mut Zvm, h: ObjHandle, class: &str) {
+    if vm.program.field_defaults.is_empty() {
+        return;
+    }
+    let mut chain = Vec::new();
+    let mut cur = class.to_owned();
+    for _ in 0..64 {
+        if cur.is_empty() {
+            break;
+        }
+        let Some(layout) = vm
+            .program
+            .classes
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&cur))
+        else {
+            break;
+        };
+        chain.push(layout.name.clone());
+        cur = layout.parent.clone();
+    }
+    let values: Vec<(String, String)> = chain
+        .iter()
+        .rev()
+        .filter_map(|c| {
+            vm.program
+                .field_defaults
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(c))
+                .map(|(_, v)| v.clone())
+        })
+        .flatten()
+        .collect();
+    for (field, text) in values {
+        match walk_field(vm, h, &field) {
+            Some((0, _)) => set_typed_int_field(vm, h, &field, arg_int(&text)),
+            Some((2, _)) => set_typed_string_field(vm, h, &field, &arg_string(&text)),
+            Some((3, _)) => set_walk_float_field(vm, h, &field, arg_float(&text)),
+            _ => {}
+        }
+    }
+}
+
+/// Set float field `name` (inherited ones too); missing fields are ignored.
+fn set_walk_float_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: f64) {
+    let Some((3, index)) = walk_field(vm, object, name) else {
+        return;
+    };
+    if let Some(ObjKind::Object { fields_f, .. }) = vm.heap.get_mut(object) {
+        if fields_f.len() <= index {
+            fields_f.resize(index + 1, 0.0);
+        }
+        fields_f[index] = value;
+    }
 }
 
 fn set_typed_int_field(vm: &mut Zvm, object: ObjHandle, name: &str, value: i64) {

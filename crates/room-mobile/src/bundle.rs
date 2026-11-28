@@ -23,6 +23,38 @@ pub const BUNDLED_FILES: [&str; 6] = [
     "BRUTALDOOM-LICENSE.txt",
 ];
 
+/// Optional list of extra shipped files (Room's own mods), one file name per
+/// line, written by `scripts/stage-mods.sh`. A copy is kept in the
+/// destination so the next sync can drop files a newer package no longer
+/// lists.
+pub const MODS_LIST: &str = "bundled-mods.txt";
+
+/// Names from a [`MODS_LIST`]: plain file names only (no folders, nothing
+/// hidden), each once.
+fn listed_mods(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let name = line.trim();
+        let plain = !name.is_empty()
+            && !name.starts_with('.')
+            && !name.contains(['/', '\\'])
+            && name != MODS_LIST;
+        if plain && !out.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+fn read_list(source: &dyn BundleSource) -> io::Result<Option<String>> {
+    if source.len(MODS_LIST).is_none() {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    source.open(MODS_LIST)?.read_to_string(&mut text)?;
+    Ok(Some(text))
+}
+
 /// Where shipped files come from (APK assets on Android, a folder in tests).
 pub trait BundleSource {
     /// Size in bytes, or `None` when the package does not contain `name`.
@@ -54,7 +86,22 @@ pub struct SyncReport {
 /// Creating a folder, reading an asset or writing a file failed.
 pub fn sync_bundle(source: &dyn BundleSource, dest: &Path) -> io::Result<SyncReport> {
     let mut report = SyncReport::default();
-    for name in BUNDLED_FILES {
+    let list = read_list(source)?;
+    let mods = list.as_deref().map(listed_mods).unwrap_or_default();
+    // Files the previous package listed and this one does not.
+    if let Ok(old) = std::fs::read_to_string(dest.join(MODS_LIST)) {
+        for name in listed_mods(&old) {
+            if !mods.iter().any(|m| m.eq_ignore_ascii_case(&name)) {
+                let _ = std::fs::remove_file(dest.join(&name));
+            }
+        }
+    }
+    let names = BUNDLED_FILES
+        .iter()
+        .map(|n| (*n).to_owned())
+        .chain(mods.iter().cloned());
+    for name in names {
+        let name = name.as_str();
         let Some(len) = source.len(name) else {
             report.missing.push(name.to_owned());
             continue;
@@ -84,6 +131,15 @@ pub fn sync_bundle(source: &dyn BundleSource, dest: &Path) -> io::Result<SyncRep
         }
         std::fs::rename(&part, &target)?;
         report.copied.push(name.to_owned());
+    }
+    match list {
+        Some(text) => {
+            std::fs::create_dir_all(dest)?;
+            std::fs::write(dest.join(MODS_LIST), text)?;
+        }
+        None => {
+            let _ = std::fs::remove_file(dest.join(MODS_LIST));
+        }
     }
     Ok(report)
 }
@@ -124,6 +180,47 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("room-bundle-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn listed_mods_are_copied_and_dropped_when_unlisted() {
+        let dir = temp("mods");
+        let src = Memory(HashMap::from([
+            ("freedoom2.wad", b"IWAD-two".to_vec()),
+            (
+                MODS_LIST,
+                b"colorworld.wad\nsurvival.wad\n../evil.wad\n.hidden\nsurvival.wad\n\n".to_vec(),
+            ),
+            ("colorworld.wad", b"PWAD-color".to_vec()),
+            ("survival.wad", b"PWAD-survival".to_vec()),
+        ]));
+        let r = sync_bundle(&src, &dir).expect("sync");
+        assert_eq!(
+            r.copied,
+            ["freedoom2.wad", "colorworld.wad", "survival.wad"]
+        );
+        assert_eq!(
+            std::fs::read(dir.join("survival.wad")).unwrap(),
+            b"PWAD-survival"
+        );
+        assert!(!dir.join("../evil.wad").exists());
+        // The next package drops Survival: its copy goes, Color World stays.
+        let src = Memory(HashMap::from([
+            ("freedoom2.wad", b"IWAD-two".to_vec()),
+            (MODS_LIST, b"colorworld.wad\n".to_vec()),
+            ("colorworld.wad", b"PWAD-color".to_vec()),
+        ]));
+        let r = sync_bundle(&src, &dir).expect("sync again");
+        assert!(r.copied.is_empty());
+        assert!(!dir.join("survival.wad").exists());
+        assert!(dir.join("colorworld.wad").exists());
+        // A package with no list removes every listed mod.
+        let src = Memory(HashMap::from([("freedoom2.wad", b"IWAD-two".to_vec())]));
+        sync_bundle(&src, &dir).expect("sync without mods");
+        assert!(!dir.join("colorworld.wad").exists());
+        assert!(!dir.join(MODS_LIST).exists());
+        assert!(dir.join("freedoom2.wad").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

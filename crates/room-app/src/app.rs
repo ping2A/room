@@ -3544,8 +3544,13 @@ fn start_play_session(
             match room_game::load_status_bar_program(vfs)
                 .and_then(|prog| room_ui::ScriptStatusBar::new(prog, class))
             {
-                Ok(bar) => {
+                Ok(mut bar) => {
                     eprintln!("room: ZScript status bar {}", bar.class());
+                    // The mods' CVar defaults (PB's `pb_showammolist`, …);
+                    // the console's values follow in `sync_mod_cvars`.
+                    for (name, default) in &mod_cvars {
+                        bar.set_mod_cvar(name, default);
+                    }
                     script_sbar = Some(bar);
                 }
                 Err(e) => eprintln!("room: status bar {class}: {e} (native bar kept)"),
@@ -4061,6 +4066,14 @@ impl ApplicationHandler for ViewerApp {
         let attrs = Window::default_attributes()
             .with_title("Room map viewer")
             .with_inner_size(window_size());
+        // `ROOM_FULLSCREEN=1`: borderless fullscreen on the current monitor
+        // (Steam Deck desktop mode; Game Mode's gamescope fills the screen
+        // either way).
+        let attrs = if env_flag("ROOM_FULLSCREEN") {
+            attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+        } else {
+            attrs
+        };
         #[cfg(target_os = "macos")]
         let attrs = {
             use winit::platform::macos::WindowAttributesExtMacOS;
@@ -5758,6 +5771,9 @@ impl ViewerApp {
                 .unwrap_or_default();
             if now != *last {
                 game.set_mod_cvar(name, &now);
+                if let Some(bar) = self.script_sbar.as_mut() {
+                    bar.set_mod_cvar(name, &now);
+                }
                 *last = now;
             }
         }
@@ -6637,6 +6653,14 @@ impl ViewerApp {
                         // Doom psprites/crosshair: the native Duke renderer
                         // draws its own weapon; a missing Doom weapon lump
                         // here showed as a grey 16x16 placeholder box.
+                        // The weapon sits above a status bar across the
+                        // bottom; a script bar that only draws a full-screen
+                        // HUD (PB) leaves it at the bottom of the screen.
+                        let weapon_fullscreen = self.hud.fullscreen
+                            || self
+                                .script_sbar
+                                .as_ref()
+                                .is_some_and(|b| !b.drew_status_bar());
                         if let Some(vfs) = self.vfs.as_ref() {
                             if !self.hud.weapon_patch.is_empty() {
                                 let _ = self.patches.ensure(vfs, &self.hud.weapon_patch);
@@ -6709,7 +6733,7 @@ impl ViewerApp {
                                     draw_weapon_tinted(
                                         ui,
                                         &layer.patch,
-                                        self.hud.fullscreen,
+                                        weapon_fullscreen,
                                         Some(soft_layer),
                                         x,
                                         y,
@@ -6744,7 +6768,7 @@ impl ViewerApp {
                         draw_weapon_tinted(
                             &mut ui,
                             &self.hud.weapon_patch,
-                            self.hud.fullscreen,
+                            weapon_fullscreen,
                             soft,
                             bob_x,
                             bob_y,
@@ -6778,7 +6802,7 @@ impl ViewerApp {
                                 draw_weapon_tinted(
                                     &mut ui,
                                     &self.hud.overlay_patch,
-                                    self.hud.fullscreen,
+                                    weapon_fullscreen,
                                     Some(soft_overlay),
                                     overlay_layer_bob(
                                         layer_bob_x,
@@ -6824,7 +6848,7 @@ impl ViewerApp {
                             draw_weapon_lit(
                                 &mut ui,
                                 &self.hud.flash_patch,
-                                self.hud.fullscreen,
+                                weapon_fullscreen,
                                 Some(soft_flash),
                                 bob_x,
                                 bob_y,
@@ -6977,10 +7001,21 @@ impl ViewerApp {
                                 spawn_sprites: items.spawn_sprites,
                                 max_amounts: items.max_amounts,
                                 power_tics: items.power_tics,
+                                ancestors: items.ancestors,
+                                player_class: items.player_class,
+                                pose: items.pose,
                             };
                             if let Some(vfs) = self.vfs.as_ref() {
                                 for name in room_ui::ScriptStatusBar::althud_patches(&snap) {
                                     let _ = self.patches.ensure(vfs, &name);
+                                }
+                                // Pictures the script bar asked for last frame
+                                // whose size was unknown: it leaves them out
+                                // until they are loaded.
+                                if let Some(bar) = self.script_sbar.as_mut() {
+                                    for name in bar.take_unknown_patches() {
+                                        let _ = self.patches.ensure(vfs, &name);
+                                    }
                                 }
                                 if use_sbarinfo {
                                     if let Some(bar) = self.sbarinfo_bar.as_ref() {
@@ -7072,6 +7107,13 @@ impl ViewerApp {
                                     }
                                 }
                             } else if let Some(bar) = self.script_sbar.as_mut() {
+                                let (fb_w, fb_h) = self
+                                    .config
+                                    .as_ref()
+                                    .map(|c| (c.width as f32, c.height as f32))
+                                    .unwrap_or((1280.0, 720.0));
+                                bar.set_screen_size(fb_w, fb_h);
+                                bar.set_game_tic(world.level.time);
                                 bar.draw(&snap, self.hud.fullscreen, 1.0, &dims, &mut ui);
                                 if let Some(e) = bar.last_error.take() {
                                     static LOGGED: std::sync::Once = std::sync::Once::new();
@@ -14823,6 +14865,17 @@ fn weapon_hud_frames(
 
 /// Window size: `ROOM_WINDOW_SIZE=WxH` (logical px; e.g. `873x393` with
 /// `WINIT_X11_SCALE_FACTOR=2.75` previews a phone's layout), else 1280×720.
+/// True when the environment variable is set to something other than
+/// empty, `0`, `false`, `no` or `off`.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| flag_is_on(&v))
+}
+
+fn flag_is_on(value: &str) -> bool {
+    let v = value.trim().to_ascii_lowercase();
+    !matches!(v.as_str(), "" | "0" | "false" | "no" | "off")
+}
+
 fn window_size() -> LogicalSize<f64> {
     std::env::var("ROOM_WINDOW_SIZE")
         .ok()
@@ -14921,4 +14974,19 @@ fn image_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) -> std::io::Re
     let mut png = Vec::new();
     room_render::encode_png(w, h, rgba, &mut png).map_err(std::io::Error::other)?;
     std::fs::write(path, png)
+}
+
+#[cfg(test)]
+mod env_flag_tests {
+    use super::flag_is_on;
+
+    #[test]
+    fn fullscreen_flag_reads_common_spellings() {
+        for on in ["1", "yes", "true", "ON", " 1 "] {
+            assert!(flag_is_on(on), "{on:?}");
+        }
+        for off in ["", "0", "no", "false", "OFF", " 0 "] {
+            assert!(!flag_is_on(off), "{off:?}");
+        }
+    }
 }

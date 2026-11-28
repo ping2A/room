@@ -88,6 +88,8 @@ pub struct PlaySession {
     sbarinfo_bar: Option<room_ui::SbarInfoBar>,
     /// Where in the HUD list this frame's SBARINFO bar goes.
     sbarinfo_slot: Option<usize>,
+    /// The weapon's commands in this frame's HUD list (`draw_player_hud`).
+    weapon_cmd_range: Option<(usize, usize)>,
     /// VOXELDEF registry.
     voxeldefs: VoxelDefs,
     /// Cached KVX meshes.
@@ -581,6 +583,7 @@ impl PlaySession {
             gldefs,
             sbarinfo_bar,
             sbarinfo_slot: None,
+            weapon_cmd_range: None,
             voxeldefs,
             voxels: VoxelCatalog::new(),
             voxel_poses: Vec::new(),
@@ -2528,6 +2531,50 @@ impl PlaySession {
 
     /// Rasterize weapon + classic `STBAR` HUD into a CPU canvas for `CanvasGpu`.
     pub fn build_hud_canvas(&mut self, fb_w: f32, fb_h: f32) -> Canvas {
+        self.build_hud_canvases(fb_w, fb_h, false).0
+    }
+
+    /// [`Self::build_hud_canvas`], with the weapon in a canvas of its own
+    /// when `split_weapon`: a mod's post shader sees the weapon as part of
+    /// the scene (as in UZDoom) but not the status bar.
+    pub fn build_hud_canvases(
+        &mut self,
+        fb_w: f32,
+        fb_h: f32,
+        split_weapon: bool,
+    ) -> (Canvas, Option<Canvas>) {
+        let mut weapon_list: Option<UiDrawList> = None;
+        let canvas =
+            self.build_hud_canvas_inner(fb_w, fb_h, split_weapon.then_some(&mut weapon_list));
+        let weapon = weapon_list.map(|list| {
+            let mut canvas = Canvas::new();
+            canvas.clear([0.0, 0.0, 0.0, 0.0]);
+            let scale = (fb_w / 320.0).min(fb_h / 200.0);
+            let (ox, oy) = ((fb_w - 320.0 * scale) * 0.5, fb_h - 200.0 * scale);
+            let mut sink = OffsetCanvasSink {
+                canvas: &mut canvas,
+                ox,
+                oy,
+            };
+            blit_draw_list_full(
+                &list,
+                320.0 * scale,
+                200.0 * scale,
+                None,
+                Some(&self.patches),
+                &mut sink,
+            );
+            canvas
+        });
+        (canvas, weapon)
+    }
+
+    fn build_hud_canvas_inner(
+        &mut self,
+        fb_w: f32,
+        fb_h: f32,
+        weapon_out: Option<&mut Option<UiDrawList>>,
+    ) -> Canvas {
         if self.edit_cam.is_some() {
             let mut canvas = Canvas::new();
             canvas.clear([0.0, 0.0, 0.0, 0.0]);
@@ -2540,8 +2587,29 @@ impl PlaySession {
         let show_bar = panes.is_none() && !self.catching_up;
         let mut ui = UiDrawList::new();
         self.sbarinfo_slot = None;
+        self.weapon_cmd_range = None;
         if show_bar {
             self.draw_player_hud(&mut ui);
+        }
+        if let Some(out) = weapon_out {
+            let mut weapon = UiDrawList::new();
+            if let Some((a, b)) = self.weapon_cmd_range
+                && a < b
+                && b <= ui.cmds.len()
+            {
+                weapon.cmds = ui.cmds.drain(a..b).collect();
+                if let Some(slot) = self.sbarinfo_slot.as_mut()
+                    && *slot >= b
+                {
+                    *slot -= b - a;
+                }
+            }
+            for cmd in &weapon.cmds {
+                if let DrawCmd::Patch { name, .. } = cmd {
+                    let _ = self.patches.ensure(&self.vfs, name);
+                }
+            }
+            *out = Some(weapon);
         }
         let sbarinfo = self
             .sbarinfo_slot
@@ -2688,6 +2756,9 @@ impl PlaySession {
                 spawn_sprites: items.spawn_sprites,
                 max_amounts: items.max_amounts,
                 power_tics: items.power_tics,
+                ancestors: items.ancestors,
+                player_class: items.player_class,
+                pose: items.pose,
             };
             (
                 snap,
@@ -3152,6 +3223,7 @@ impl PlaySession {
         if hud.inverse_colormap() {
             ui.invert_since(weapon_cmds);
         }
+        self.weapon_cmd_range = Some((weapon_cmds, ui.cmds.len()));
         draw_crosshair(ui, hud.crosshair);
         let maptime = self.game.world().map(|w| w.level.maptime).unwrap_or(0);
         if let Some(world) = self.game.world() {
@@ -4943,5 +5015,29 @@ impl PlaySession {
         self.game
             .world()
             .map_or(0.0, |w| w.level.maptime as f32 / 35.0)
+    }
+}
+
+/// Canvas sink shifted by `(ox, oy)` (the HUD box inside the window).
+struct OffsetCanvasSink<'a> {
+    canvas: &'a mut Canvas,
+    ox: f32,
+    oy: f32,
+}
+
+impl CanvasSink for OffsetCanvasSink<'_> {
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        self.canvas.fill_rect(x + self.ox, y + self.oy, w, h, color);
+    }
+    fn text(&mut self, x: f32, y: f32, text: &str, color: [f32; 4]) {
+        self.canvas.text(x + self.ox, y + self.oy, text, color);
+    }
+    fn blit_rgba(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: &[u8]) {
+        self.canvas
+            .blit_rgba(x + self.ox, y + self.oy, w, h, pixels.to_vec());
+    }
+    fn blit_rgba_owned(&mut self, x: f32, y: f32, w: u32, h: u32, pixels: Vec<u8>) {
+        self.canvas
+            .blit_rgba(x + self.ox, y + self.oy, w, h, pixels);
     }
 }

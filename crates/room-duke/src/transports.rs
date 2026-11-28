@@ -102,7 +102,7 @@ const FLOORSLIME: i16 = 200;
 /// splash sits on the water ceiling (`lotag 2`, floor-aligned) or floor
 /// (`lotag 1`) of the spawner's sector; slime tints it; STAT_MISC.
 #[allow(clippy::too_many_arguments)]
-fn spawn_water_splash2(
+pub(crate) fn spawn_water_splash2(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],

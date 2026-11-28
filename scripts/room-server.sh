@@ -206,35 +206,8 @@ manifest = (d / "room.toml").read_bytes()
 modules = tomllib.loads(manifest.decode()).get("module", [])
 pk3 = d / "pk3"
 if not modules and pk3.is_dir():
-    # Content mod (GLDEFS post shader, ZSCRIPT, CVARINFO, MENUDEF …): the
-    # files of pk3/ become lumps; files in subfolders are named after their
-    # stem and GLDEFS is pointed at those lump names (a WAD has no folders).
-    lumps = [("ROOMMOD", manifest)]
-    renamed = {}
-    for path in sorted(pk3.rglob("*")):
-        if not path.is_file() or path.name.startswith("."):
-            continue
-        rel = path.relative_to(pk3).as_posix()
-        if "/" in rel:
-            name = path.stem.upper()[:8]
-            renamed[rel] = name
-        else:
-            name = path.name.upper()[:8]
-        lumps.append((name, path.read_bytes()))
-    for i, (name, body) in enumerate(lumps):
-        if name == "GLDEFS":
-            text = body.decode("utf-8", "replace")
-            for rel, lump in renamed.items():
-                text = text.replace(f'"{rel}"', f'"{lump}"')
-            lumps[i] = (name, text.encode())
-    data, dir_, off = b"", b"", 12
-    for name, body in lumps:
-        dir_ += struct.pack("<ii8s", off, len(body), name.encode())
-        data += body
-        off += len(body)
-    out = d / f"{d.name}.wad"
-    out.write_bytes(b"PWAD" + struct.pack("<ii", len(lumps), off) + data + dir_)
-    print(f"room-server: mod {out} ({len(data) + len(dir_) + 12} bytes)")
+    # Content mod (GLDEFS post shader, ZSCRIPT, CVARINFO, MENUDEF …).
+    subprocess.run([sys.executable, "scripts/pack-content-mod.py", str(d)], check=True)
     raise SystemExit(0)
 if not modules:
     sys.exit(f"{d}/room.toml: no [[module]]")
@@ -450,6 +423,12 @@ do_start() {
       [[ -f "$wad" ]] && cp "$wad" "$mods_dir/"
     done
     start_args+=(--mods-dir "$mods_dir")
+    # Every mod built from mods/ is allowed the first time the server sees
+    # it (Play solo lists only allowed mods); admins can still disallow one
+    # in Settings → Mods, and that choice is kept in data/mods.json.
+    if [[ "$extra_joined" != *"--allow-mods"* ]]; then
+      export ROOM_ALLOW_MODS="${ROOM_ALLOW_MODS:-*}"
+    fi
   fi
 
   # Persist bans/audit/admins; bootstrap MFA admin on first run.

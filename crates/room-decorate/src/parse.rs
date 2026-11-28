@@ -1001,24 +1001,57 @@ fn parse_state_line_body(
             }
         }
     }
-    items.push(StateItem::Line(StateLine {
-        sprite: sprite.clone(),
-        frames: frames.clone(),
-        duration,
-        modifiers,
-        action,
-        action_args,
-    }));
-    let extra_frame = frames.chars().next().unwrap_or('A').to_string();
-    for (name, args) in extra_actions {
+    if extra_actions.is_empty() {
         items.push(StateItem::Line(StateLine {
-            sprite: sprite.clone(),
-            frames: extra_frame.clone(),
-            duration: 0,
-            modifiers: Vec::new(),
-            action: Some(name),
-            action_args: args,
+            sprite,
+            frames,
+            duration,
+            modifiers,
+            action,
+            action_args,
         }));
+        return Ok(());
+    }
+    // An action block (`{ a; b; c }`) runs whole when the state is entered,
+    // as UZDoom calls the anonymous function: a, b … as zero-tic states of
+    // the same frame, the last action on the state that carries the
+    // duration. (A tail after the timed state ran a tic late, with other
+    // actions in between eating `A_SkipUnless*` counts.) Each frame of
+    // `ABCD 4 { … }` runs the block.
+    let mut block = vec![(action, action_args)];
+    block.extend(extra_actions.into_iter().map(|(n, a)| (Some(n), a)));
+    let per_frame = frames.len() > 1
+        && frames
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || matches!(c, '[' | ']' | '\\'));
+    let frame_list: Vec<String> = if per_frame {
+        frames.chars().map(String::from).collect()
+    } else {
+        vec![frames]
+    };
+    // Tic modifiers (`random(lo,hi)`) belong to the timed state only.
+    let untimed: Vec<String> = modifiers
+        .iter()
+        .filter(|m| !m.starts_with("random("))
+        .cloned()
+        .collect();
+    let last = block.len() - 1;
+    for frame in frame_list {
+        for (i, (name, args)) in block.iter().enumerate() {
+            let timed = i == last;
+            items.push(StateItem::Line(StateLine {
+                sprite: sprite.clone(),
+                frames: frame.clone(),
+                duration: if timed { duration } else { 0 },
+                modifiers: if timed {
+                    modifiers.clone()
+                } else {
+                    untimed.clone()
+                },
+                action: name.clone(),
+                action_args: args.clone(),
+            }));
+        }
     }
     Ok(())
 }
@@ -1317,9 +1350,30 @@ fn read_return_stmt(sc: &mut Scanner<'_>) -> Result<Option<(String, Vec<String>)
     if sc.check_punct(Punct::Semi)? {
         return Ok(None);
     }
+    // `return A_DoPBWeaponAction(WRF_ALLOWRELOAD);`: the function runs and
+    // the state it returns is followed, as for a frame's own action.
+    let tok = sc.next_token()?;
+    if let Tok::Ident(name) = tok {
+        if !Scanner::compare(name, "state")
+            && !Scanner::compare(name, "resolvestate")
+            && !Scanner::compare(name, "null")
+        {
+            if sc.check_punct(Punct::LParen)? {
+                let args = read_action_args(sc)?;
+                let _ = sc.check_punct(Punct::Semi)?;
+                return Ok(Some((name.to_owned(), args)));
+            }
+        } else if Scanner::compare(name, "resolvestate") {
+            sc.unget(Tok::Ident("state"));
+            let label = read_state_return_label(sc)?;
+            let _ = sc.check_punct(Punct::Semi)?;
+            return Ok((!label.is_empty()).then(|| ("A_Jump".into(), vec!["256".into(), label])));
+        }
+    }
+    sc.unget(tok);
     let label = read_state_return_label(sc)?;
     let _ = sc.check_punct(Punct::Semi)?;
-    if label.is_empty() {
+    if label.is_empty() || label.eq_ignore_ascii_case("null") {
         return Ok(None);
     }
     Ok(Some(("A_Jump".into(), vec!["256".into(), label])))
@@ -1675,8 +1729,91 @@ fn read_if_stmt(sc: &mut Scanner<'_>) -> Result<Vec<(String, Vec<String>)>, Deco
     if let Some((name, cmp, value)) = parse_user_var_threshold(&cond_tokens) {
         return Ok(flatten_user_var_if(&name, cmp, value, then_body, else_body));
     }
-    // Unrecognised condition — keep then_body so the actor still loads.
-    Ok(then_body)
+    // Any other condition is evaluated when the state runs
+    // (`if (PressingFire() && CountInv("Ammo") > 0)`).
+    let cond = cond_text(&cond_tokens);
+    if cond.is_empty() {
+        return Ok(then_body);
+    }
+    let cond = format!("\"{}\"", cond.replace('"', "\\\""));
+    Ok(flatten_cmp_skip_text_if(&cond, then_body, else_body))
+}
+
+/// `A_SkipUnlessExpr` over `then_body` / `else_body`.
+fn flatten_cmp_skip_text_if(
+    cond: &str,
+    then_body: Vec<(String, Vec<String>)>,
+    else_body: Vec<(String, Vec<String>)>,
+) -> Vec<(String, Vec<String>)> {
+    if then_body.is_empty() && else_body.is_empty() {
+        return Vec::new();
+    }
+    let skip = |n: usize| {
+        (
+            "A_SkipUnlessExpr".to_owned(),
+            vec![cond.to_owned(), n.to_string()],
+        )
+    };
+    if else_body.is_empty() {
+        let mut out = vec![skip(then_body.len())];
+        out.extend(then_body);
+        return out;
+    }
+    let else_len = else_body.len();
+    let mut out = vec![skip(then_body.len() + 1)];
+    out.extend(then_body);
+    out.push(("A_SkipAlways".into(), vec![else_len.to_string()]));
+    out.extend(else_body);
+    out
+}
+
+/// A condition written back out as expression text for `A_SkipUnlessExpr`.
+fn cond_text(tokens: &[CondAtom]) -> String {
+    let mut out = String::new();
+    for t in tokens {
+        let piece = match t {
+            CondAtom::Ident(s) => s.clone(),
+            CondAtom::String(s) => format!("\"{s}\""),
+            CondAtom::Int(n) => n.to_string(),
+            CondAtom::Float(f) => format!("{f:?}"),
+            CondAtom::Punct(p) => match p {
+                Punct::LParen => "(",
+                Punct::RParen => ")",
+                Punct::LBracket => "[",
+                Punct::RBracket => "]",
+                Punct::Comma => ",",
+                Punct::Plus => "+",
+                Punct::Minus => "-",
+                Punct::Star => "*",
+                Punct::Slash => "/",
+                Punct::Percent => "%",
+                Punct::Lt => "<",
+                Punct::Gt => ">",
+                Punct::Bang => "!",
+                Punct::Tilde => "~",
+                Punct::Amp => "&",
+                Punct::Pipe => "|",
+                Punct::Caret => "^",
+                Punct::Dot => ".",
+                Punct::EqEq => "==",
+                Punct::NotEq => "!=",
+                Punct::LtEq => "<=",
+                Punct::GtEq => ">=",
+                Punct::AndAnd => "&&",
+                Punct::OrOr => "||",
+                Punct::Shl => "<<",
+                Punct::Shr => ">>",
+                // Assignments, `?:` and the like are not conditions.
+                _ => return String::new(),
+            }
+            .to_owned(),
+        };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&piece);
+    }
+    out
 }
 
 fn flatten_health_cmp_if(
@@ -2794,11 +2931,61 @@ actor ExprGuy
             .collect();
         assert_eq!(lines[0].duration, 10);
         assert_eq!(lines[0].action.as_deref(), Some("A_Look"));
-        assert_eq!(lines[1].duration, 3);
-        assert!(lines[1].modifiers.iter().any(|m| m.starts_with("random(")));
+        // The block runs on entry: A_Chase zero-tic, then A_FaceTarget on
+        // the state that waits (and keeps the random duration).
+        assert_eq!(lines[1].duration, 0);
+        assert!(!lines[1].modifiers.iter().any(|m| m.starts_with("random(")));
         assert_eq!(lines[1].action.as_deref(), Some("A_Chase"));
-        assert_eq!(lines[2].duration, 0);
+        assert_eq!(lines[2].duration, 3);
+        assert!(lines[2].modifiers.iter().any(|m| m.starts_with("random(")));
         assert_eq!(lines[2].action.as_deref(), Some("A_FaceTarget"));
+    }
+
+    #[test]
+    fn an_action_block_runs_whole_on_each_frame() {
+        let src = r#"
+actor BlockGun
+{
+  States
+  {
+  Fire:
+    PISG AB 3 Bright { A_StartSound("a"); if (CountInv("Up") == 1) { A_StartSound("b"); } else { A_StartSound("c"); } A_GunFlash; }
+    Stop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let lines: Vec<&StateLine> = st
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        let shape: Vec<(String, i32, Option<&str>)> = lines
+            .iter()
+            .map(|l| (l.frames.clone(), l.duration, l.action.as_deref()))
+            .collect();
+        let frame = |f: &str| {
+            vec![
+                (f.to_owned(), 0, Some("A_StartSound")),
+                (f.to_owned(), 0, Some("A_SkipUnlessInventory")),
+                (f.to_owned(), 0, Some("A_StartSound")),
+                (f.to_owned(), 0, Some("A_SkipAlways")),
+                (f.to_owned(), 0, Some("A_StartSound")),
+                (f.to_owned(), 3, Some("A_GunFlash")),
+            ]
+        };
+        let mut want = frame("A");
+        want.extend(frame("B"));
+        assert_eq!(shape, want);
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.modifiers.iter().any(|m| m.eq_ignore_ascii_case("bright")))
+        );
     }
 
     #[test]
@@ -2974,6 +3161,62 @@ actor InvIf
             vec!["\"Clip\"".to_owned(), "5".to_owned(), "1".to_owned()]
         );
         assert_eq!(lines[1].action.as_deref(), Some("A_Look"));
+    }
+
+    /// An `if` whose condition is not a folded shape runs its body only
+    /// when the condition holds (it used to run unconditionally, so PB's
+    /// `if (PressingFire() && …) return state("Fire");` fired on its own),
+    /// and `return F(args);` calls `F` and follows its state.
+    #[test]
+    fn decoblock_other_if_is_evaluated_and_return_calls_run() {
+        let src = r#"
+actor ExprIf
+{
+  States
+  {
+  Ready:
+    PISG A 1
+    {
+      if (PressingFire() && CountInv("Clip") > 0 && !FindInventory("Busy"))
+      {
+        return state("Fire");
+      }
+      else { A_Look; }
+      return A_DoReady(WRF_ALLOWRELOAD);
+    }
+    Loop
+  }
+}
+"#;
+        let ir = parse_decorate(src).unwrap();
+        let st = ir.actors[0].states.as_ref().unwrap();
+        let lines: Vec<&StateLine> = st
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                StateItem::Line(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        let calls: Vec<(&str, &[String])> = lines
+            .iter()
+            .map(|l| (l.action.as_deref().unwrap_or(""), l.action_args.as_slice()))
+            .collect();
+        assert_eq!(calls[0].0, "A_SkipUnlessExpr");
+        assert_eq!(
+            calls[0].1,
+            [
+                "\"PressingFire ( ) && CountInv ( \\\"Clip\\\" ) > 0 && ! FindInventory ( \\\"Busy\\\" )\"".to_owned(),
+                "2".to_owned()
+            ]
+        );
+        assert_eq!(
+            calls[1],
+            ("A_Jump", &["256".to_owned(), "Fire".to_owned()][..])
+        );
+        assert_eq!(calls[2], ("A_SkipAlways", &["1".to_owned()][..]));
+        assert_eq!(calls[3].0, "A_Look");
+        assert_eq!(calls[4], ("A_DoReady", &["WRF_ALLOWRELOAD".to_owned()][..]));
     }
 
     #[test]

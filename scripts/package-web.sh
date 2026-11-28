@@ -170,6 +170,17 @@ while IFS= read -r -d '' wad; do
   echo "room: mod  /mods/$base"
   MOD_COUNT=$((MOD_COUNT + 1))
 done < <(find mods -mindepth 2 -maxdepth 2 -name '*.wad' -print0 2>/dev/null | sort -z)
+# Content mods (Color World, Red Noir: pk3/ + room.toml, no code) are packed
+# straight into the site, so a fresh checkout ships them without
+# `./room start` having built mods/<name>/<name>.wad first.
+for dir in mods/*/; do
+  dir="${dir%/}"
+  [[ -f "$dir/room.toml" && -d "$dir/pk3" && ! -f "$dir/Cargo.toml" ]] || continue
+  compgen -G "$dir/*.ts" >/dev/null && continue
+  name="$(basename "$dir")"
+  [[ -f "$OUT/mods/$name.wad" ]] || MOD_COUNT=$((MOD_COUNT + 1))
+  python3 scripts/pack-content-mod.py "$dir" "$OUT/mods/$name.wad"
+done
 
 if [[ -f testdata/voxel/cheello_voxels.zip ]]; then
   # Play + editor fetch either name (GZDoom-style .pk3 alias or the upstream zip).

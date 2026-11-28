@@ -37,7 +37,7 @@ pub use interp::{DEFAULT_FUEL, DEFAULT_STACK_LIMIT, Value, Zvm, ZvmConfig};
 pub use map_natives::{ZsMapKind, ZsMapObjects, ZsPlane};
 pub use natives::{
     InventoryEntry, NativeFn, NativeRegs, NativeTable, ZsActorOp, ZsLevelOp, ZsNativeOp, ZvmCtx,
-    ZvmPlayHost, format_printf, register_bd_natives, vararg_values,
+    ZvmPlayHost, format_printf, is_host_action_import, register_bd_natives, vararg_values,
 };
 pub use opcode::{Op, has_ext, pack, unpack};
 pub use peephole::{optimize_function, optimize_program};
@@ -63,6 +63,42 @@ pub enum Bank {
     S = 2,
     /// Object / array / struct reference.
     A = 3,
+}
+
+/// Class id of a `ResolveState` token object (no script class has it).
+pub const STATE_TOKEN_CLASS: u32 = u32::MAX - 1;
+
+/// A `state` value made by `ResolveState(label)`: an object of
+/// [`STATE_TOKEN_CLASS`] holding the label. Reused per label while the
+/// heap still holds it.
+pub fn state_token(
+    heap: &mut ZvmHeap,
+    cache: &mut std::collections::BTreeMap<String, ObjHandle>,
+    label: &str,
+) -> ObjHandle {
+    if let Some(&h) = cache.get(label) {
+        if state_token_label(heap, h).as_deref() == Some(label) {
+            return h;
+        }
+    }
+    let h = heap.new_object(STATE_TOKEN_CLASS, 0, 0, 1);
+    let s = heap.intern_string(label);
+    if let Some(ObjKind::Object { fields_s, .. }) = heap.get_mut(h) {
+        fields_s[0] = s;
+    }
+    cache.insert(label.to_owned(), h);
+    h
+}
+
+/// The label of a [`state_token`], or `None` for any other object.
+#[must_use]
+pub fn state_token_label(heap: &ZvmHeap, h: ObjHandle) -> Option<String> {
+    match heap.get(h)? {
+        ObjKind::Object {
+            class_id, fields_s, ..
+        } if *class_id == STATE_TOKEN_CLASS => Some(heap.str(*fields_s.first()?).to_owned()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

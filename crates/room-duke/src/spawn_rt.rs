@@ -98,6 +98,11 @@ pub(crate) fn init_spawned_badguy(
     if sprites[cu].pal == 0 && TROOP_NAMES.iter().any(|n| named(script, n) == pn) {
         sprites[cu].pal = 22;
     }
+    // Chocolate `spawn`: GREENSLIME has no CON strength; its case sets
+    // `extra = 1` (radius damage only reaches actors with `extra >= 0`).
+    if pn == crate::spawn::GREENSLIME {
+        sprites[cu].extra = 1;
+    }
     let is_boss = BOSS_NAMES.iter().any(|n| named(script, n) == pn);
     if is_boss {
         if sprites[cu].pal != 0 {

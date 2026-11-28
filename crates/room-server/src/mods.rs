@@ -69,6 +69,11 @@ pub struct AdminModRow {
 #[derive(Default, Serialize, Deserialize)]
 struct PolicyFile {
     allowed: Vec<String>,
+    /// Every mod the policy has seen. A mod added to the mods dir later (not
+    /// listed here) follows the first-run seed instead of staying disallowed.
+    /// Missing in older files: the allowed list stands in for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    known: Option<Vec<String>>,
 }
 
 /// Mods available on this node, keyed by name.
@@ -76,6 +81,8 @@ struct PolicyFile {
 pub struct ModCatalog {
     entries: BTreeMap<String, ModEntry>,
     allowed: RwLock<BTreeSet<String>>,
+    /// Mods the saved policy has decided on (see [`PolicyFile::known`]).
+    known: BTreeSet<String>,
     policy_path: Option<PathBuf>,
 }
 
@@ -134,31 +141,78 @@ impl ModCatalog {
 
     /// Read the allow list from `<data_dir>/mods.json` and save later changes
     /// there. Without that file (first run), `seed` decides: mod names, or
-    /// `"*"` for every mod. Empty `data_dir` = in memory only.
+    /// `"*"` for every mod. Mods added to the mods dir after the file was
+    /// written follow `seed` too (and are then remembered), so a new mod
+    /// shows up without an admin having to find it. Empty `data_dir` = in
+    /// memory only.
     pub fn load_policy(&mut self, data_dir: &str, seed: &[String]) {
         let path = (!data_dir.is_empty()).then(|| Path::new(data_dir).join("mods.json"));
         let saved = path.as_deref().and_then(|p| {
             let bytes = std::fs::read(p).ok()?;
             match serde_json::from_slice::<PolicyFile>(&bytes) {
-                Ok(f) => Some(f.allowed),
+                Ok(f) => Some(f),
                 Err(e) => {
                     warn!(path = %p.display(), %e, "mods.json unreadable; all mods disallowed");
-                    Some(Vec::new())
+                    Some(PolicyFile {
+                        allowed: Vec::new(),
+                        known: Some(self.entries.keys().cloned().collect()),
+                    })
                 }
             }
         });
-        let names: BTreeSet<String> = match saved {
-            Some(list) => list.into_iter().collect(),
-            None if seed.iter().any(|s| s.trim() == "*") => self.entries.keys().cloned().collect(),
-            None => seed.iter().map(|s| s.trim().to_ascii_lowercase()).collect(),
+        let seed_all = seed.iter().any(|s| s.trim() == "*");
+        let seeded =
+            |name: &str| seed_all || seed.iter().any(|s| s.trim().eq_ignore_ascii_case(name));
+        let had_file = saved.is_some();
+        let (mut names, known): (BTreeSet<String>, BTreeSet<String>) = match saved {
+            Some(f) => {
+                let allowed: BTreeSet<String> = f.allowed.into_iter().collect();
+                let known = f
+                    .known
+                    .map_or_else(|| allowed.clone(), |k| k.into_iter().collect());
+                (allowed, known)
+            }
+            None => (BTreeSet::new(), BTreeSet::new()),
         };
+        let mut added = Vec::new();
+        for name in self.entries.keys() {
+            if !known.contains(name) && seeded(name) && names.insert(name.clone()) {
+                added.push(name.clone());
+            }
+        }
         let allowed: BTreeSet<String> = names
             .into_iter()
             .filter(|n| self.entries.contains_key(n))
             .collect();
-        info!(allowed = ?allowed, "mod allow list");
+        info!(allowed = ?allowed, new = ?added, "mod allow list");
         *self.allowed_mut() = allowed;
+        self.known = known;
         self.policy_path = path;
+        if had_file && self.entries.keys().any(|n| !self.known.contains(n)) {
+            // Remember the new mods so a later admin "disallow" sticks.
+            let _ = self.save_policy();
+        }
+    }
+
+    fn save_policy(&mut self) -> Result<(), String> {
+        let Some(path) = &self.policy_path else {
+            return Ok(());
+        };
+        let allowed = self
+            .allowed
+            .read()
+            .map(|g| g.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        self.known.extend(self.entries.keys().cloned());
+        let body = serde_json::to_vec_pretty(&PolicyFile {
+            allowed,
+            known: Some(self.known.iter().cloned().collect()),
+        })
+        .map_err(|e| e.to_string())?;
+        std::fs::write(path, body).map_err(|e| {
+            warn!(path = %path.display(), %e, "mods.json write failed");
+            e.to_string()
+        })
     }
 
     /// Allow / disallow a mod for new rooms (persisted when a data dir is set).
@@ -180,8 +234,13 @@ impl ModCatalog {
             g.iter().cloned().collect::<Vec<_>>()
         };
         if let Some(path) = &self.policy_path {
-            let body = serde_json::to_vec_pretty(&PolicyFile { allowed: snapshot })
-                .map_err(|e| e.to_string())?;
+            let mut known: BTreeSet<String> = self.known.clone();
+            known.extend(self.entries.keys().cloned());
+            let body = serde_json::to_vec_pretty(&PolicyFile {
+                allowed: snapshot,
+                known: Some(known.into_iter().collect()),
+            })
+            .map_err(|e| e.to_string())?;
             std::fs::write(path, body).map_err(|e| {
                 warn!(path = %path.display(), %e, "mods.json write failed");
                 e.to_string()
@@ -488,6 +547,50 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [("alpha", true), ("beta", false)]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mods_added_after_the_policy_follow_the_seed() {
+        let root = std::env::temp_dir().join(format!("room-mods-new-{}", std::process::id()));
+        let (mods_dir, data_dir) = (root.join("mods"), root.join("data"));
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let write = |name: &str| {
+            let wad = pwad(&[("ROOMMOD", b"[mod]\nname = \"M\"\n")]);
+            std::fs::write(mods_dir.join(format!("{name}.wad")), wad).unwrap();
+        };
+        write("alpha");
+        write("beta");
+        // An older mods.json (no `known`): alpha allowed, beta disabled.
+        std::fs::write(data_dir.join("mods.json"), br#"{"allowed":["alpha"]}"#).unwrap();
+        let (mods, data) = (mods_dir.to_str().unwrap(), data_dir.to_str().unwrap());
+        let allowed = |cat: &ModCatalog| {
+            cat.admin_listing()
+                .iter()
+                .filter(|r| r.allowed)
+                .map(|r| r.listing.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // A content mod dropped in later (Color World) shows up with `*`.
+        write("colorworld");
+        let mut cat = ModCatalog::load_dir(mods);
+        cat.load_policy(data, &["*".into()]);
+        assert!(allowed(&cat).contains(&"colorworld".to_owned()));
+        assert!(allowed(&cat).contains(&"alpha".to_owned()));
+
+        // Once seen, an admin's "disallow" sticks across restarts.
+        cat.set_allowed("colorworld", false).unwrap();
+        let mut again = ModCatalog::load_dir(mods);
+        again.load_policy(data, &["*".into()]);
+        assert!(!allowed(&again).contains(&"colorworld".to_owned()));
+
+        // Without a seed a new mod stays off.
+        write("rednoir");
+        let mut strict = ModCatalog::load_dir(mods);
+        strict.load_policy(data, &[]);
+        assert!(!allowed(&strict).contains(&"rednoir".to_owned()));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

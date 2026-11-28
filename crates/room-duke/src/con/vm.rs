@@ -277,6 +277,11 @@ pub struct ActorConTemps {
     pub pending_tip: bool,
     /// CON `spawn PN` — applied by [`crate::actors::moveactors`] after execute.
     pub pending_spawns: Vec<i16>,
+    /// For each `pending_spawns` entry, how many `pending_guts` fragments
+    /// the script had queued before it, so the two replay in script order
+    /// (sprite slots come off the free list in that order).
+    #[serde(default)]
+    pub pending_spawn_guts_before: Vec<usize>,
     /// CON `respawnhitag` activations, applied to matching RESPAWN markers.
     #[serde(default)]
     pub pending_respawn_hitags: Vec<i16>,
@@ -478,6 +483,7 @@ impl Default for ActorConTemps {
             pending_quotes: Vec::new(),
             pending_tip: false,
             pending_spawns: Vec::new(),
+            pending_spawn_guts_before: Vec::new(),
             pending_respawn_hitags: Vec::new(),
             pending_weapon_tosses: Vec::new(),
             pending_shoots: Vec::new(),
@@ -1791,6 +1797,8 @@ impl<'a> ConVm<'a> {
                 self.insptr += 1;
                 let pn = self.word(self.insptr) as i16;
                 self.temps.pending_spawns.push(pn);
+                let guts = self.temps.pending_guts.len();
+                self.temps.pending_spawn_guts_before.push(guts);
                 self.insptr += 1;
             }
             // shoot PN — Chocolate `shoot(g_i, *insptr)`

@@ -107,6 +107,9 @@ struct Lx {
     object_fields: BTreeMap<String, BTreeMap<String, (u16, String)>>,
     /// Lowercased class → lowercased parent.
     parents: BTreeMap<String, String>,
+    /// Virtual method slots per class (lower case), as `CallVirt` indexes
+    /// them: a subclass keeps its parent's slots and appends its own.
+    vslots: BTreeMap<String, Vec<String>>,
     consts: BTreeMap<String, i64>,
     /// Lowercased float constant → value. Compiler-side folding only.
     float_consts: BTreeMap<String, f64>,
@@ -436,7 +439,7 @@ pub fn lower_lenient(
 
 fn lower_with(
     unit: &TranslationUnit,
-    _analysis: &Analysis,
+    analysis: &Analysis,
     lenient: bool,
 ) -> Result<(CompiledProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
     let with_maps;
@@ -565,6 +568,35 @@ fn lower_with(
                 .filter(|m| matches!(m, Member::Field(_) | Member::FlagDef { .. }))
                 .cloned(),
         );
+    }
+    // `Property BaseDamage : truedamage;` per class, for the field values a
+    // `Default` block's `PB_Projectile.BaseDamage 22;` sets.
+    let mut properties: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for (name, _, members, _) in &layouts {
+        for m in members.iter() {
+            if let Member::Property {
+                name: prop, fields, ..
+            } = m
+            {
+                properties.insert(
+                    (name.to_ascii_lowercase(), prop.to_ascii_lowercase()),
+                    fields.iter().map(|f| f.to_ascii_lowercase()).collect(),
+                );
+            }
+        }
+    }
+    for (name, _, members, _) in &layouts {
+        for m in members.iter() {
+            if let Member::Default(d) = m {
+                let values = default_field_values(&d.lines, &properties);
+                if !values.is_empty() {
+                    prog.field_defaults
+                        .entry(name.clone())
+                        .or_default()
+                        .extend(values);
+                }
+            }
+        }
     }
     let mut field_base: BTreeMap<String, [u16; 4]> = BTreeMap::new();
     for key in merged_fields.keys() {
@@ -919,6 +951,16 @@ fn lower_with(
         float_fields,
         object_fields,
         parents,
+        vslots: analysis
+            .vtables
+            .iter()
+            .map(|(c, slots)| {
+                (
+                    c.to_ascii_lowercase(),
+                    slots.iter().map(|m| m.to_ascii_lowercase()).collect(),
+                )
+            })
+            .collect(),
         consts,
         float_consts,
         string_consts,
@@ -1167,6 +1209,23 @@ fn lower_with(
             lx.locals_o
                 .insert("stateinfo".to_owned(), (reg, "fstateparaminfo".to_owned()));
         }
+        // `invoker` in an action function is the weapon or item whose state
+        // is running, while `self` is its owner (UZDoom `CallAction`). The
+        // host names it per call (`Object.__invoker`); outside a weapon or
+        // item state it is `self`.
+        if meth.quals.action
+            && lx.instance
+            && let Some(self_r) = lx.self_reg
+            && mentions("invoker")
+        {
+            let reg = lx.alloc_a();
+            let id = lx.native_id("Object.__invoker");
+            f.emit(Op::Arg, 3, self_r, 0);
+            f.emit_ext(Op::CallNat, 1, 3, 0, id);
+            f.emit(Op::GetRet, 3, reg, 0);
+            lx.locals_o
+                .insert("invoker".to_owned(), (reg, class.to_ascii_lowercase()));
+        }
         // Global arrays live on struct `_` (`playeringame`, `players`, …).
         if let Some(fields) = lx.array_fields.get("_").cloned() {
             for (fname, _slot, string_elem) in fields {
@@ -1304,10 +1363,46 @@ fn lower_with(
         f.n_f = lx.peak[1].clamp(1, 255) as u8;
         f.n_s = lx.peak[2].clamp(1, 255) as u8;
         f.n_a = lx.peak[3].clamp(1, 255) as u8;
+        if meth.quals.action && !meth.quals.static_ {
+            let defaults = meth
+                .params
+                .iter()
+                .map(|p| {
+                    p.default
+                        .as_ref()
+                        .map(|d| default_text(d, &lx))
+                        .unwrap_or_default()
+                })
+                .collect();
+            prog.action_defaults.insert(f.name.clone(), defaults);
+        }
         prog.functions.push(f);
     }
     for name in &lx.native_list {
         prog.intern_native(name);
+    }
+    // `CallVirt` tables: per class, each slot's most derived body.
+    for (class, slots) in &lx.vslots {
+        let Some(&cid) = lx.class_ids.get(class) else {
+            continue;
+        };
+        let mut table = Vec::with_capacity(slots.len());
+        for method in slots {
+            let mut cur = Some(class.clone());
+            let mut idx = u32::MAX;
+            for _ in 0..64 {
+                let Some(c) = cur else { break };
+                if let Some(sig) = lx.funcs.get(&format!("{c}.{method}"))
+                    && !sig.native
+                {
+                    idx = sig.idx;
+                    break;
+                }
+                cur = parent_of(&lx, &c);
+            }
+            table.push(idx);
+        }
+        prog.vtables.insert(cid, table);
     }
     stubbed.append(&mut lx.soft);
     if lx.diags.is_empty() {
@@ -1315,6 +1410,84 @@ fn lower_with(
         Ok((prog, stubbed))
     } else {
         Err(lx.diags)
+    }
+}
+
+/// Script field values a `Default` block sets: custom properties
+/// (`PB_Projectile.BaseDamage 22;` → `truedamage = 22`) and flagdefs
+/// (`+PB_Projectile.WHIZCRACK;` → `bWHIZCRACK = 1`), as `(field, value text)`.
+fn default_field_values(
+    lines: &[String],
+    properties: &BTreeMap<(String, String), Vec<String>>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in lines {
+        for stmt in line.split(';') {
+            // The captured block keeps tokens apart (`TP . BaseDamage 5`).
+            let mut joined = String::new();
+            for tok in stmt
+                .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+                .split_whitespace()
+            {
+                if !joined.is_empty() && tok != "." && !joined.ends_with('.') {
+                    joined.push(' ');
+                }
+                joined.push_str(tok);
+            }
+            let stmt = joined.as_str();
+            if stmt.is_empty() || stmt.starts_with("//") {
+                continue;
+            }
+            if stmt.starts_with('+') || stmt.starts_with('-') {
+                // `+ TP.WHIZ + NOGRAVITY` can share a line.
+                let flags = stmt.replace("+ ", "+").replace("- ", "-");
+                for tok in flags.split_whitespace() {
+                    let on = if tok.starts_with('+') { "1" } else { "0" };
+                    let Some((_, flag)) = tok[1..].split_once('.') else {
+                        continue;
+                    };
+                    out.push((format!("b{}", flag.to_ascii_lowercase()), on.to_owned()));
+                }
+                continue;
+            }
+            let (key, value) = match stmt.split_once(char::is_whitespace) {
+                Some((k, v)) => (k, v.trim()),
+                None => continue,
+            };
+            let Some((owner, prop)) = key.split_once('.') else {
+                continue;
+            };
+            let Some(fields) =
+                properties.get(&(owner.to_ascii_lowercase(), prop.to_ascii_lowercase()))
+            else {
+                continue;
+            };
+            for (field, v) in fields.iter().zip(value.split(',')) {
+                out.push((field.clone(), v.trim().to_owned()));
+            }
+        }
+    }
+    out
+}
+
+/// A parameter default as the host reads it: a number, a quoted string,
+/// `null`, or `""` when it does not fold to a constant.
+fn default_text(expr: &Expr, lx: &Lx) -> String {
+    if let Some(v) = const_int(expr, &lx.consts, &lx.parents) {
+        return v.to_string();
+    }
+    if let Some(v) = const_float(expr, &lx.consts, &lx.float_consts, &lx.parents) {
+        return format!("{v:?}");
+    }
+    if let Some(v) = const_string(expr, &lx.string_consts) {
+        return format!("\"{v}\"");
+    }
+    match expr {
+        Expr::Ident(n, _) if n.eq_ignore_ascii_case("true") => "1".to_owned(),
+        Expr::Ident(n, _) if n.eq_ignore_ascii_case("false") => "0".to_owned(),
+        Expr::Ident(n, _) if n.eq_ignore_ascii_case("null") => "null".to_owned(),
+        Expr::String(v, _) | Expr::Name(v, _) => format!("\"{v}\""),
+        _ => String::new(),
     }
 }
 
@@ -1687,9 +1860,7 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
         } => {
             let type_name = ty.as_ref().and_then(named_type);
             let string_local = ty.as_ref().is_some_and(is_class_type)
-                || type_name.is_some_and(|t| {
-                    t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
-                })
+                || type_name.is_some_and(is_name_type)
                 || (ty.is_none() && init.as_ref().is_some_and(|e| expr_yields_string(e, lx)));
             let float_local = type_name.is_some_and(is_float_type_name)
                 || (ty.is_none() && init.as_ref().is_some_and(|e| expr_is_float(e, lx)));
@@ -1865,7 +2036,21 @@ fn emit_stmt(f: &mut CompiledFunction, stmt: &Stmt, lx: &mut Lx) {
             }
         }
         Stmt::Expr { expr, .. } => {
-            if let Some(store) = string_mutation(expr, lx) {
+            // A call whose result is dropped still calls the script function
+            // it names, whatever it returns (`A_FireProjectile(…);` returns
+            // two actors); the integer path below would fall back to an
+            // untyped native call that loses float arguments. Natives keep
+            // their own paths.
+            let dropped_call = match expr {
+                Expr::Call { callee, args, .. } => resolve_call(callee, lx)
+                    .and_then(|t| lx.funcs.get(&t.key))
+                    .filter(|sig| !sig.native && sig.ret != 0 && sig.ret_vec == 0)
+                    .map(|sig| sig.ret)
+                    .is_some_and(|want| emit_script_call(f, lx, callee, args, want).is_some()),
+                _ => false,
+            };
+            if dropped_call {
+            } else if let Some(store) = string_mutation(expr, lx) {
                 let _ = emit_expr(f, &store, lx);
             } else {
                 let _ = emit_expr(f, expr, lx);
@@ -2120,6 +2305,13 @@ fn emit_expr(f: &mut CompiledFunction, expr: &Expr, lx: &mut Lx) -> u8 {
             }
             if let Some(v) = scoped_const(lx, name) {
                 return load_i(f, lx, v);
+            }
+            // A field of `self` shadows a global enum value of the same name
+            // (PB's HUD `int Health;` against an enum's `Health = 288`).
+            if let (Some(slot), Some(self_reg)) = (self_int_slot(lx, name), lx.self_reg) {
+                let dest = lx.alloc();
+                f.emit_ext(Op::LoadFieldI, dest, self_reg, 0, u32::from(slot));
+                return dest;
             }
             if let Some(&v) = lx.consts.get(&name.to_ascii_lowercase()) {
                 return load_i(f, lx, v);
@@ -3460,6 +3652,7 @@ fn lookup_method(lx: &Lx, class: &str, field: &str, self_reg: Option<u8>) -> Opt
             return Some(CallTarget {
                 key,
                 self_reg: if sig.instance { self_reg } else { None },
+                is_super: false,
             });
         }
         cur = parent_of(lx, &name);
@@ -4493,7 +4686,7 @@ fn array_elem_kind(ty: &TypeRef) -> Option<bool> {
         TypeRef::Array(inner) => Some(
             matches!(
                 inner.as_ref(),
-                TypeRef::Named(t) if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
+                TypeRef::Named(t) if is_name_type(t)
             ) || matches!(inner.as_ref(), TypeRef::ClassOf(_)),
         ),
         // `Array<T>` is a named type once the generic arguments are skipped.
@@ -4501,6 +4694,14 @@ fn array_elem_kind(ty: &TypeRef) -> Option<bool> {
         TypeRef::Map(_, _) => Some(false),
         _ => None,
     }
+}
+
+/// Types this VM carries as strings: `string`, `name`, and `statelabel`
+/// (the host resolves a label on the class whose state runs).
+fn is_name_type(t: &str) -> bool {
+    t.eq_ignore_ascii_case("string")
+        || t.eq_ignore_ascii_case("name")
+        || t.eq_ignore_ascii_case("statelabel")
 }
 
 fn value_bank(ty: &TypeRef, class_ids: &BTreeMap<String, u32>) -> u8 {
@@ -4524,7 +4725,9 @@ fn param_bank(ty: &TypeRef) -> u8 {
         return 2;
     }
     match named_type(ty).unwrap_or("") {
-        t if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name") => 2,
+        // `statelabel` is carried by name: the host resolves it on the class
+        // whose state runs (`ResolveState`, `A_Jump…`).
+        t if is_name_type(t) => 2,
         t if t.eq_ignore_ascii_case("double") || t.eq_ignore_ascii_case("float") => 1,
         _ => 0,
     }
@@ -4617,7 +4820,7 @@ fn layout_members(
                     let string_elem = matches!(
                         inner.as_ref(),
                         TypeRef::Named(t)
-                            if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name")
+                            if is_name_type(t)
                     ) || matches!(inner.as_ref(), TypeRef::ClassOf(_));
                     if string_elem {
                         layout.array_s.push(n_a);
@@ -4634,9 +4837,7 @@ fn layout_members(
                     layout.fields.insert(fname.to_ascii_lowercase(), (2, n_s));
                     n_s += 1;
                 }
-                TypeRef::Named(t)
-                    if t.eq_ignore_ascii_case("string") || t.eq_ignore_ascii_case("name") =>
-                {
+                TypeRef::Named(t) if is_name_type(t) => {
                     layout.fields.insert(fname.to_ascii_lowercase(), (2, n_s));
                     n_s += 1;
                 }
@@ -4670,6 +4871,8 @@ fn layout_members(
 struct CallTarget {
     key: String,
     self_reg: Option<u8>,
+    /// `Super.X()`: the parent's body, never dispatched on the object.
+    is_super: bool,
 }
 
 fn resolve_call(callee: &Expr, lx: &Lx) -> Option<CallTarget> {
@@ -4681,7 +4884,10 @@ fn resolve_call(callee: &Expr, lx: &Lx) -> Option<CallTarget> {
                 if name.eq_ignore_ascii_case("super") && object_local(lx, name).is_none() {
                     let parent = parent_of(lx, &lx.class_name)?;
                     let self_reg = if lx.instance { lx.self_reg } else { None };
-                    return lookup_method(lx, &parent, field, self_reg);
+                    return lookup_method(lx, &parent, field, self_reg).map(|t| CallTarget {
+                        is_super: true,
+                        ..t
+                    });
                 }
                 if let Some((reg, class)) = object_local(lx, name) {
                     if let Some(target) = lookup_method(lx, &class, field, Some(reg)) {
@@ -4701,6 +4907,7 @@ fn resolve_call(callee: &Expr, lx: &Lx) -> Option<CallTarget> {
             qualify(callee, &lx.class_name).map(|name| CallTarget {
                 key: name.to_ascii_lowercase(),
                 self_reg: None,
+                is_super: false,
             })
         }
         Expr::Ident(name, _) => {
@@ -4709,7 +4916,11 @@ fn resolve_call(callee: &Expr, lx: &Lx) -> Option<CallTarget> {
                 let key = format!("{}.{}", lx.class_name, name).to_ascii_lowercase();
                 let sig = lx.funcs.get(&key)?;
                 let self_reg = if sig.instance { lx.self_reg } else { None };
-                Some(CallTarget { key, self_reg })
+                Some(CallTarget {
+                    key,
+                    self_reg,
+                    is_super: false,
+                })
             })
         }
         _ => None,
@@ -4746,6 +4957,11 @@ fn emit_script_call(
     if sig.native {
         let id = lx.native_id(&target.key);
         f.emit_ext(Op::CallNat, 1, want, 0, id);
+    } else if let Some(slot) = virtual_slot(lx, &target, &sig) {
+        // On the object's class (`HandleMovement()` inside
+        // `PlayerPawn.PlayerThink` runs the mod's override); the static
+        // body when the class has no table.
+        f.emit_ext(Op::CallVirt, 1, 0, 0, (sig.idx << 12) | slot);
     } else {
         f.emit_ext(Op::Call, 1, 0, 0, sig.idx);
     }
@@ -4770,6 +4986,18 @@ fn emit_script_call(
         read_out_args(f, lx, &sig, args);
     }
     result
+}
+
+/// The `CallVirt` slot of an instance call to a virtual method, when the
+/// call is not `Super.X()` and the slot fits (12 bits; the function index
+/// takes the other 20).
+fn virtual_slot(lx: &Lx, target: &CallTarget, sig: &FnSig) -> Option<u32> {
+    if target.is_super || !sig.instance || target.self_reg.is_none() || sig.idx >= (1 << 20) {
+        return None;
+    }
+    let (class, method) = target.key.rsplit_once('.')?;
+    let slot = lx.vslots.get(class)?.iter().position(|m| m == method)?;
+    u32::try_from(slot).ok().filter(|s| *s < (1 << 12))
 }
 
 /// Result slot of the first `out` value: after every declared result
@@ -5401,6 +5629,46 @@ fn emit_is(f: &mut CompiledFunction, lx: &mut Lx, lhs: &Expr, rhs: &Expr) -> u8 
     let dest = lx.alloc();
     f.emit(Op::GetRet, 0, dest, 0);
     dest
+}
+
+/// `a == b` / `a != b` on two objects compares identity (`victim == Target`).
+/// The integer path would compare whether each side is null.
+fn object_cmp(
+    f: &mut CompiledFunction,
+    lx: &mut Lx,
+    op: &str,
+    lhs: &Expr,
+    rhs: &Expr,
+) -> Option<u8> {
+    if op != "==" && op != "!=" {
+        return None;
+    }
+    let is_null = |e: &Expr| matches!(e, Expr::Ident(n, _) if n.eq_ignore_ascii_case("null"));
+    if is_null(lhs) || is_null(rhs) {
+        return None;
+    }
+    let left_class = static_class(lhs, lx)?;
+    let right_class = static_class(rhs, lx)?;
+    if !lx.class_ids.contains_key(&left_class.to_ascii_lowercase())
+        || !lx.class_ids.contains_key(&right_class.to_ascii_lowercase())
+    {
+        return None;
+    }
+    let left = emit_expr_a(f, lhs, lx);
+    let right = emit_expr_a(f, rhs, lx);
+    let id = lx.native_id("Object.__same");
+    f.emit(Op::Arg, 3, left, 0);
+    f.emit(Op::Arg, 3, right, 0);
+    f.emit_ext(Op::CallNat, 1, 0, 0, id);
+    let same = lx.alloc();
+    f.emit(Op::GetRet, 0, same, 0);
+    if op == "==" {
+        return Some(same);
+    }
+    let zero = load_i(f, lx, 0);
+    let dest = lx.alloc();
+    f.emit(Op::EqI, dest, same, zero);
+    Some(dest)
 }
 
 fn null_cmp(f: &mut CompiledFunction, lx: &mut Lx, op: &str, lhs: &Expr, rhs: &Expr) -> Option<u8> {
@@ -6086,6 +6354,9 @@ fn emit_binary(
     if let Some(r) = null_cmp(f, lx, op, lhs, rhs) {
         return r;
     }
+    if let Some(r) = object_cmp(f, lx, op, lhs, rhs) {
+        return r;
+    }
     if let Some(r) = string_cmp(f, lx, op, lhs, rhs) {
         return r;
     }
@@ -6341,6 +6612,23 @@ fn emit_binary(
 }
 
 fn emit_switch(f: &mut CompiledFunction, cond: &Expr, body: &Block, lx: &mut Lx) {
+    // `switch (x.GetClassName()) { case 'PB_Shell': … }` compares names.
+    let by_name = body.stmts.iter().any(|s| {
+        matches!(
+            s,
+            Stmt::Case {
+                value: Some(Expr::Name(..) | Expr::String(..)),
+                ..
+            }
+        )
+    }) && !body.stmts.iter().any(|s| {
+        matches!(s, Stmt::Case { value: Some(Expr::String(v, _)), .. } if v.chars().count() == 1)
+            && !expr_is_string(cond, lx)
+    });
+    if by_name {
+        emit_switch_names(f, cond, body, lx);
+        return;
+    }
     let disc = emit_expr(f, cond, lx);
     let saved = lx.alloc();
     f.emit(Op::MoveI, saved, disc, 0);
@@ -6374,6 +6662,62 @@ fn emit_switch(f: &mut CompiledFunction, cond: &Expr, body: &Block, lx: &mut Lx)
                 f.emit(Op::EqI, eq, saved, cv);
                 jumps.push((emit_jcc(f, Op::JmpIf, eq), ci));
                 lx.next = mark;
+            }
+            Stmt::Case { value: None, .. } => default_i = Some(ci),
+            _ => {}
+        }
+    }
+    let miss = emit_jcc(f, Op::Jmp, 0);
+    let mut starts = vec![0usize; cases.len()];
+    for (ci, (_, from, to)) in cases.iter().copied().enumerate() {
+        starts[ci] = f.code.len();
+        for s in &stmts[from..to] {
+            emit_stmt_scoped(f, s, lx);
+        }
+    }
+    let end = f.code.len();
+    for (at, ci) in jumps {
+        patch_to(f, at, starts[ci]);
+    }
+    patch_to(f, miss, default_i.map(|i| starts[i]).unwrap_or(end));
+    end_loop(f, lx, end, end);
+}
+
+/// A `switch` over a name or string: each `case` compares with `String.Eq`.
+fn emit_switch_names(f: &mut CompiledFunction, cond: &Expr, body: &Block, lx: &mut Lx) {
+    let saved = emit_expr_s(f, cond, lx);
+    lx.jumps.push(Jump {
+        breaks: Vec::new(),
+        continues: Vec::new(),
+        is_loop: false,
+    });
+    let stmts = &body.stmts;
+    let mut cases: Vec<(usize, usize, usize)> = Vec::new();
+    let mut open: Option<(usize, usize)> = None;
+    for (i, s) in stmts.iter().enumerate() {
+        if let Stmt::Case { .. } = s {
+            if let Some((case_i, start)) = open.take() {
+                cases.push((case_i, start, i));
+            }
+            open = Some((i, i + 1));
+        }
+    }
+    if let Some((case_i, start)) = open {
+        cases.push((case_i, start, stmts.len()));
+    }
+    let mut jumps: Vec<(usize, usize)> = Vec::new();
+    let mut default_i: Option<usize> = None;
+    let id = lx.native_id("String.Eq");
+    for (ci, (case_i, _, _)) in cases.iter().copied().enumerate() {
+        match &stmts[case_i] {
+            Stmt::Case { value: Some(v), .. } => {
+                let cv = emit_expr_s(f, v, lx);
+                f.emit(Op::Arg, 2, saved, 0);
+                f.emit(Op::Arg, 2, cv, 0);
+                f.emit_ext(Op::CallNat, 1, 0, 0, id);
+                let eq = lx.alloc();
+                f.emit(Op::GetRet, 0, eq, 0);
+                jumps.push((emit_jcc(f, Op::JmpIf, eq), ci));
             }
             Stmt::Case { value: None, .. } => default_i = Some(ci),
             _ => {}
@@ -6528,6 +6872,158 @@ class K
 "#;
         assert_eq!(run(src, "K.G", &[]), 3);
         assert_eq!(run(src, "K.H", &[]), 1);
+    }
+
+    /// A call to a virtual method runs the object's override, also from a
+    /// base class body (`Super.G()` → `F()` inside it), as in UZDoom; it
+    /// used to run the base body (PB's `HandleMovement` never ran).
+    #[test]
+    fn virtual_calls_dispatch_on_the_object() {
+        let src = r#"
+class VA
+{
+    virtual int F() { return 1; }
+    virtual int G() { int x = 0; F(); return F() + 10 * H(); }
+    virtual int H() { return 1; }
+}
+class VB : VA
+{
+    override int F() { return 2; }
+    override int H() { return 3; }
+    override int G() { return Super.G(); }
+    static int Go() { let b = new("VB"); return b.G(); }
+}
+"#;
+        assert_eq!(run(src, "VB.Go", &[]), 32);
+    }
+
+    /// An override added by `extend class` is dispatched like any other.
+    #[test]
+    fn extend_class_overrides_dispatch() {
+        let src = r#"
+class XA
+{
+    virtual int F() { return 1; }
+    int G() { return F(); }
+}
+class XB : XA {}
+extend class XB
+{
+    override int F() { return 2; }
+}
+class XC
+{
+    static int Go() { let b = new("XB"); return b.G(); }
+}
+"#;
+        assert_eq!(run(src, "XC.Go", &[]), 2);
+    }
+
+    #[test]
+    fn object_equality_compares_identity_not_nullness() {
+        let src = r#"
+class O { int v; }
+class E
+{
+    static int Go()
+    {
+        let a = new("O");
+        let b = new("O");
+        let c = a;
+        int r = 0;
+        if (a == b) r += 1;
+        if (a == c) r += 10;
+        if (a != b) r += 100;
+        if (a != c) r += 1000;
+        return r;
+    }
+}
+"#;
+        // Two live objects are different objects (PB's `victim == target`).
+        assert_eq!(run(src, "E.Go", &[]), 110);
+    }
+
+    #[test]
+    fn switch_on_names_matches_each_case() {
+        let src = r#"
+class W
+{
+    static int Pick(Name n)
+    {
+        switch (n)
+        {
+        case 'PB_HighCalMag': return 1;
+        case 'Clip': return 2;
+        default: return 3;
+        }
+    }
+    static int A() { return Pick('PB_HighCalMag'); }
+    static int B() { return Pick('Clip'); }
+    static int C() { return Pick('Shell'); }
+}
+"#;
+        assert_eq!(run(src, "W.A", &[]), 1);
+        assert_eq!(run(src, "W.B", &[]), 2);
+        assert_eq!(run(src, "W.C", &[]), 3);
+    }
+
+    #[test]
+    fn own_int_field_shadows_a_same_named_constant() {
+        let src = r#"
+enum EStat { Health = 288 }
+class P
+{
+    int health;
+    int Get() { health = 57; return Health; }
+    static int Go() { let p = new("P"); return p.Get(); }
+    static int Plain() { return Health; }
+}
+"#;
+        assert_eq!(run(src, "P.Go", &[]), 57);
+        assert_eq!(run(src, "P.Plain", &[]), 288);
+    }
+
+    #[test]
+    fn default_blocks_record_custom_properties_and_flags() {
+        let src = r#"
+class Proj
+{
+    int baseDamage;
+    double speedMul;
+    bool bWhiz;
+    property BaseDamage: baseDamage;
+    property Tune: baseDamage, speedMul;
+    Default
+    {
+        Proj.BaseDamage 22;
+        +PROJ.WHIZ
+    }
+}
+class Kid : Proj
+{
+    Default { Proj.Tune 5, 1.5; }
+}
+"#;
+        let parsed = parse_sources(&[("p.zs".into(), src.into())]);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let analysis = analyze(&parsed.unit).expect("sema");
+        let prog = lower(&parsed.unit, &analysis).expect("lower");
+        let get = |class: &str| {
+            prog.field_defaults
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(class))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let proj = get("Proj");
+        assert!(
+            proj.contains(&("basedamage".into(), "22".into())),
+            "{proj:?}"
+        );
+        assert!(proj.contains(&("bwhiz".into(), "1".into())), "{proj:?}");
+        let kid = get("Kid");
+        assert!(kid.contains(&("basedamage".into(), "5".into())), "{kid:?}");
+        assert!(kid.contains(&("speedmul".into(), "1.5".into())), "{kid:?}");
     }
 
     #[test]

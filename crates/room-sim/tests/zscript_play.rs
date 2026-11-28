@@ -3477,3 +3477,497 @@ class SeatT
 "#;
     assert_eq!(uz_call(src, "SeatT.Go"), 10);
 }
+
+/// A ZScript weapon's own `action` functions run from its psprite states
+/// with the owner as `self` and the weapon as `invoker` (UZDoom
+/// `CallAction`): their fields persist, `player.cmd.buttons` reads the input,
+/// `ResolveState` jumps the psprite, and the library gun actions they call
+/// (`A_WeaponReady`, `A_GiveInventory`) run as the playsim's.
+#[test]
+fn zscript_weapon_action_functions_run_with_invoker() {
+    let deco = include_str!("../../../testdata/actors/doom_basic.txt");
+    let ir = parse_decorate(deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 512.0, 256.0), 0.0, 128.0)
+        .player_start(64.0, 64.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, classes, states).unwrap();
+    let prog = load_uzdoom_stdlib_with(
+        r#"
+class TestGun : Weapon
+{
+    int readies;
+    int shots;
+    action state A_TestReady(int flags = WRF_NOBOB)
+    {
+        invoker.readies++;
+        if (player.cmd.buttons & BT_ATTACK) return ResolveState("Fire");
+        A_WeaponReady(flags);
+        return null;
+    }
+    action void A_TestShoot(string item = "Clip", int amount = 3)
+    {
+        invoker.shots++;
+        A_GiveInventory(item, amount);
+    }
+    States
+    {
+    Ready:
+        PISG A 1 A_TestReady;
+        Loop;
+    Deselect:
+        PISG A 1 A_Lower;
+        Loop;
+    Select:
+        PISG A 1 A_Raise;
+        Loop;
+    Fire:
+        PISG B 4 A_TestShoot;
+        PISG C 4;
+        Goto Ready;
+    }
+}
+"#,
+    );
+    w.load_zscript_program_stubbed(prog);
+    let gun = w.classes.find_name("TestGun").expect("TestGun registered");
+    let clip = w.classes.find_name("Clip").unwrap();
+    let ready = w.states.find_label(gun, "Ready").unwrap();
+    let fire = w.states.find_label(gun, "Fire").unwrap();
+    let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+    {
+        let p = w.players[0].as_mut().unwrap();
+        p.ready_weapon = Some(gun);
+        p.pending_weapon = None;
+        p.pspr_y = 32.0; // WEAPON_TOP: raised
+        p.pspr_state = Some(ready);
+        p.pspr_tics = 1;
+    }
+    let clips = w.inventory.count(mo, clip);
+    // Idle: the Ready function runs every tic and the gun never fires.
+    for _ in 0..10 {
+        w.set_ticcmds(&[room_sim::TicCmd::default()]);
+        w.tick();
+        assert_eq!(w.players[0].as_ref().unwrap().pspr_state, Some(ready));
+    }
+    assert_eq!(w.inventory.count(mo, clip), clips, "no shot while idle");
+    // Fire held: `ResolveState("Fire")` jumps, `A_TestShoot` gives 3 clips.
+    let mut cmd = room_sim::TicCmd::default();
+    cmd.buttons.0 |= room_sim::Buttons::ATTACK;
+    w.set_ticcmds(&[cmd]);
+    w.tick();
+    assert_eq!(w.players[0].as_ref().unwrap().pspr_state, Some(fire));
+    assert_eq!(w.inventory.count(mo, clip), clips + 3);
+    // The weapon's script object kept its counters between calls.
+    let vm = w.zscript.vm.as_ref().unwrap();
+    let layout = vm
+        .program
+        .classes
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case("TestGun"))
+        .unwrap();
+    let (readies, shots) = (
+        usize::from(layout.fields["readies"].1),
+        usize::from(layout.fields["shots"].1),
+    );
+    let weapon_obj = w
+        .zscript
+        .actor_fields
+        .iter()
+        .filter(|(k, _)| **k >= 0xc000_0000)
+        .map(|(_, h)| *h)
+        .next()
+        .expect("weapon object");
+    match vm.heap.get(weapon_obj) {
+        Some(room_zvm::ObjKind::Object { fields_i, .. }) => {
+            assert_eq!(
+                fields_i[readies], 11,
+                "Ready ran 10 idle tics + the firing one"
+            );
+            assert_eq!(fields_i[shots], 1);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A ZScript projectile's `SpecialMissileHit` decides the hit (PB's bullets):
+/// it passes through its shooter, and hurts the monster it reaches with its
+/// own `Default`-block damage via `victim.DamageMobj(self, target, …)`.
+#[test]
+fn zs_special_missile_hit_passes_shooter_and_damages_victim() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor TestBolt
+{
+  Radius 2
+  Height 2
+  Speed 20
+  Damage 0
+  PROJECTILE
+  States
+  {
+  Spawn:
+    MISL A -1
+    Stop
+  Death:
+    MISL B 1
+    Stop
+  }
+}
+actor TankZombie : ZombieMan
+{
+  Health 1000
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let zs = r#"
+class TestBolt : Actor
+{
+    int boltDamage;
+    property BoltDamage: boltDamage;
+    Default
+    {
+        TestBolt.BoltDamage 37;
+    }
+    override int SpecialMissileHit(Actor victim)
+    {
+        if (victim == target) return 1;
+        if (victim.bSHOOTABLE)
+        {
+            victim.DamageMobj(self, target, boltDamage, 'None');
+        }
+        return 0;
+    }
+}
+"#;
+    // Against the vendored UZDoom library, as a mod's ZScript loads.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((
+                path.to_owned(),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
+        }
+    }
+    sources.push(("bolt.zs".into(), zs.into()));
+    let result = room_zscript::check(&sources);
+    assert!(
+        result.ok(),
+        "{:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == room_zscript::Severity::Error)
+            .take(5)
+            .collect::<Vec<_>>()
+    );
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 1024.0, 256.0), 0.0, 128.0)
+        .player_start(32.0, 32.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+    w.load_zscript_program(result.program.unwrap());
+    let tank = classes.find_name("TankZombie").unwrap();
+    let at = |x: f64| room_core::math::DVec3::new(x, 128.0, 0.0);
+    let shooter = w
+        .spawn_at(tank, at(100.0), room_core::math::Angle::ZERO)
+        .unwrap();
+    let victim = w
+        .spawn_at(tank, at(400.0), room_core::math::Angle::ZERO)
+        .unwrap();
+    // Start inside the shooter, flying at the victim.
+    let bolt_class = classes.find_name("TestBolt").unwrap();
+    let bolt = w
+        .spawn_at(
+            bolt_class,
+            room_core::math::DVec3::new(100.0, 128.0, 30.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    {
+        let b = w.actors.get_mut(bolt).unwrap();
+        b.target = Some(shooter);
+        b.vel = room_core::math::DVec3::new(20.0, 0.0, 0.0);
+    }
+    for _ in 0..40 {
+        w.tick();
+    }
+    assert_eq!(
+        w.actors.get(shooter).unwrap().health,
+        1000,
+        "the bolt passes through its shooter"
+    );
+    assert_eq!(
+        w.actors.get(victim).unwrap().health,
+        1000 - 37,
+        "the victim takes the script's Default-block damage"
+    );
+    assert!(
+        w.actors.get(bolt).is_none_or(|b| b.vel.x().abs() < 1e-9),
+        "the bolt stopped at the victim"
+    );
+}
+
+/// The vendored UZDoom library plus `extra`, as a mod's ZScript loads.
+fn uzdoom_program(extra: &str) -> room_zvm::CompiledProgram {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+    let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+    let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+    for line in entry.lines() {
+        if let Some(rest) = line.trim().strip_prefix("#include") {
+            let path = rest.trim().trim_matches('"');
+            sources.push((
+                path.to_owned(),
+                std::fs::read_to_string(root.join(path)).unwrap(),
+            ));
+        }
+    }
+    sources.push(("mod.zs".into(), extra.into()));
+    let result = room_zscript::check(&sources);
+    assert!(
+        result.ok(),
+        "{:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == room_zscript::Severity::Error)
+            .take(5)
+            .collect::<Vec<_>>()
+    );
+    result.program.unwrap()
+}
+
+/// `Actor.Spawn` hands the script a live actor at once (UZDoom): fields
+/// it writes on it land on the new actor, and a pointer to it (`tracer`)
+/// names the new actor. It used to return `null` (PB's casings and muzzle
+/// sparks did nothing).
+#[test]
+fn zs_spawn_returns_a_live_actor() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor SpawnerThing
+{
+  Radius 8
+  Height 16
+  +NOGRAVITY
+  States
+  {
+  Spawn:
+    TROO A -1
+    Stop
+  }
+}
+actor SpawnedThing
+{
+  Radius 8
+  Height 16
+  Health 40
+  +NOGRAVITY
+  States
+  {
+  Spawn:
+    TROO B -1
+    Stop
+  }
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let program = uzdoom_program(
+        r#"
+class SpawnerThing : Actor
+{
+    int made;
+    override void Tick()
+    {
+        if (made) return;
+        made = 1;
+        let mo = Spawn("SpawnedThing", pos + (200, 0, 0));
+        if (mo)
+        {
+            mo.vel = (0, 3, 0);
+            mo.angle = 90;
+            mo.tracer = self;
+            tracer = mo;
+            made = 2 + mo.health;
+        }
+    }
+}
+"#,
+    );
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 1024.0, 256.0), 0.0, 128.0)
+        .player_start(32.0, 32.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+    w.load_zscript_program(program);
+    let spawner_class = classes.find_name("SpawnerThing").unwrap();
+    let spawned_class = classes.find_name("SpawnedThing").unwrap();
+    let spawner = w
+        .spawn_at(
+            spawner_class,
+            room_core::math::DVec3::new(100.0, 128.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    for _ in 0..3 {
+        w.tick();
+    }
+    let made: Vec<_> = w
+        .thinkers
+        .default
+        .iter()
+        .copied()
+        .filter(|&id| w.actors.get(id).is_some_and(|a| a.class == spawned_class))
+        .collect();
+    assert_eq!(made.len(), 1, "one actor spawned");
+    let child = made[0];
+    let c = w.actors.get(child).unwrap();
+    assert!(
+        (c.pos.x() - 300.0).abs() < 1e-6,
+        "at pos + 200: {:?}",
+        c.pos
+    );
+    assert!((c.angle.degrees() - 90.0).abs() < 1e-6);
+    assert!(c.pos.y() > 128.0 + 3.0, "moving by its vel: {:?}", c.pos);
+    assert_eq!(c.tracer, Some(spawner), "the script set its tracer");
+    assert_eq!(w.actors.get(spawner).unwrap().tracer, Some(child));
+}
+
+/// `Sector.NextLowestFloorAt` answers `(height, sector)`: PB's
+/// `GetFloorInfo` reads `RealFloor.FloorPlane.Normal` from the second value.
+#[test]
+fn zs_next_lowest_floor_at_returns_the_sector() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        r#"
+actor ProbeThing
+{
+  Radius 8
+  Height 16
+  States
+  {
+  Spawn:
+    TROO A -1
+    Stop
+  }
+}
+"#
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let program = uzdoom_program(
+        r#"
+class ProbeThing : Actor
+{
+    override void Tick()
+    {
+        let s = FloorSector;
+        if (!s) { special1 = 1; return; }
+        double z; Sector r;
+        [z, r] = s.NextLowestFloorAt(pos.x, pos.y, pos.z);
+        if (!r) { special1 = 2; return; }
+        let n = r.FloorPlane.Normal;
+        special1 = 3;
+        special2 = int(n.z * 100);
+    }
+}
+"#,
+    );
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 1024.0, 256.0), 0.0, 128.0)
+        .player_start(32.0, 32.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+    w.load_zscript_program(program);
+    let cid = classes.find_name("ProbeThing").unwrap();
+    let id = w
+        .spawn_at(
+            cid,
+            room_core::math::DVec3::new(100.0, 128.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    for _ in 0..2 {
+        w.tick();
+    }
+    let a = w.actors.get(id).unwrap();
+    assert_eq!(
+        (a.ext.special1, a.ext.special2),
+        (3, 100),
+        "a flat floor's normal is up"
+    );
+}
+
+/// `RotateVector` turns the vector (PB's ground movement builds its
+/// acceleration with it); it used to read as a zero vector.
+#[test]
+fn zs_rotate_vector_turns_the_vector() {
+    let deco = format!(
+        "{}\n{}",
+        include_str!("../../../testdata/actors/doom_basic.txt"),
+        "actor ProbeThing\n{\n  Radius 8\n  Height 16\n  States\n  {\n  Spawn:\n    TROO A -1\n    Stop\n  }\n}\n"
+    );
+    let ir = parse_decorate(&deco).unwrap();
+    let classes = Arc::new(ClassRegistry::from_decorate(&ir).unwrap());
+    let states = Arc::new(StateTable::from_decorate(&ir, &classes));
+    let program = uzdoom_program(
+        r#"
+class ProbeThing : Actor
+{
+    override void Tick()
+    {
+        int fm = 12800;
+        int sm = 0;
+        Vector2 acc = RotateVector((fm, -sm), 90);
+        special1 = int(acc.x);
+        special2 = int(acc.y);
+    }
+}
+"#,
+    );
+    let mut map = MapBuilder::new()
+        .room("a", rect(0.0, 0.0, 1024.0, 256.0), 0.0, 128.0)
+        .player_start(32.0, 32.0, 0)
+        .build_udmf("MAP01")
+        .unwrap();
+    apply_nodes(&mut map);
+    let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+    w.load_zscript_program(program);
+    let cid = classes.find_name("ProbeThing").unwrap();
+    let id = w
+        .spawn_at(
+            cid,
+            room_core::math::DVec3::new(100.0, 128.0, 0.0),
+            room_core::math::Angle::ZERO,
+        )
+        .unwrap();
+    w.tick();
+    let a = w.actors.get(id).unwrap();
+    assert_eq!((a.ext.special1, a.ext.special2), (0, 12800));
+}

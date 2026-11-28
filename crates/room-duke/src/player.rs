@@ -177,6 +177,10 @@ pub fn sprite_z_clip(s: &SpriteT, tile_meta: &[TileZMeta]) -> SpriteZClip {
     }
 }
 
+fn minus_one() -> i16 {
+    -1
+}
+
 /// Player pose + XY momentum (subset of `player_struct`).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Player {
@@ -528,6 +532,11 @@ pub struct Player {
     /// Chocolate alternating walking-sound phase.
     #[serde(default)]
     pub walking_snd_toggle: u8,
+    /// This tic's `psectlotag` as Chocolate's `processinput` reads it once at
+    /// the top (before the move, after the deep-water override); -1 when
+    /// not computed. Working state, not saved.
+    #[serde(skip, default = "minus_one")]
+    pub tic_psectlotag: i16,
     /// Chocolate `player_struct::knee_incs` scripted/player knee animation.
     #[serde(default)]
     pub knee_incs: i16,
@@ -884,6 +893,7 @@ impl Default for Player {
             hard_landing: 0,
             knuckle_incs: 0,
             walking_snd_toggle: 0,
+            tic_psectlotag: -1,
             knee_incs: 0,
             actorsqu: -1,
             pending_knee_target: None,
@@ -1293,6 +1303,7 @@ pub(crate) fn processinput_move_with_lists_clipping_eduke(
     }
 
     // Chocolate: getzrange + fall/ceiling clamp happen *before* XY clipmove.
+    p.tic_psectlotag = -1;
     apply_player_fall_z_with_eduke_bridge(
         p,
         sync,
@@ -1410,10 +1421,16 @@ pub(crate) fn processinput_move_with_lists_clipping_eduke(
     let walk_xvel = i32::from(p.body_xvel);
 
     // Chocolate walk view-bob (`pyoff`) — feeds shotgun `sz = posz+pyoff+(4<<8)`.
-    let psectlotag = sectors
-        .get(p.cursectnum as usize)
-        .map(|s| s.lotag)
-        .unwrap_or(0);
+    // The same `psectlotag` as the water bob above: read before the move, so
+    // the tic the player walks out of shallow water still bobs as wet.
+    let psectlotag = if p.tic_psectlotag >= 0 {
+        p.tic_psectlotag
+    } else {
+        sectors
+            .get(p.cursectnum as usize)
+            .map(|s| s.lotag)
+            .unwrap_or(0)
+    };
     if p.jetpack_on == 0 {
         if walk_xvel > 16 {
             if psectlotag != 1 && psectlotag != 2 && p.on_ground {
@@ -1586,6 +1603,7 @@ fn apply_player_fall_z_with_eduke_bridge(
     if (zr.florhit & 49152) == 16384 && psectlotag == 1 && truefdist > PHEIGHT + (16 << 8) {
         psectlotag = 0;
     }
+    p.tic_psectlotag = psectlotag;
     // Sprite ceiling that is a living badguy → use true sector ceiling.
     if zr.ceilhit >= 0 && (zr.ceilhit & 49152) == 49152 {
         let si = (zr.ceilhit & (room_build_engine::world::MAXSPRITES as i32 - 1)) as usize;

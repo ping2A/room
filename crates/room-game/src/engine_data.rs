@@ -207,18 +207,7 @@ fn stub_zscript_parents(
             // children (`PB_Pistol : PB_Weapon`) inherit its properties.
             let (flags, properties) = defaults
                 .get(&name.to_ascii_lowercase())
-                .and_then(|lines| {
-                    let body = lines.join("\n");
-                    let body = body.trim();
-                    let text = if body.starts_with('{') {
-                        format!("actor {name}\n{body}\n")
-                    } else {
-                        format!("actor {name}\n{{\n{body}\n}}\n")
-                    };
-                    room_decorate::parse_decorate(&text).ok()
-                })
-                .and_then(|ir| ir.actors.into_iter().next())
-                .map(|a| (a.flags, a.properties))
+                .map(|lines| default_block_as_decorate(&name, lines))
                 .unwrap_or_default();
             stubs.push(room_decorate::ActorDef {
                 name,
@@ -238,6 +227,37 @@ fn stub_zscript_parents(
         );
         ir.actors.splice(first..first, stubs);
     }
+}
+
+/// A ZScript `Default` block read as DECORATE flags and properties. Each
+/// statement is read on its own, so one DECORATE does not know
+/// (`PB_Monster.posHeadHB 0.8;`, a `//$Title` comment) no longer drops the
+/// whole block: PB's monsters lost `Monster;` that way, so DECORATE monsters
+/// below them were neither solid nor shootable.
+fn default_block_as_decorate(
+    name: &str,
+    lines: &[String],
+) -> (Vec<room_decorate::FlagOp>, Vec<room_decorate::PropertyStmt>) {
+    let body = lines.join("\n");
+    let mut flags = Vec::new();
+    let mut properties = Vec::new();
+    for stmt in body.split([';', '\n']) {
+        let stmt = stmt
+            .trim()
+            .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace());
+        if stmt.is_empty() || stmt.starts_with("//") {
+            continue;
+        }
+        let text = format!("actor {name}\n{{\n{stmt}\n}}\n");
+        if let Some(a) = room_decorate::parse_decorate(&text)
+            .ok()
+            .and_then(|ir| ir.actors.into_iter().next())
+        {
+            flags.extend(a.flags);
+            properties.extend(a.properties);
+        }
+    }
+    (flags, properties)
 }
 
 #[cfg(test)]
@@ -265,6 +285,36 @@ mod zscript_parent_tests {
         );
         assert!(!ir.actors[1].flags.is_empty());
         room_sim::ClassRegistry::from_decorate(&ir).unwrap();
+    }
+
+    /// PB's monster `Default` blocks mix things DECORATE cannot read (a
+    /// custom `PB_Monster.Gibbable 1;`) with `Monster;` and flags; one bad
+    /// statement must not drop the rest (PB monsters had no SHOOTABLE).
+    #[test]
+    fn default_block_keeps_statements_around_unknown_ones() {
+        let lines = vec![
+            "{".to_owned(),
+            "Health 60; Speed 8;".to_owned(),
+            "PB_Monster.Gibbable 1, \"x\" ?;".to_owned(),
+            "Monster;".to_owned(),
+            "+FLOORCLIP -COUNTKILL".to_owned(),
+            "}".to_owned(),
+        ];
+        let (flags, props) = super::default_block_as_decorate("PB_Zombie", &lines);
+        let has_prop = |n: &str| props.iter().any(|p| p.name.eq_ignore_ascii_case(n));
+        assert!(has_prop("Health") && has_prop("Speed"), "{props:?}");
+        let has_flag = |n: &str, set: bool| {
+            flags
+                .iter()
+                .any(|f| f.name.eq_ignore_ascii_case(n) && f.set == set)
+        };
+        assert!(has_flag("FLOORCLIP", true), "{flags:?}");
+        assert!(has_flag("COUNTKILL", false), "{flags:?}");
+        // `Monster` expands to SHOOTABLE (+ friends) or stays a combo flag.
+        assert!(
+            has_flag("SHOOTABLE", true) || has_flag("MONSTER", true) || has_prop("Monster"),
+            "{flags:?} {props:?}"
+        );
     }
 }
 

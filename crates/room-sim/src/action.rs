@@ -53,6 +53,7 @@ pub fn call_action_args(
         "A_SkipUnlessHealthLower" => a_skip_unless_health_lower(world, self_id, args),
         "A_SkipUnlessHealth" => a_skip_unless_health(world, self_id, args),
         "A_SkipUnlessInventory" => a_skip_unless_inventory(world, self_id, args),
+        "A_SkipUnlessExpr" => a_skip_unless_expr(world, self_id, args),
         "A_SkipUnlessArg" => a_skip_unless_arg(world, self_id, args),
         "A_SkipUnlessSpeed" => a_skip_unless_speed(world, self_id, args),
         "A_SkipUnlessAngle" => a_skip_unless_angle(world, self_id, args),
@@ -694,6 +695,10 @@ pub fn call_action_args(
         "A_JumpIfLaserHit" => a_jump_if_laser_hit(world, self_id, args),
         "A_SetBlend" => a_set_blend(world, args),
         // ZScript action bodies (`A_MarineLook`, `A_M_FirePistol`, …).
+        // A weapon's own action functions run with the weapon as `invoker`.
+        other if zscript_weapon_action(world, other).is_some() => {
+            call_zscript_weapon_action(world, self_id, other, args)
+        }
         other => {
             let class_name = world
                 .actors
@@ -1089,6 +1094,40 @@ fn a_skip_unless_arg(world: &mut World, self_id: ActorId, args: &[String]) -> Ac
 }
 
 /// Internal DecoBlock helper: if inventory count `< amount`, skip the next `count` actions.
+/// `A_SkipUnlessExpr("cond", n)`: an anonymous function's `if (cond)` that
+/// is not one of the shapes DECORATE folds; skip the `n` actions after it
+/// when `cond` evaluates to zero.
+fn a_skip_unless_expr(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
+    let cond = args
+        .first()
+        .map(|s| {
+            let s = s.trim();
+            s.strip_prefix('"')
+                .and_then(|t| t.strip_suffix('"'))
+                .unwrap_or(s)
+                .replace("\\\"", "\"")
+        })
+        .unwrap_or_default();
+    let count = args
+        .get(1)
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if count == 0 {
+        return ActionResult::Continue;
+    }
+    let value = crate::deco_eval::eval_action_arg(world, self_id, &cond);
+    let truthy = value
+        .parse::<f64>()
+        .map(|v| v != 0.0)
+        .unwrap_or(!value.is_empty() && value != cond);
+    if !truthy {
+        if let Some(a) = world.actors.get_mut(self_id) {
+            a.action_skip = count;
+        }
+    }
+    ActionResult::Continue
+}
+
 fn a_skip_unless_inventory(world: &mut World, self_id: ActorId, args: &[String]) -> ActionResult {
     let item = args
         .first()
@@ -2986,6 +3025,187 @@ fn a_jump_if_closer(world: &mut World, self_id: ActorId, args: &[String]) -> Act
     }
 }
 
+/// The running psprite's weapon class when it defines script action `name`
+/// (not a library `Actor`/`StateProvider`/`Weapon` one, which Room runs
+/// natively).
+fn zscript_weapon_action(world: &World, name: &str) -> Option<String> {
+    let weapon = world.psprite_weapon?;
+    // A DECORATE weapon (`actor PB_DMR : PB_Weapon`) inherits the functions
+    // of its nearest ZScript ancestor.
+    let mut cur = Some(weapon);
+    let mut found = None;
+    for _ in 0..64 {
+        let Some(def) = cur.and_then(|c| world.classes.get(c)) else {
+            break;
+        };
+        if let Some(r) = world.zscript.resolve_method(&def.name, name) {
+            found = Some((def.name.clone(), r));
+            break;
+        }
+        cur = def.parent;
+    }
+    let (class, resolved) = found?;
+    let owner = resolved
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        owner.as_str(),
+        "actor" | "stateprovider" | "weapon" | "inventory" | "object" | "thinker"
+    ) {
+        return None;
+    }
+    Some(class)
+}
+
+/// Run the psprite weapon's ZScript action function `name` (UZDoom
+/// `CallAction`: `self` = the player pawn, `invoker` = the weapon), apply what
+/// it queued, and follow the state it returned.
+pub fn call_zscript_weapon_action(
+    world: &mut World,
+    self_id: ActorId,
+    name: &str,
+    args: &[String],
+) -> ActionResult {
+    let Some(weapon) = world.psprite_weapon else {
+        return ActionResult::Continue;
+    };
+    match run_zscript_weapon_function(world, self_id, name, args) {
+        Some((_, Some(label))) => world
+            .states
+            .find_label(weapon, &label)
+            .map_or(ActionResult::Continue, ActionResult::Jump),
+        _ => ActionResult::Continue,
+    }
+}
+
+/// The value of a psprite weapon's ZScript function called from a DECORATE
+/// expression (`if (PressingFire() && …)`), or `None` when the weapon has no
+/// such function.
+pub(crate) fn zscript_weapon_function_value(
+    world: &mut World,
+    self_id: ActorId,
+    name: &str,
+    args: &[String],
+) -> Option<i64> {
+    zscript_weapon_action(world, name)?;
+    run_zscript_weapon_function(world, self_id, name, args).map(|(v, _)| v)
+}
+
+/// Run weapon function `name` for [`call_zscript_weapon_action`]: its integer
+/// result and returned state label.
+fn run_zscript_weapon_function(
+    world: &mut World,
+    self_id: ActorId,
+    name: &str,
+    args: &[String],
+) -> Option<(i64, Option<String>)> {
+    let weapon = world.psprite_weapon?;
+    let script_class = zscript_weapon_action(world, name)?;
+    let def = world.classes.get(weapon)?;
+    let info = crate::zscript::WeaponCallInfo {
+        class: script_class,
+        ammo_type1: def.ammo_type.clone(),
+        ammo_type2: def.ammo_type2.clone(),
+        ammo_use1: def.ammo_use,
+        ammo_use2: def.ammo_use2,
+        buttons: world.psprite_buttons[0],
+        old_buttons: world.psprite_buttons[1],
+        view_z: world.psprite_view[0],
+        crouch_factor: world.psprite_view[1],
+    };
+    let owner_class = world
+        .actors
+        .get(self_id)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    let has_target = world.actors.get(self_id).and_then(|a| a.target).is_some();
+    world
+        .zscript
+        .mark_actor_target(self_id.index(), &owner_class, has_target);
+    world
+        .zscript
+        .set_ai_observers(world.zscript_ai_observers(self_id));
+    world.zscript.set_resurrection_candidate(None);
+    let synced = world.zscript_sync_in(self_id);
+    let returned =
+        world
+            .zscript
+            .call_weapon_action(self_id.index(), &owner_class, &info, name, args);
+    world.zscript_sync_out(self_id, synced);
+    apply_zscript_actor_ops(world, self_id);
+    match returned {
+        Ok(r) => Some(r),
+        Err(e) => {
+            report_weapon_action_trap(&info.class, name, &e);
+            Some((0, None))
+        }
+    }
+}
+
+/// Run a projectile's ZScript `SpecialMissileHit(victim)` override, if its
+/// class has one: `Some(1)` passes through, `Some(0)` explodes, `Some(-1)`
+/// (or no override) is the normal hit.
+pub(crate) fn zscript_special_missile_hit(
+    world: &mut World,
+    missile: ActorId,
+    victim: ActorId,
+) -> Option<i64> {
+    if !world.zscript.is_active() {
+        return None;
+    }
+    let class = world
+        .actors
+        .get(missile)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.name.clone())?;
+    let resolved = world.zscript.resolve_method(&class, "SpecialMissileHit")?;
+    if resolved.to_ascii_lowercase().starts_with("actor.") {
+        return None;
+    }
+    let victim_class = world
+        .actors
+        .get(victim)
+        .and_then(|a| world.classes.get(a.class))
+        .map(|c| c.name.clone())?;
+    // The victim is mirrored too (`victim.pos`, `victim.bSHOOTABLE`).
+    let synced = world.zscript_sync_in_with(missile, &[victim]);
+    let result = world.zscript.call_with_actor(
+        missile.index(),
+        &class,
+        &resolved,
+        victim.index(),
+        &victim_class,
+    );
+    world.zscript_sync_out(missile, synced);
+    apply_zscript_actor_ops(world, missile);
+    match result {
+        Ok(v) => Some(v),
+        Err(e) => {
+            report_weapon_action_trap(&class, "SpecialMissileHit", &e);
+            None
+        }
+    }
+}
+
+/// Log a weapon action function that trapped, once per function.
+fn report_weapon_action_trap(class: &str, name: &str, e: &room_zvm::Trap) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::BTreeSet<String>>> = OnceLock::new();
+    if cfg!(test) {
+        return;
+    }
+    let key = format!("{class}.{name}").to_ascii_lowercase();
+    let seen = SEEN.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()));
+    if let Ok(mut s) = seen.lock() {
+        if s.insert(key) {
+            eprintln!("room: ZScript {class}.{name}: {e}");
+        }
+    }
+}
+
 /// Run a ZScript action body, then apply the actor natives it queued.
 pub fn call_zscript_action(world: &mut World, self_id: ActorId, name: &str) -> ActionResult {
     let class_name = world
@@ -3437,6 +3657,14 @@ pub fn apply_zscript_actor_ops(world: &mut World, self_id: ActorId) {
                     .unwrap_or(0);
                 let text: Vec<String> = args[..last].iter().map(|n| n.to_string()).collect();
                 let _ = call_action_args(world, self_id, &name, &text);
+            }
+            room_zvm::ZsActorOp::ActionText { name, args } => {
+                // Gun actions only make sense on the psprite that is running.
+                if world.psprite_state.is_some() && crate::think_player::is_gun_action(&name) {
+                    world.psp_script_actions.push((name, args));
+                } else {
+                    let _ = call_action_args(world, self_id, &name, &args);
+                }
             }
             room_zvm::ZsActorOp::Burst { chunk_class } => {
                 let _ = call_action_args(world, self_id, "A_Burst", &[chunk_class]);
@@ -9467,11 +9695,23 @@ fn check_missile_spawn(world: &mut World, missile_id: ActorId) {
             (Fixed::from_f64(m.pos.z()) + Fixed(mz.0 >> 1)).to_f64(),
         )
     } else {
-        DVec3::new(
-            m.pos.x() + m.vel.x() * 0.5,
-            m.pos.y() + m.vel.y() * 0.5,
-            m.pos.z() + m.vel.z() * 0.5,
-        )
+        // UZDoom `P_CheckMissileSpawn(th, shooter->radius)`: halve the
+        // advance until it is inside the shooter, so a fast projectile
+        // (PB's 320-unit bullets) does not start past a monster in front of
+        // the gun.
+        let maxdist = m
+            .target
+            .and_then(|t| world.actors.get(t))
+            .map_or(0.0, |t| t.radius);
+        let mut advance = m.vel;
+        loop {
+            advance *= 0.5;
+            let xy = advance.x() * advance.x() + advance.y() * advance.y();
+            if maxdist <= 0.0 || xy < maxdist * maxdist {
+                break;
+            }
+        }
+        m.pos + advance
     };
     if world.math_mode == crate::vanilla::SimMathMode::VanillaFixed {
         if !crate::vanilla::try_move_fixed(world, missile_id, dest).ok {

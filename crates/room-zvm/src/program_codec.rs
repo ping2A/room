@@ -175,6 +175,23 @@ impl CompiledProgram {
                 w.u32(*s);
             }
         }
+        w.len(self.action_defaults.len());
+        for (k, v) in &self.action_defaults {
+            w.str(k);
+            w.len(v.len());
+            for d in v {
+                w.str(d);
+            }
+        }
+        w.len(self.field_defaults.len());
+        for (k, v) in &self.field_defaults {
+            w.str(k);
+            w.len(v.len());
+            for (field, value) in v {
+                w.str(field);
+                w.str(value);
+            }
+        }
         w.0
     }
 
@@ -280,6 +297,28 @@ impl CompiledProgram {
             }
             p.vtables.insert(class, slots);
         }
+        // Images written before `action_defaults` end here.
+        if r.at < bytes.len() {
+            for _ in 0..r.len()? {
+                let k = r.str()?;
+                let mut v = Vec::new();
+                for _ in 0..r.len()? {
+                    v.push(r.str()?);
+                }
+                p.action_defaults.insert(k, v);
+            }
+        }
+        if r.at < bytes.len() {
+            for _ in 0..r.len()? {
+                let k = r.str()?;
+                let mut v = Vec::new();
+                for _ in 0..r.len()? {
+                    let field = r.str()?;
+                    v.push((field, r.str()?));
+                }
+                p.field_defaults.insert(k, v);
+            }
+        }
         if r.at != bytes.len() {
             return Err("program image has trailing bytes".into());
         }
@@ -329,12 +368,32 @@ mod tests {
         p.class_states.insert("C".into(), "Spawn: TNT1 A 1".into());
         p.class_defaults.insert("C".into(), "+SOLID".into());
         p.vtables.insert(0, vec![0, 0]);
+        p.action_defaults.insert(
+            "C.A_Go".into(),
+            vec!["16".into(), String::new(), "\"Fire\"".into()],
+        );
+        p.field_defaults
+            .insert("C".into(), vec![("x".into(), "22".into())]);
         p.finalize();
         let q = CompiledProgram::from_bytes(&p.to_bytes()).unwrap();
+        assert_eq!(q.action_defaults, p.action_defaults);
+        assert_eq!(q.field_defaults, p.field_defaults);
         assert_eq!(q.to_bytes(), p.to_bytes());
         assert_eq!(q.program_hash, p.program_hash);
         assert_eq!(q.func_by_name, p.func_by_name);
         assert!(q.functions[0].const_f[0].is_nan());
         assert!(CompiledProgram::from_bytes(&p.to_bytes()[..20]).is_err());
+        // An image written before `action_defaults` still reads.
+        let mut old = p.clone();
+        old.action_defaults.clear();
+        old.field_defaults.clear();
+        let bytes = old.to_bytes();
+        let trimmed = &bytes[..bytes.len() - 8]; // drop the two empty maps' counts
+        assert!(
+            CompiledProgram::from_bytes(trimmed)
+                .unwrap()
+                .action_defaults
+                .is_empty()
+        );
     }
 }

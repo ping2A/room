@@ -234,6 +234,14 @@ pub struct CompiledProgram {
     pub program_hash: u64,
     /// [`crate::Op::CallVirt`] targets: class id → function index per slot.
     pub vtables: BTreeMap<u32, Vec<u32>>,
+    /// `action` functions (`Class.Method`, as in `func_by_name`) → default
+    /// of each user parameter as text (`""` = none), for the host to fill
+    /// arguments a state left out (`A_DoPBWeaponAction` with no arguments).
+    pub action_defaults: BTreeMap<String, Vec<String>>,
+    /// Script field values a class's `Default` block sets (custom
+    /// `Property`s and flagdefs), as `(field, value text)`; the host applies
+    /// them, ancestors first, to each new actor object.
+    pub field_defaults: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl CompiledProgram {
@@ -276,6 +284,87 @@ impl CompiledProgram {
             }
         }
         self.program_hash = h;
+    }
+
+    /// Replace the bodies of library functions the host implements as
+    /// playsim actions (`Weapon.A_WeaponReady`, `StateProvider.A_FireProjectile`):
+    /// each passes its parameters in order to the `Host.<Method>` native,
+    /// which queues the action for the host ([`crate::ZsActorOp::ActionText`]).
+    /// `classes` and `methods` match case-insensitively. Returns the count.
+    pub fn route_to_host_actions(&mut self, classes: &[&str], methods: &[&str]) -> usize {
+        let mut n = 0;
+        for fi in 0..self.functions.len() {
+            let name = self.functions[fi].name.clone();
+            let Some((class, method)) = name.rsplit_once('.') else {
+                continue;
+            };
+            if !classes.iter().any(|c| c.eq_ignore_ascii_case(class))
+                || !methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+            {
+                continue;
+            }
+            let id = self.intern_native(&format!("Host.{method}"));
+            let f = &mut self.functions[fi];
+            let line = f.lines.first().copied().unwrap_or(0);
+            f.code.clear();
+            for p in f.params.clone() {
+                f.emit(Op::Arg, p.bank, u8::try_from(p.reg).unwrap_or(0), 0);
+            }
+            f.emit_ext(Op::CallNat, 1, 0, 0, id);
+            // The native's integer result is the function's (`GetAirTime`).
+            f.emit(Op::GetRet, 0, 0, 0);
+            f.emit(Op::Ret, 0, 0, 0);
+            f.n_i = f.n_i.max(1);
+            f.lines = vec![line; f.code.len()];
+            n += 1;
+        }
+        if n > 0 {
+            self.finalize();
+        }
+        n
+    }
+
+    /// Make `classes`' `methods` return at once without doing anything (the
+    /// host does that work itself, such as the parts of UZDoom's
+    /// `PlayerPawn.PlayerThink` Room's playsim runs natively). Returns how
+    /// many bodies were replaced.
+    pub fn route_to_noops(&mut self, classes: &[&str], methods: &[&str]) -> usize {
+        let mut n = 0;
+        for f in &mut self.functions {
+            let Some((class, method)) = f.name.rsplit_once('.') else {
+                continue;
+            };
+            if !classes.iter().any(|c| c.eq_ignore_ascii_case(class))
+                || !methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+            {
+                continue;
+            }
+            let line = f.lines.first().copied().unwrap_or(0);
+            f.code.clear();
+            f.emit(Op::Ret, 0, 0, 0);
+            f.lines = vec![line; f.code.len()];
+            n += 1;
+        }
+        if n > 0 {
+            self.finalize();
+        }
+        n
+    }
+
+    /// The function an [`crate::Op::CallVirt`] with extension word `ext`
+    /// runs for an object of `class_id`: the class table's entry for the
+    /// slot (low 12 bits), else the statically resolved function (the
+    /// other 20 bits) — an object of a class without a table, such as a
+    /// proxy for a DECORATE actor.
+    #[must_use]
+    pub fn virtual_target(&self, ext: u32, class_id: u32) -> Option<u32> {
+        let slot = (ext & 0xfff) as usize;
+        let fallback = ext >> 12;
+        self.vtables
+            .get(&class_id)
+            .and_then(|vt| vt.get(slot).copied())
+            .filter(|&i| (i as usize) < self.functions.len())
+            .or_else(|| ((fallback as usize) < self.functions.len()).then_some(fallback))
     }
 
     /// Look up a function by qualified name.

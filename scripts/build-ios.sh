@@ -122,6 +122,13 @@ if [[ -f "$ROOT/soundfonts/TimGM6mb.sf2" ]]; then
 else
   echo "build-ios: no soundfonts/TimGM6mb.sf2 (scripts/fetch-soundfont.sh); music falls back to OPL"
 fi
+# Room's own mods (Survival, Bounty, Royale, Shuriken, Color World, Red
+# Noir), read in place from the bundle and listed unticked by the launcher.
+if [[ -n "${ROOM_IOS_NO_MODS:-}" ]]; then
+  echo "build-ios: Room's mods left out"
+else
+  bash "$ROOT/scripts/stage-mods.sh" "$app"
+fi
 # Brutal Doom + Room's Rust port of its ZScript (development builds); the
 # launcher lists files in the app bundle as shipped and ticks them.
 brutal="${ROOM_BRUTALDOOM_PK3:-}"

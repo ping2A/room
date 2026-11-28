@@ -59,6 +59,7 @@ impl Clone for Zvm {
             last_f: self.last_f,
             last_i: self.last_i,
             last_s: self.last_s.clone(),
+            last_a: self.last_a,
             play: self.play.clone(),
             args: self.args.clone(),
             rets: self.rets,
@@ -95,6 +96,9 @@ pub struct Zvm {
     pub last_i: [i64; 4],
     /// `s[0]` of the last top-level return, as text.
     pub last_s: String,
+    /// Object result of the last top-level return (`null` for other
+    /// results): an `action state` function's state.
+    pub last_a: ObjHandle,
     /// Play-scope natives (skill, lumps, grants). Not shared across VMs.
     pub play: Box<crate::natives::ZvmPlayHost>,
     /// Argument stack for [`Op::Arg`] / [`Op::Call`].
@@ -153,6 +157,14 @@ impl Zvm {
         inherit_native_imports(&mut program, &natives);
         if stub_missing {
             natives.bind_imports(&program.native_imports);
+        } else {
+            // Library bodies routed to the host always have their native.
+            natives.bind_imports(
+                program
+                    .native_imports
+                    .iter()
+                    .filter(|n| n.len() > 5 && n[..5].eq_ignore_ascii_case("host.")),
+            );
         }
         remap_native_imports(&mut program, &natives);
         let object_layouts = program
@@ -179,6 +191,7 @@ impl Zvm {
             last_f: 0.0,
             last_i: [0; 4],
             last_s: String::new(),
+            last_a: ObjHandle::NULL,
             play: Box::new(play),
             args: Vec::new(),
             rets: [None; 8],
@@ -204,6 +217,7 @@ impl Zvm {
             last_f: 0.0,
             last_i: [0; 4],
             last_s: String::new(),
+            last_a: ObjHandle::NULL,
             play: Box::default(),
             args: Vec::new(),
             rets: [None; 8],
@@ -502,6 +516,9 @@ impl Zvm {
 
     /// Run until the stack unwinds; returns the top-level integer result.
     fn run_with_result(&mut self, stack: &mut Vec<Frame>) -> Result<i64, Trap> {
+        if self.bridge_floor == 0 && stack.len() == 1 {
+            self.last_a = ObjHandle::NULL;
+        }
         #[cfg(feature = "aot")]
         if self.bridge_floor == 0 && stack.len() == 1 {
             if let Some(r) = self.try_aot(&stack[0]) {
@@ -736,9 +753,7 @@ impl Zvm {
                         .unwrap_or(0);
                     let func_idx = self
                         .program
-                        .vtables
-                        .get(&class_id)
-                        .and_then(|vt| vt.get(slot).copied())
+                        .virtual_target(slot as u32, class_id)
                         .ok_or_else(|| {
                             Trap::Native(format!(
                                 "CallVirt class {class_id} slot {slot} is unbound"
@@ -785,7 +800,7 @@ impl Zvm {
                             Value::I(x) => result = x,
                             Value::F(x) => self.last_f = x,
                             Value::S(h) => self.last_s = self.heap.str(h).to_owned(),
-                            _ => {}
+                            Value::A(h) => self.last_a = h,
                         }
                     }
                 }
@@ -1105,6 +1120,8 @@ impl Zvm {
         let mut fv: Vec<f64> = Vec::with_capacity(4);
         let mut s: Vec<StrHandle> = Vec::with_capacity(4);
         let mut ao: Vec<ObjHandle> = Vec::with_capacity(4);
+        self.play.native_args.clear();
+        self.play.native_args.extend_from_slice(&pushed);
         for v in pushed {
             match v {
                 Value::I(x) => i.push(x),

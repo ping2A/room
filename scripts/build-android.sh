@@ -191,6 +191,21 @@ if [[ -f "$ROOT/soundfonts/TimGM6mb.sf2" ]]; then
 else
   echo "build-android: no soundfonts/TimGM6mb.sf2 (scripts/fetch-soundfont.sh); music falls back to OPL"
 fi
+# Room's own mods (Survival, Bounty, Royale, Shuriken, Color World, Red
+# Noir), as the web build serves them. bundled-mods.txt lists them for the
+# app's first-run copy; the launcher shows them unticked.
+# ROOM_ANDROID_NO_MODS=1 leaves them out.
+if [[ -n "${ROOM_ANDROID_NO_MODS:-}" ]]; then
+  if [[ -f "$assets/bundled-mods.txt" ]]; then
+    while IFS= read -r old; do
+      [[ -n "$old" && "$old" != */* ]] && rm -f "$assets/$old"
+    done <"$assets/bundled-mods.txt"
+    rm -f "$assets/bundled-mods.txt"
+  fi
+  echo "build-android: ROOM_ANDROID_NO_MODS set: Room's mods left out"
+else
+  bash "$ROOT/scripts/stage-mods.sh" "$assets"
+fi
 
 # 3. APK (or AAB)
 variant=Debug

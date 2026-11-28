@@ -3400,57 +3400,33 @@ mod browser {
             }
         }
         s.scene_color = scene_color;
-        // Mods' GLDEFS post shaders, on the scene before the post chain.
+        // Mods' GLDEFS post shaders (Color World, Red Noir): switched and
+        // fed here, run below on the finished picture.
+        let mut mod_post_on = false;
         {
             let FrameState {
                 mode,
                 gpu,
-                scene_color,
-                post_ping,
+                config,
                 web_post,
-                pass,
                 ..
             } = &mut *s;
             if let Mode::Play(play) = mode {
                 let ops = play.take_post_shader_ops();
                 if web_post
                     .as_ref()
-                    .is_none_or(|p| p.session != play.session_id)
-                    && let Some((tex, _)) = scene_color.as_ref()
+                    .is_none_or(|p| p.session != play.session_id || p.format != config.format)
                 {
                     *web_post = Some(crate::web_post::WebPost::new(
                         &gpu.device,
-                        tex.format(),
+                        config.format,
                         play.session_id,
                         play.post_shader_sources(),
                     ));
                 }
-                let game = play.game_seconds();
                 if let Some(post) = web_post.as_mut() {
                     post.apply(ops);
-                    if soft_pixels.is_none()
-                        && post.any_enabled()
-                        && let (Some(scene), Some(ping)) =
-                            (scene_color.as_ref(), post_ping.as_ref())
-                    {
-                        let mut encoder =
-                            gpu.device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: Some("mod-post"),
-                                });
-                        post.run(
-                            gpu,
-                            &mut encoder,
-                            &scene.0,
-                            &ping.0,
-                            room_render::PostTimes {
-                                delta: 1.0 / 60.0,
-                                time: pass.time,
-                                game,
-                            },
-                        );
-                        gpu.queue.submit(Some(encoder.finish()));
-                    }
+                    mod_post_on = soft_pixels.is_none() && post.any_enabled();
                 }
             }
         }
@@ -3472,13 +3448,19 @@ mod browser {
             let scene = s.scene_color.as_ref();
             let ping = s.post_ping.as_ref();
             if let (Some(chain), Some(scene), Some(ping)) = (chain.as_mut(), scene, ping) {
+                // With a mod's post shader on, the chain's picture goes to
+                // `post_ldr` (the window's format, gamma space) first.
+                let dst = match s.post_ldr.as_ref() {
+                    Some(ldr) if mod_post_on => &ldr.1,
+                    _ => &view,
+                };
                 chain.apply_views(
                     &s.gpu,
                     &mut encoder,
                     &scene.1,
                     &s.depth.0,
                     &ping.1,
-                    &view,
+                    dst,
                     PostChainInputs {
                         settings: &settings,
                         blend: [0.0, 0.0, 0.0, 0.0],
@@ -3492,6 +3474,81 @@ mod browser {
             s.post_chain = chain;
             s.gpu.queue.submit(Some(encoder.finish()));
         }
+        // The weapon joins the picture, the mod shaders run on it into the
+        // window, and the rest of the HUD is drawn on top below (as UZDoom:
+        // the shaders see the weapon, not the status bar).
+        let mut hud_after_post: Option<Canvas> = None;
+        if mod_post_on {
+            let (native_fb_width, native_fb_height) = hud_dims(native_fb_width, native_fb_height);
+            let game = match &s.mode {
+                Mode::Play(play) => play.game_seconds(),
+                _ => 0.0,
+            };
+            let canvases = match &mut s.mode {
+                Mode::Play(play) => Some(play.build_hud_canvases(
+                    native_fb_width as f32,
+                    native_fb_height as f32,
+                    true,
+                )),
+                _ => None,
+            };
+            let time = s.pass.time;
+            let FrameState {
+                gpu,
+                canvas,
+                post_ldr,
+                web_post,
+                ..
+            } = &mut *s;
+            if let (Some((rest, weapon)), Some(ldr), Some(post)) =
+                (canvases, post_ldr.as_ref(), web_post.as_mut())
+            {
+                if let (Some(weapon), Some(canvas_gpu)) = (weapon, canvas.as_mut()) {
+                    canvas_gpu.rasterize_frame(weapon, None);
+                    let mut encoder =
+                        gpu.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("weapon-in-scene"),
+                            });
+                    {
+                        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("weapon-in-scene"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &ldr.1,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                        canvas_gpu.blit(gpu, &mut rp);
+                    }
+                    gpu.queue.submit(Some(encoder.finish()));
+                }
+                let mut encoder =
+                    gpu.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("mod-post"),
+                        });
+                post.run_to_view(
+                    gpu,
+                    &mut encoder,
+                    &ldr.0,
+                    &view,
+                    room_render::PostTimes {
+                        delta: 1.0 / 60.0,
+                        time,
+                        game,
+                    },
+                );
+                gpu.queue.submit(Some(encoder.finish()));
+                hud_after_post = Some(rest);
+            }
+        }
         let mut encoder = s
             .gpu
             .device
@@ -3503,6 +3560,7 @@ mod browser {
             let (native_fb_width, native_fb_height) = hud_dims(native_fb_width, native_fb_height);
             let (hud_fw, hud_fh) = (native_fb_width as f32, native_fb_height as f32);
             let hud_canvas = match &mut s.mode {
+                Mode::Play(_) if hud_after_post.is_some() => hud_after_post.take(),
                 Mode::Play(play) => {
                     let mut hud = play.build_hud_canvas(hud_fw, hud_fh);
                     if let Some((w, h, pixels)) = soft_pixels {

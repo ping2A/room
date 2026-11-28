@@ -374,11 +374,7 @@ fn imp_vcall(h: &mut impl HostCtx, slot: i32, n: i32) -> Hr<i32> {
         })
         .unwrap_or(0);
     let slot = slot as u32 as usize;
-    let target = vm
-        .program
-        .vtables
-        .get(&class_id)
-        .and_then(|vt| vt.get(slot).copied());
+    let target = vm.program.virtual_target(slot as u32, class_id);
     let is_compiled = target.is_some_and(|t| compiled.get(t as usize).copied().unwrap_or(false));
     core.compiled = compiled;
     let Some(target) = target else {
@@ -778,6 +774,7 @@ impl AotModule {
                 abi::TAG_I => result = payload as i64,
                 abi::TAG_F => vm.last_f = f64::from_bits(payload),
                 abi::TAG_S => vm.last_s = vm.heap.str(StrHandle(payload as u32)).to_owned(),
+                abi::TAG_A => vm.last_a = obj_from_bits(payload),
                 _ => {}
             },
             abi::EXIT_RETURN => {

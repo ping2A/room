@@ -69,15 +69,77 @@ impl Library {
             .collect()
     }
 
-    /// Mods ticked when `game` is picked: the ones shipped with the app
-    /// (phones ship Brutal Doom, so Freedoom starts with it).
+    /// Mods ticked when `game` is picked: Brutal Doom when the app ships it
+    /// (phones do, so Freedoom starts with it). Room's other shipped mods
+    /// (Survival, Color World, …) are listed but left unticked: they change
+    /// the game mode or the look, and several at once rarely make sense.
     pub(crate) fn default_mods(&self, game: &Entry) -> Vec<PathBuf> {
         self.mods_for(game)
             .into_iter()
-            .filter(|m| m.bundled)
+            .filter(|m| m.bundled && ticked_when_shipped(&m.file))
             .map(|m| m.path.clone())
             .collect()
     }
+}
+
+/// Shipped mods that start ticked (see [`Library::default_mods`]).
+fn ticked_when_shipped(file: &str) -> bool {
+    let lower = file.to_ascii_lowercase();
+    lower.starts_with("brutal") && lower.ends_with(".pk3")
+}
+
+/// The `name = "…"` of a Room mod's `ROOMMOD` lump (`[mod]` table), so the
+/// launcher shows "Survival Director" rather than `survival.wad`. `None` for
+/// any other WAD, or when the lump is missing or unreadable.
+fn roommod_title(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 12];
+    file.read_exact(&mut head).ok()?;
+    if &head[..4] != b"PWAD" {
+        return None;
+    }
+    let word = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let lumps = usize::try_from(word(&head[4..8])).ok()?.min(65_536);
+    file.seek(SeekFrom::Start(u64::from(word(&head[8..12]))))
+        .ok()?;
+    let mut dir = vec![0u8; lumps * 16];
+    file.read_exact(&mut dir).ok()?;
+    let entry = dir.chunks_exact(16).find(|e| {
+        let name = &e[8..16];
+        let end = name.iter().position(|&c| c == 0).unwrap_or(8);
+        name[..end].eq_ignore_ascii_case(b"ROOMMOD")
+    })?;
+    let (at, size) = (word(&entry[..4]), word(&entry[4..8]).min(65_536));
+    file.seek(SeekFrom::Start(u64::from(at))).ok()?;
+    let mut text = vec![0u8; usize::try_from(size).ok()?];
+    file.read_exact(&mut text).ok()?;
+    manifest_name(&String::from_utf8_lossy(&text))
+}
+
+/// `name` in the `[mod]` table of a `room.toml` / `ROOMMOD` text.
+fn manifest_name(text: &str) -> Option<String> {
+    let mut in_mod = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_mod = line == "[mod]";
+            continue;
+        }
+        if !in_mod {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let value = value.trim();
+        let name = value.strip_prefix('"')?.split('"').next()?.trim();
+        return (!name.is_empty()).then(|| name.to_owned());
+    }
+    None
 }
 
 /// `(companion file, prefix of the mod it goes with)`: Room's Rust port of
@@ -236,7 +298,14 @@ pub(crate) fn scan(dirs: &[(PathBuf, bool)]) -> Library {
             };
             match kind {
                 FileKind::Iwad => lib.games.push(entry(Engine::Doom)),
-                FileKind::Pwad | FileKind::Pk3 => lib.mods.push(entry(Engine::Doom)),
+                FileKind::Pwad => {
+                    let mut mod_entry = entry(Engine::Doom);
+                    if let Some(title) = roommod_title(&path) {
+                        mod_entry.title = title;
+                    }
+                    lib.mods.push(mod_entry);
+                }
+                FileKind::Pk3 => lib.mods.push(entry(Engine::Doom)),
                 // Base Duke GRPs are games; other GRPs are add-ons.
                 FileKind::Grp if lower.starts_with("duke3d") || lower == "nam.grp" => {
                     lib.games.push(entry(Engine::Duke));
@@ -386,6 +455,62 @@ mod tests {
         // Shipped mods are ticked by default; the player's own are not.
         assert_eq!(lib.default_mods(game), [bundle.join("brutal.pk3")]);
         let _ = std::fs::remove_dir_all(&imported);
+        let _ = std::fs::remove_dir_all(&bundle);
+    }
+
+    /// A PWAD holding one `ROOMMOD` lump.
+    fn room_mod(manifest: &str) -> Vec<u8> {
+        let body = manifest.as_bytes();
+        let mut b = Vec::new();
+        b.extend_from_slice(b"PWAD");
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&(12 + body.len() as u32).to_le_bytes());
+        b.extend_from_slice(body);
+        b.extend_from_slice(&12u32.to_le_bytes());
+        b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        b.extend_from_slice(b"ROOMMOD\0");
+        b
+    }
+
+    #[test]
+    fn shipped_room_mods_show_their_names_and_start_unticked() {
+        let bundle = dir("bundle-room-mods");
+        std::fs::write(bundle.join("freedoom2.wad"), wad(b"IWAD", 0, 12, 12)).unwrap();
+        std::fs::write(bundle.join("brutal.pk3"), b"PK\x03\x04").unwrap();
+        std::fs::write(
+            bundle.join("survival.wad"),
+            room_mod("[mod]\nid = \"x\"\nname = \"Survival Director\"\n[[module]]\nname = \"survival\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            bundle.join("colorworld.wad"),
+            room_mod("# comment\n[mod]\nname=\"Color World\" # trailing\n"),
+        )
+        .unwrap();
+        // A ROOMMOD with no [mod] name keeps the file name.
+        std::fs::write(
+            bundle.join("bare.wad"),
+            room_mod("[[module]]\nname = \"m\"\n"),
+        )
+        .unwrap();
+        let lib = scan(&[(bundle.clone(), true)]);
+        let game = &lib.games[0];
+        let mut titles: Vec<(&str, &str)> = lib
+            .mods_for(game)
+            .iter()
+            .map(|m| (m.file.as_str(), m.title.as_str()))
+            .collect();
+        titles.sort_unstable();
+        assert_eq!(
+            titles,
+            [
+                ("bare.wad", "bare.wad"),
+                ("brutal.pk3", "Brutal Doom"),
+                ("colorworld.wad", "Color World"),
+                ("survival.wad", "Survival Director"),
+            ]
+        );
+        assert_eq!(lib.default_mods(game), [bundle.join("brutal.pk3")]);
         let _ = std::fs::remove_dir_all(&bundle);
     }
 

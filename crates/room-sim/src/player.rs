@@ -308,6 +308,16 @@ pub struct Player {
     pub view_ofs_z: f64,
     /// On ground this tic.
     pub on_ground: bool,
+    /// `player.viewheight` as a movement script left it (`CalcHeight`).
+    pub script_view_height: Option<f64>,
+    /// `player.deltaviewheight` of a movement script.
+    pub script_delta_view_height: f64,
+    /// `player.jumpTics` of a movement script.
+    pub script_jump_tics: i32,
+    /// `player.turnticks` of a movement script.
+    pub script_turn_ticks: i32,
+    /// `player.centering` of a movement script.
+    pub script_centering: bool,
     /// Crouched (Duke stance, or any part of a GZDoom-style crouch).
     pub crouching: bool,
     /// GZDoom-style crouch progress: `0` standing … `1` fully down (half

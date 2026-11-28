@@ -375,10 +375,13 @@ fn find_inventory(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(),
     let found = inventory_entry(ctx, owner, &class);
     let h = match found {
         Some((amount, max)) => {
+            // A DECORATE item has no script layout: use `Inventory`'s, so
+            // `Amount` / `MaxAmount` have their slots.
             let (class_id, n_i, n_a, n_s) = ctx
                 .play
                 .object_layouts
                 .get(&class)
+                .or_else(|| ctx.play.object_layouts.get("inventory"))
                 .copied()
                 .unwrap_or((0, 8, 4, 4));
             let h = ctx.heap.new_object(class_id, n_i, n_a, n_s);
@@ -459,6 +462,7 @@ pub fn typed_native_vector_result(name: &str) -> Option<u8> {
         "actor.vec2to"
         | "actor.vec2offset"
         | "actor.vec2angle"
+        | "actor.rotatevector"
         | "texman.getscaledsize"
         | "texman.getscaledoffset" => Some(2),
         "levellocals.vec2diff"

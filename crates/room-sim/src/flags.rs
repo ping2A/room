@@ -444,6 +444,42 @@ impl ActorFlags {
     }
 }
 
+/// The UZDoom flag names by bit, for script `bFLAG` reads.
+#[must_use]
+pub fn flag_names() -> Vec<String> {
+    UZDOOM_FLAGS.iter().map(|n| (*n).to_owned()).collect()
+}
+
+/// An actor's UZDoom flags as words: its extra flag set with the core flags
+/// the playsim keeps in `Actor::flags` merged in (`SHOOTABLE`, `SOLID`, …).
+#[must_use]
+pub fn actor_flag_words(a: &crate::actor::Actor) -> Vec<u64> {
+    use crate::class as c;
+    let mut set = a.extra_flags;
+    for (bit, name) in [
+        (c::FLAG_SOLID, "SOLID"),
+        (c::FLAG_SHOOTABLE, "SHOOTABLE"),
+        (c::FLAG_NOGRAVITY, "NOGRAVITY"),
+        (c::FLAG_FLOAT, "FLOAT"),
+        (c::FLAG_DROPOFF, "DROPOFF"),
+        (c::FLAG_DORMANT, "DORMANT"),
+        (c::FLAG_FRIENDLY, "FRIENDLY"),
+        (c::FLAG_NOTARGET, "NOTARGET"),
+        (c::FLAG_INVULNERABLE, "INVULNERABLE"),
+        (c::FLAG_NODAMAGE, "NODAMAGE"),
+        (c::FLAG_NOBLOOD, "NOBLOOD"),
+        (c::FLAG_FLOATBOB, "FLOATBOB"),
+        (c::FLAG_AMBUSH, "AMBUSH"),
+        (c::FLAG_MISSILE, "MISSILE"),
+        (c::FLAG_RIPPER, "RIPPER"),
+        (c::FLAG_COUNTKILL, "COUNTKILL"),
+        (c::FLAG_CORPSE, "CORPSE"),
+    ] {
+        set.set_name(name, a.flags & bit != 0);
+    }
+    set.to_words().to_vec()
+}
+
 /// True when `name` is one of the UZDoom `DEFINE_FLAG` names.
 #[must_use]
 pub fn is_uzdoom_flag(name: &str) -> bool {

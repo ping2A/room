@@ -49,6 +49,7 @@
 @external("room", "player_print") declare function _player_print(p: i32, ptr: usize, len: i32): void;
 @external("room", "actor_class") declare function _actor_class(a: u64): i32;
 @external("room", "class_name") declare function _class_name(c: i32, buf: usize, cap: i32): i32;
+@external("room", "manifest_option_i32") declare function _manifest_option_i32(ptr: usize, len: i32, def: i32): i32;
 @external("room", "class_is_descendant") declare function _class_is_descendant(c: i32, parent: i32): i32;
 @external("room", "actor_pos") declare function _actor_pos(a: u64, out: usize): void;
 @external("room", "actor_vel") declare function _actor_vel(a: u64, out: usize): void;
@@ -146,6 +147,14 @@ export namespace PlayerStat {
   export const KILLS: i32 = 3;
   export const ITEMS: i32 = 4;
   export const SECRETS: i32 = 5;
+  export const FRAGS: i32 = 6;
+  export const DAMAGECOUNT: i32 = 7;
+  export const BONUSCOUNT: i32 = 8;
+  export const EXTRALIGHT: i32 = 9;
+  /** Class ref of the weapon in hand (`className` names it; 0 = none). */
+  export const READY_WEAPON: i32 = 10;
+  /** Damage this player has dealt this map. */
+  export const DAMAGE_DEALT: i32 = 11;
 }
 
 /** `Actor.getInt` / `setInt` selectors. */
@@ -426,6 +435,15 @@ export function classOf(name: string): i32 {
 }
 
 export function className(cls: i32): string { return readName(_class_name(cls, SCRATCH, 256)); }
+/** `cls` (a class ref, e.g. `playerStat(slot, PlayerStat.READY_WEAPON)`) is `parent` or inherits from it. */
+export function classIs(cls: i32, parent: string): bool {
+  return cls != 0 && _class_is_descendant(cls, classOf(parent)) != 0;
+}
+/** Integer from the manifest's `[options]` table (`room.toml`), or `def`. */
+export function optionInt(key: string, def: i32): i32 {
+  const b = utf8(key);
+  return _manifest_option_i32(changetype<usize>(b), b.byteLength, def);
+}
 
 /** Spawn `cls` at (x, y, z); z = NaN puts it on the floor. Null when blocked / unknown. */
 export function spawn(cls: string, x: f64, y: f64, z: f64 = NaN, angle: f64 = 0, flags: i32 = 0): Actor | null {

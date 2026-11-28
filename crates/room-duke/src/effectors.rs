@@ -4118,6 +4118,12 @@ pub(crate) fn move_quake_effectors(
     quake_time: &mut u8,
     pending_sound_ids: &mut Vec<u16>,
 ) {
+    // Chocolate `domovethings` decrements `earthquaketime` at the start of
+    // the tic, before any mover: a blast in `movestandables` (16) shakes 15
+    // more tics, an SE2 quake set here (48) is seen as 47 next tic.
+    if *quake_time > 0 {
+        *quake_time -= 1;
+    }
     let sector_walls: Vec<SectorWalls> = sectors
         .iter()
         .map(|sector| SectorWalls {
@@ -4280,11 +4286,6 @@ pub(crate) fn move_quake_effectors(
             sprites[index].sectnum = new_sector;
             let _ = lists.changespritesect(index as i16, new_sector);
         }
-    }
-    // Chocolate decrements `earthquaketime` in the game-tic tail, after
-    // moveeffectors has had a chance to set it to 48.
-    if *quake_time > 0 {
-        *quake_time -= 1;
     }
 }
 

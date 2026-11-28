@@ -330,7 +330,33 @@ fn eval_call(world: &mut World, self_id: ActorId, name: &str, args: &[DecoExpr])
             let span = (mask as i32).saturating_mul(2).saturating_add(1).max(1);
             EvalValue::Int(r % span - mask as i32)
         }
-        _ => EvalValue::Int(0),
+        "findinventory" => {
+            let name = match args.first() {
+                Some(DecoExpr::String(s) | DecoExpr::Ident(s)) => s.clone(),
+                _ => return EvalValue::Int(0),
+            };
+            let Some(cid) = world.classes.find_name(&name) else {
+                return EvalValue::Int(0);
+            };
+            EvalValue::Int(i32::from(
+                crate::inventory::count_inventory(world, self_id, cid) > 0,
+            ))
+        }
+        // A weapon's own ZScript function (`PressingFire()`).
+        _ => {
+            let texts: Vec<String> = args
+                .iter()
+                .map(|e| match eval_expr(world, self_id, e) {
+                    EvalValue::Int(n) => n.to_string(),
+                    EvalValue::Float(f) => f.to_string(),
+                    EvalValue::Str(s) => format!("\"{s}\""),
+                })
+                .collect();
+            crate::action::zscript_weapon_function_value(world, self_id, name, &texts)
+                .map_or(EvalValue::Int(0), |v| {
+                    EvalValue::Int(i32::try_from(v).unwrap_or(i32::from(v != 0)))
+                })
+        }
     }
 }
 

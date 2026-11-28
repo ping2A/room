@@ -68,7 +68,7 @@ The only number that counts is the honest one —
 
 | Demo | Map | Tics | Honest frontier | First divergence |
 |------|-----|------|-----------------|------------------|
-| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–1353** (2026-11-23; was 0–959) | tic 1354 randomseed |
+| DEMO1 | E3L11 skill 3 | 3,808 | **tics 0–1773** (2026-11-27; was 0–1353) | tic 1774 `numsprites` (lizman gib clusters swapped) |
 | DEMO2 | E4L11 skill 1 | 2,162 | 0 | tic 0 `sprite_hash` (sprite counts now match at load) |
 | DEMO3 | E4L2 skill 2 | 1,657 | 0 | tic 0 randomseed: 3 fewer krands at load |
 
@@ -173,6 +173,32 @@ moves `bobposx/y`.
 getzrange with the owner's plane fallback.
 - BLOODPOOL lands with `makeitfall` at `floorz - 256`; GREENSLIME's size and
 offset math use C operator precedence.
+
+Fixed on the way from tic 1354 to tic 1774 (2026-11-27, same method, no
+fixups; `demo1_real_sync_floor` raised to 1774):
+
+- SEENINE/OOZ/tripbomb explosions are real `spawn` calls (`spawn_explosion2_from`),
+so they draw the `TRAND&4` cstat roll.
+- GREENSLIME gets `extra = 1` (map load and runtime spawn), so `hitradius`
+reaches it; RECON keeps its map `xrepeat`/`clipdist`.
+- The earthquake countdown runs at the start of `domovethings`.
+- SHOTSPARK1's CON `spawn WATERSPLASH2` uses the real splash spawn, and
+the spark's `t[0]` counts up after `execute`.
+- C-actor `movesprite` clips against live sprites (a badguy bumping one
+turns 768).
+- FIRELASER and SPIT move with `movesprite` (`(256<<16)|64`), the laser trail
+spawns after the move, sprite hits go through the shared `checkhitsprite`,
+lasers reflect off mirrors; `hittype.extra` accumulates (`+=`) onto the
+idle -1.
+- The walk bob reads the `psectlotag` captured at the top of `processinput`.
+- `execute`'s tail: `timetosleep` counts down and puts idle actors to sleep
+(`changespritestat(2)`), with Chocolate's stay-awake exceptions.
+- CON `guts` and `spawn` are emitted in script order (sprite slots come
+off the LIFO freelist).
+
+Next: at tic 1774 the RNG still matches but two lizmen's gib clusters land in
+each other's slots and an item (pic 41) is 512 off in z, so the order or path
+of those two deaths differs.
 
 Fixed on the way from tic 960 to tic 1354 (2026-11-23, same method, no
 fixups; `demo1_real_sync_floor` raised to 1354):

@@ -270,6 +270,16 @@ pub enum ZsActorOp {
         /// Up to four integer arguments.
         args: [i64; 4],
     },
+    /// A playsim action called from script with its arguments in order, as
+    /// DECORATE argument text (numbers, `"quoted"` strings, `null`). Queued
+    /// by [`native_host_action`]: library actions Room implements natively
+    /// (`A_WeaponReady`, `A_FireProjectile`, …) and unbound `A_*` imports.
+    ActionText {
+        /// Action name, such as `A_FireProjectile`.
+        name: String,
+        /// Arguments after `self`.
+        args: Vec<String>,
+    },
     /// `Actor.A_SpawnParticleEx` motion and fade request.
     ParticleEx {
         /// Packed RGB color.
@@ -382,7 +392,9 @@ impl NativeTable {
     /// Register a no-op stub for every import that is not already in the table.
     ///
     /// Existing natives are left in place. The returned count is how many stubs
-    /// were added. A stub returns 0 so the caller keeps running.
+    /// were added. A stub returns 0 so the caller keeps running. `Host.*` and
+    /// `A_*` imports bind to [`native_host_action`] instead and are not
+    /// counted: the playsim runs the action they name.
     pub fn bind_imports<I, S>(&mut self, names: I) -> usize
     where
         I: IntoIterator<Item = S>,
@@ -399,6 +411,11 @@ impl NativeTable {
             if name.is_empty() || !known.insert(name.to_ascii_lowercase()) {
                 continue;
             }
+            // Not a stub: the playsim runs the action it names.
+            if is_host_action_import(name) {
+                self.register(name.to_owned(), native_host_action);
+                continue;
+            }
             self.register(name.to_owned(), native_unbound);
             added += 1;
         }
@@ -411,6 +428,8 @@ impl NativeTable {
         let mut t = Self::new();
         t.register("Object.Destroy", native_destroy);
         t.register("Console.Printf", native_printf);
+        t.register("Object.__invoker", native_invoker);
+        t.register("Object.__same", native_same_object);
         t.register("Array.PushI", native_array_push_i);
         let _ = play_natives::register_bd_natives(&mut t);
         crate::world_natives::register(&mut t);
@@ -717,6 +736,82 @@ fn trim_zeros(s: &str) -> String {
     }
 }
 
+/// An import Room runs as a playsim action: `Host.*` (library bodies the
+/// host replaced, see [`host_action_body`]) and unbound `Class.A_*` natives.
+#[must_use]
+pub fn is_host_action_import(name: &str) -> bool {
+    let method = name.rsplit('.').next().unwrap_or(name);
+    name.len() > 5 && name[..5].eq_ignore_ascii_case("host.")
+        || (method.len() > 2 && method[..2].eq_ignore_ascii_case("a_"))
+}
+
+/// The argument text the playsim's action code parses: numbers, quoted
+/// strings, `null` for objects.
+fn host_action_args(ctx: &ZvmCtx<'_>) -> Vec<String> {
+    let mut values = ctx.play.native_args.iter();
+    // Instance natives and replaced library bodies get `self` first.
+    let mut skip_self = matches!(
+        ctx.play.native_args.first(),
+        Some(crate::interp::Value::A(_))
+    );
+    let mut out = Vec::new();
+    for v in values.by_ref() {
+        if std::mem::take(&mut skip_self) {
+            continue;
+        }
+        out.push(match *v {
+            crate::interp::Value::I(x) => x.to_string(),
+            crate::interp::Value::F(x) => trim_zeros(&format!("{x:.6}")),
+            crate::interp::Value::S(h) => {
+                let text = ctx.heap.str(h);
+                if text == "__room_null_state" {
+                    "null".to_owned()
+                } else {
+                    format!("\"{text}\"")
+                }
+            }
+            crate::interp::Value::A(_) => "null".to_owned(),
+        });
+    }
+    out
+}
+
+/// Queue the playsim action this import names with its arguments in order.
+fn native_host_action(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    let full = ctx.play.native_name.clone();
+    let name = full.rsplit('.').next().unwrap_or(&full).to_owned();
+    let args = host_action_args(ctx);
+    ctx.play
+        .actor_ops
+        .push(crate::ZsActorOp::ActionText { name, args });
+    // `bool A_GiveInventory(…)`: the action is assumed to succeed.
+    if let Some(slot) = regs.i.first_mut() {
+        *slot = 1;
+    }
+    Ok(())
+}
+
+/// `invoker` inside an action function: the weapon or item the host named
+/// for this call, else `self` (`a[0]`).
+fn native_invoker(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    if !ctx.play.invoker.is_null() {
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = ctx.play.invoker;
+        }
+    }
+    Ok(())
+}
+
+/// `a == b` on two objects: the same object (or both null).
+fn native_same_object(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    let a = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
+    let b = regs.a.get(1).copied().unwrap_or(ObjHandle::NULL);
+    if let Some(slot) = regs.i.first_mut() {
+        *slot = i64::from(a == b);
+    }
+    Ok(())
+}
+
 fn native_unbound(_ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
     // A default of 0. Trapping here aborts every stdlib function at its first
     // engine global (`_.menuactive`, …) before a real native such as `LineAttack`.
@@ -841,6 +936,18 @@ mod play_natives {
         /// Arguments pushed to the running native per bank (int, float,
         /// string, object): the register slices are padded past these.
         pub native_arg_counts: [usize; 4],
+        /// UZDoom flag names by bit (`bSHOOTABLE` is bit `index_of("SHOOTABLE")`),
+        /// set once by the host.
+        pub flag_names: std::sync::Arc<Vec<String>>,
+        /// Flag bits of the actors mirrored for this call, by script object.
+        pub actor_flags: Vec<(ObjHandle, Vec<u64>)>,
+        /// `ResolveState` tokens by label (see [`crate::state_token`]).
+        pub state_tokens: BTreeMap<String, ObjHandle>,
+        /// Arguments of the running native in push order.
+        pub native_args: Vec<crate::interp::Value>,
+        /// `invoker` of the action function the host is running (the weapon
+        /// whose psprite state called it); null outside one.
+        pub invoker: ObjHandle,
         /// ZScript class-id → class name table for `class<T>` values passed to natives.
         pub class_names: Vec<String>,
         /// `TextureID` table: id `n > 0` names `texture_names[n - 1]`
@@ -904,6 +1011,11 @@ mod play_natives {
                 resurrection_candidate: None,
                 native_name: String::new(),
                 native_arg_counts: [0; 4],
+                flag_names: std::sync::Arc::new(Vec::new()),
+                actor_flags: Vec::new(),
+                state_tokens: BTreeMap::new(),
+                native_args: Vec::new(),
+                invoker: ObjHandle::NULL,
                 class_names: Vec::new(),
                 texture_names: Vec::new(),
                 object_layouts: BTreeMap::new(),
@@ -1303,10 +1415,10 @@ mod play_natives {
         }
         add("playerinfo.getteam", player_team);
         add("playerinfo.getcolorset", player_color_set);
+        add("playerinfo.GetMoveBob", player_move_bob);
+        add("playerinfo.getstillbob", player_still_bob);
         for name in [
             "GetDeltaViewHeight",
-            "GetMoveBob",
-            "getstillbob",
             "getwbobfire",
             "getaveragelatency",
             "poisondamage",
@@ -1580,8 +1692,8 @@ mod play_natives {
         add("global.StatusbarToRealCoords", actor_vec2_offset);
         add("global.double", global_double);
         add("global.name", reply_append);
+        add("global.Spawn", actor_spawn_live);
         for name in [
-            "Spawn",
             "SpawnBlood",
             "SpawnMissile",
             "SpawnMissileAngle",
@@ -2214,8 +2326,8 @@ mod play_natives {
         add("actor.setz", object_set_z);
         add("actor.setxyz", object_set_origin);
         add("actor.soundalert", actor_look);
+        add("actor.spawn", actor_spawn_live);
         for name in [
-            "spawn",
             "spawnmissile",
             "spawnmissileanglezspeed",
             "spawnmissilexyz",
@@ -2224,10 +2336,10 @@ mod play_natives {
             "spawnplayermissile",
             "spawnsubmissile",
             "spawnteleportfog",
-            "resolvestate",
         ] {
             add(&format!("actor.{name}"), object_next_null);
         }
+        add("actor.resolvestate", actor_resolve_state);
         add("actor.velfromangle", object_vel_from_angle);
         add("actor.vec2angle", object_vel_from_angle);
         add("actor.vel3dfromangle", object_vel3d_from_angle);
@@ -2258,7 +2370,7 @@ mod play_natives {
         add("actor.getboneindex", actor_missing_index);
         add("actor.gettag", actor_tag);
         add("actor.playerskincheck", level_yes);
-        add("actor.rotatevector", actor_vec2_offset);
+        add("actor.rotatevector", actor_rotate_vector);
         add("actor.getbonebaseposition", actor_zero_vec);
         add("actor.posrelative", actor_zero_vec);
         for name in [
@@ -3005,14 +3117,26 @@ mod play_natives {
         Ok(())
     }
 
+    /// `victim.DamageMobj(inflictor, source, damage, mod, flags, angle)`:
+    /// queued for the playsim on the receiver, with the inflictor and source.
     fn actor_damage_mobj(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let dmg = regs.i.first().copied().unwrap_or(0);
+        let flags = regs.i.get(1).copied().unwrap_or(0);
+        let damage_type = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let op = crate::ZsNativeOp {
+            name: "actor.damagemobj".into(),
+            recv: regs.a.first().copied().unwrap_or(ObjHandle::NULL),
+            objs: regs.a.iter().skip(1).take(2).copied().collect(),
+            i: vec![dmg, flags],
+            f: vec![regs.f.first().copied().unwrap_or(0.0)],
+            s: vec![damage_type],
+        };
         write_num(regs, dmg.max(0) as f64);
         if dmg > 0 {
-            ctx.play.actor_ops.push(super::ZsActorOp::Action {
-                name: "A_DamageSelf".into(),
-                args: [dmg, 0, 0, 0],
-            });
+            ctx.play.native_ops.push(op);
         }
         Ok(())
     }
@@ -3315,6 +3439,75 @@ mod play_natives {
         Ok(())
     }
 
+    /// `ResolveState(label)`: a state token the host resolves on the class
+    /// whose state is running ([`crate::state_token_label`]); `null` for an
+    /// empty or null label.
+    fn actor_resolve_state(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let label = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        let token = if label.is_empty() || label == "__room_null_state" {
+            ObjHandle::NULL
+        } else {
+            crate::state_token(ctx.heap, &mut ctx.play.state_tokens, &label)
+        };
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = token;
+        }
+        Ok(())
+    }
+
+    /// `Actor.Spawn(class, pos, replace)`: a live actor object right away.
+    /// The object is typed as the class (or its nearest script ancestor,
+    /// through the host's class parents), and an `actor.spawn` op tells the
+    /// playsim to make the actor and bind it to this object; what the script
+    /// writes to the object before then (`mo.vel = …`, `tracer = mo`) is
+    /// applied to the new actor. `objs[0]` is an untouched copy, so only the
+    /// script's own writes are applied.
+    fn actor_spawn_live(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let class = ctx
+            .heap
+            .str(regs.s.first().copied().unwrap_or_default())
+            .to_owned();
+        if class.is_empty() {
+            if let Some(slot) = regs.a.first_mut() {
+                *slot = ObjHandle::NULL;
+            }
+            return Ok(());
+        }
+        let mut cur = class.to_ascii_lowercase();
+        let mut layout = None;
+        for _ in 0..64 {
+            if let Some(l) = ctx.play.object_layouts.get(&cur).copied() {
+                layout = Some(l);
+                break;
+            }
+            match ctx.play.class_parents.get(&cur) {
+                Some(p) => cur = p.to_ascii_lowercase(),
+                None => break,
+            }
+        }
+        let (cid, n_i, n_a, n_s) = layout
+            .or_else(|| ctx.play.object_layouts.get("actor").copied())
+            .unwrap_or((0, 8, 4, 4));
+        let h = ctx.heap.new_object(cid, n_i, n_a, n_s);
+        let initial = ctx.heap.new_object(cid, n_i, n_a, n_s);
+        let f = |k: usize| regs.f.get(k).copied().unwrap_or(0.0);
+        ctx.play.native_ops.push(crate::ZsNativeOp {
+            name: "actor.spawn".to_owned(),
+            recv: h,
+            objs: vec![initial],
+            i: vec![regs.i.first().copied().unwrap_or(0)],
+            f: vec![f(0), f(1), f(2)],
+            s: vec![class],
+        });
+        if let Some(slot) = regs.a.first_mut() {
+            *slot = h;
+        }
+        Ok(())
+    }
+
     fn object_next_null(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         if let Some(slot) = regs.a.first_mut() {
             *slot = ObjHandle::NULL;
@@ -3467,8 +3660,31 @@ mod play_natives {
             }
             _ => (String::new(), 0),
         };
-        let on = !stored.is_empty() && stored.eq_ignore_ascii_case(&want);
-        write_num(regs, if on { value as f64 } else { 0.0 });
+        if !stored.is_empty() {
+            let on = stored.eq_ignore_ascii_case(&want);
+            write_num(regs, if on { value as f64 } else { 0.0 });
+            return Ok(());
+        }
+        // A mirrored actor: its live flags.
+        let on = ctx
+            .play
+            .actor_flags
+            .iter()
+            .find(|(o, _)| *o == h)
+            .and_then(|(_, words)| {
+                let bit = ctx
+                    .play
+                    .flag_names
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(&want))?;
+                Some(
+                    words
+                        .get(bit >> 6)
+                        .is_some_and(|w| (w >> (bit & 63)) & 1 == 1),
+                )
+            })
+            .unwrap_or(false);
+        write_num(regs, if on { 1.0 } else { 0.0 });
         Ok(())
     }
 
@@ -3521,6 +3737,43 @@ mod play_natives {
         if let Some(slot) = regs.f.get_mut(1) {
             *slot = y;
         }
+        Ok(())
+    }
+
+    /// `Actor.RotateVector(Vector2 vec, double angle)`: `vec` turned by
+    /// `angle` degrees (PB's `RotateVector((forwardmove, -sidemove), Angle)`).
+    fn actor_rotate_vector(_ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let x = regs.f.first().copied().unwrap_or(0.0);
+        let y = regs.f.get(1).copied().unwrap_or(0.0);
+        let a = regs.f.get(2).copied().unwrap_or(0.0).to_radians();
+        let (s, c) = a.sin_cos();
+        if let Some(slot) = regs.f.first_mut() {
+            *slot = x * c - y * s;
+        }
+        if let Some(slot) = regs.f.get_mut(1) {
+            *slot = x * s + y * c;
+        }
+        Ok(())
+    }
+
+    /// `PlayerInfo.GetMoveBob()`: the `movebob` CVar (UZDoom default 0.25).
+    fn player_move_bob(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        let has =
+            ctx.play.cvar_floats.contains_key("movebob") || ctx.play.cvars.contains_key("movebob");
+        write_num(
+            regs,
+            if has {
+                ctx.play.cvar_float("movebob")
+            } else {
+                0.25
+            },
+        );
+        Ok(())
+    }
+
+    /// `PlayerInfo.GetStillBob()`: the `stillbob` CVar (default 0).
+    fn player_still_bob(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+        write_num(regs, ctx.play.cvar_float("stillbob"));
         Ok(())
     }
 
@@ -5979,6 +6232,26 @@ mod play_natives {
     fn actor_get_class_name(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
         let h = regs.a.first().copied().unwrap_or(ObjHandle::NULL);
         let name = match ctx.heap.get(h) {
+            // An object of a script class: that class (status bar mirrors,
+            // `Primary.GetClassName()`).
+            Some(ObjKind::Object { class_id, .. })
+                if *class_id != 0 && *class_id != crate::STATE_TOKEN_CLASS =>
+            {
+                let id = *class_id;
+                ctx.play
+                    .class_names
+                    .get(id as usize)
+                    .cloned()
+                    .or_else(|| {
+                        ctx.play
+                            .object_layouts
+                            .iter()
+                            .find(|(_, v)| v.0 == id)
+                            .map(|(k, _)| k.clone())
+                    })
+                    .unwrap_or_default()
+            }
+            // Proxies carry the class name in their first string field.
             Some(ObjKind::Object { fields_s, .. }) => ctx
                 .heap
                 .str(fields_s.first().copied().unwrap_or_default())
@@ -6597,11 +6870,14 @@ mod tests {
     fn bind_imports_keeps_real_natives_and_traps_stubs() {
         let mut table = NativeTable::with_builtins();
         let destroy = table.id_ci("Object.Destroy").expect("destroy");
-        let added = table.bind_imports(["Object.Destroy", "Actor.A_FreezeDeath"]);
+        let added = table.bind_imports(["Object.Destroy", "Actor.FreezeDeathLater"]);
         assert_eq!(added, 1);
         assert_eq!(table.id_ci("Object.Destroy"), Some(destroy));
-        assert_eq!(table.bind_imports(["actor.a_freezedeath"]), 0);
-        let id = table.id_ci("Actor.A_FreezeDeath").expect("stub");
+        assert_eq!(table.bind_imports(["actor.freezedeathlater"]), 0);
+        // `A_*` imports run as playsim actions and are not stubs.
+        assert_eq!(table.bind_imports(["Actor.A_FreezeDeath"]), 0);
+        assert!(table.id_ci("Actor.A_FreezeDeath").is_some());
+        let id = table.id_ci("Actor.FreezeDeathLater").expect("stub");
         let func = table.get(id).expect("fn");
         let mut heap = ZvmHeap::new();
         let mut play = ZvmPlayHost::default();
@@ -9014,7 +9290,7 @@ mod tests {
         let hurt = table
             .get(table.id_ci("actor.damagemobj").expect("hurt"))
             .expect("fn");
-        let before = ctx.play.actor_ops.len();
+        let before = ctx.play.native_ops.len();
         i[0] = 0;
         {
             let mut regs = NativeRegs {
@@ -9025,7 +9301,7 @@ mod tests {
             };
             hurt(&mut ctx, &mut regs).expect("nodmg");
         }
-        assert_eq!(ctx.play.actor_ops.len(), before);
+        assert_eq!(ctx.play.native_ops.len(), before);
         i[0] = 15;
         {
             let mut regs = NativeRegs {
@@ -9037,10 +9313,17 @@ mod tests {
             hurt(&mut ctx, &mut regs).expect("hurt");
         }
         assert_eq!(i[0], 15);
-        match ctx.play.actor_ops.last() {
-            Some(super::ZsActorOp::Action { name, args }) => {
-                assert_eq!(name, "A_DamageSelf");
-                assert_eq!(args[0], 15);
+        // Queued for the playsim on the receiver (`victim.DamageMobj`), with
+        // the inflictor and source handles, not as damage to the caller.
+        match ctx.play.native_ops.last() {
+            Some(op) => {
+                assert_eq!(op.name, "actor.damagemobj");
+                assert_eq!(op.recv, a[0]);
+                assert_eq!(
+                    op.objs,
+                    a.iter().skip(1).take(2).copied().collect::<Vec<_>>()
+                );
+                assert_eq!(op.i[0], 15);
             }
             other => panic!("damage mobj {other:?}"),
         }
@@ -9058,10 +9341,10 @@ mod tests {
             pawn(&mut ctx, &mut regs).expect("pawn");
         }
         assert_eq!(i[0], 8);
-        match ctx.play.actor_ops.last() {
-            Some(super::ZsActorOp::Action { name, args }) => {
-                assert_eq!(name, "A_DamageSelf");
-                assert_eq!(args[0], 8);
+        match ctx.play.native_ops.last() {
+            Some(op) => {
+                assert_eq!(op.name, "actor.damagemobj");
+                assert_eq!(op.i[0], 8);
             }
             other => panic!("pawn damage {other:?}"),
         }
@@ -9547,7 +9830,7 @@ mod tests {
         assert_eq!(call_font_int("playerpawn.CheckKeys", ""), 0);
         assert_eq!(call_font_int("playerinfo.poisondamage", ""), 0);
         assert_eq!(call_font_int("playerinfo.getteam", ""), 0);
-        assert_eq!(call_math("playerinfo.GetMoveBob", &[2.0]), 0.0);
+        assert_eq!(call_math("playerinfo.GetMoveBob", &[2.0]), 0.25);
         assert_eq!(
             call_math("playerpawn.Distance2D", &[0.0, 0.0, 3.0, 4.0]),
             5.0
@@ -9735,6 +10018,7 @@ mod tests {
             0.0
         );
         assert_eq!(call_math("actor.rotatevector", &[3.0, 4.0]), 3.0);
+        assert!((call_math("actor.rotatevector", &[1.0, 0.0, 90.0])).abs() < 1e-9);
         assert_eq!(call_math("actor.normalize180", &[190.0]), -170.0);
         assert_eq!(call_math("actor.normalize180", &[-190.0]), 170.0);
         let table = NativeTable::with_builtins();

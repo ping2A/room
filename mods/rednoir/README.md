@@ -36,7 +36,14 @@ stacks with other mods such as Brutal Doom.
 ## In the browser (room server)
 
 `./room start` (or `./scripts/room-server.sh start`) packs `pk3/` into
-`mods/rednoir/rednoir.wad` (with `room.toml` as its manifest) and adds it to the
-server's mod catalog. An admin allows it once in the admin page (Settings →
-Mods); it is then listed in the lobby's **Play solo** and can be chosen for
-new rooms. The browser runs the same shader and script.
+`mods/rednoir/rednoir.wad` (with `room.toml` as its manifest, via
+`scripts/pack-content-mod.py`) and adds it to the server's mod catalog. It is
+allowed the first time the server sees it, so it is listed in the lobby's
+**Play solo** (pick **Red Noir** under Mod) and can be chosen for new rooms;
+an admin can turn it off in the admin page (Settings → Mods). The browser runs
+the same shader and script, and its settings are under Options → Red Noir.
+
+`scripts/package-web.sh` packs it into the static site too (`mods/rednoir.wad`):
+choose it in the game bar's Mod list, or open the play page with
+`?mod=rednoir`, or `?pack=rednoir` to stack it on a gameplay mod
+(`?mod=survival&pack=rednoir`).

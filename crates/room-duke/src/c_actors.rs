@@ -287,6 +287,16 @@ impl CActorCtx<'_> {
         let daz = s.z - ((height * i32::from(s.yrepeat)) << 1);
         let (oldx, oldy, oldsect) = (s.x, s.y, s.sectnum);
         let mut sect = s.sectnum;
+        // Chocolate `ssp(i, CLIPMASK0)`: blocking sprites clip too (two
+        // RECONs bump and the mover turns 768). The mover skips itself.
+        let mut clips = crate::player::live_sprite_z_clips(
+            self.sprites,
+            &self.lists.sprite_stat,
+            self.tile_meta,
+        );
+        if let Some(own) = clips.get_mut(i) {
+            own.cstat = 0;
+        }
         let retval = clipmove_xy_at_z_sprites_with_lists(
             &mut s.x,
             &mut s.y,
@@ -300,7 +310,7 @@ impl CActorCtx<'_> {
             &sec,
             &wxy,
             Some(&sec_z),
-            &[],
+            &clips,
             1,
             Some(self.lists),
         );

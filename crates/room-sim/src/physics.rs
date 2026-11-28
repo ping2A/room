@@ -2092,7 +2092,35 @@ pub fn xy_movement(world: &mut World, actor_id: ActorId) {
                 break;
             }
             if is_missile {
-                if let Some(victim) = mv.blocking_actor {
+                // ZScript `SpecialMissileHit` (UZDoom `PIT_CheckThing`):
+                // 1 = pass through, 0 = explode (the script did the damage),
+                // -1 = the normal hit.
+                let special = mv.blocking_actor.and_then(|victim| {
+                    crate::action::zscript_special_missile_hit(world, actor_id, victim)
+                });
+                if special == Some(1) {
+                    if let Some(a) = world.actors.get_mut(actor_id) {
+                        a.pos = DVec3::new(nx, ny, z);
+                    }
+                    x = nx;
+                    y = ny;
+                    continue;
+                }
+                if let (Some(victim), Some(0)) = (mv.blocking_actor, special) {
+                    let pos = world
+                        .actors
+                        .get(actor_id)
+                        .map(|a| a.pos)
+                        .unwrap_or(DVec3::new(nx, ny, z));
+                    set_missile_hit(
+                        world,
+                        actor_id,
+                        room_script_abi::hit_kind::ACTOR,
+                        Some(victim),
+                        pos,
+                        DVec3::ZERO,
+                    );
+                } else if let Some(victim) = mv.blocking_actor {
                     apply_missile_damage(world, actor_id, victim);
                     let rip = match (world.actors.get(actor_id), world.actors.get(victim)) {
                         (Some(m), Some(v)) => {

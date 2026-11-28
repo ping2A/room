@@ -47,6 +47,7 @@ deploy/.env
 dist/
 dist-vps/
 dist-vps.tar.gz
+dist-steamdeck/
 
 # cargo-fuzz runtime
 fuzz/corpus/

@@ -126,8 +126,12 @@ impl World {
     /// Apply queued play-scope natives. `caller` is the actor whose script
     /// ran (the receiver fallback for `PlayerInfo` natives).
     pub fn apply_zscript_native_ops(&mut self, caller: Option<ActorId>) {
+        self.materialize_zscript_spawns();
         let ops = self.zscript.take_native_ops();
         for (recv, op) in ops {
+            // A `Spawn` result is bound after the ops were queued: look
+            // its receiver up again.
+            let recv = recv.or_else(|| self.zscript.actor_index_of(op.recv));
             let target = recv.and_then(|ix| actor_id_of(self, ix)).or(caller);
             self.apply_native_op(target, caller, &op);
         }
@@ -176,6 +180,17 @@ impl World {
             return;
         };
         match name {
+            "actor.damagemobj" => {
+                let who = |k: usize| {
+                    op.objs
+                        .get(k)
+                        .and_then(|h| self.zscript.actor_index_of(*h))
+                        .and_then(|ix| actor_id_of(self, ix))
+                };
+                let (inflictor, source) = (who(0), who(1));
+                let damage = i32::try_from(i(op, 0, 0)).unwrap_or(i32::MAX);
+                crate::damage::damage_mobj(self, id, inflictor, source, damage);
+            }
             "actor.activate" | "actor.deactivate" => {
                 if let Some(a) = self.actors.get_mut(id) {
                     if name == "actor.activate" {

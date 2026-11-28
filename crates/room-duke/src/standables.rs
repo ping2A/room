@@ -20,7 +20,6 @@ const SEENINEDEAD: i16 = 1248;
 #[allow(dead_code, reason = "Duke tile number, kept next to SEENINE")]
 const SEENINEDEAD2: i16 = 1249;
 const OOZFILTER: i16 = 1079;
-const EXPLOSION2: i16 = 1890;
 const PIPEBOMB_EXPLODE: i16 = 14;
 const TRIPBOMB: i16 = 2566;
 const LASERLINE: i16 = 2567;
@@ -232,50 +231,36 @@ fn tick_breakable_standable(
                 world.sprites[scrap as usize].pal = 2;
             }
         }
-        let _ = crate::shoot::egs(
+        // Chocolate `spawn(i, EXPLOSION2)` (its `cstat` draws `TRAND&4`).
+        world.sprites[sprite_index] = thing;
+        let _ = crate::actors::spawn_explosion2_from(
             &mut world.lists,
             &mut world.sprites[..],
+            &world.sectors[..world.numsectors as usize],
+            &world.walls[..world.numwalls as usize],
             picnum,
             actor_temps,
             script,
-            thing.sectnum,
-            thing.x,
-            thing.y,
-            thing.z,
-            EXPLOSION2,
-            -32,
-            32,
-            32,
-            thing.ang,
-            0,
-            0,
-            sprite_index as i16,
-            STAT_MISC,
+            randomseed,
+            sprite_index,
         );
         actor_temps[sprite_index]
             .pending_actor_sounds
             .extend([pipebomb_sound, glass_sound]);
         if thing.hitag > 0 {
             arm_explosive_hitag(world, actor_temps, thing.hitag);
-            let _ = crate::shoot::egs(
+            // Chocolate `spawn(i, EXPLOSION2)` (its `cstat` draws `TRAND&4`).
+            world.sprites[sprite_index] = thing;
+            let _ = crate::actors::spawn_explosion2_from(
                 &mut world.lists,
                 &mut world.sprites[..],
+                &world.sectors[..world.numsectors as usize],
+                &world.walls[..world.numwalls as usize],
                 picnum,
                 actor_temps,
                 script,
-                thing.sectnum,
-                thing.x,
-                thing.y,
-                thing.z,
-                EXPLOSION2,
-                -32,
-                32,
-                32,
-                thing.ang,
-                0,
-                0,
-                sprite_index as i16,
-                STAT_MISC,
+                randomseed,
+                sprite_index,
             );
             let radius = script
                 .and_then(|image| {
@@ -762,25 +747,18 @@ pub(crate) fn tick_detonables(
                     .unwrap_or(2500)
                     .max(1);
                 let power = i32::from(thing.extra);
-                let _ = crate::shoot::egs(
+                // Chocolate `spawn(i, EXPLOSION2)` (its `cstat` draws `TRAND&4`).
+                world.sprites[sprite_index] = thing;
+                let _ = crate::actors::spawn_explosion2_from(
                     &mut world.lists,
                     &mut world.sprites[..],
+                    &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     picnum,
                     actor_temps,
                     script,
-                    thing.sectnum,
-                    thing.x,
-                    thing.y,
-                    thing.z,
-                    EXPLOSION2,
-                    -32,
-                    32,
-                    32,
-                    thing.ang,
-                    0,
-                    0,
-                    sprite_index as i16,
-                    crate::stat::STAT_MISC,
+                    randomseed,
+                    sprite_index,
                 );
                 crate::weapons_move::apply_con_hitradius(
                     &mut world.lists,
@@ -965,26 +943,22 @@ pub(crate) fn tick_tripbombs(
                     script,
                     tile_meta,
                 );
-                let _explosion = crate::shoot::egs(
+                // Chocolate `spawn(i, EXPLOSION2)` (its `cstat` draws `TRAND&4`).
+                world.sprites[sprite_index] = bomb;
+                let _explosion = crate::actors::spawn_explosion2_from(
                     &mut world.lists,
                     &mut world.sprites[..],
+                    &world.sectors[..world.numsectors as usize],
+                    &world.walls[..world.numwalls as usize],
                     picnum,
                     actor_temps,
                     script,
-                    bomb.sectnum,
-                    bomb.x,
-                    bomb.y,
-                    bomb.z,
-                    EXPLOSION2,
-                    -32,
-                    32,
-                    32,
-                    bomb.ang,
-                    348,
-                    0,
-                    sprite_index as i16,
-                    crate::stat::STAT_MISC,
+                    randomseed,
+                    sprite_index,
                 );
+                if _explosion >= 0 {
+                    world.sprites[_explosion as usize].xvel = 348;
+                }
                 // Chocolate immediately runs `ssp(j, CLIPMASK0)` on the
                 // spawned EXPLOSION2 so the visual flash starts at the end of
                 // the bomb's 348-unit blast vector this tic.

@@ -12084,8 +12084,10 @@ impl DukeSession {
                     continue;
                 }
                 world.sprites[i].cstat |= 257;
-                if pic != 1550 {
-                    // SHARK
+                // RECON spawns through Chocolate's REACTOR/RECON case, which
+                // keeps the map's size and clip distance (they decide whom
+                // it bumps into); SHARK has its own size.
+                if pic != 1550 && pic != crate::spawn::RECON {
                     world.sprites[i].xrepeat = 40;
                     world.sprites[i].yrepeat = 40;
                     world.sprites[i].clipdist = 80;
@@ -12093,6 +12095,11 @@ impl DukeSession {
                 let (extra, header) = crate::con::init_actor_temps_from_script(script, pic);
                 if extra != 0 {
                     world.sprites[i].extra = extra;
+                }
+                // Chocolate's GREENSLIME spawn case: no CON strength, `extra = 1`
+                // (`hitradius` only reaches actors with `extra >= 0`).
+                if pic == crate::spawn::GREENSLIME {
+                    world.sprites[i].extra = 1;
                 }
                 // Chocolate `spawn()` map path: T5 = actor action, T2 = move,
                 // hitag = header flags (when unset). Without these, enemies

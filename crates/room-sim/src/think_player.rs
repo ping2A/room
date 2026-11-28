@@ -359,8 +359,12 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     player.bonus_count = (player.bonus_count - 1).max(0);
     tick_powerups(world, player);
     apply_crouch(world, player, mo, &cmd);
+    // A mod's ZScript movement (`PlayerThink` / `HandleMovement` overrides,
+    // Project Brutality) turns, moves, jumps and sets the eye instead of
+    // Room's `P_MovePlayer`.
+    let script_move = world.zscript_moves_player(mo);
     // Yaw / pitch (same turn units as Doom `angleturn`).
-    if cmd.yaw != 0 || cmd.pitch != 0 {
+    if !script_move && (cmd.yaw != 0 || cmd.pitch != 0) {
         if let Some(a) = world.actors.get_mut(mo) {
             if cmd.yaw != 0 {
                 if world.math_mode == crate::vanilla::SimMathMode::VanillaFixed {
@@ -382,6 +386,7 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     // Jump edge while grounded (`JumpZ` impulse → `z_movement`).
     let jump = cmd.buttons.any(Buttons::JUMP);
     if jump
+        && !script_move
         && !player.jump_down
         && player.on_ground
         && !player.crouching
@@ -519,7 +524,11 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
         move_cmd.forward_move /= 2;
         move_cmd.side_move /= 2;
     }
-    move_player(world, mo, &move_cmd);
+    if script_move {
+        script_player_think(world, player, mo, &move_cmd);
+    } else {
+        move_player(world, mo, &move_cmd);
+    }
     // Doom `P_MovePlayer` / GZDoom PlayRunning: walk cycle for other players' view.
     update_player_body_sprite(world, mo, &cmd);
     // Automap fog-of-war: reveal linedefs of the sector we stand in (`ML_MAPPED`).
@@ -641,7 +650,8 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     advance_overlay2(world, player);
     advance_extra_layers(world, player);
     // Sync view_z to eye height / grounded flag (pre-`z_movement` this tic).
-    if let Some(a) = world.actors.get(mo).cloned() {
+    // A movement script set the eye itself (`CalcHeight`).
+    if let Some(a) = world.actors.get(mo).cloned().filter(|_| !script_move) {
         let planes = crate::physics::check_position(world, &a, a.pos, Some(mo));
         if a.vel.z() <= 0.0 {
             player.on_ground = a.pos.z() <= planes.floor_z + 0.1;
@@ -693,6 +703,84 @@ pub(crate) fn player_think_for_seat(world: &mut World, player: &mut Player, seat
     pulse_bd_weapon_tokens(world, mo, cmd.buttons.0, player.prev_buttons);
     log_attack_status(world, player, mo, cmd.buttons.0);
     player.prev_buttons = raw.buttons.0;
+}
+
+/// Run the pawn's script `PlayerThink` (a mod's movement code) with the
+/// player's state mirrored in and its changes (eye height, ground flag,
+/// jump and turn counters) taken back. The pawn's fields (velocity, angle,
+/// pitch, position, flags) go through the usual script sync.
+fn script_player_think(world: &mut World, player: &mut Player, mo: ActorId, cmd: &TicCmd) {
+    let Some(a) = world.actors.get(mo).cloned() else {
+        return;
+    };
+    let Some(class) = world.classes.get(a.class).map(|c| c.name.clone()) else {
+        return;
+    };
+    let (pawn_view_height, view_bob) = world
+        .classes
+        .get(a.class)
+        .map_or((41.0, 1.0), |c| (c.view_height, c.ext.view_bob));
+    // UZDoom's `BT_*` bits: run (`BT_RUN`, a run-speed move or the speed
+    // key) and crouch (`BT_CROUCH`, move down) included.
+    let uz_buttons = |b: u32, c: &TicCmd| {
+        let mut g = crate::acs::gzdoom_button_bits(b) as u32;
+        if b & Buttons::SPEED != 0
+            || i32::from(c.forward_move).abs() > 25 * 256
+            || i32::from(c.side_move).abs() > 24 * 256
+        {
+            g |= 1 << 25;
+        }
+        if c.up_move < 0 {
+            g |= 1 << 3;
+        }
+        g
+    };
+    let mut st = crate::zscript::PlayerMoveState {
+        buttons: uz_buttons(cmd.buttons.0, cmd),
+        old_buttons: crate::acs::gzdoom_button_bits(player.prev_buttons) as u32,
+        forward_move: cmd.forward_move,
+        side_move: cmd.side_move,
+        up_move: cmd.up_move,
+        yaw: cmd.yaw,
+        // UZDoom's `cmd.pitch` is positive looking up; Room's down.
+        pitch: cmd.pitch.saturating_neg(),
+        on_ground: player.on_ground,
+        jump_tics: player.script_jump_tics,
+        turn_ticks: player.script_turn_ticks,
+        centering: player.script_centering,
+        cheats: 0,
+        health: a.health,
+        water_level: crate::physics::actor_waterlevel(world, &a),
+        view_z: player.view_z,
+        view_height: player.script_view_height.unwrap_or(pawn_view_height),
+        delta_view_height: player.script_delta_view_height,
+        crouch_factor: 1.0 - 0.5 * player.crouch_amount,
+        crouch_view_delta: -0.5 * player.crouch_amount * pawn_view_height,
+        pawn_view_height,
+        view_bob,
+    };
+    let synced = world.zscript_sync_in(mo);
+    let result = world.zscript.call_player_think(mo.index(), &class, &mut st);
+    world.zscript_sync_out(mo, synced);
+    crate::action::apply_zscript_actor_ops(world, mo);
+    if let Err(e) = result {
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| eprintln!("room: {class}.PlayerThink: {e:?}"));
+        // Fall back to Room's turning and movement so the player is not
+        // stuck.
+        if let Some(a) = world.actors.get_mut(mo) {
+            a.angle = Angle::from_degrees(a.angle.degrees() + f64::from(cmd.yaw) * YAW_TO_DEG);
+        }
+        move_player(world, mo, cmd);
+        return;
+    }
+    player.on_ground = st.on_ground;
+    player.view_z = st.view_z;
+    player.script_view_height = Some(st.view_height);
+    player.script_delta_view_height = st.delta_view_height;
+    player.script_jump_tics = st.jump_tics;
+    player.script_turn_ticks = st.turn_ticks;
+    player.script_centering = st.centering;
 }
 
 /// Why the gun did or did not fire. Printed on the attack edge, and once a
@@ -900,41 +988,59 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
     // UZDoom `DPSprite::SetState` loops `while (!Tics)` with no cap; Brutal
     // Doom's reloads load each round through ~17 zero-tic states in one tic
     // (`InsertBullets`). Keep a guard only against a broken 0-tic `Loop`.
+    // Gun actions a ZScript weapon action function called (`A_WeaponReady`
+    // inside `A_DoPBWeaponAction`), run on this psprite after it returns.
+    // A state change drops the rest (they were for the state that called).
+    let mut script_queue: std::collections::VecDeque<(StateId, String, Vec<String>)> =
+        std::collections::VecDeque::new();
     for _ in 0..MAX_PSPRITE_ZERO_TIC_CHAIN {
-        player.pspr_state = Some(state);
-        if let Some(st) = world.states.get(state) {
-            if !crate::state::sprite_unchanged(&st.sprite) {
-                player.pspr_sprite = st.sprite.clone();
-            }
-            if st.frame != crate::state::FRAME_NOCHANGE {
-                player.pspr_frame = st.frame;
-            }
+        if script_queue
+            .front()
+            .is_some_and(|(from, _, _)| *from != state)
+        {
+            script_queue.clear();
         }
-        let (tics, action, args, callback_id, module_index) = world
-            .states
-            .get(state)
-            .map(|st| {
-                (
-                    i32::from(st.tics),
-                    st.action.clone(),
-                    st.action_args.clone(),
-                    st.callback_id,
-                    st.module_index,
-                )
-            })
-            .unwrap_or((-1, None, Vec::new(), -1, 0));
-        let tics = if player.weapon_pow_double && tics > 1 && double_firing_speed(world, mo) {
-            (tics / 2).max(1)
-        } else if player.weapon_cvar_fast && tics > 1 {
-            match world.fast_weapons {
-                1 => (tics / 2).max(1),
-                n if n >= 2 => 1,
-                _ => tics,
-            }
+        let (action, args, callback_id, module_index) = if let Some((_, name, queued_args)) =
+            script_queue.pop_front()
+        {
+            (Some(name), queued_args, -1, 0)
         } else {
-            tics
+            player.pspr_state = Some(state);
+            if let Some(st) = world.states.get(state) {
+                if !crate::state::sprite_unchanged(&st.sprite) {
+                    player.pspr_sprite = st.sprite.clone();
+                }
+                if st.frame != crate::state::FRAME_NOCHANGE {
+                    player.pspr_frame = st.frame;
+                }
+            }
+            let (tics, action, args, callback_id, module_index) = world
+                .states
+                .get(state)
+                .map(|st| {
+                    (
+                        i32::from(st.tics),
+                        st.action.clone(),
+                        st.action_args.clone(),
+                        st.callback_id,
+                        st.module_index,
+                    )
+                })
+                .unwrap_or((-1, None, Vec::new(), -1, 0));
+            let tics = if player.weapon_pow_double && tics > 1 && double_firing_speed(world, mo) {
+                (tics / 2).max(1)
+            } else if player.weapon_cvar_fast && tics > 1 {
+                match world.fast_weapons {
+                    1 => (tics / 2).max(1),
+                    n if n >= 2 => 1,
+                    _ => tics,
+                }
+            } else {
+                tics
+            };
+            player.pspr_tics = tics;
+            (action, args, callback_id, module_index)
         };
-        player.pspr_tics = tics;
         // WASM psprite action (`docs/31` MA1) before native arms.
         if callback_id >= 0 {
             let seat = world
@@ -956,7 +1062,17 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                 continue;
             }
         } else if let Some(action) = action {
+            // A flattened `if` skipped this action (`A_SkipUnless*`); the gun
+            // arms below do not pass through `call_action_args`, which
+            // counts the skips for every other action.
+            let skipped = world
+                .actors
+                .get_mut(mo)
+                .filter(|a| a.action_skip > 0)
+                .map(|a| a.action_skip -= 1)
+                .is_some();
             match action.as_str() {
+                _ if skipped => {}
                 name if overlay_action(world, player, name, &args) => {}
                 "A_ZoomFactor" => {
                     // Weapon states run while the player slot is empty, so this
@@ -1196,6 +1312,11 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                     world.psprite_weapon = player.ready_weapon;
                     world.psprite_state = Some(state);
                     world.psprite_flash_request = None;
+                    world.psprite_buttons = [
+                        crate::acs::gzdoom_button_bits(player.cmd.buttons.0),
+                        crate::acs::gzdoom_button_bits(player.prev_buttons),
+                    ];
+                    world.psprite_view = [player.view_z, if player.crouching { 0.5 } else { 1.0 }];
                     let args = crate::deco_eval::eval_action_args(world, mo, &args);
                     let result = crate::action::call_action_args(world, mo, other, &args);
                     drain_psp_queue(world, player, mo);
@@ -1205,12 +1326,17 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
                     }
                     world.psprite_weapon = None;
                     world.psprite_state = None;
+                    let gun_actions = std::mem::take(&mut world.psp_script_actions);
                     if let crate::action::ActionResult::Jump(j) = result {
                         state = j;
                         continue;
                     }
+                    script_queue.extend(gun_actions.into_iter().map(|(n, a)| (state, n, a)));
                 }
             }
+        }
+        if !script_queue.is_empty() {
+            continue;
         }
         // Action may have jumped `pspr_state` (A_Lower / A_Raise / request_weapon).
         let Some(cur) = player.pspr_state else {
@@ -1232,6 +1358,30 @@ fn set_psprite(world: &mut World, player: &mut Player, mo: ActorId, mut state: S
         };
         state = next;
     }
+}
+
+/// Actions that act on the running weapon psprite, so a ZScript weapon
+/// action function's call to one runs in [`set_psprite`] (UZDoom calls them
+/// with the psprite's `stateinfo`).
+pub(crate) fn is_gun_action(name: &str) -> bool {
+    const GUN: &[&str] = &[
+        "A_WeaponReady",
+        "A_ReFire",
+        "A_Lower",
+        "A_Raise",
+        "A_CheckReload",
+        "A_CheckForReload",
+        "A_ResetReloadCounter",
+        "A_GunFlash",
+        "A_Light",
+        "A_Light0",
+        "A_Light1",
+        "A_Light2",
+        "A_LightDone",
+        "A_ZoomFactor",
+        "A_SetCrosshair",
+    ];
+    GUN.iter().any(|g| g.eq_ignore_ascii_case(name))
 }
 
 /// Layer argument of an `A_Overlay*` call: a number, `OverlayID()`, or 0 for
@@ -7259,6 +7409,102 @@ actor FastWalker : Actor
         let x1 = w.actors.get(mo).unwrap().pos.x();
         assert!(x1 > x0, "MOD1 must not block forward move");
         assert_eq!(player.raw_cmd.buttons.0 & Buttons::MOD1, Buttons::MOD1);
+        w.players[0] = Some(player);
+    }
+
+    /// A mod's ZScript `HandleMovement` / `CalcHeight` overrides move the
+    /// player and set the eye instead of Room's `P_MovePlayer` (Project
+    /// Brutality's movement), reached through UZDoom's `PlayerThink`.
+    #[test]
+    fn zscript_movement_overrides_replace_native_movement() {
+        let src = include_str!("../../../testdata/actors/doom_basic.txt");
+        let file = parse_decorate(src).unwrap();
+        let classes = Arc::new(ClassRegistry::from_decorate(&file).unwrap());
+        let states = Arc::new(StateTable::from_decorate(&file, &classes));
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+        let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+        for line in entry.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#include") {
+                let path = rest.trim().trim_matches('"');
+                sources.push((
+                    path.to_owned(),
+                    std::fs::read_to_string(root.join(path)).unwrap(),
+                ));
+            }
+        }
+        sources.push((
+            "move.zs".into(),
+            r#"
+class MovePawn : DoomPlayer
+{
+    override void HandleMovement()
+    {
+        UserCmd cmd = player.cmd;
+        angle += cmd.yaw * (360. / 65536.);
+        if (cmd.forwardmove > 0 && (cmd.buttons & BT_RUN)) vel.xy = RotateVector((7, 0), angle);
+    }
+    override void CalcHeight()
+    {
+        player.viewz = pos.z + 10;
+    }
+}
+"#
+            .into(),
+        ));
+        let result = room_zscript::check(&sources);
+        assert!(
+            result.ok(),
+            "{:?}",
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == room_zscript::Severity::Error)
+                .take(3)
+                .collect::<Vec<_>>()
+        );
+        let mut map = MapBuilder::new()
+            .room("a", rect(0.0, 0.0, 256.0, 256.0), 0.0, 128.0)
+            .player_start(64.0, 64.0, 0)
+            .build_udmf("MAP01")
+            .unwrap();
+        apply_nodes(&mut map);
+        let mut w = World::from_map_with_classes(map, Arc::clone(&classes), states).unwrap();
+        let mo = w.players[0].as_ref().unwrap().mo.unwrap();
+        w.load_zscript_program(result.program.unwrap());
+        // The test map's start spawns a bare `PlayerPawn`; play as the mod's
+        // pawn, not frozen by the spawn.
+        let pawn = w
+            .classes
+            .find_name("MovePawn")
+            .expect("script class registered");
+        w.actors.get_mut(mo).unwrap().class = pawn;
+        w.actors.get_mut(mo).unwrap().reaction_time = 0;
+        assert!(w.zscript_moves_player(mo));
+        let mut player = w.players[0].take().unwrap();
+        // A run-speed forward move and a quarter turn left.
+        player.cmd = TicCmd {
+            forward_move: 50 * 256,
+            yaw: 16384,
+            ..TicCmd::default()
+        };
+        player_think(&mut w, &mut player);
+        let a = w.actors.get(mo).unwrap();
+        assert!(
+            (a.angle.degrees() - 90.0).abs() < 1e-6,
+            "{}",
+            a.angle.degrees()
+        );
+        assert!(
+            a.vel.x().abs() < 1e-6 && (a.vel.y() - 7.0).abs() < 1e-6,
+            "{:?}",
+            a.vel
+        );
+        assert!(
+            (player.view_z - (a.pos.z() + 10.0)).abs() < 1e-6,
+            "{}",
+            player.view_z
+        );
         w.players[0] = Some(player);
     }
 

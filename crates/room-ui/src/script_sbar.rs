@@ -60,6 +60,14 @@ pub struct SbarSnapshot {
     /// Running powers as `(PowerupGiver class, tics left, full tics)`
     /// (SBARINFO `PowerupTime`).
     pub power_tics: Vec<(String, i32, i32)>,
+    /// Parent chain (nearest first) per class, so a DECORATE class the
+    /// script program lacks is typed as its nearest script ancestor.
+    pub ancestors: Vec<(String, Vec<String>)>,
+    /// The pawn's class (typed with its script ancestors for `CPlayer.mo`).
+    pub player_class: Option<String>,
+    /// The pawn's angle, pitch, roll (degrees), velocity x / y / z, height
+    /// and floor height (`StatusBarItems::pose`).
+    pub pose: [f64; 8],
 }
 
 /// One weapon-slot entry (`WeaponSlots.GetWeapon(slot, index)`).
@@ -122,6 +130,7 @@ const DI_ITEM_HOFFSET: i64 = 0x60_0000;
 const DI_TEXT_ALIGN_RIGHT: i64 = 0x80_0000;
 const DI_TEXT_ALIGN_CENTER: i64 = 0x100_0000;
 const DI_MIRROR: i64 = 0x1000;
+const DI_MIRRORY: i64 = 0x4000_0000;
 const DI_DIM: i64 = 0x80;
 
 /// Per-frame state the drawing natives read and write.
@@ -146,6 +155,158 @@ struct Frame {
     items: Vec<(ObjHandle, Vec<String>)>,
     /// Class defaults (`GetDefaultByType`, `.default`), lower-case class.
     defaults: Vec<(String, ObjHandle)>,
+    /// Window size in pixels ([`ScriptStatusBar::set_screen_size`]); zero
+    /// keeps the full-screen HUD in the 320×200 box.
+    screen: (f32, f32),
+    /// First command drawn since `BeginHUD`, still in HUD space.
+    hud_start: Option<usize>,
+    /// `BeginStatusBar` was called this frame.
+    used_statusbar: bool,
+}
+
+/// UZDoom's full-screen HUD space for a `w × h` pixel window: the window
+/// divided by the automatic UI scale (`GetUIScale(0)`: the whole number of
+/// times 640×400 fits, at least 1), and how it maps onto the 320×200 box the
+/// shell draws the HUD list in (that box is scaled to fit the window and
+/// centred, so a wide window shows box coordinates below 0 and above 320).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HudSpace {
+    /// Virtual width / height.
+    w: f32,
+    h: f32,
+    /// HUD unit → box unit.
+    k: f32,
+    /// Box coordinate of HUD (0, 0).
+    x0: f32,
+    y0: f32,
+}
+
+impl HudSpace {
+    const BOX: Self = Self {
+        w: 320.0,
+        h: 200.0,
+        k: 1.0,
+        x0: 0.0,
+        y0: 0.0,
+    };
+
+    fn for_screen((sw, sh): (f32, f32)) -> Self {
+        if sw < 1.0 || sh < 1.0 {
+            return Self::BOX;
+        }
+        let ui = (sw / 640.0).min(sh / 400.0).floor().max(1.0);
+        let fit = (sw / 320.0).min(sh / 200.0);
+        let (bx, by) = ((sw - 320.0 * fit) * 0.5, (sh - 200.0 * fit) * 0.5);
+        Self {
+            w: sw / ui,
+            h: sh / ui,
+            k: ui / fit,
+            x0: -bx / fit,
+            y0: -by / fit,
+        }
+    }
+
+    fn pt(self, v: Vec2) -> Vec2 {
+        Vec2::new(self.x0 + v.x * self.k, self.y0 + v.y * self.k)
+    }
+
+    fn rect(self, r: crate::draw::Rect) -> crate::draw::Rect {
+        crate::draw::Rect {
+            x: self.x0 + r.x * self.k,
+            y: self.y0 + r.y * self.k,
+            w: r.w * self.k,
+            h: r.h * self.k,
+        }
+    }
+}
+
+fn hud_space() -> HudSpace {
+    FRAME.with(|fr| HudSpace::for_screen(fr.borrow().screen))
+}
+
+/// Move the commands drawn since `BeginHUD` from HUD space into the box.
+/// A picture at its own size gets that size spelled out (scaled); one whose
+/// size is not known yet is left out this frame instead of drawn at the
+/// wrong size.
+fn finish_hud_commands(fr: &mut Frame) {
+    let Some(start) = fr.hud_start.take() else {
+        return;
+    };
+    let sp = HudSpace::for_screen(fr.screen);
+    if sp == HudSpace::BOX || start >= fr.cmds.len() {
+        return;
+    }
+    let tail: Vec<DrawCmd> = fr.cmds.drain(start..).collect();
+    for mut cmd in tail {
+        match &mut cmd {
+            DrawCmd::Fill { rect, .. } => *rect = sp.rect(*rect),
+            DrawCmd::Text { pos, scale, .. } => {
+                *pos = sp.pt(*pos);
+                *scale *= sp.k;
+            }
+            DrawCmd::Patch {
+                name,
+                pos,
+                size,
+                apply_offsets,
+                corners,
+                ..
+            } => {
+                let d = fr
+                    .dims
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                    .map(|(_, d)| *d);
+                let natural = size.x <= 0.0 || size.y <= 0.0;
+                let Some(d) = d.or(if natural {
+                    None
+                } else {
+                    Some(PatchDims::default())
+                }) else {
+                    continue;
+                };
+                let (dw, dh) = if natural {
+                    (d.w, d.h)
+                } else {
+                    (size.x, size.y)
+                };
+                let mut p = *pos;
+                if *apply_offsets && d.w > 0.0 && d.h > 0.0 {
+                    p.x -= d.left * dw / d.w;
+                    p.y -= d.top * dh / d.h;
+                    *apply_offsets = false;
+                }
+                *pos = sp.pt(p);
+                *size = Vec2::new(dw * sp.k, dh * sp.k);
+                for c in corners.iter_mut() {
+                    *c = Vec2::new(c.x * sp.k, c.y * sp.k);
+                }
+            }
+            DrawCmd::Clip { rect } => *rect = rect.map(|r| sp.rect(r)),
+            DrawCmd::Line {
+                a, b, thickness, ..
+            } => {
+                *a = sp.pt(*a);
+                *b = sp.pt(*b);
+                *thickness *= sp.k;
+            }
+            DrawCmd::FlatPoly { edges, tex, .. } => {
+                for e in edges.iter_mut() {
+                    *e = [sp.pt(e[0]), sp.pt(e[1])];
+                }
+                // texel = t·hud = t·(box − x0)/k
+                let inv = 1.0 / sp.k;
+                let (t0, t1, t3, t4) = (tex[0] * inv, tex[1] * inv, tex[3] * inv, tex[4] * inv);
+                tex[2] -= t0 * sp.x0 + t1 * sp.y0;
+                tex[5] -= t3 * sp.x0 + t4 * sp.y0;
+                tex[0] = t0;
+                tex[1] = t1;
+                tex[3] = t3;
+                tex[4] = t4;
+            }
+        }
+        fr.cmds.push(cmd);
+    }
 }
 
 /// UZDoom's defaults for the HUD CVars `AltHud` reads (`shared_hud.cpp`);
@@ -534,6 +695,51 @@ fn field_slot(program: &CompiledProgram, class: &str, field: &str) -> Option<(u8
     None
 }
 
+/// The status bar's mirrored player objects ([`ScriptStatusBar`]): one per
+/// key (`"mo"`, `"item:clip"`, …), reused while its key is.
+#[derive(Default)]
+struct Mirror {
+    cache: Vec<(String, ObjHandle)>,
+    used: Vec<String>,
+}
+
+impl Mirror {
+    /// The object for `key`, typed as the first class of `chain` the
+    /// program knows; made on first use.
+    fn obtain(&mut self, vm: &mut Zvm, key: &str, chain: &[&str]) -> ObjHandle {
+        if !self.used.iter().any(|k| k == key) {
+            self.used.push(key.to_owned());
+        }
+        if let Some((_, h)) = self.cache.iter().find(|(k, _)| k == key)
+            && vm.heap.get(*h).is_some()
+        {
+            return *h;
+        }
+        self.cache.retain(|(k, _)| k != key);
+        let h = new_typed(vm, chain);
+        self.cache.push((key.to_owned(), h));
+        h
+    }
+
+    /// Start a frame: nothing used yet.
+    fn begin(&mut self) {
+        self.used.clear();
+    }
+
+    /// End a frame: free the objects it did not use.
+    fn end(&mut self, vm: &mut Zvm) {
+        let used = std::mem::take(&mut self.used);
+        self.cache.retain(|(k, h)| {
+            let keep = used.iter().any(|u| u == k);
+            if !keep {
+                vm.heap.destroy(*h);
+            }
+            keep
+        });
+        self.used = used;
+    }
+}
+
 /// A typed object of `class` (or the first existing fallback).
 fn new_typed(vm: &mut Zvm, classes: &[&str]) -> ObjHandle {
     for class in classes {
@@ -590,6 +796,21 @@ fn set_int(vm: &mut Zvm, h: ObjHandle, field: &str, v: i64) {
                 fields_i.resize(idx + 1, 0);
             }
             fields_i[idx] = v;
+        }
+    }
+}
+
+/// A float or vector field: `v` fills its consecutive slots.
+fn set_floats(vm: &mut Zvm, h: ObjHandle, field: &str, v: &[f64]) {
+    let Some(class) = class_of(vm, h) else {
+        return;
+    };
+    if let Some((3, idx)) = field_slot(&vm.program, &class, field) {
+        if let Some(ObjKind::Object { fields_f, .. }) = vm.heap.get_mut(h) {
+            if fields_f.len() < idx + v.len() {
+                fields_f.resize(idx + v.len(), 0.0);
+            }
+            fields_f[idx..idx + v.len()].copy_from_slice(v);
         }
     }
 }
@@ -698,8 +919,13 @@ pub struct ScriptStatusBar {
     class: String,
     bar: ObjHandle,
     init_done: bool,
-    /// Objects mirrored for the last frame, freed before the next.
-    mirrored: Vec<ObjHandle>,
+    /// Objects mirrored for the player, kept from frame to frame (by role
+    /// and class) so the handles a script keeps in its own fields between
+    /// `Tick`s stay valid; ones a frame no longer needs are freed.
+    mirror: Mirror,
+    /// The last [`Self::draw`] drew a status bar (`BeginStatusBar`), not
+    /// only a full-screen HUD.
+    drew_status_bar: bool,
     /// The pawn mirrored for the current frame.
     mo: ObjHandle,
     /// `InvFirst` the script left on the pawn, carried to the next frame.
@@ -713,12 +939,27 @@ pub struct ScriptStatusBar {
     althud_class: String,
     /// Last trap from `Init` / `Draw`, if any.
     pub last_error: Option<String>,
+    /// Pictures the bar drew that are not stock HUD patches (`BARBACK2`):
+    /// their sizes are asked for every frame so `DI_ITEM_*` alignment works.
+    seen_patches: Vec<String>,
+    /// Window size in pixels for the full-screen HUD ([`Self::set_screen_size`]).
+    screen: (f32, f32),
+    /// Pictures drawn whose size was unknown, for the host to load.
+    unknown_patches: Vec<String>,
+    /// Game tic of the last [`Self::set_game_tic`].
+    game_tic: Option<u32>,
+    /// `Tick` calls owed to the bar (UZDoom ticks the status bar every tic).
+    pending_tics: u32,
 }
 
 impl ScriptStatusBar {
     /// Load `class` from `program`. Fails when the class is missing or does
     /// not have a `Draw`.
-    pub fn new(program: CompiledProgram, class: &str) -> Result<Self, String> {
+    pub fn new(mut program: CompiledProgram, class: &str) -> Result<Self, String> {
+        // Library functions whose engine parts this VM lacks run as host
+        // natives: `DrawBar` (clip rectangles, `TexMan.GetScaledSize`) and
+        // `GetAirTime` (`Level.airsupply`).
+        program.route_to_host_actions(&["BaseStatusBar"], &["DrawBar", "GetAirTime"]);
         if !program
             .classes
             .iter()
@@ -741,14 +982,78 @@ impl ScriptStatusBar {
             class,
             bar,
             init_done: false,
-            mirrored: Vec::new(),
+            mirror: Mirror::default(),
+            drew_status_bar: true,
             mo: ObjHandle::NULL,
             inv_first: None,
             player: ObjHandle::NULL,
             althud: ObjHandle::NULL,
             althud_class: "AltHud".to_owned(),
             last_error: None,
+            seen_patches: Vec::new(),
+            screen: (0.0, 0.0),
+            unknown_patches: Vec::new(),
+            game_tic: None,
+            pending_tics: 0,
         })
+    }
+
+    /// A mod CVar's value (CVARINFO; `CVar.GetCVar` in the bar's scripts):
+    /// numbers as numbers, `true` / `false` as 1 / 0, anything else as text.
+    pub fn set_mod_cvar(&mut self, name: &str, value: &str) {
+        let v = value.trim();
+        let play = &mut self.vm.play;
+        if let Ok(i) = v.parse::<i32>() {
+            play.set_cvar_int(name, i);
+        } else if let Ok(f) = v.parse::<f64>() {
+            play.set_cvar_float(name, f);
+        } else if v.eq_ignore_ascii_case("true") {
+            play.set_cvar_int(name, 1);
+        } else if v.eq_ignore_ascii_case("false") {
+            play.set_cvar_int(name, 0);
+        } else {
+            play.set_cvar_string(name, v);
+        }
+    }
+
+    /// Whether the last frame drew a status bar across the bottom
+    /// (`BeginStatusBar`). A bar that only ever draws a full-screen HUD
+    /// (Project Brutality's) leaves the weapon at the bottom of the screen,
+    /// as UZDoom's full view does. `true` before the first frame.
+    #[must_use]
+    pub fn drew_status_bar(&self) -> bool {
+        self.drew_status_bar
+    }
+
+    /// The window's size in pixels. The full-screen HUD (`BeginHUD`) is then
+    /// laid out as in UZDoom: in the window divided by the automatic UI
+    /// scale, with `DI_SCREEN_RIGHT` / `BOTTOM` at the window's edges, and
+    /// its commands are mapped into the 320×200 box the shell draws (outside
+    /// it on a wide window). Not set: the HUD stays in the 320×200 box.
+    pub fn set_screen_size(&mut self, w: f32, h: f32) {
+        self.screen = (w, h);
+    }
+
+    /// The game tic now: the bar's `Tick` runs once per tic passed since the
+    /// last call (at most 4 at a time), before the next [`Self::draw`]. PB's
+    /// HUD copies health and armor into its own fields there.
+    pub fn set_game_tic(&mut self, tic: u32) {
+        match self.game_tic {
+            Some(prev) if tic > prev => {
+                self.pending_tics = (self.pending_tics + (tic - prev)).min(4);
+            }
+            None => self.pending_tics = 1,
+            _ => {}
+        }
+        self.game_tic = Some(tic);
+    }
+
+    /// Pictures [`Self::draw`] asked for whose size the `dims` callback did
+    /// not know, each reported once: load them before the next draw. The
+    /// full-screen HUD (`BeginHUD` with a window size) leaves them out
+    /// until then, so a shell that never loads them shows none of them.
+    pub fn take_unknown_patches(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unknown_patches)
     }
 
     /// `GameInfo` `AltHudClass` (must derive from `AltHud`; else the stock
@@ -915,10 +1220,14 @@ impl ScriptStatusBar {
             fr.fullscreen = fullscreen;
             fr.snap = snap.clone();
             fr.alpha = 1.0;
+            fr.screen = self.screen;
+            fr.hud_start = None;
+            fr.used_statusbar = false;
             // Patches the natives will ask about, resolved up front.
             let names = Self::wanted_patches(snap);
             fr.dims = names
                 .into_iter()
+                .chain(self.seen_patches.iter().cloned())
                 .filter_map(|n| dims(&n).map(|d| (n, d)))
                 .collect();
         });
@@ -933,6 +1242,30 @@ impl ScriptStatusBar {
                     self.last_error = Some(format!("{init}: {e:?}"));
                 }
             }
+            // UZDoom calls `NewGame` when play starts (PB starts its visor
+            // animation there).
+            if let Some(new_game) = find_method(&self.vm.program, &self.class, "NewGame") {
+                if let Err(e) = self
+                    .vm
+                    .call_method_banks(&new_game, self.bar, &[], &[], &[], &[])
+                {
+                    self.last_error = Some(format!("{new_game}: {e:?}"));
+                }
+            }
+        }
+        if self.pending_tics > 0 {
+            if let Some(tick) = find_method(&self.vm.program, &self.class, "Tick") {
+                for _ in 0..std::mem::take(&mut self.pending_tics) {
+                    if let Err(e) = self
+                        .vm
+                        .call_method_banks(&tick, self.bar, &[], &[], &[], &[])
+                    {
+                        self.last_error = Some(format!("{tick}: {e:?}"));
+                        break;
+                    }
+                }
+            }
+            self.pending_tics = 0;
         }
         if let Some(draw) = find_method(&self.vm.program, &self.class, "Draw") {
             let state = if fullscreen {
@@ -949,33 +1282,113 @@ impl ScriptStatusBar {
         }
         // Keep the bar's scroll position (`InvFirst`) for the next frame.
         self.inv_first = get_obj(&self.vm, self.mo, "invfirst").and_then(|h| class_of(&self.vm, h));
-        FRAME.with(|fr| list.cmds.append(&mut fr.borrow_mut().cmds));
+        FRAME.with(|fr| {
+            let mut fr = fr.borrow_mut();
+            // Pictures `finish_hud_commands` will leave out (size unknown).
+            let pending: Vec<String> = fr
+                .cmds
+                .iter()
+                .filter_map(|c| match c {
+                    DrawCmd::Patch { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect();
+            finish_hud_commands(&mut fr);
+            // Reported once each (`take_unknown_patches`): the shell loads
+            // them, and a name that does not load is not asked about again.
+            let drawn = fr.cmds.iter().filter_map(|c| match c {
+                DrawCmd::Patch { name, .. } => Some(name.clone()),
+                _ => None,
+            });
+            let names: Vec<String> = pending.into_iter().chain(drawn).collect();
+            for name in names {
+                let known = fr.dims.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name));
+                if !known
+                    && !self
+                        .seen_patches
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case(&name))
+                {
+                    self.seen_patches.push(name.clone());
+                    self.unknown_patches.push(name);
+                }
+            }
+            self.drew_status_bar = fr.used_statusbar;
+            list.cmds.append(&mut fr.cmds);
+        });
     }
 
     /// `CPlayer`, its pawn and ready weapon for this frame.
     fn mirror_player(&mut self, snap: &SbarSnapshot) {
         let vm = &mut self.vm;
-        for h in self.mirrored.drain(..) {
-            vm.heap.destroy(h);
+        let made = &mut self.mirror;
+        made.begin();
+        let player = made.obtain(vm, "player", &["PlayerInfo"]);
+        // The pawn typed as its class or nearest script ancestor, so a mod's
+        // `PlayerPawnBase(plr)` cast holds.
+        let mut pawn_chain: Vec<&str> = Vec::new();
+        let mut pawn_key = String::from("mo");
+        if let Some(pc) = snap.player_class.as_deref() {
+            pawn_chain.push(pc);
+            if let Some((_, a)) = snap
+                .ancestors
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(pc))
+            {
+                pawn_chain.extend(a.iter().map(String::as_str));
+            }
+            pawn_key = format!("mo:{}", pc.to_ascii_lowercase());
         }
-        let made = &mut self.mirrored;
-        let player = new_typed(vm, &["PlayerInfo"]);
-        made.push(player);
-        let mo = new_typed(vm, &["DoomPlayer", "PlayerPawn", "Actor"]);
-        made.push(mo);
+        pawn_chain.extend(["DoomPlayer", "PlayerPawn", "Actor"]);
+        let mo = made.obtain(vm, &pawn_key, &pawn_chain);
+        let [angle, pitch, roll, vx, vy, vz, z, floor] = snap.pose;
+        set_floats(vm, mo, "angle", &[angle]);
+        set_floats(vm, mo, "pitch", &[pitch]);
+        set_floats(vm, mo, "roll", &[roll]);
+        set_floats(vm, mo, "vel", &[vx, vy, vz]);
+        set_floats(vm, mo, "floorz", &[floor]);
+        // `pos` keeps x / y at 0: the HUD reads its height only.
+        set_floats(vm, mo, "pos", &[0.0, 0.0, z]);
+        set_obj(vm, mo, "player", player);
+        // Field of view: UZDoom's default 90 (PB's zoom offset reads
+        // `fov - DesiredFov`).
+        set_floats(vm, player, "fov", &[90.0]);
+        set_floats(vm, player, "desiredfov", &[90.0]);
+        // Links rebuilt below; clear what the last frame left.
+        for f in ["inv", "invsel", "invfirst"] {
+            set_obj(vm, mo, f, ObjHandle::NULL);
+        }
+        set_obj(vm, player, "readyweapon", ObjHandle::NULL);
         set_int(vm, player, "health", i64::from(snap.health));
         set_int(vm, player, "fragcount", i64::from(snap.frags));
         set_int(vm, mo, "health", i64::from(snap.health));
+        // `GetMaxHealth()` reads `MaxHealth` (`Player.MaxHealth`, 100 for
+        // Doom; 0 would fall to the DEHACKED global, which is not mirrored).
+        // PB scales its health bar by it.
+        set_int(vm, mo, "maxhealth", 100);
         set_obj(vm, player, "mo", mo);
+        // `mo.cursector` with a light level and colormap (PB tints its visor
+        // by them); the snapshot carries no sector, so a mid light.
+        let sector = made.obtain(vm, "sector", &["Sector"]);
+        set_int(vm, sector, "lightlevel", 192);
+        let colormap = made.obtain(vm, "colormap", &["FColormap"]);
+        set_int(vm, colormap, "lightcolor", 0x00ff_ffff);
+        set_obj(vm, sector, "colormap", colormap);
+        set_obj(vm, mo, "cursector", sector);
         // `CPlayer.weapons` (a non-null receiver for the slot natives).
-        let slots = new_typed(vm, &["WeaponSlots"]);
-        made.push(slots);
+        let slots = made.obtain(vm, "slots", &["WeaponSlots"]);
         set_obj(vm, player, "weapons", slots);
         let icon_of = |class: &str| {
             snap.icons
                 .iter()
                 .find(|(c, _)| c.eq_ignore_ascii_case(class))
                 .map(|(_, i)| i.as_str())
+        };
+        let ancestors_of = |class: &str| -> &[String] {
+            snap.ancestors
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(class))
+                .map_or(&[], |(_, a)| a.as_slice())
         };
         let weapon_of = |class: &str| {
             snap.weapons
@@ -995,45 +1408,64 @@ impl ScriptStatusBar {
                 })
         };
         // One object per class: typed, with its icon, ammo types and amounts.
-        let item =
-            |vm: &mut Zvm, made: &mut Vec<ObjHandle>, class: &str, owned: bool| -> ObjHandle {
-                let h = new_typed(vm, &[class, "Ammo", "Inventory"]);
-                made.push(h);
-                if let Some(icon) = icon_of(class) {
-                    set_int(vm, h, "icon", texture_id(icon));
-                }
-                if DOOM_KEYS.iter().any(|k| k.eq_ignore_ascii_case(class)) {
-                    if let Some((_, spr)) = snap
-                        .spawn_sprites
-                        .iter()
-                        .find(|(c, _)| c.eq_ignore_ascii_case(class))
-                    {
-                        // Drawn like UZDoom's alt HUD: the spawn sprite, not the icon.
-                        set_int(vm, h, "althudicon", texture_id(spr));
-                    }
-                }
-                if let Some(w) = weapon_of(class) {
-                    if let Some(a) = &w.ammo1 {
-                        set_str(vm, h, "ammotype1", a);
-                    }
-                    if let Some(a) = &w.ammo2 {
-                        set_str(vm, h, "ammotype2", a);
-                    }
-                }
-                if let Some((_, amount, max)) = snap
-                    .inventory
+        let item = |vm: &mut Zvm, made: &mut Mirror, class: &str, owned: bool| -> ObjHandle {
+            // A class the script program lacks (a DECORATE weapon such as
+            // PB's `PB_DMR`) still gets the right base, so `ReadyWeapon.Ammo1`
+            // reads a weapon's field.
+            let is_weapon = weapon_of(class).is_some()
+                || snap
+                    .ready_weapon
+                    .as_deref()
+                    .is_some_and(|w| w.eq_ignore_ascii_case(class));
+            let base = if is_weapon { "Weapon" } else { "Ammo" };
+            let mut chain: Vec<&str> = vec![class];
+            chain.extend(ancestors_of(class).iter().map(String::as_str));
+            chain.extend([base, "Inventory"]);
+            let key = format!(
+                "{}:{}",
+                if owned { "item" } else { "default" },
+                class.to_ascii_lowercase()
+            );
+            let h = made.obtain(vm, &key, &chain);
+            if owned {
+                set_obj(vm, h, "inv", ObjHandle::NULL);
+                set_int(vm, h, "binvbar", 0);
+            }
+            if let Some(icon) = icon_of(class) {
+                set_int(vm, h, "icon", texture_id(icon));
+            }
+            if DOOM_KEYS.iter().any(|k| k.eq_ignore_ascii_case(class)) {
+                if let Some((_, spr)) = snap
+                    .spawn_sprites
                     .iter()
-                    .find(|(c, _, _)| c.eq_ignore_ascii_case(class))
+                    .find(|(c, _)| c.eq_ignore_ascii_case(class))
                 {
-                    if owned {
-                        set_int(vm, h, "amount", i64::from(*amount));
-                    }
-                    set_int(vm, h, "maxamount", i64::from(*max));
-                } else if let Some(max) = ammo_max(class) {
-                    set_int(vm, h, "maxamount", i64::from(max));
+                    // Drawn like UZDoom's alt HUD: the spawn sprite, not the icon.
+                    set_int(vm, h, "althudicon", texture_id(spr));
                 }
-                h
-            };
+            }
+            if let Some(w) = weapon_of(class) {
+                if let Some(a) = &w.ammo1 {
+                    set_str(vm, h, "ammotype1", a);
+                }
+                if let Some(a) = &w.ammo2 {
+                    set_str(vm, h, "ammotype2", a);
+                }
+            }
+            if let Some((_, amount, max)) = snap
+                .inventory
+                .iter()
+                .find(|(c, _, _)| c.eq_ignore_ascii_case(class))
+            {
+                if owned {
+                    set_int(vm, h, "amount", i64::from(*amount));
+                }
+                set_int(vm, h, "maxamount", i64::from(*max));
+            } else if let Some(max) = ammo_max(class) {
+                set_int(vm, h, "maxamount", i64::from(max));
+            }
+            h
+        };
         // The pawn's inventory as the `Inv` chain the stdlib walks, each
         // item owned by the pawn; `FindInventory` searches the same items.
         let mut items = Vec::new();
@@ -1043,7 +1475,11 @@ impl ScriptStatusBar {
             set_obj(vm, h, "owner", mo);
             set_obj(vm, prev, "inv", h);
             prev = h;
-            items.push((h, lineage(&vm.program, class)));
+            let mut l = lineage(&vm.program, class);
+            if l.len() == 1 {
+                l.extend(ancestors_of(class).iter().map(|a| a.to_ascii_lowercase()));
+            }
+            items.push((h, l));
             if snap.inv_bar.iter().any(|c| c.eq_ignore_ascii_case(class)) {
                 set_int(vm, h, "binvbar", 1);
             }
@@ -1069,10 +1505,17 @@ impl ScriptStatusBar {
                 .find(|(_, l)| l.first().is_some_and(|c| c.eq_ignore_ascii_case(weapon)))
                 .map(|(h, _)| *h)
                 .unwrap_or_else(|| {
-                    let h = new_typed(vm, &[weapon, "Weapon"]);
-                    made.push(h);
-                    h
+                    let mut chain: Vec<&str> = vec![weapon];
+                    chain.extend(ancestors_of(weapon).iter().map(String::as_str));
+                    chain.push("Weapon");
+                    made.obtain(
+                        vm,
+                        &format!("ready:{}", weapon.to_ascii_lowercase()),
+                        &chain,
+                    )
                 });
+            set_obj(vm, w, "ammo1", ObjHandle::NULL);
+            set_obj(vm, w, "ammo2", ObjHandle::NULL);
             if let Some(a1) = &snap.ammo1 {
                 set_str(vm, w, "ammotype1", a1);
                 let h = items
@@ -1119,8 +1562,8 @@ impl ScriptStatusBar {
         self.mo = mo;
         self.player = player;
         // `gameinfo`: Doom's health / berserk pictures (`GameInfoStruct`).
-        let gi = new_typed(vm, &["GameInfoStruct"]);
-        made.push(gi);
+        let gi = made.obtain(vm, "gameinfo", &["GameInfoStruct"]);
+        made.end(vm);
         set_int(vm, gi, "gametype", 1);
         set_int(vm, gi, "healthpic", texture_id("MEDIA0"));
         set_int(vm, gi, "berserkpic", texture_id("PSTRA0"));
@@ -1271,26 +1714,128 @@ fn screen_xy(x: f64, y: f64, flags: i64) -> (f32, f32) {
     if !fullscreen {
         return (px, py);
     }
+    let sp = hud_space();
     if flags & DI_SCREEN_MANUAL_ALIGN != 0 {
         match flags & DI_SCREEN_HMASK {
-            DI_SCREEN_RIGHT => px += 320.0,
-            DI_SCREEN_HCENTER => px += 160.0,
+            DI_SCREEN_RIGHT => px += sp.w,
+            DI_SCREEN_HCENTER => px += sp.w / 2.0,
             _ => {}
         }
         match flags & DI_SCREEN_VMASK {
-            DI_SCREEN_BOTTOM => py += 200.0,
-            DI_SCREEN_VCENTER => py += 100.0,
+            DI_SCREEN_BOTTOM => py += sp.h,
+            DI_SCREEN_VCENTER => py += sp.h / 2.0,
             _ => {}
         }
     } else {
         if x < 0.0 {
-            px += 320.0;
+            px += sp.w;
         }
         if y < 0.0 {
-            py += 200.0;
+            py += sp.h;
         }
     }
     (px, py)
+}
+
+/// `GetAirTime()`: `Level.airsupply` (20 s) while above water. The snapshot
+/// has no water level, so PB's oxygen readout stays hidden.
+fn sbar_host_air_time(_: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    if let Some(slot) = regs.i.first_mut() {
+        *slot = 20 * 35;
+    }
+    Ok(())
+}
+
+/// `DrawBar(ongfx, offgfx, curval, maxval, pos, border, vertical, flags,
+/// alpha)`: the background picture, then the foreground clipped to the
+/// filled part (`SHADER_VERT` = 2 fills bottom-up, `SHADER_REVERSE` = 1
+/// from the other end), as UZDoom's script does with clip rectangles.
+fn sbar_host_draw_bar(ctx: &mut ZvmCtx<'_>, _regs: &mut NativeRegs<'_>) -> Result<(), Trap> {
+    use room_zvm::Value;
+    let args = &ctx.play.native_args;
+    let s = |k: usize| match args.get(k) {
+        Some(Value::S(h)) => ctx.heap.str(*h).to_owned(),
+        _ => String::new(),
+    };
+    let f = |k: usize| match args.get(k) {
+        Some(Value::F(v)) => *v,
+        Some(Value::I(v)) => *v as f64,
+        _ => 0.0,
+    };
+    let i = |k: usize| match args.get(k) {
+        Some(Value::I(v)) => *v,
+        _ => 0,
+    };
+    // `self`, on, off, cur, max, pos.x, pos.y, border, vertical, flags, alpha.
+    let (on, off) = (s(1), s(2));
+    let (cur, max) = (f(3), f(4));
+    let (x, y) = (f(5), f(6));
+    let vertical = i(8);
+    let flags = i(9);
+    let alpha = if args.len() > 10 { f(10) } else { 1.0 };
+    let value = if max != 0.0 {
+        (cur / max).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if !off.is_empty() {
+        push_image(&off, x, y, flags, alpha, (1.0, 1.0));
+    }
+    let Some(d) = dims_of(&on) else {
+        // Size unknown (first frame): no clip is possible, so the full image
+        // is not shown; drawn invisible so the shell loads it.
+        push_image(&on, x, y, flags, 0.0, (1.0, 1.0));
+        return Ok(());
+    };
+    let (sx, sy) = screen_xy(x, y, flags);
+    let px = match flags & DI_ITEM_HMASK {
+        DI_ITEM_LEFT | DI_ITEM_HOFFSET => sx,
+        DI_ITEM_RIGHT => sx - d.w,
+        _ => sx - d.w / 2.0,
+    };
+    let py = match flags & DI_ITEM_VMASK {
+        DI_ITEM_TOP | DI_ITEM_VOFFSET => sy,
+        DI_ITEM_VCENTER => sy - d.h / 2.0,
+        _ => sy - d.h,
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let v = value as f32;
+    let horizontal = vertical & 2 == 0;
+    let reverse = vertical & 1 != 0;
+    let rect = match (horizontal, reverse) {
+        (true, false) => crate::draw::Rect {
+            x: px,
+            y: py,
+            w: d.w * v,
+            h: d.h,
+        },
+        (true, true) => crate::draw::Rect {
+            x: px + d.w * (1.0 - v),
+            y: py,
+            w: d.w * v,
+            h: d.h,
+        },
+        (false, false) => crate::draw::Rect {
+            x: px,
+            y: py + d.h * (1.0 - v),
+            w: d.w,
+            h: d.h * v,
+        },
+        (false, true) => crate::draw::Rect {
+            x: px,
+            y: py,
+            w: d.w,
+            h: d.h * v,
+        },
+    };
+    FRAME.with(|fr| {
+        fr.borrow_mut()
+            .cmds
+            .push(DrawCmd::Clip { rect: Some(rect) })
+    });
+    push_image(&on, x, y, flags, alpha, (1.0, 1.0));
+    FRAME.with(|fr| fr.borrow_mut().cmds.push(DrawCmd::Clip { rect: None }));
+    Ok(())
 }
 
 /// Draw a patch with `DI_ITEM_*` alignment.
@@ -1355,7 +1900,7 @@ fn push_image(name: &str, x: f64, y: f64, flags: i64, alpha: f64, scale: (f64, f
         light: dim,
         fuzz: false,
         flip: flags & DI_MIRROR != 0,
-        mirror: false,
+        mirror: flags & DI_MIRRORY != 0,
         angle: 0.0,
         pivot_x: 0.5,
         pivot_y: 0.5,
@@ -1370,6 +1915,8 @@ fn push_image(name: &str, x: f64, y: f64, flags: i64, alpha: f64, scale: (f64, f
 fn sbar_begin_statusbar(_: &mut ZvmCtx<'_>, _: &mut NativeRegs<'_>) -> Result<(), Trap> {
     FRAME.with(|fr| {
         let mut fr = fr.borrow_mut();
+        finish_hud_commands(&mut fr);
+        fr.used_statusbar = true;
         fr.fullscreen = false;
         fr.alpha = 1.0;
     });
@@ -1383,6 +1930,9 @@ fn sbar_begin_hud(_: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), T
         let mut fr = fr.borrow_mut();
         fr.fullscreen = true;
         fr.alpha = if alpha > 0.0 { alpha } else { 1.0 };
+        if fr.hud_start.is_none() {
+            fr.hud_start = Some(fr.cmds.len());
+        }
     });
     Ok(())
 }
@@ -1529,7 +2079,12 @@ fn sbar_fill(_: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Result<(), Trap> 
     #[allow(clippy::cast_possible_truncation)]
     FRAME.with(|fr| {
         fr.borrow_mut().cmds.push(DrawCmd::Fill {
-            rect: crate::draw::Rect::new(sx, sy, w as f32, h as f32),
+            rect: crate::draw::Rect {
+                x: sx,
+                y: sy,
+                w: w as f32,
+                h: h as f32,
+            },
             color: Rgba {
                 r: c(16),
                 g: c(8),
@@ -1926,6 +2481,8 @@ fn get_default_by_type(ctx: &mut ZvmCtx<'_>, regs: &mut NativeRegs<'_>) -> Resul
 fn register(vm: &mut Zvm) {
     let t = &mut vm.natives;
     t.replace("statusbarcore.beginstatusbar", sbar_begin_statusbar);
+    t.replace("Host.DrawBar", sbar_host_draw_bar);
+    t.replace("Host.GetAirTime", sbar_host_air_time);
     t.replace("statusbarcore.beginhud", sbar_begin_hud);
     t.replace("statusbarcore.setsize", sbar_noop);
     t.replace("statusbarcore.setcliprect", sbar_noop);
@@ -1939,6 +2496,9 @@ fn register(vm: &mut Zvm) {
     t.replace("basestatusbar.getmugshot", sbar_get_mugshot);
     t.replace("basestatusbar.getinventoryicon", sbar_get_inventory_icon);
     t.replace("basestatusbar.refreshbackground", sbar_noop);
+    // The native part of `BaseStatusBar.Tick` (message and mugshot timers)
+    // has nothing to do here; the script `Tick` around it runs.
+    t.replace("basestatusbar.tick", sbar_noop);
     t.replace("basestatusbar.drawcrosshair", sbar_noop);
     t.replace("basestatusbar.updatescreengeometry", sbar_noop);
     t.replace("textureid.isvalid", sbar_tex_valid);
@@ -2181,6 +2741,343 @@ mod tests {
         };
         assert!(y_of(&list, "MEDIA0") < y_of(&list, "ARM1A0"));
         assert!(y_of(&swapped, "MEDIA0") > y_of(&swapped, "ARM1A0"));
+    }
+
+    #[test]
+    fn hud_space_follows_uzdoom_ui_scale() {
+        // No window size: the 320×200 box itself.
+        assert_eq!(HudSpace::for_screen((0.0, 0.0)), HudSpace::BOX);
+        // 1280×720: UI scale 1 (640×400 fits once), the box is 3.6× and
+        // centred, 17.8 box units in from each side.
+        let sp = HudSpace::for_screen((1280.0, 720.0));
+        assert_eq!((sp.w, sp.h), (1280.0, 720.0));
+        assert!((sp.k - 1.0 / 3.6).abs() < 1e-5);
+        assert!((sp.x0 + 64.0 / 3.6).abs() < 1e-3);
+        assert!(sp.y0.abs() < 1e-5);
+        // 1920×1080: UI scale 2, a 960×540 HUD.
+        let sp = HudSpace::for_screen((1920.0, 1080.0));
+        assert_eq!((sp.w, sp.h), (960.0, 540.0));
+        // Every HUD pixel lands on a whole number of window pixels.
+        assert!((sp.k * 5.4 - 2.0).abs() < 1e-5);
+    }
+
+    /// `BeginHUD` on a wide window: `DI_SCREEN_RIGHT_BOTTOM` is the window's
+    /// corner, not the 320×200 box's (PB's two clusters overlapped in the
+    /// middle of the screen), and pictures are scaled by the UI scale.
+    #[test]
+    fn fullscreen_hud_anchors_to_the_window_edges() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+        let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+        for line in entry.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#include") {
+                let path = rest.trim().trim_matches('"');
+                let text = std::fs::read_to_string(root.join(path)).unwrap();
+                sources.push((path.replace('\\', "/"), text));
+            }
+        }
+        sources.push((
+            "bar.zs".into(),
+            r#"
+class CornerBar : BaseStatusBar
+{
+    override void Draw(int state, double TicFrac)
+    {
+        BeginHUD();
+        DrawImage("PANELR", (-10, -10), DI_SCREEN_RIGHT_BOTTOM | DI_ITEM_RIGHT_BOTTOM);
+        DrawImage("PANELL", (10, 10), DI_SCREEN_LEFT_TOP | DI_ITEM_LEFT_TOP);
+        // PB scales its health bar by this; 0 left the bar empty.
+        if (CPlayer.mo.GetMaxHealth() == 100) DrawImage("PANELM", (0, 0), DI_SCREEN_CENTER);
+    }
+}
+"#
+            .into(),
+        ));
+        let program = room_zscript::check(&sources).program.unwrap();
+        let mut bar = ScriptStatusBar::new(program, "CornerBar").unwrap();
+        bar.set_screen_size(1280.0, 720.0);
+        let dims = |name: &str| {
+            name.starts_with("PANEL").then_some(PatchDims {
+                w: 100.0,
+                h: 40.0,
+                left: 0.0,
+                top: 0.0,
+            })
+        };
+        let snap = SbarSnapshot::default();
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &dims, &mut list);
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &dims, &mut list);
+        assert!(bar.last_error.is_none(), "{:?}", bar.last_error);
+        let sp = HudSpace::for_screen((1280.0, 720.0));
+        let at = |want: &str| {
+            list.cmds
+                .iter()
+                .find_map(|c| match c {
+                    DrawCmd::Patch {
+                        name, pos, size, ..
+                    } if name == want => Some((*pos, *size)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{want} not drawn: {:?}", list.cmds))
+        };
+        let (pos, size) = at("PANELR");
+        // Window pixels: right edge at 1270, bottom at 710, 100×40.
+        let px = |v: f32| (v - sp.x0) / sp.k;
+        let py = |v: f32| (v - sp.y0) / sp.k;
+        assert!(
+            (px(pos.x + size.x) - 1270.0).abs() < 0.01,
+            "{pos:?} {size:?}"
+        );
+        assert!(
+            (py(pos.y + size.y) - 710.0).abs() < 0.01,
+            "{pos:?} {size:?}"
+        );
+        assert!((size.x / sp.k - 100.0).abs() < 0.01);
+        let (pos, _) = at("PANELL");
+        assert!((px(pos.x) - 10.0).abs() < 0.01, "{pos:?}");
+        assert!((py(pos.y) - 10.0).abs() < 0.01, "{pos:?}");
+        // Left of the 320×200 box on a 16:9 window.
+        assert!(pos.x < 0.0);
+        let _ = at("PANELM");
+    }
+
+    /// The shell's loop: pictures start unloaded, the bar reports them, the
+    /// shell loads them, and the next frame draws them (the app used to drop
+    /// the report, and PB's HUD never appeared).
+    #[test]
+    fn unknown_pictures_are_reported_once_and_drawn_once_loaded() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+        let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+        for line in entry.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#include") {
+                let path = rest.trim().trim_matches('"');
+                let text = std::fs::read_to_string(root.join(path)).unwrap();
+                sources.push((path.replace('\\', "/"), text));
+            }
+        }
+        sources.push((
+            "bar.zs".into(),
+            r#"
+class LoadBar : BaseStatusBar
+{
+    override void Draw(int state, double TicFrac)
+    {
+        BeginHUD();
+        DrawImage("PANELR", (-10, -10), DI_SCREEN_RIGHT_BOTTOM | DI_ITEM_RIGHT_BOTTOM);
+        DrawImage("NOSUCHPIC", (10, 10), DI_SCREEN_LEFT_TOP | DI_ITEM_LEFT_TOP);
+    }
+}
+"#
+            .into(),
+        ));
+        let program = room_zscript::check(&sources).program.unwrap();
+        let mut bar = ScriptStatusBar::new(program, "LoadBar").unwrap();
+        bar.set_screen_size(1280.0, 720.0);
+        let loaded = std::cell::RefCell::new(Vec::<String>::new());
+        let dims = |name: &str| {
+            loaded
+                .borrow()
+                .iter()
+                .any(|n| n == name)
+                .then_some(PatchDims {
+                    w: 100.0,
+                    h: 40.0,
+                    left: 0.0,
+                    top: 0.0,
+                })
+        };
+        let snap = SbarSnapshot::default();
+        let drawn = |list: &UiDrawList| {
+            patches(list)
+                .into_iter()
+                .map(|p| p.0)
+                .collect::<Vec<String>>()
+        };
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &dims, &mut list);
+        assert!(drawn(&list).is_empty(), "unsized pictures wait");
+        let mut asked = bar.take_unknown_patches();
+        asked.sort();
+        assert_eq!(asked, ["NOSUCHPIC", "PANELR"]);
+        // The shell loads what exists; NOSUCHPIC does not.
+        loaded.borrow_mut().push("PANELR".into());
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &dims, &mut list);
+        assert_eq!(drawn(&list), ["PANELR"]);
+        assert!(bar.take_unknown_patches().is_empty(), "asked once");
+    }
+
+    /// PB keeps `weap = CPlayer.ReadyWeapon` from its `Tick` and draws the
+    /// ammo panel from it; frames between two tics (the screen draws faster
+    /// than 35 Hz) must see the same, live objects (they were remade every
+    /// frame, so the panel flickered).
+    #[test]
+    fn objects_kept_from_tick_stay_valid_between_tics() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+        let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+        for line in entry.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#include") {
+                let path = rest.trim().trim_matches('"');
+                let text = std::fs::read_to_string(root.join(path)).unwrap();
+                sources.push((path.replace('\\', "/"), text));
+            }
+        }
+        sources.push((
+            "bar.zs".into(),
+            r#"
+class KeepBar : BaseStatusBar
+{
+    Weapon weap;
+    Weapon oldWeap;
+    int switches;
+    override void Tick()
+    {
+        Super.Tick();
+        weap = CPlayer.ReadyWeapon;
+        if (oldWeap && oldWeap != weap) switches++;
+        oldWeap = weap;
+    }
+    override void Draw(int state, double TicFrac)
+    {
+        BeginHUD();
+        if (weap && weap == CPlayer.ReadyWeapon && weap.Ammo1 && weap.Ammo1.Amount == 7)
+            DrawImage("AMMOOK", (-10, -10), DI_SCREEN_RIGHT_BOTTOM | DI_ITEM_RIGHT_BOTTOM);
+        if (switches > 0) DrawImage("SWITCHED", (0, 0), DI_SCREEN_CENTER);
+    }
+}
+"#
+            .into(),
+        ));
+        let program = room_zscript::check(&sources).program.unwrap();
+        let mut bar = ScriptStatusBar::new(program, "KeepBar").unwrap();
+        let snap = SbarSnapshot {
+            health: 100,
+            inventory: vec![("Pistol".into(), 1, 1), ("Clip".into(), 7, 200)],
+            ready_weapon: Some("Pistol".into()),
+            ammo1: Some("Clip".into()),
+            weapons: vec![SbarWeapon {
+                class: "Pistol".into(),
+                slot: 2,
+                ammo1: Some("Clip".into()),
+                ammo2: None,
+            }],
+            ..SbarSnapshot::default()
+        };
+        let dims = |_: &str| {
+            Some(PatchDims {
+                w: 10.0,
+                h: 10.0,
+                left: 0.0,
+                top: 0.0,
+            })
+        };
+        let mut shown = Vec::new();
+        for frame in 0..8u32 {
+            // Two screen frames per tic.
+            bar.set_game_tic(frame / 2);
+            let mut list = UiDrawList::new();
+            bar.draw(&snap, true, 0.0, &dims, &mut list);
+            assert!(bar.last_error.is_none(), "{:?}", bar.last_error);
+            let names: Vec<String> = patches(&list).into_iter().map(|p| p.0).collect();
+            shown.push((
+                names.iter().any(|n| n == "AMMOOK"),
+                names.iter().any(|n| n == "SWITCHED"),
+            ));
+        }
+        assert!(shown.iter().all(|(ok, _)| *ok), "{shown:?}");
+        assert!(
+            shown.iter().all(|(_, sw)| !*sw),
+            "same weapon every tic: {shown:?}"
+        );
+    }
+
+    /// Project Brutality shape: the ready weapon is a DECORATE class the
+    /// script program lacks, so it is typed as its nearest script ancestor
+    /// (`PB_WeaponBase(CPlayer.ReadyWeapon)` holds), and `DrawBar` draws the
+    /// empty image, then the full one clipped to the filled part.
+    #[test]
+    fn decorate_weapon_casts_to_its_script_ancestor_and_bars_draw() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wadsrc/uzdoom");
+        let entry = std::fs::read_to_string(root.join("zscript.txt")).unwrap();
+        let mut sources = vec![("zscript.txt".to_owned(), entry.clone())];
+        for line in entry.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#include") {
+                let path = rest.trim().trim_matches('"');
+                let text = std::fs::read_to_string(root.join(path)).unwrap();
+                sources.push((path.replace('\\', "/"), text));
+            }
+        }
+        sources.push((
+            "bar.zs".into(),
+            r#"
+class TestModWeapon : Weapon { int magSize; }
+class TestBar : BaseStatusBar
+{
+    override void Draw(int state, double TicFrac)
+    {
+        Super.Draw(state, TicFrac);
+        BeginHUD();
+        let w = TestModWeapon(CPlayer.ReadyWeapon);
+        if (w) DrawImage("WEAPOK", (10, 10), DI_ITEM_OFFSETS);
+        else DrawImage("WEAPNO", (10, 10), DI_ITEM_OFFSETS);
+        DrawBar("BARON", "BAROFF", 30, 100, (20, 50), 0, SHADER_HORZ, DI_ITEM_OFFSETS);
+    }
+}
+"#
+            .into(),
+        ));
+        let result = room_zscript::check(&sources);
+        let program = result.program.unwrap();
+        let mut bar = ScriptStatusBar::new(program, "TestBar").unwrap();
+        let snap = SbarSnapshot {
+            health: 100,
+            inventory: vec![("DecoRifle".into(), 1, 1)],
+            ready_weapon: Some("DecoRifle".into()),
+            ancestors: vec![(
+                "DecoRifle".into(),
+                vec![
+                    "TestModWeapon".into(),
+                    "Weapon".into(),
+                    "StateProvider".into(),
+                    "Inventory".into(),
+                    "Actor".into(),
+                ],
+            )],
+            ..SbarSnapshot::default()
+        };
+        let bar_dims = |name: &str| {
+            let up = name.to_ascii_uppercase();
+            (up.starts_with("BAR") || up.starts_with("WEAP")).then_some(PatchDims {
+                w: 100.0,
+                h: 10.0,
+                left: 0.0,
+                top: 0.0,
+            })
+        };
+        // The first frame learns which patches the script draws; their sizes
+        // are known from the next one on (as in the app).
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &bar_dims, &mut list);
+        let mut list = UiDrawList::new();
+        bar.draw(&snap, true, 0.0, &bar_dims, &mut list);
+        assert!(bar.last_error.is_none(), "{:?}", bar.last_error);
+        let names: Vec<String> = patches(&list).into_iter().map(|p| p.0).collect();
+        assert!(names.iter().any(|n| n == "WEAPOK"), "{names:?}");
+        let off = names.iter().position(|n| n == "BAROFF").expect("empty bar");
+        let on = names.iter().position(|n| n == "BARON").expect("full bar");
+        assert!(off < on, "{names:?}");
+        // The full image is clipped to 30 % of the bar's width.
+        let clip = list.cmds.iter().find_map(|c| match c {
+            DrawCmd::Clip { rect: Some(r) } => Some(*r),
+            _ => None,
+        });
+        let r = clip.expect("clip around the filled part");
+        assert!((r.w - 30.0).abs() < 0.6, "{r:?}");
+        assert!((r.h - 10.0).abs() < 0.6, "{r:?}");
     }
 
     #[test]

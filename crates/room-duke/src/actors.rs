@@ -938,6 +938,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         temps[iu].pending_player_inventory.clear();
         temps[iu].pending_player_inventory_icon = None;
         temps[iu].pending_spawns.clear();
+        temps[iu].pending_spawn_guts_before.clear();
         temps[iu].pending_shoots.clear();
 
         let (pidx, dist) = findplayer_dist(&sprites[iu], players);
@@ -1468,6 +1469,7 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         }
         // CON `spawn` / `shoot` — after fall + damage so BLOOD freelist/Z match.
         let spawns: Vec<i16> = temps[iu].pending_spawns.drain(..).collect();
+        let spawn_guts_before: Vec<usize> = temps[iu].pending_spawn_guts_before.drain(..).collect();
         let shoots: Vec<i16> = temps[iu].pending_shoots.drain(..).collect();
         let item_sprays: Vec<(i16, i16)> = temps[iu].pending_item_sprays.drain(..).collect();
         let glass_bursts: Vec<i16> = temps[iu].pending_glass.drain(..).collect();
@@ -1540,7 +1542,16 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 shard.pal = debris.palette;
             }
         }
-        for guts in guts_bursts {
+        // CON `guts` fragments and `spawn`s take sprite slots in script
+        // order (`spawn BLOOD` then `state standard_jibs`), so each spawn
+        // first places the fragments queued before it.
+        let mut guts_left = guts_bursts.into_iter().peekable();
+        let mut guts_done = 0usize;
+        let emit_guts = |guts: crate::con::vm::PendingGuts,
+                         lists: &mut SpriteLists,
+                         sprites: &mut [SpriteT],
+                         picnum: &mut Vec<i16>,
+                         temps: &mut Vec<ActorConTemps>| {
             let index = crate::shoot::egs(
                 lists,
                 sprites,
@@ -1564,6 +1575,14 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
             if index >= 0 && guts.palette == 6 {
                 sprites[index as usize].pal = 6;
             }
+        };
+        let first_guts = spawn_guts_before.first().copied().unwrap_or(usize::MAX);
+        while guts_done < first_guts {
+            let Some(guts) = guts_left.next() else {
+                break;
+            };
+            emit_guts(guts, lists, sprites, picnum, temps);
+            guts_done += 1;
         }
         for (tile, count) in item_sprays {
             for _ in 0..count.max(0) {
@@ -1603,11 +1622,30 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
         }
         let spawn_count = spawns.len();
         for (spawn_k, pn) in spawns.into_iter().enumerate() {
+            let before = spawn_guts_before
+                .get(spawn_k)
+                .copied()
+                .unwrap_or(usize::MAX);
+            while guts_done < before {
+                let Some(guts) = guts_left.next() else {
+                    break;
+                };
+                emit_guts(guts, lists, sprites, picnum, temps);
+                guts_done += 1;
+            }
             if pn == BLOOD {
                 let _ = con_spawn_blood(lists, sprites, picnum, temps, Some(script), i);
             } else if pn == EXPLOSION2 {
-                spawn_explosion2_from(
-                    lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu,
+                let _ = spawn_explosion2_from(
+                    lists,
+                    sprites,
+                    sectors,
+                    walls,
+                    picnum,
+                    temps,
+                    Some(script),
+                    randomseed,
+                    iu,
                 );
             } else {
                 let _ = crate::spawn_rt::spawn_from(
@@ -1647,6 +1685,10 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
                 }
                 !due
             });
+        }
+        // Fragments queued after the last spawn.
+        for guts in guts_left {
+            emit_guts(guts, lists, sprites, picnum, temps);
         }
         // Spawn queue dropped meanwhile: the blast still happens.
         for request in late_hit_radii {
@@ -1749,6 +1791,26 @@ pub(crate) fn moveactors_with_skill_with_decal_queue(
             // the Build sector lists here after the movement routine returns.
             if sprites[iu].sectnum != old_sect {
                 let _ = lists.changespritesect(i, sprites[iu].sectnum);
+            }
+            // Chocolate `execute` tail for STAT_ACTOR: count `timetosleep`
+            // down and put the actor (a corpse too) back to sleep at 1.
+            // Big badguys, corpses that will respawn and hidden respawning
+            // items stay awake.
+            if lists.sprite_stat.get(iu).copied() == Some(STAT_ACTOR) {
+                let s = sprites[iu];
+                let stays_awake = if crate::badguy::badguy_pic(s.picnum, &script.actortype) {
+                    s.xrepeat > 60 || (respawn_settings[0] && s.extra <= 0)
+                } else {
+                    respawn_settings[2] && s.cstat & 32768 != 0
+                };
+                if !stays_awake {
+                    let t = &mut temps[iu];
+                    if t.timetosleep > 1 {
+                        t.timetosleep -= 1;
+                    } else if t.timetosleep == 1 {
+                        let _ = lists.changespritestat(i, crate::stat::STAT_DUMMY);
+                    }
+                }
             }
         }
         i = next;
@@ -2937,8 +2999,16 @@ fn move_dukecar(
         let _ = lists.deletesprite(i);
         return;
     } else if t0 & 3 == 0 {
-        spawn_explosion2_from(
-            lists, sprites, sectors, walls, picnum, temps, script, randomseed, iu,
+        let _ = spawn_explosion2_from(
+            lists,
+            sprites,
+            sectors,
+            walls,
+            picnum,
+            temps,
+            Some(script),
+            randomseed,
+            iu,
         );
     }
     // Chocolate `ssp(i, CLIPMASK0)` → non-badguy `movesprite`.
@@ -2985,24 +3055,24 @@ fn move_dukecar(
 
 /// Chocolate `spawn(j, EXPLOSION2)` for a parent sprite.
 #[allow(clippy::too_many_arguments)]
-fn spawn_explosion2_from(
+pub(crate) fn spawn_explosion2_from(
     lists: &mut SpriteLists,
     sprites: &mut [SpriteT],
     sectors: &[SectorT],
     walls: &[WallT],
     picnum: &mut Vec<i16>,
     temps: &mut Vec<ActorConTemps>,
-    script: &ScriptImage,
+    script: Option<&ScriptImage>,
     randomseed: &mut i32,
     from: usize,
-) {
+) -> i16 {
     let src = sprites[from];
     let e = crate::shoot::egs(
         lists,
         sprites,
         picnum,
         temps,
-        Some(script),
+        script,
         src.sectnum,
         src.x,
         src.y,
@@ -3018,7 +3088,7 @@ fn spawn_explosion2_from(
         STAT_DEFAULT,
     );
     if e < 0 {
-        return;
+        return e;
     }
     let eu = e as usize;
     sprites[eu].ang = src.ang;
@@ -3036,4 +3106,5 @@ fn spawn_explosion2_from(
         }
     }
     let _ = lists.changespritestat(e, crate::stat::STAT_MISC);
+    e
 }

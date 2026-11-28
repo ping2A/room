@@ -944,6 +944,9 @@
         <option value="">None</option>
         <option value="survival">Survival Director (Rust)</option>
         <option value="bounty">Bounty Hunter (AssemblyScript)</option>
+        <option value="echoes">Echoes: past lives fight beside you</option>
+        <option value="colorworld">Color World (shader)</option>
+        <option value="rednoir">Red Noir (shader)</option>
         <option value="voxel">Voxel sprites only</option>
       </select>
     </label>
@@ -1095,12 +1098,31 @@
     };
 
     // ---- Screenshot -------------------------------------------------------
-    function grabShot() {
+    let shotTries = 0;
+    // `retry`: called right after an engine frame; a blank picture (a frame
+    // the engine skipped, or a GPU canvas read after it was presented) waits
+    // for the next frame instead of saving a black or transparent file.
+    function grabShot(retry = false) {
       const src = canvas();
       if (!src || src.width < 2) { badge('Nothing to capture yet', false, 2000); return; }
       const c = document.createElement('canvas');
       c.width = src.width; c.height = src.height;
-      c.getContext('2d').drawImage(src, 0, 0);
+      const ctx = c.getContext('2d');
+      // Opaque, like the screen: a canvas with alpha left in it would
+      // otherwise save see-through pixels.
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(src, 0, 0);
+      if (retry) {
+        const px = ctx.getImageData(0, 0, c.width, c.height).data;
+        const step = Math.max(4, Math.floor(px.length / 4 / 997) * 4);
+        let lit = false;
+        for (let i = 0; i < px.length; i += step) {
+          if (px[i] | px[i + 1] | px[i + 2]) { lit = true; break; }
+        }
+        if (!lit && shotTries < 10) { shotTries++; wantShot = true; return; }
+      }
+      shotTries = 0;
       c.toBlob((blob) => {
         if (!blob) { badge('Screenshot failed', false, 2500); return; }
         download(blob, `room-${stamp()}.png`);
@@ -1256,7 +1278,7 @@
     const toggleGif = () => (rec ? stopGif() : startGif());
 
     function afterFrame(t) {
-      if (wantShot) { wantShot = false; grabShot(); }
+      if (wantShot) { wantShot = false; grabShot(true); }
       if (!rec) return;
       const now = performance.now();
       const elapsed = (now - rec.start) / 1000;
@@ -2293,11 +2315,15 @@
         }
         for (const pack of packs) {
           try {
+            // Content packs: voxel meshes, or a shader mod (`?pack=colorworld`)
+            // stacked on a gameplay mod.
             await tryMount(pack, [
               `mods/${pack}.pk3`,
               `mods/${pack}.zip`,
+              `mods/${pack}.wad`,
               `/play/mods/${pack}.pk3`,
               `/play/mods/${pack}.zip`,
+              `/api/mods/${pack}.wad`,
             ]);
           } catch (e) {
             console.warn(`room-web: pack ${pack} unavailable`, e);
