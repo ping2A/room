@@ -234,6 +234,12 @@ async function boot() {
         const requested = engineMapName(want.toUpperCase());
         if (S.summary.maps.includes(requested)) loadMap(requested);
       }
+      // `?tab=scripts` (the lobby's "Script a mod"): open that browser tab.
+      const tab = params.get("tab");
+      if (tab) {
+        const button = document.querySelector(`#browser-tabs [data-tab="${CSS.escape(tab)}"]`);
+        if (button && !button.hidden) button.click();
+      }
       return;
     } catch (e) {
       console.warn("editor: autoload", url, e);

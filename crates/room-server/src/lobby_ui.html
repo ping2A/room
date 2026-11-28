@@ -4,7 +4,8 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="color-scheme" content="dark"/>
-  <title>ROOM — Multiplayer</title>
+  <title>ROOM</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAE9klEQVR42u2bP4jbVhzHPz5EUeGlvOENGlx4UA0ePBxFgwYNHjJk8NChww033pAhY4ZuXTsUugSaMdAMGQs9yA0ZDmqIoKJ4MMQQFQQVRMMbRPIgohiug2zFlztf0zY29p0eGGyh96zv9/f9/XlP/KAdN3t0/s3Nh5+Js10A9fi17XxUAhbAf6/+2gmrful+8sFEdK4T8P9CROcq8LsK/DIiVpGwd93BLxS8Kn7tXXfw/0TC3k1Pg3s3wfpXqaBVwE2x/ioVtApoCWgJaAm40cNZ5+J/dDr/e40vzs52UwEfA/zHXGejClj10EII+l2HST6j33UwtqIo60ew1l653rqU4Kwb/DD0mu++FPhKciJzjuMCv+teCXwTJKwtBvhdFyVcfCkACLRHaStO0vwcMUpUKOlyHBfn5qZ5tdtB8DDwUcJtAKfjFFPWYBfDlBWTfMZAQtiT9TVbbQz8WggQQuDJGUlhmOYlva58B9hWl4I8jm0z19rNgV9LFlj4tCnrAGfKqvksQK+y8IfGg61Pg0q4TPLZuWvL1gcYbklKXAsBk3yGtRZPzjC2utSvtRAr5w93XQELKSvhUpROk+sX8h8CURDgd90G7DLo4/nv4QaqwrXuBYytsNY2hAyXrC8DhwcHEVoIhvNrD/r95j4txJUq2VoClgufZdkPgcPBgHtC0NMa7Xloz2N4N2yAykhybw68pzU9rc+pYCdiwPdf326Kmfd9fioNURCglEJrjdaaQRgSBUFdLPm6AW58MD6NQnYqBgghzuV/gMxaDqJ9ALq+f2HOwcEBANMsY5plJIUhKQwAp3OFPDgMtr8QyooC7UHgKY4pzlnv/v3HtRqSBCtDBmHIaRwzShKy09MLGSLwFMoqvDJlGPnc3u/xw0+/bTcBJ5MM4TiN3x8vxYAFsJ7WiFI3c3paQ5Y1SsmsxZQOzMOJ6zrcvR3y8Fm8/QpIS4udzRpLDucZ4HAwAGCUJEyzjP0wJMsy0qJkOgcfBQERMJlOcXqqcQndFyRpxi9PX25/DHjx/BXCcSirOgMEX/X57v59hJRMpSHpzvf/Mjs3L+k6TKVBSImn1IV1v/3x193ZDRpbkZYWDRxE+9isQvs+vidQwmWaTy/MeXRURwvh1IFOeoa0KHezEjz7823jz88ejWuml4qaKAjqOkBrpHCJgoAno/GF/cTOnwprIciLgnEcY02d0qRwGSVJnd7imLQoGSUJSrhorbFliSkKjK0aN8qM3b0DkczULtD1POLJBICqhNTUsl5E9PQkRQuB70lO45hiZBFSMspSpOtigLcv3+weAW9fvoFbtzA+7OPzc5IQdPv4SoJ2UZWqC6KjAeM45vhhjBN5RNLHliXSc8lLS7HmM4K1vhfIrCUrDHdQ9JWirCpUCieTCXf6/cYVMmvRQpCepOyHCiEleVlQVBUv1vxeYK0EvDg7o5OXhEt/4/d6fBOGAHx1dPSOrMmEcRyTzN2lsHbt4NdOwCIjxJ2cvlLYakZZGcbjOuKPlspfJSVKKbI5AZsAvxECGjDGQOWQmZxoXhXq+f5/WQGbBL8xAhpQz18x/fxT8idPLo0XmwS+cQKWXeIptK/HWwJaAloCWgJaAraJgMevbWfRYHCdx/u9A60CeK/Z6Dqr4LLOkVYBXNJydh1VsKpvaG9V3911IuGqpqm2bY62cZIb3Trbjps+/gZtqWbr8Gy4UAAAAABJRU5ErkJggg=="/>
   <link rel="stylesheet" href="/lobby/assets/app.css"/>
 </head>
 <body>
@@ -29,62 +30,166 @@
 
   <main class="layout">
     <section class="hero-block">
-      <p class="mark" aria-label="Room">ROOM</p>
-      <h1 class="hero-line">Rip &amp; tear — online</h1>
-      <p class="lede">Netgames on this server. Host a co-op or deathmatch game, join one by its ID, or spectate a match in progress.</p>
-      <div class="hero-actions">
-        <button type="button" id="btn-create" class="btn primary">Host game</button>
-        <button type="button" id="btn-quick-br" class="btn primary" title="8-seat Battle Royale queue; bots fill empty seats after 60s">Quick play BR</button>
-        <button type="button" id="btn-join-id" class="btn">Join by ID</button>
-        <button type="button" id="btn-solo" class="btn" title="Single player in this browser: no server, no netplay">Play solo</button>
-        <button type="button" id="btn-refresh" class="btn ghost">Refresh</button>
-        <a id="btn-editor" class="btn ghost" href="/play/editor.html" target="_blank" rel="noopener">WAD editor</a>
+      <div class="brand">
+        <!-- Room's logo: Freedoom's dead status-bar face (STFDEAD0, BSD-3-Clause), as on the app icons. -->
+        <img class="brand-face" alt="" width="24" height="31" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAfCAYAAAD9cg1AAAAEMklEQVR42r2Wv4vbZhjHP3bEWYQX+pJ7CeIw5YWKYFpTbtDgwYOHGzJ4CLSFGzJ06JAh0KH3B2Ts0KWQIWMKHbrcdsMNKbjgQQU13KAUU5yiBnGI8gZUeCnycZw7yFbkOzsJ/SUwtsyrz/N+v88PvfAfX436TavVmv9T4Gw2W2E2/034Ok7jdXAhBN22Q5ye0207GFuQ5Q4A1tq3UuJchg97XvXblwJfSY5lylGY4bfdN4LrSmazWaOxDOC3XZRw6WkFQKA9cltwPE1XHjR5gZIuR2H2aiNtl2larFVRBXhwp4sS7gpwCavfx+k5g67A5CXQ2GItvAqwvb099+Q5nbZkkuZ02rJaMElzlHA3QoQQr7VsNps1mssFJi8TaPKi+iyhm3b4NvloAijhEqfnq17bYuV7+DdLtgkQp+dYa/HkOcYWay3RQmwEDd+kYClVCZcsd6paX9ozBPpBgN92K1gderS4H67LwWVbrLVVwGFt9zJweLjfRwvBcPHfw263WqeFWKuyWW+sui1D4O5gwH0h6GiN9jy05zG816tAsi+5vwB3tKaj9YqKVqs1b3718V7VLJc9n0hDPwhQSqG1RmvNoNejHwRlM/q6AhsfjE+lcCUHQoiV+gdIrGW/vwtA2/evSN/f3y97JUmYJAlRZogyA8BoofDh3QAnyTK0B4GnOCJbiX5w8G2pJoqwsseg12MUhoyjiGQ0ulJhgadQVuHlU4Z9n73dDs5xnCAcp/L9qJaD5YMdrRG5roAdrSFJKqWJtZjcgUU6Xdfh3l6PR09Crnne9Qe/24L3b0q20j+5eXbGrUWC393Z4cXpKSbP6Xa7nDmGaJoyCaewKN0PtaZZFNzaLekvniagBTe2mnz+zY+N5uEPvzWE45AXZQUFd7p8eXCAkJKJNETtxfyXyUoOorbDRBqElHhKXcnRJ19/X74PqomYWzSw39/FJgXa9/E9gRIuk3RyBfD4szJbwikrSnqGaZav7+Rnz/9oLP188vgEAKfWNP0gKPtAa6Rw6QcB341PVkBKuJtHRb0a0izjJAyxpiw5KVzGUVSWXxgyzXLGUYQSLlprbJ5jsgxji8rmxLyastXQSUxpUdvzCOMYgCKHqSllP3oSlt1+PEULge9JRmFINrYIKRknU6TrYoCfnr1srD22fLG9PVd7GjWF4zgmWLzlOClQSlUNdxKGTJIEp+/Rx8fmOYlnSXNLNko4rB1drtUD7FxcPDiVTfyz67gXF9ibDjd+KYPtCMFoPCaOY6I0RW5t8evPGb5SCCl5ak/JioLD5y8bGw9eAB+89878UxS2KCgCyW2xi5DlGNGL6QmQxHGlZFkgh5cOXWsDAHzUas27SmG6gj00SZpeWaOkRAjBt4uRsQ6+kuT6dTibNTBmTuGQmJT+YLBRwevgGxVctux2fnUfmyz536+/AAhW+pBf6stqAAAAAElFTkSuQmCC"/>
+        <p class="wordmark" role="img" aria-label="Room">
+        <svg class="wordmark-svg" viewBox="0 0 512 210" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="wm-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#ff4a32"/><stop offset=".5" stop-color="#d0160f"/><stop offset="1" stop-color="#8a0606"/>
+            </linearGradient>
+            <linearGradient id="wm-blood" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#9a0a06"/><stop offset=".6" stop-color="#6a0000"/><stop offset="1" stop-color="#4a0000"/>
+            </linearGradient>
+            <path id="wm-letters" fill-rule="evenodd" d="M0 20H90L110 40V82L95 94L113 150H82L67 102H30V150H0Z M30 46H77L82 51V71L77 76H30Z M146 20H216L236 40V130L216 150H146L126 130V40Z M156 48H206V122H156Z M272 20H342L362 40V130L342 150H272L252 130V40Z M282 48H332V122H282Z M378 20H410L436 62L462 20H494V150H466V70L442 110H430L406 70V150H378Z"/>
+            <clipPath id="wm-clip"><use href="#wm-letters"/></clipPath>
+          </defs>
+          <g class="wm-extrude"><use href="#wm-letters" transform="translate(9 9)" fill="#000"/><use href="#wm-letters" transform="translate(8 8)" fill="#1a0000"/><use href="#wm-letters" transform="translate(7 7)" fill="#2a0000"/><use href="#wm-letters" transform="translate(6 6)" fill="#3a0000"/><use href="#wm-letters" transform="translate(5 5)" fill="#4a0000"/><use href="#wm-letters" transform="translate(4 4)" fill="#5a0000"/><use href="#wm-letters" transform="translate(3 3)" fill="#6a0000"/><use href="#wm-letters" transform="translate(2 2)" fill="#7a0000"/><use href="#wm-letters" transform="translate(1 1)" fill="#8a0606"/></g>
+          <use href="#wm-letters" fill="url(#wm-fill)"/>
+          <g clip-path="url(#wm-clip)" fill="url(#wm-blood)"><g class="wm-runs"><path d="M10.5 30.0L11.8 50.2L13.0 70.3L14.1 90.5L14.8 110.7L15.1 130.8L15.1 151.0L20.8 151.0L21.8 130.8L22.4 110.7L22.6 90.5L22.4 70.3L22.1 50.2L21.7 30.0Z"/><path d="M90.2 30.0L90.2 50.2L90.6 70.3L91.5 90.5L92.6 110.7L93.8 130.8L94.8 151.0L99.6 151.0L99.3 130.8L98.8 110.7L98.5 90.5L98.4 70.3L98.7 50.2L99.4 30.0Z"/><path d="M159.8 30.0L159.5 50.2L159.3 70.3L159.5 90.5L160.1 110.7L161.0 130.8L162.3 151.0L168.9 151.0L168.7 130.8L168.9 110.7L169.4 90.5L170.3 70.3L171.6 50.2L173.0 30.0Z"/><path d="M197.0 30.0L197.1 50.2L197.7 70.3L198.6 90.5L199.7 110.7L200.8 130.8L201.7 151.0L206.1 151.0L205.8 130.8L205.3 110.7L204.9 90.5L204.6 70.3L204.7 50.2L205.2 30.0Z"/><path d="M288.4 30.0L289.6 50.2L290.6 70.3L291.2 90.5L291.5 110.7L291.3 130.8L291.0 151.0L296.2 151.0L297.4 130.8L298.4 110.7L299.0 90.5L299.1 70.3L298.9 50.2L298.6 30.0Z"/><path d="M322.8 30.0L323.4 50.2L324.4 70.3L325.6 90.5L327.0 110.7L328.1 130.8L329.0 151.0L335.1 151.0L335.3 130.8L335.1 110.7L334.8 90.5L334.6 70.3L334.6 50.2L335.0 30.0Z"/><path d="M386.0 30.0L385.6 50.2L385.2 70.3L385.1 90.5L385.3 110.7L385.9 130.8L386.9 151.0L391.7 151.0L391.4 130.8L391.5 110.7L392.1 90.5L392.9 70.3L394.1 50.2L395.2 30.0Z"/><path d="M475.6 30.0L476.8 50.2L478.1 70.3L479.1 90.5L479.8 110.7L480.1 130.8L480.0 151.0L485.7 151.0L486.7 130.8L487.4 110.7L487.6 90.5L487.5 70.3L487.1 50.2L486.8 30.0Z"/><path d="M33.8 30.0L34.3 36.7L35.1 43.3L36.3 50.0L37.4 56.7L38.5 63.3L39.2 70.0A3.8 3.8 0 0 0 44.0 70.0L44.0 63.3L43.7 56.7L43.3 50.0L42.9 43.3L42.8 36.7L43.0 30.0Z"/><path d="M65.4 30.0L64.8 32.3L64.6 34.7L64.6 37.0L65.1 39.3L66.0 41.7L67.0 44.0A3.4 3.4 0 0 0 70.9 44.0L70.4 41.7L70.1 39.3L70.2 37.0L70.7 34.7L71.5 32.3L72.6 30.0Z"/><path d="M141.0 30.0L140.9 41.3L140.6 52.7L140.1 64.0L139.7 75.3L139.5 86.7L139.7 98.0A3.6 3.6 0 0 0 144.1 98.0L144.5 86.7L145.3 75.3L146.4 64.0L147.5 52.7L148.5 41.3L149.2 30.0Z"/><path d="M225.1 30.0L226.2 39.0L227.1 48.0L227.8 57.0L228.0 66.0L227.9 75.0L227.4 84.0A3.3 3.3 0 0 0 231.3 84.0L232.3 75.0L233.0 66.0L233.3 57.0L233.2 48.0L232.8 39.0L232.3 30.0Z"/><path d="M260.5 30.0L260.1 35.7L259.7 41.3L259.4 47.0L259.3 52.7L259.7 58.3L260.5 64.0A3.8 3.8 0 0 0 265.3 64.0L265.2 58.3L265.6 52.7L266.4 47.0L267.4 41.3L268.6 35.7L269.7 30.0Z"/><path d="M351.6 30.0L352.7 43.0L353.5 56.0L354.0 69.0L354.0 82.0L353.7 95.0L353.2 108.0A3.6 3.6 0 0 0 357.5 108.0L358.6 95.0L359.6 82.0L360.2 69.0L360.4 56.0L360.3 43.0L359.8 30.0Z"/><path d="M418.1 30.0L419.0 40.3L420.0 50.7L421.1 61.0L421.9 71.3L422.4 81.7L422.4 92.0A3.3 3.3 0 0 0 426.3 92.0L426.8 81.7L426.9 71.3L426.6 61.0L426.1 50.7L425.6 40.3L425.3 30.0Z"/><path d="M450.8 30.0L452.0 35.0L453.1 40.0L454.0 45.0L454.5 50.0L454.5 55.0L454.3 60.0A3.8 3.8 0 0 0 459.1 60.0L460.1 55.0L460.7 50.0L461.0 45.0L460.8 40.0L460.4 35.0L460.0 30.0Z"/></g><path class="wm-soak" d="M-2 0H502V30L494 35.8L484 55.9L474 37.0L462 37.2L452 33.8L440 31.6L428 33.7L416 36.2L408 36.4L400 34.5L394 47.5L382 31.2L372 37.2L360 33.0L348 35.5L338 31.4L332 35.9L320 49.6L314 43.5L302 59.2L292 33.4L282 36.4L276 34.0L264 32.1L254 32.2L242 31.8L236 35.3L226 36.1L216 34.7L206 41.6L198 36.6L190 33.5L178 35.1L166 36.4L154 34.5L146 35.0L140 33.6L132 31.7L124 34.9L114 34.8L106 33.0L98 47.3L90 31.3L78 35.0L72 37.6L66 31.4L54 31.6L46 45.9L34 31.3L26 37.4L20 33.6L14 53.5L8 33.8L0 33.3Z" fill="url(#wm-blood)"/></g>
+          <g class="wm-drips" fill="url(#wm-blood)"><g class="drip" style="--t:6.4s;--d:-0.0s"><path d="M12 149h10v34a5.0 5.0 0 0 1 -10 0Z"/><path class="drip-shine" d="M13.6 152v28"/></g><circle class="drop" style="--t:6.4s;--d:-0.0s" cx="17.0" cy="192.0" r="4.2"/><g class="drip" style="--t:7.6s;--d:-2.1s"><path d="M92 149h8v22a4.0 4.0 0 0 1 -8 0Z"/><path class="drip-shine" d="M93.6 152v16"/></g><circle class="drop" style="--t:7.6s;--d:-2.1s" cx="96.0" cy="179.0" r="3.4"/><g class="drip" style="--t:5.8s;--d:-1.2s"><path d="M160 149h12v46a6.0 6.0 0 0 1 -12 0Z"/><path class="drip-shine" d="M161.6 152v40"/></g><circle class="drop" style="--t:5.8s;--d:-1.2s" cx="166.0" cy="205.0" r="5.1"/><g class="drip" style="--t:8.2s;--d:-3.4s"><path d="M199 149h7v18a3.5 3.5 0 0 1 -7 0Z"/><path class="drip-shine" d="M200.6 152v12"/></g><circle class="drop" style="--t:8.2s;--d:-3.4s" cx="202.5" cy="174.5" r="3.0"/><g class="drip" style="--t:6.9s;--d:-0.6s"><path d="M289 149h9v30a4.5 4.5 0 0 1 -9 0Z"/><path class="drip-shine" d="M290.6 152v24"/></g><circle class="drop" style="--t:6.9s;--d:-0.6s" cx="293.5" cy="187.5" r="3.8"/><g class="drip" style="--t:5.4s;--d:-2.7s"><path d="M325 149h11v52a5.5 5.5 0 0 1 -11 0Z"/><path class="drip-shine" d="M326.6 152v46"/></g><circle class="drop" style="--t:5.4s;--d:-2.7s" cx="330.5" cy="210.5" r="4.7"/><g class="drip" style="--t:7.3s;--d:-4.1s"><path d="M386 149h8v26a4.0 4.0 0 0 1 -8 0Z"/><path class="drip-shine" d="M387.6 152v20"/></g><circle class="drop" style="--t:7.3s;--d:-4.1s" cx="390.0" cy="183.0" r="3.4"/><g class="drip" style="--t:6.1s;--d:-1.8s"><path d="M477 149h10v40a5.0 5.0 0 0 1 -10 0Z"/><path class="drip-shine" d="M478.6 152v34"/></g><circle class="drop" style="--t:6.1s;--d:-1.8s" cx="482.0" cy="198.0" r="4.2"/><g class="drip" style="--t:9.0s;--d:-0.9s"><path d="M171 47h6v20a3.0 3.0 0 0 1 -6 0Z"/><path class="drip-shine" d="M172.6 50v14"/></g><circle class="drop" style="--t:9.0s;--d:-0.9s" cx="174.0" cy="74.0" r="2.5"/><g class="drip" style="--t:8.4s;--d:-3.0s"><path d="M311 47h7v28a3.5 3.5 0 0 1 -7 0Z"/><path class="drip-shine" d="M312.6 50v22"/></g><circle class="drop" style="--t:8.4s;--d:-3.0s" cx="314.5" cy="82.5" r="3.0"/><g class="drip" style="--t:9.6s;--d:-5.0s"><path d="M52 45h6v14a3.0 3.0 0 0 1 -6 0Z"/><path class="drip-shine" d="M53.6 48v8"/></g><circle class="drop" style="--t:9.6s;--d:-5.0s" cx="55.0" cy="66.0" r="2.5"/></g>
+        </svg>
+        </p>
       </div>
+      <h1 class="hero-line">Rip &amp; tear</h1>
+      <p class="lede">Play online with friends, play on your own in this browser, or build maps and mods. Pick where to start.</p>
+      <nav class="modes" role="tablist" aria-label="Sections">
+        <button type="button" class="mode-tab" role="tab" id="tab-multiplayer" data-mode="multiplayer" aria-controls="mode-multiplayer">
+          <span class="mode-name">Multiplayer</span>
+          <span class="mode-sub">Host, join or watch a netgame</span>
+        </button>
+        <button type="button" class="mode-tab" role="tab" id="tab-solo" data-mode="solo" aria-controls="mode-solo">
+          <span class="mode-name">Solo</span>
+          <span class="mode-sub">Play alone, no server needed</span>
+        </button>
+        <button type="button" class="mode-tab" role="tab" id="tab-editor" data-mode="editor" aria-controls="mode-editor">
+          <span class="mode-name">Editor</span>
+          <span class="mode-sub">Make maps and script mods</span>
+        </button>
+      </nav>
       <p id="flash" class="flash hidden" role="status"></p>
-      <aside class="hero-steps" aria-label="How a netgame starts">
-        <p class="steps-kicker">How a netgame starts</p>
-        <ol>
-          <li><b>Host a game</b><span>Pick Doom or Duke Nukem 3D, the map, skill and mode: co-op, deathmatch or DukeMatch. Your browser loads the game files locally.</span></li>
-          <li><b>Share the link</b><span>Friends join from any browser — phones included — with the game link or its ID.</span></li>
-          <li><b>Frag</b><span>Lockstep netplay, voice chat and live spectating. Bots fill empty Battle Royale slots.</span></li>
-        </ol>
-      </aside>
     </section>
 
-    <section class="panel" id="netgames">
-      <div class="panel-head">
-        <h2>Netgames</h2>
-        <span class="muted" id="room-count">—</span>
+    <!-- Multiplayer -->
+    <section id="mode-multiplayer" class="mode-view" role="tabpanel" aria-labelledby="tab-multiplayer">
+      <div class="mode-intro">
+        <h2>Play with friends</h2>
+        <p class="muted">Host a co-op or deathmatch game, jump into the Battle Royale queue, or join a friend's game by its ID. Your player name is set at the top right.</p>
+        <div class="hero-actions">
+          <button type="button" id="btn-create" class="btn primary">Host game</button>
+          <button type="button" id="btn-quick-br" class="btn primary" title="8-seat Battle Royale queue; bots fill empty seats after 60s">Quick play BR</button>
+          <button type="button" id="btn-join-id" class="btn">Join by ID</button>
+          <button type="button" id="btn-refresh" class="btn ghost">Refresh</button>
+        </div>
+        <aside class="hero-steps" aria-label="How a netgame starts">
+          <p class="steps-kicker">How a netgame starts</p>
+          <ol>
+            <li><b>Host a game</b><span>Pick Doom or Duke Nukem 3D, the map, skill and mode: co-op, deathmatch or DukeMatch. Your browser loads the game files locally.</span></li>
+            <li><b>Share the link</b><span>Friends join from any browser, phones included, with the game link or its ID.</span></li>
+            <li><b>Frag</b><span>Lockstep netplay, voice chat and live spectating. Bots fill empty Battle Royale slots.</span></li>
+          </ol>
+        </aside>
       </div>
-      <div id="room-grid" class="room-grid"></div>
-      <p id="rooms-empty" class="empty">No games running. Host one and invite your friends.</p>
+
+      <section class="panel" id="netgames">
+        <div class="panel-head">
+          <h2>Netgames</h2>
+          <span class="muted" id="room-count">—</span>
+        </div>
+        <div id="room-grid" class="room-grid"></div>
+        <p id="rooms-empty" class="empty">No games running. Host one and invite your friends.</p>
+      </section>
+
+      <div class="side-stack">
+        <aside id="watch-panel" class="panel watch hidden">
+          <div class="panel-head">
+            <h2>Spectating</h2>
+            <button type="button" id="watch-close" class="btn ghost small">Close</button>
+          </div>
+          <div id="watch-body" class="watch-body"></div>
+          <div class="watch-actions">
+            <button type="button" id="watch-live" class="btn">Watch</button>
+            <button type="button" id="watch-link" class="btn ghost">Copy watch link</button>
+            <button type="button" id="watch-play" class="btn primary">Join &amp; play</button>
+          </div>
+        </aside>
+
+        <section class="panel top-players">
+          <div class="panel-head">
+            <h2>Leaderboard</h2>
+            <span class="muted" id="lb-mode-label">all modes</span>
+          </div>
+          <div class="lb-tabs" role="tablist">
+            <button type="button" class="lb-tab on" data-lb="all" role="tab">All</button>
+            <button type="button" class="lb-tab" data-lb="br" role="tab">Battle Royale</button>
+          </div>
+          <ol id="top-list" class="top-list"></ol>
+          <p id="top-empty" class="empty">No finished matches yet. Be the first name on the wall.</p>
+        </section>
+      </div>
     </section>
 
-    <section class="panel top-players">
-      <div class="panel-head">
-        <h2>Leaderboard</h2>
-        <span class="muted" id="lb-mode-label">all modes</span>
+    <!-- Solo -->
+    <section id="mode-solo" class="mode-view" role="tabpanel" aria-labelledby="tab-solo" hidden>
+      <div class="mode-intro">
+        <h2>Play on your own</h2>
+        <p class="muted">Runs entirely in this browser: no server, no netplay. Start from the game files this server ships, your own WAD or GRP, or a map generated for you. Your files never leave your machine.</p>
+        <div class="hero-actions">
+          <button type="button" id="btn-solo" class="btn primary" title="Choose game files, map, skill and mod">Play solo</button>
+          <button type="button" id="btn-solo-gen" class="btn">Generate a map</button>
+          <button type="button" id="btn-solo-own" class="btn">Use my own WAD</button>
+        </div>
       </div>
-      <div class="lb-tabs" role="tablist">
-        <button type="button" class="lb-tab on" data-lb="all" role="tab">All</button>
-        <button type="button" class="lb-tab" data-lb="br" role="tab">Battle Royale</button>
-      </div>
-      <ol id="top-list" class="top-list"></ol>
-      <p id="top-empty" class="empty">No finished matches yet — be the first name on the wall.</p>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Quick start</h2>
+          <span class="muted" id="solo-preset-count"></span>
+        </div>
+        <div id="solo-presets" class="card-grid"></div>
+        <p id="solo-presets-empty" class="empty hidden">This server ships no game files. Use your own WAD or GRP, or generate a map.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Mods</h2>
+          <span class="muted">Doom only · pick one, then choose a map</span>
+        </div>
+        <div id="solo-mods" class="card-grid compact"></div>
+        <p id="solo-mods-empty" class="empty hidden">No mods on this server.</p>
+      </section>
     </section>
 
-    <aside id="watch-panel" class="panel watch hidden">
-      <div class="panel-head">
-        <h2>Spectating</h2>
-        <button type="button" id="watch-close" class="btn ghost small">Close</button>
+    <!-- Editor -->
+    <section id="mode-editor" class="mode-view" role="tabpanel" aria-labelledby="tab-editor" hidden>
+      <div class="mode-intro">
+        <h2>Make something</h2>
+        <p class="muted">The editor opens a game's files in this browser: change maps, things, textures and actors, test-play straight away, and export a WAD. Its Scripts tab writes AssemblyScript mods that run live in the game.</p>
+        <div class="hero-actions">
+          <a id="btn-editor" class="btn primary" href="/play/editor.html" target="_blank" rel="noopener">Open the editor</a>
+        </div>
       </div>
-      <div id="watch-body" class="watch-body"></div>
-      <div class="watch-actions">
-        <button type="button" id="watch-live" class="btn">Watch</button>
-        <button type="button" id="watch-link" class="btn ghost">Copy watch link</button>
-        <button type="button" id="watch-play" class="btn primary">Join &amp; play</button>
-      </div>
-    </aside>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Start from</h2>
+        </div>
+        <div id="editor-starts" class="card-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>What you can do</h2>
+        </div>
+        <ul class="feature-list">
+          <li><b>Maps</b><span>Draw sectors and lines, place things, retexture, and test-play any map in a click.</span></li>
+          <li><b>Actors &amp; lumps</b><span>Browse DECORATE actors, sprites, flats and every lump of the archive.</span></li>
+          <li><b>Scripts</b><span>Write a gameplay mod in AssemblyScript, compile it in the browser and play it at once.</span></li>
+          <li><b>Export</b><span>Download a PWAD (or a Duke GRP) with your changes, ready for Room or any source port.</span></li>
+        </ul>
+      </section>
+    </section>
   </main>
 
   <footer class="foot">
@@ -96,11 +201,11 @@
     <form method="dialog" id="modal-form">
       <header>
         <h2 id="modal-title">Action</h2>
-        <button type="submit" value="cancel" class="icon-btn" aria-label="Close">×</button>
+        <button type="submit" value="cancel" class="icon-btn" aria-label="Close" formnovalidate>×</button>
       </header>
       <div id="modal-body" class="modal-body"></div>
       <footer>
-        <button type="submit" value="cancel" class="btn">Cancel</button>
+        <button type="submit" value="cancel" class="btn" formnovalidate>Cancel</button>
         <button type="submit" value="confirm" class="btn primary" id="modal-confirm">Confirm</button>
       </footer>
     </form>

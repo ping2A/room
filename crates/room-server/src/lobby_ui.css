@@ -116,22 +116,6 @@ body {
   }
 }
 
-@keyframes brand-bleed {
-  0%,
-  100% {
-    text-shadow:
-      0 0 0 transparent,
-      2px 3px 0 rgba(90, 10, 12, 0.9),
-      0 18px 40px rgba(176, 16, 24, 0.35);
-  }
-  50% {
-    text-shadow:
-      0 0 28px rgba(255, 42, 42, 0.35),
-      3px 4px 0 rgba(90, 10, 12, 1),
-      0 22px 50px rgba(224, 24, 40, 0.45);
-  }
-}
-
 .hidden {
   display: none !important;
 }
@@ -235,31 +219,6 @@ body {
   padding: 1.5rem 0 1.75rem;
   border-bottom: 1px solid rgba(176, 16, 24, 0.35);
   margin-bottom: 0.35rem;
-}
-
-.mark {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(5.2rem, 16vw, 9.5rem);
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  line-height: 0.82;
-  color: var(--bone);
-  text-transform: uppercase;
-  animation: brand-bleed 4.5s ease-in-out infinite;
-  /* Dried-blood wash over the letters */
-  background: linear-gradient(
-    185deg,
-    #fff0e8 0%,
-    #e8d4c4 28%,
-    #c44 55%,
-    #7a1018 78%,
-    #3a0608 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
 }
 
 .hero-line {
@@ -774,9 +733,6 @@ body {
   .room-actions {
     flex-direction: row;
   }
-  .mark {
-    font-size: clamp(4.2rem, 22vw, 6.5rem);
-  }
 }
 
 a.btn { text-decoration: none; display: inline-flex; align-items: center; }
@@ -823,17 +779,6 @@ body {
 .bg-grit { opacity: 0.35; mix-blend-mode: normal; background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(0, 0, 0, 0.35) 3px 4px); }
 .bg-drips { display: none; }
 
-/* The wordmark: solid red, stepped hard extrusion */
-.mark {
-  animation: none;
-  background: none;
-  -webkit-text-fill-color: currentColor;
-  color: var(--r-red);
-  letter-spacing: 0.04em;
-  text-shadow:
-    1px 1px 0 #7a0000, 2px 2px 0 #6a0000, 3px 3px 0 #5a0000, 4px 4px 0 #4a0000,
-    5px 5px 0 #3a0000, 6px 6px 0 #2a0000, 7px 7px 0 #1a0000, 10px 12px 0 rgba(0, 0, 0, 0.7);
-}
 .hero-line { color: var(--r-amber); text-shadow: 2px 2px 0 #000; }
 .lede { color: var(--r-bone); font-weight: 400; font-size: 0.95rem; }
 .hero-block { border-bottom: 2px solid; border-color: var(--r-lo); box-shadow: 0 2px 0 rgba(140, 140, 140, 0.35); }
@@ -1104,4 +1049,197 @@ a.pill.source-link:focus-visible,
 .foot a.foot-link:focus-visible {
   color: var(--r-amber, #d4a04a);
   text-decoration: underline;
+}
+
+/* ---- Sections: Multiplayer · Solo · Editor ---------------------------------- */
+.hero-block { display: block; padding-bottom: 1.25rem; }
+.hero-block .lede { margin-bottom: 1.1rem; }
+
+/* Three raised slabs like the status bar's weapon boxes; the open one sinks. */
+.modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  max-width: 54rem;
+}
+.mode-tab {
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+  padding: 0.75rem 1rem 0.8rem;
+  cursor: pointer;
+  font: inherit;
+  color: var(--r-bone);
+  background: var(--r-grain);
+  border: 2px solid;
+  border-color: var(--r-raised-c);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.7);
+}
+.mode-tab:hover { filter: brightness(1.12); }
+.mode-tab .mode-name {
+  font: 400 clamp(1.25rem, 2.6vw, 1.6rem)/1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-shadow: 2px 2px 0 #000;
+}
+.mode-tab .mode-sub { color: var(--r-dim); font-size: 0.8rem; }
+.mode-tab[aria-selected="true"] {
+  background: var(--r-well);
+  border-color: var(--r-sunk-c);
+  box-shadow: inset 0 0 0 2px var(--r-red);
+}
+.mode-tab[aria-selected="true"] .mode-name { color: var(--r-red-hi); }
+.mode-tab[aria-selected="true"] .mode-sub { color: var(--r-amber); }
+
+.mode-view {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1.35fr 0.9fr;
+  gap: 1rem;
+  align-items: start;
+}
+.mode-view[hidden] { display: none; }
+.mode-view > .panel { min-width: 0; }
+#mode-solo > .panel,
+#mode-editor > .panel { grid-column: auto; }
+.side-stack { display: grid; gap: 1rem; min-width: 0; }
+
+/* Each section opens with what it is for and its main actions. */
+.mode-intro {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem);
+  column-gap: clamp(1.5rem, 5vw, 4rem);
+  align-items: start;
+  padding: 0.25rem 0 0.75rem;
+}
+.mode-intro > :not(.hero-steps) { grid-column: 1; }
+.mode-intro h2 {
+  margin: 0 0 0.35rem;
+  font: 400 clamp(1.4rem, 3vw, 1.9rem)/1.1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--r-amber);
+  text-shadow: 2px 2px 0 #000;
+}
+.mode-intro > p { margin: 0 0 1rem; max-width: 40rem; }
+.mode-intro .hero-steps { grid-column: 2; grid-row: 1 / span 4; align-self: start; }
+
+/* Cards: recessed wells with a title, a line of text and an action. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+.card-grid.compact { grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); }
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.8rem 0.9rem;
+  background: var(--r-well);
+  border: 2px solid;
+  border-color: var(--r-sunk-c);
+  min-width: 0;
+}
+.card:hover { box-shadow: inset 0 0 0 2px var(--r-red); }
+.card h3 {
+  margin: 0;
+  font: 400 1.15rem/1.15 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--r-bone);
+}
+.card p { margin: 0; color: var(--r-dim); font-size: 0.85rem; flex: 1; }
+.card .card-meta { color: var(--r-amber); font-size: 0.75rem; flex: 0; }
+.card .btn { align-self: flex-start; }
+
+.feature-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.65rem; }
+.feature-list li { display: grid; gap: 0.15rem; }
+.feature-list b {
+  color: var(--r-bone);
+  font: 400 1.05rem/1.2 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.feature-list span { color: var(--r-dim); font-size: 0.88rem; }
+
+@media (max-width: 900px) {
+  .mode-view { grid-template-columns: 1fr; }
+  .mode-intro { grid-template-columns: 1fr; }
+  .mode-intro .hero-steps { grid-column: 1; grid-row: auto; margin-top: 1.2rem; }
+}
+@media (max-width: 520px) {
+  .modes { gap: 0.35rem; }
+  .mode-tab { padding: 0.55rem 0.5rem; text-align: center; }
+  .mode-tab .mode-name { font-size: 1rem; letter-spacing: 0.02em; }
+  .mode-tab .mode-sub { display: none; }
+}
+
+/* ---- Brand: the face and a ROOM that bleeds --------------------------------- */
+.brand {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(0.8rem, 2.5vw, 1.6rem);
+}
+.brand-face {
+  /* Native 24×31 sprite, scaled by whole pixels. */
+  width: clamp(72px, 9vw, 120px);
+  height: auto;
+  image-rendering: pixelated;
+  margin-top: clamp(0.4rem, 1.4vw, 1.1rem);
+  filter: drop-shadow(5px 6px 0 rgba(0, 0, 0, 0.75));
+}
+.wordmark {
+  margin: 0;
+  line-height: 0;
+  width: clamp(17rem, 50vw, 38rem);
+}
+.wordmark-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.wm-soak,
+.wm-runs { opacity: 0.95; }
+.wm-runs { filter: drop-shadow(0.6px 0 0 rgba(255, 120, 100, 0.35)); }
+.drip-shine {
+  fill: none;
+  stroke: #ff6a52;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.45;
+}
+/* Each drip swells, lets a drop go, and pulls back a little. */
+.drip {
+  transform-box: fill-box;
+  transform-origin: 50% 0;
+  animation: wm-drip var(--t, 6s) cubic-bezier(0.55, 0, 0.75, 0.4) var(--d, 0s) infinite;
+}
+.drop {
+  fill: #8a0404;
+  opacity: 0;
+  transform-box: fill-box;
+  animation: wm-drop var(--t, 6s) linear var(--d, 0s) infinite;
+}
+@keyframes wm-drip {
+  0% { transform: scaleY(0.3); }
+  72% { transform: scaleY(1); }
+  76% { transform: scaleY(0.62); }
+  100% { transform: scaleY(0.3); }
+}
+@keyframes wm-drop {
+  0%, 71% { opacity: 0; transform: translateY(0) scaleY(1); }
+  73% { opacity: 1; transform: translateY(4px) scaleY(1.25); }
+  96% { opacity: 0.9; transform: translateY(150px) scaleY(1.4); }
+  100% { opacity: 0; transform: translateY(170px) scaleY(1.4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drip { animation: none; transform: none; }
+  .drop { animation: none; opacity: 0; }
+}
+@media (max-width: 520px) {
+  .brand-face { width: 64px; }
+  .wordmark { width: min(70vw, 17rem); }
 }

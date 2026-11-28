@@ -1073,7 +1073,11 @@
     db.close();
   }
 
-  async function playSolo() {
+  /**
+   * `pre` opens the dialog already pointed somewhere: `source` (a built-in
+   * preset id, or "own"), `level` ("game" / "gen"), `mod` (a mod name).
+   */
+  async function playSolo(pre = {}) {
     const mods = await loadMods();
     // Multiplayer-only: `[mod] solo = false`, or known names if an old server omits the field.
     const soloMods = mods.filter(
@@ -1299,6 +1303,16 @@
         });
         updateSource();
         updateLevel();
+        // Shortcuts from the Solo section's cards.
+        const pick = (el, value) => {
+          if (!el || value == null || ![...el.options].some((o) => o.value === value)) return;
+          el.value = value;
+          el.dispatchEvent(new Event("change"));
+        };
+        pick(source, pre.source);
+        pick(level, pre.level);
+        pick(body.querySelector('select[name="mod"]'), pre.mod);
+        if (pre.source === "own") file.focus();
       },
     });
     if (!data) return;
@@ -1580,6 +1594,155 @@
     });
   });
 
+  // ---- Sections: Multiplayer · Solo · Editor -------------------------------
+  const MODES = ["multiplayer", "solo", "editor"];
+
+  function showMode(mode, { remember = true } = {}) {
+    if (!MODES.includes(mode)) mode = "multiplayer";
+    for (const m of MODES) {
+      const on = m === mode;
+      $("mode-" + m).hidden = !on;
+      const tab = $("tab-" + m);
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+    }
+    if (remember) {
+      try { localStorage.setItem("roomLobbyMode", mode); } catch (_) { /* private mode */ }
+      if (location.hash !== "#" + mode) history.replaceState(null, "", "#" + mode);
+    }
+  }
+
+  function initialMode() {
+    const hash = location.hash.replace(/^#/, "");
+    if (MODES.includes(hash)) return hash;
+    // A join or watch link is about a netgame.
+    const q = new URLSearchParams(location.search);
+    if (q.get("join") || q.get("watch")) return "multiplayer";
+    try {
+      const saved = localStorage.getItem("roomLobbyMode");
+      if (MODES.includes(saved)) return saved;
+    } catch (_) { /* private mode */ }
+    return "multiplayer";
+  }
+
+  for (const m of MODES) {
+    const tab = $("tab-" + m);
+    tab.addEventListener("click", () => showMode(m));
+    // Arrow keys move between the three tabs (ARIA tabs pattern).
+    tab.addEventListener("keydown", (ev) => {
+      const step = ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      ev.preventDefault();
+      const next = MODES[(MODES.indexOf(m) + step + MODES.length) % MODES.length];
+      showMode(next);
+      $("tab-" + next).focus();
+    });
+  }
+  window.addEventListener("hashchange", () => {
+    const hash = location.hash.replace(/^#/, "");
+    if (MODES.includes(hash)) showMode(hash);
+  });
+  showMode(initialMode(), { remember: false });
+
+  function cardHtml({ title, text, meta, action, attrs = "", href = "" }) {
+    const button = href
+      ? '<a class="btn" href="' + escapeHtml(href) + '" target="_blank" rel="noopener">' + escapeHtml(action) + "</a>"
+      : '<button type="button" class="btn" ' + attrs + ">" + escapeHtml(action) + "</button>";
+    return (
+      '<article class="card"><h3>' + escapeHtml(title) + "</h3>" +
+      (meta ? '<p class="card-meta">' + escapeHtml(meta) + "</p>" : "") +
+      "<p>" + escapeHtml(text || "") + "</p>" + button + "</article>"
+    );
+  }
+
+  /** Solo section: the server's game files and its mods, one click each. */
+  async function renderSoloHub(presets) {
+    const grid = $("solo-presets");
+    grid.innerHTML = presets
+      .map((p) =>
+        cardHtml({
+          title: p.label,
+          meta: [(p.game === "duke3d" ? "Duke Nukem 3D" : "Doom engine"), p.maps?.length ? p.maps.length + (p.maps.length === 1 ? " map" : " maps") : "", p.bytes ? Math.round(p.bytes / 1048576) + " MB" : ""].filter(Boolean).join(" · "),
+          text: p.note || "Built-in game files served by this server.",
+          action: "Play",
+          attrs: 'data-solo-preset="' + escapeHtml(p.id) + '"',
+        })
+      )
+      .join("");
+    $("solo-presets-empty").classList.toggle("hidden", presets.length > 0);
+    $("solo-preset-count").textContent = presets.length ? presets.length + " built in" : "";
+    const mods = (await loadMods()).filter((m) => m.solo !== false && m.name !== "royale");
+    $("solo-mods").innerHTML = mods
+      .map((m) =>
+        cardHtml({
+          title: m.title || m.name,
+          text: m.description || "",
+          action: "Play with this mod",
+          attrs: 'data-solo-mod="' + escapeHtml(m.name) + '"',
+        })
+      )
+      .join("");
+    $("solo-mods-empty").classList.toggle("hidden", mods.length > 0);
+  }
+
+  /** Editor section: open the editor empty or on a built-in game. */
+  function renderEditorHub(presets) {
+    const editor = clientBase() + "editor.html";
+    // The editor opens one game archive (plus at most one PWAD): skip
+    // presets that stack mods on the game.
+    presets = presets.filter((p) => !(p.addons && p.addons.length));
+    const doomPreset = presets.find((p) => p.game !== "duke3d") || null;
+    const cards = [
+      cardHtml({
+        title: "Your own files",
+        text: "Open any WAD, PK3 or Duke GRP from your computer. Files stay in this browser.",
+        action: "Open the editor",
+        href: editor,
+      }),
+    ];
+    for (const p of presets) {
+      cards.push(
+        cardHtml({
+          title: p.label,
+          meta: p.game === "duke3d" ? "Duke Nukem 3D maps" : "Doom maps",
+          text: "Open the built-in game files with its first map loaded.",
+          action: "Edit its maps",
+          href: editor + "?iwad=" + encodeURIComponent(p.iwad.url) + (p.maps?.[0] ? "&map=" + encodeURIComponent(p.maps[0]) : ""),
+        })
+      );
+    }
+    if (doomPreset) {
+      cards.push(
+        cardHtml({
+          title: "Script a mod",
+          meta: "AssemblyScript · runs live",
+          text: "Start in the Scripts tab: write gameplay code, compile it in the browser and play it on " + doomPreset.label + ".",
+          action: "Open Scripts",
+          href: editor + "?iwad=" + encodeURIComponent(doomPreset.iwad.url) + "&tab=scripts",
+        })
+      );
+    }
+    $("editor-starts").innerHTML = cards.join("");
+  }
+
+  let hubsReady = false;
+  async function renderHubs() {
+    if (hubsReady) return;
+    hubsReady = true;
+    const presets = await loadBundledPresets();
+    renderEditorHub(presets);
+    await renderSoloHub(presets).catch(() => {});
+  }
+
+  $("mode-solo").addEventListener("click", (ev) => {
+    const preset = ev.target.closest("[data-solo-preset]");
+    if (preset) return void playSolo({ source: preset.dataset.soloPreset, level: "game" });
+    const mod = ev.target.closest("[data-solo-mod]");
+    if (mod) return void playSolo({ mod: mod.dataset.soloMod });
+  });
+  $("btn-solo-gen").addEventListener("click", () => playSolo({ level: "gen" }));
+  $("btn-solo-own").addEventListener("click", () => playSolo({ source: "own" }));
+
   $("btn-create").addEventListener("click", () => createRoom());
   $("btn-quick-br").addEventListener("click", () => quickPlayBr());
   $("btn-join-id").addEventListener("click", () => joinById());
@@ -1640,7 +1803,10 @@
   });
 
   refresh()
-    .then(() => consumeJoinQuery())
+    .then(() => {
+      consumeJoinQuery();
+      return renderHubs();
+    })
     .catch(() => {});
   setInterval(refresh, 4000);
 })();
